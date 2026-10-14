@@ -1,12 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { CaretDown, CaretRight, Tray, Warning, X } from "@phosphor-icons/react";
+import { ArrowRight, CaretDown, CaretRight, Check, Diamond, Info, Tray, Warning, X, XCircle } from "@phosphor-icons/react";
 
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Textarea } from "@/components/ui/textarea";
 import {
-  RISK_DOT,
   RISK_LABEL,
   approvalActions,
   attentionCount,
@@ -15,6 +14,9 @@ import {
   filterEntries,
   groupBySession,
   historyEntries,
+  isDoneGroup,
+  isRequestKind,
+  nativePending,
   resetParts,
   unreadCount,
   type DayBucket,
@@ -29,10 +31,12 @@ import {
   type ApprovalDecision,
   type ApprovalRequest,
   type NotificationEntry,
+  type RiskLevel,
   type Session,
   type SessionId,
 } from "../lib/ipc";
 import { PANEL_HEADER } from "./SidePanelBar";
+import "./notifications.css";
 
 const FILTERS: { key: NotificationFilter; label: string }[] = [
   { key: "all", label: "notifFilterAll" },
@@ -48,8 +52,28 @@ const BUCKET_LABEL: Record<DayBucket, string> = {
   earlier: "notifEarlier",
 };
 
-const SMALL_BTN =
-  "h-6 shrink-0 rounded-[5px] border border-tyba-border-strong px-2 text-[11px] text-tyba-text-muted hover:text-tyba-text";
+// Mockup Notificacoes: ação é texto (`.tb`), a principal tem contorno âmbar
+// (`.tbp`) e a secundária é link (`.lnk`). Nenhum cartão: a linha é grade
+// ícone · conteúdo · ponto de não lida (`.row`).
+const TEXT_BTN =
+  "inline-flex shrink-0 items-center gap-[5px] whitespace-nowrap py-0.5 text-[11px] text-tyba-text-muted outline-none hover:text-tyba-text focus-visible:ring-2 focus-visible:ring-tyba-cyan rounded-[3px]";
+const PRIMARY_BTN =
+  "notif-primary shrink-0 whitespace-nowrap rounded-[4px] px-2 py-0.5 text-[11px] outline-none focus-visible:ring-2 focus-visible:ring-tyba-cyan";
+const LINK_BTN =
+  "whitespace-nowrap text-[11px] underline underline-offset-[3px] outline-none hover:text-tyba-text focus-visible:ring-2 focus-visible:ring-tyba-cyan rounded-[3px]";
+const ROW = "grid grid-cols-[16px_minmax(0,1fr)_6px] gap-x-2.5 pb-3 pt-2";
+const META = "mt-0.5 text-[11px] leading-normal text-tyba-text-faint";
+const CMD = "notif-cmd mt-1.5 line-clamp-3 w-fit max-w-full rounded-[4px] px-1.5 py-0.5 font-mono text-[12px]";
+const ACTS = "mt-2 flex flex-wrap items-center gap-3.5";
+const SECTION = "flex justify-between pb-1 text-[11px] text-tyba-text-faint";
+const GROUP_HEAD =
+  "sticky top-0 z-[1] flex min-w-0 items-center gap-2 bg-tyba-surface py-1.5 text-[11px] text-tyba-text-faint";
+
+/** Ícone do pedido (losango) na cor do risco. */
+function RiskGlyph({ risk, label }: { risk: RiskLevel | null; label: string }) {
+  const color = risk === "red" ? "text-tyba-red-fill" : risk === "green" ? "text-tyba-green-fill" : "text-tyba-amber-fill";
+  return <Diamond role="img" aria-label={label} size={14} weight="bold" className={`mt-0.5 ${color}`} />;
+}
 
 function clock(ms: number): string {
   return new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
@@ -136,6 +160,7 @@ export function NotificationsInbox({
   };
 
   const history = useMemo(() => historyEntries(entries), [entries]);
+  const native = useMemo(() => nativePending(entries), [entries]);
   const shown = useMemo(() => filterEntries(history, filter), [history, filter]);
   const badge = attentionCount(approvals.length, entries);
   // Só o histórico: os pedidos pendentes têm a contagem própria em "Precisa de você".
@@ -144,7 +169,7 @@ export function NotificationsInbox({
 
   const counts: Record<NotificationFilter, number> = {
     all: 0,
-    requests: approvals.length,
+    requests: approvals.length + native.length,
     errors: history.filter((e) => e.category === "error" && !e.read).length,
     done: 0,
   };
@@ -157,26 +182,23 @@ export function NotificationsInbox({
       return next;
     });
 
-  const agentChip = (agent: string | null) =>
-    agent && (
-      <span className="shrink-0 rounded-[4px] bg-tyba-amber/[.12] px-1.5 text-[10px] text-tyba-amber">{agent}</span>
-    );
+  const agentLabel = (agent: string | null) => agent && <span className="shrink-0">{agent}</span>;
 
   const groupHeader = (key: string, title: string, agent: string | null, count: number) => {
     const isOpen = !collapsed.has(key);
     return (
-      <div className="flex items-center justify-between px-1 pb-1 pt-2">
+      <div className={GROUP_HEAD}>
         <button
           type="button"
           aria-expanded={isOpen}
           onClick={() => toggleGroup(key)}
-          className="flex min-w-0 items-center gap-1.5 text-[12px] text-tyba-text hover:text-tyba-text"
+          className="flex min-w-0 flex-1 items-center gap-1.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-tyba-cyan rounded-[3px]"
         >
-          {isOpen ? <CaretDown size={10} /> : <CaretRight size={10} />}
-          <span className="truncate">{title}</span>
-          {agentChip(agent)}
+          {isOpen ? <CaretDown size={10} weight="bold" /> : <CaretRight size={10} weight="bold" />}
+          <span className="truncate text-tyba-text-muted">{title}</span>
+          {agentLabel(agent)}
         </button>
-        <span className="text-[11px] text-tyba-text-faint">{count}</span>
+        <span>{count}</span>
       </div>
     );
   };
@@ -184,12 +206,12 @@ export function NotificationsInbox({
   // Grupo de pedidos não recolhe: nenhum pedido pode sumir de todas as telas
   // (com o painel aberto, o toast os esconde — hiddenApprovalIds).
   const requestGroupHeader = (title: string, agent: string | null, count: number) => (
-    <div className="flex items-center justify-between px-1 pb-1 pt-2">
-      <span className="flex min-w-0 items-center gap-1.5 text-[12px] text-tyba-text">
-        <span className="truncate">{title}</span>
-        {agentChip(agent)}
+    <div className={GROUP_HEAD}>
+      <span className="flex min-w-0 flex-1 items-center gap-1.5">
+        <span className="truncate text-tyba-text-muted">{title}</span>
+        {agentLabel(agent)}
       </span>
-      <span className="text-[11px] text-tyba-text-faint">{count}</span>
+      <span>{count}</span>
     </div>
   );
 
@@ -202,123 +224,146 @@ export function NotificationsInbox({
     if (!e.read) void notificationsMarkRead([e.id]).catch(() => {});
   };
 
-  const approvalCard = (request: ApprovalRequest) => (
-    <div key={request.id} className="motion-safe:animate-tyba-pop-in flex gap-2 rounded-[8px] bg-tyba-raised p-2.5 shadow-[var(--tyba-raised-ring)]">
-      <div className="min-w-0 flex-1">
-        <div className="text-[12.5px] text-tyba-text">
-          {request.risk === "red" ? t("notifRedTitle") : t("notifAskTitle")}
-        </div>
-        <div className="mt-0.5 flex items-center gap-1.5 text-[11px] text-tyba-text-faint">
-          {request.risk === "red" ? (
-            <span className="flex items-center gap-1 text-tyba-red">
-              <Warning size={10} weight="bold" />
-              {t("redAction")}
-            </span>
-          ) : (
-            <span className="flex items-center gap-1">
-              <span
-                role="img"
-                aria-label={t(RISK_LABEL[request.risk])}
-                className={`size-1.5 rounded-full ${RISK_DOT[request.risk]}`}
-              />
-              {t("notifAsks")}
-            </span>
-          )}
-          · {sessionTitle(request.session_id)} · {clock(request.requested_at_ms)}
-        </div>
-        <code className="mt-1.5 block truncate rounded-[5px] bg-tyba-sunken px-2 py-1 font-mono text-[11.5px] text-tyba-text" title={request.command}>
-          {request.command}
-        </code>
-        {request.context && <div className="mt-1 text-[11px] text-tyba-text-muted">{request.context}</div>}
-        <div className="mt-2 flex flex-wrap gap-1.5">
-          {/* R4: vermelho não se aprova de fora da sessão — só abrir nela. */}
-          {request.risk === "red" ? (
-            <Button
-              size="sm"
-              onClick={() => goToSession(request.session_id)}
-              className="h-6 rounded-[5px] px-2.5 text-[11px]"
-            >
-              {t("notifOpenInSession")}
-            </Button>
-          ) : (
-            <>
-              {approvalActions(request.risk).map((action) => {
-                const onClick = () => {
-                  if (action.id === "denyWithReason") {
-                    setFeedbackFor(request.id);
-                    return;
-                  }
-                  const decision: ApprovalDecision =
-                    action.id === "alwaysAllow" ? "approved_always" : action.id === "deny" ? "denied" : "approved";
-                  decide(request, decision);
-                };
-                const button = (
-                  <Button
-                    key={action.id}
-                    size="sm"
-                    variant={action.id === "approve" ? "default" : "outline"}
-                    onClick={onClick}
-                    className={`h-6 gap-1.5 rounded-[5px] px-2.5 text-[11px] ${action.id === "approve" ? "" : "text-tyba-text-muted"}`}
-                  >
-                    {t(action.labelKey)}
-                  </Button>
-                );
-                return action.id === "alwaysAllow" ? (
-                  <Tooltip key={action.id}>
-                    <TooltipTrigger asChild>{button}</TooltipTrigger>
-                    <TooltipContent side="bottom">{t("alwaysAllowHint")}</TooltipContent>
-                  </Tooltip>
-                ) : (
-                  button
-                );
-              })}
-              <button type="button" className={SMALL_BTN} onClick={() => onGoToSession(request.session_id)}>
-                {t("notifOpenSession")}
-              </button>
-            </>
-          )}
-        </div>
-        {feedbackFor === request.id && request.risk !== "red" && (
-          <div className="motion-safe:animate-tyba-pop-in mt-2 space-y-1.5">
-            <Textarea
-              autoFocus
-              rows={2}
-              value={feedback}
-              onChange={(e) => setFeedback(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-                  e.preventDefault();
-                  decide(request, "denied", feedback);
-                }
-                if (e.key === "Escape") {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  setFeedbackFor(null);
-                  setFeedback("");
-                }
-              }}
-              placeholder={t("denyFeedbackPlaceholder")}
-              className="min-h-0 resize-none text-[11px]"
-            />
-            <div className="flex gap-2">
-              <Button size="sm" onClick={() => decide(request, "denied", feedback)} className="h-6 rounded-[4px] px-2.5 text-[11px]">
-                {t("denyAndTell")}
-              </Button>
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => {
-                  setFeedbackFor(null);
-                  setFeedback("");
-                }}
-                className="h-6 rounded-[4px] px-2.5 text-[11px] text-tyba-text-muted"
-              >
-                {t("cancel")}
-              </Button>
-            </div>
+  // "Abrir na sessão →": a única ação do vermelho (R4) e do amarelo que
+  // espera no prompt nativo do Claude (decide-se no terminal, não aqui).
+  const openInSessionBtn = (sessionId: SessionId) => (
+    <button type="button" className={`${TEXT_BTN} !text-tyba-text`} onClick={() => goToSession(sessionId)}>
+      {t("notifOpenInSession")}
+      <ArrowRight size={11} weight="bold" />
+    </button>
+  );
+
+  const approvalCard = (request: ApprovalRequest) => {
+    // Mockup: aprovar (contorno âmbar), negar, "não, e dizer…" e por último
+    // o "sempre permitir" como link. O conjunto continua vindo de approvalActions.
+    const actions = approvalActions(request.risk);
+    const ordered = [...actions.filter((a) => a.id !== "alwaysAllow"), ...actions.filter((a) => a.id === "alwaysAllow")];
+    return (
+      <div key={request.id} className={`motion-safe:animate-tyba-pop-in ${ROW}`}>
+        <RiskGlyph risk={request.risk} label={t(RISK_LABEL[request.risk])} />
+        <div className="min-w-0">
+          <div className="text-[13px] font-bold leading-[1.45] text-tyba-text">
+            {request.risk === "red" ? t("notifRedTitle") : t("notifAskTitle")}
           </div>
-        )}
+          <div className={META}>
+            <span className="text-tyba-text-muted">{request.risk === "red" ? t("redAction") : t("notifAsks")}</span>
+            {" · "}
+            {sessionTitle(request.session_id)} · {clock(request.requested_at_ms)}
+          </div>
+          <code className={CMD} title={request.command}>
+            {request.command}
+          </code>
+          {request.context && <div className="mt-1 text-[11px] text-tyba-text-muted">{request.context}</div>}
+          <div className={ACTS}>
+            {/* R4: vermelho não se aprova de fora da sessão — só abrir nela. */}
+            {request.risk === "red" ? (
+              openInSessionBtn(request.session_id)
+            ) : (
+              <>
+                {ordered.map((action) => {
+                  const onClick = () => {
+                    if (action.id === "denyWithReason") {
+                      setFeedbackFor(request.id);
+                      return;
+                    }
+                    const decision: ApprovalDecision =
+                      action.id === "alwaysAllow" ? "approved_always" : action.id === "deny" ? "denied" : "approved";
+                    decide(request, decision);
+                  };
+                  const className =
+                    action.id === "approve"
+                      ? PRIMARY_BTN
+                      : action.id === "alwaysAllow"
+                        ? `${LINK_BTN} text-tyba-text-faint`
+                        : TEXT_BTN;
+                  const button = (
+                    <button key={action.id} type="button" onClick={onClick} className={className}>
+                      {t(action.labelKey)}
+                    </button>
+                  );
+                  return action.id === "alwaysAllow" ? (
+                    <Tooltip key={action.id}>
+                      <TooltipTrigger asChild>{button}</TooltipTrigger>
+                      <TooltipContent side="bottom">{t("alwaysAllowHint")}</TooltipContent>
+                    </Tooltip>
+                  ) : (
+                    button
+                  );
+                })}
+                <button type="button" className={TEXT_BTN} onClick={() => onGoToSession(request.session_id)}>
+                  {t("notifOpenSession")}
+                </button>
+              </>
+            )}
+          </div>
+          {feedbackFor === request.id && request.risk !== "red" && (
+            <div className="motion-safe:animate-tyba-pop-in mt-2 space-y-1.5">
+              <Textarea
+                autoFocus
+                rows={2}
+                value={feedback}
+                onChange={(e) => setFeedback(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                    e.preventDefault();
+                    decide(request, "denied", feedback);
+                  }
+                  if (e.key === "Escape") {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setFeedbackFor(null);
+                    setFeedback("");
+                  }
+                }}
+                placeholder={t("denyFeedbackPlaceholder")}
+                className="min-h-0 resize-none text-[11px]"
+              />
+              <div className="flex gap-2">
+                <Button size="sm" onClick={() => decide(request, "denied", feedback)} className="h-6 rounded-[4px] px-2.5 text-[11px]">
+                  {t("denyAndTell")}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => {
+                    setFeedbackFor(null);
+                    setFeedback("");
+                  }}
+                  className="h-6 rounded-[4px] px-2.5 text-[11px] text-tyba-text-muted"
+                >
+                  {t("cancel")}
+                </Button>
+              </div>
+            </div>
+          )}
+        </div>
+        <span />
       </div>
+    );
+  };
+
+  // Amarelo do Claude esperando no prompt nativo: só registro e "Abrir na
+  // sessão". A decisão é do terminal (decisão 2026-09-23), nunca daqui.
+  const nativeCard = (e: NotificationEntry) => (
+    <div key={`native:${e.id}`} className={`motion-safe:animate-tyba-pop-in ${ROW}`}>
+      <RiskGlyph risk={e.risk} label={t(RISK_LABEL[e.risk ?? "yellow"])} />
+      <div className="min-w-0">
+        <div className="text-[13px] font-bold leading-[1.45] text-tyba-text">
+          {t("notifNativeTitle", { who: e.agent ?? e.session_title })}
+        </div>
+        <div className={META}>
+          <span className="text-tyba-text-muted">{t("notifNativeAsks")}</span>
+          {" · "}
+          {e.session_title} · {clock(e.at_ms)}
+        </div>
+        {e.command && (
+          <code className={CMD} title={e.command}>
+            {e.command}
+          </code>
+        )}
+        <div className={ACTS}>{openInSessionBtn(e.session_id)}</div>
+      </div>
+      <span />
     </div>
   );
 
@@ -331,6 +376,12 @@ export function NotificationsInbox({
           : e.decision
             ? t("notifApprovalApproved", { who })
             : t("notifApprovalExpired", { who });
+      case "native_approval":
+        return e.decision === "denied"
+          ? t("notifNativeDenied", { who })
+          : e.decision
+            ? t("notifNativeApproved", { who })
+            : t("notifNativeExpired", { who });
       case "agent_finished":
         return t("notifFinished", { who, session: e.session_title });
       case "agent_failed":
@@ -342,7 +393,15 @@ export function NotificationsInbox({
     }
   };
 
-  const entryRow = (e: NotificationEntry) => {
+  /** Ícone por item (mockup): losango = pedido, ⊗ = erro, △ = aviso, ✓ = concluído. */
+  const entryGlyph = (e: NotificationEntry) => {
+    if (isRequestKind(e)) return <Diamond role="img" aria-label={t("notifGlyphRequest")} size={14} weight="bold" className="mt-0.5 text-tyba-text-faint" />;
+    if (e.category === "error") return <XCircle role="img" aria-label={t("notifGlyphError")} size={14} weight="bold" className="mt-0.5 text-tyba-red-fill" />;
+    if (e.category === "info") return <Warning role="img" aria-label={t("notifGlyphWarning")} size={14} weight="bold" className="mt-0.5 text-tyba-amber-fill" />;
+    return <Check role="img" aria-label={t("notifGlyphDone")} size={14} weight="bold" className="mt-0.5 text-tyba-text-faint" />;
+  };
+
+  const entryRow = (e: NotificationEntry, doneGroup: boolean) => {
     const reset = e.usage?.resets_at ? resetParts(e.usage.resets_at, Date.now()) : null;
     const resets = reset && (reset.date ? t("notifResetsOn", reset) : t("notifResetsAt", reset));
     return (
@@ -354,26 +413,33 @@ export function NotificationsInbox({
         onKeyDown={(ev) => {
           if (ev.key === "Enter") markRead(e);
         }}
-        className="flex cursor-default gap-2 rounded-[8px] px-2.5 py-2 outline-none hover:bg-tyba-raised/60 focus-visible:bg-tyba-raised/60"
+        className={`${ROW} cursor-default rounded-[4px] outline-none focus-visible:ring-2 focus-visible:ring-tyba-cyan`}
       >
-        <div className="min-w-0 flex-1">
-          <div className={`text-[12.5px] ${e.category === "error" ? "text-tyba-red" : "text-tyba-text"}`}>{entryTitle(e)}</div>
-          <div className="mt-0.5 truncate text-[11px] text-tyba-text-faint">
+        {entryGlyph(e)}
+        <div className="min-w-0">
+          <div
+            className={`text-[13px] leading-[1.45] ${e.read ? "" : "font-bold"} ${
+              doneGroup ? "text-tyba-text-muted" : "text-tyba-text"
+            }`}
+          >
+            {entryTitle(e)}
+          </div>
+          <div className={`${META} truncate`}>
             {e.session_title} · {clock(e.at_ms)}
             {resets && ` · ${resets}`}
             {e.detail && ` · ${e.detail}`}
           </div>
           {e.command && (
-            <code className="mt-1 block truncate font-mono text-[11px] text-tyba-text-muted" title={e.command}>
+            <code className={CMD} title={e.command}>
               {e.command}
             </code>
           )}
           {(e.kind === "agent_finished" || e.kind === "agent_failed" || e.kind === "usage_limit") && (
-            <div className="mt-1.5 flex gap-1.5">
+            <div className={ACTS}>
               {e.kind === "agent_finished" && (
                 <button
                   type="button"
-                  className={SMALL_BTN}
+                  className={TEXT_BTN}
                   onClick={(ev) => {
                     ev.stopPropagation();
                     markRead(e);
@@ -386,7 +452,7 @@ export function NotificationsInbox({
               )}
               <button
                 type="button"
-                className={SMALL_BTN}
+                className={TEXT_BTN}
                 onClick={(ev) => {
                   ev.stopPropagation();
                   markRead(e);
@@ -398,8 +464,10 @@ export function NotificationsInbox({
             </div>
           )}
         </div>
-        {!e.read && (
-          <span role="img" aria-label={t("notifUnread")} className="mt-1.5 size-1.5 shrink-0 rounded-full bg-tyba-blue" />
+        {e.read ? (
+          <span />
+        ) : (
+          <span role="img" aria-label={t("notifUnread")} className="mt-[7px] size-1.5 rounded-full bg-tyba-blue" />
         )}
       </div>
     );
@@ -409,6 +477,9 @@ export function NotificationsInbox({
     title: sessionTitle(a.session_id),
     agent: sessionAgent(a.session_id),
   }));
+  const nativeGroups = groupBySession(native, (e) => ({ title: e.session_title, agent: e.agent }));
+  const liveCount = approvals.length + native.length;
+  const firstBucket = BUCKETS.find((b) => shown.some((e) => dayBucket(e.at_ms, now) === b));
 
   return (
     <>
@@ -426,7 +497,7 @@ export function NotificationsInbox({
           >
             <Tray size={16} weight={badge > 0 ? "fill" : "regular"} />
             {badge > 0 && (
-              <span className="absolute right-[3px] top-[3px] flex h-3 min-w-3 items-center justify-center rounded-[6px] bg-tyba-red-fill px-[3px] text-[9px] leading-none text-white">
+              <span className="absolute right-[3px] top-[3px] flex h-3 min-w-3 items-center justify-center rounded-[6px] bg-tyba-red-fill px-[3px] text-[9px] leading-none text-tyba-text-inverse">
                 {badge > 9 ? "9+" : badge}
               </span>
             )}
@@ -442,21 +513,35 @@ export function NotificationsInbox({
           className="motion-safe:animate-tyba-panel-in fixed bottom-[26px] right-0 top-[38px] z-50 flex w-[380px] flex-col tyba-divide-l bg-[var(--tyba-panel-bg)] tyba-glass shadow-[-24px_0_48px_rgba(0,0,0,0.35)]"
         >
           <div className={PANEL_HEADER}>
-            <span className="text-[13px] text-tyba-text">{t("notifications")}</span>
+            <Tray size={16} className="shrink-0 text-tyba-blue" />
+            <span className="min-w-0 flex-1 truncate text-[13px] text-tyba-text">{t("notifications")}</span>
             {unread > 0 && <span className="text-[11px] text-tyba-text-faint">{t("notifUnreadCount", { count: unread })}</span>}
-            <span className="flex-1" />
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  aria-label={t("notifHowItWorks")}
+                  className="rounded-[4px] text-tyba-text-faint outline-none hover:text-tyba-text focus-visible:ring-2 focus-visible:ring-tyba-cyan"
+                >
+                  <Info size={14} />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" className="max-w-[280px] text-[11px] leading-normal">
+                {t("notifHowItWorksBody")}
+              </TooltipContent>
+            </Tooltip>
             <button
               type="button"
               aria-label={t("sidePanelClose")}
               onClick={() => onOpenChange(false)}
-              className="rounded-[4px] text-tyba-text-faint hover:text-tyba-text"
+              className="rounded-[4px] text-tyba-text-faint outline-none hover:text-tyba-text focus-visible:ring-2 focus-visible:ring-tyba-cyan"
             >
               <X size={13} />
             </button>
           </div>
 
-          <div className="flex shrink-0 items-center gap-2 tyba-divide-b px-3 py-2">
-            <div role="tablist" aria-label={t("notifFilter")} className="flex gap-0.5 rounded-[7px] bg-tyba-sunken p-0.5 shadow-[inset_0_0_0_1px_var(--tyba-border)]">
+          <div className="notif-filters flex shrink-0 flex-col gap-2 px-4 py-2.5">
+            <div role="tablist" aria-label={t("notifFilter")} className="flex gap-1.5">
               {FILTERS.map((f) => (
                 <button
                   key={f.key}
@@ -464,9 +549,7 @@ export function NotificationsInbox({
                   role="tab"
                   aria-selected={filter === f.key}
                   onClick={() => setFilter(f.key)}
-                  className={`flex items-center gap-1 whitespace-nowrap rounded-[5px] px-2 py-0.5 text-[11.5px] ${
-                    filter === f.key ? "bg-tyba-raised text-tyba-text shadow-[var(--tyba-raised-ring)]" : "text-tyba-text-muted hover:text-tyba-text"
-                  }`}
+                  className="notif-chip flex items-center gap-1 whitespace-nowrap rounded-full px-2.5 py-[3px] text-[11px] outline-none focus-visible:ring-2 focus-visible:ring-tyba-cyan"
                 >
                   {t(f.label)}
                   {counts[f.key] > 0 && (
@@ -475,30 +558,37 @@ export function NotificationsInbox({
                 </button>
               ))}
             </div>
-            <span className="flex-1" />
-            <button
-              type="button"
-              disabled={unread === 0}
-              onClick={() => void notificationsMarkRead(null).catch(() => {})}
-              className="whitespace-nowrap text-[11px] text-tyba-text-muted hover:text-tyba-text disabled:opacity-40"
-            >
-              {t("notifMarkAllRead")}
-            </button>
+            <div className="flex justify-end">
+              <button
+                type="button"
+                disabled={unread === 0}
+                onClick={() => void notificationsMarkRead(null).catch(() => {})}
+                className={`${LINK_BTN} text-tyba-text-muted disabled:opacity-40 disabled:no-underline`}
+              >
+                {t("notifMarkAllRead")}
+              </button>
+            </div>
           </div>
 
-          <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-4">
+          <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-3">
             {/* "Precisa de você" aparece em qualquer filtro: com o painel aberto
                 o toast esconde os pedidos, então nenhum pode sumir daqui. */}
-            {approvals.length > 0 && (
+            {liveCount > 0 && (
               <>
-                <div className="flex items-center justify-between px-1 pb-1 pt-3 text-[11px] text-tyba-amber">
-                  <span className="tyba-label !text-tyba-amber">{t("notifNeedsYou")}</span>
-                  <span>{approvals.length}</span>
+                <div className={`${SECTION} pt-3.5`}>
+                  <span>{t("notifNeedsYou")}</span>
+                  <span>{liveCount}</span>
                 </div>
                 {requestGroups.map((g) => (
-                  <section key={`req:${g.session}`} aria-label={g.title} className="flex flex-col gap-1.5">
+                  <section key={`req:${g.session}`} aria-label={g.title}>
                     {requestGroupHeader(g.title, g.agent, g.items.length)}
                     {g.items.map(approvalCard)}
+                  </section>
+                ))}
+                {nativeGroups.map((g) => (
+                  <section key={`native:${g.session}`} aria-label={g.title}>
+                    {requestGroupHeader(g.title, g.agent, g.items.length)}
+                    {g.items.map(nativeCard)}
                   </section>
                 ))}
               </>
@@ -508,18 +598,20 @@ export function NotificationsInbox({
               const inBucket = shown.filter((e) => dayBucket(e.at_ms, now) === bucket);
               if (inBucket.length === 0) return null;
               const groups = groupBySession(inBucket, (e) => ({ title: e.session_title, agent: e.agent }));
+              const first = liveCount === 0 && bucket === firstBucket;
               return (
                 <div key={bucket}>
-                  <div className="flex items-center justify-between px-1 pb-1 pt-4 text-[11px] text-tyba-text-faint">
-                    <span className="tyba-label">{t(BUCKET_LABEL[bucket])}</span>
+                  <div className={`${SECTION} ${first ? "pt-3.5" : "pt-[18px]"}`}>
+                    <span>{t(BUCKET_LABEL[bucket])}</span>
                     <span>{inBucket.length}</span>
                   </div>
                   {groups.map((g) => {
                     const key = `${bucket}:${g.session}`;
+                    const done = isDoneGroup(g.items);
                     return (
                       <section key={key} aria-label={g.title}>
                         {groupHeader(key, g.title, g.agent, g.items.length)}
-                        {!collapsed.has(key) && g.items.map(entryRow)}
+                        {!collapsed.has(key) && g.items.map((e) => entryRow(e, done))}
                       </section>
                     );
                   })}
@@ -527,7 +619,7 @@ export function NotificationsInbox({
               );
             })}
 
-            {approvals.length === 0 && shown.length === 0 && (
+            {liveCount === 0 && shown.length === 0 && (
               <p className="px-2 py-8 text-center text-[12px] text-tyba-text-faint">{t("notificationsEmpty")}</p>
             )}
           </div>
