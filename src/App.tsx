@@ -17,6 +17,7 @@ import {
   Prohibit,
   SidebarSimple,
   SquaresFour,
+  Stack,
   TerminalWindow,
   User,
   X,
@@ -5321,6 +5322,7 @@ export default function App() {
                     aria-pressed
                     className="flex h-6 items-center gap-1.5 rounded-[6px] bg-tyba-raised px-3 text-[13px] text-tyba-text shadow-[var(--tyba-row-raised)]"
                   >
+                    <TerminalWindow size={14} aria-hidden />
                     {t("terminalView")}
                   </button>
                 </TooltipTrigger>
@@ -5336,6 +5338,7 @@ export default function App() {
                     disabled
                     className="flex h-6 cursor-not-allowed items-center gap-1.5 rounded-[6px] px-3 text-[13px] text-tyba-text-faint"
                   >
+                    <Stack size={14} aria-hidden />
                     {t("workspaceView")}
                   </button>
                 </TooltipTrigger>
