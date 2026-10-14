@@ -151,6 +151,9 @@ export function visiblePanels(input: VisibilityInput): PanelKind[] {
       // O Diff é seção da tela de Git (Revisar), não ícone no header.
       case "diff":
         return false;
+      // Arquivos abre pelo menu do app, pela paleta e pelo atalho, não pelo header.
+      case "files":
+        return false;
       case "agents":
         return input.agentsAvailable;
       default:

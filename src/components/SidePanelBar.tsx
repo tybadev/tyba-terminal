@@ -3,8 +3,8 @@ import { useTranslation } from "react-i18next";
 import {
   ArrowsLeftRight,
   ClockCounterClockwise,
+  FolderOpen,
   GitDiff,
-  TreeView,
   X,
 } from "@phosphor-icons/react";
 
@@ -56,7 +56,7 @@ export function PanelIcon({
     case "tunnels":
       return <ArrowsLeftRight size={size} className={className} />;
     case "files":
-      return <TreeView size={size} className={className} />;
+      return <FolderOpen size={size} className={className} />;
     case "git":
       return <GitIcon size={size - 1} className={className} />;
     case "diff":
