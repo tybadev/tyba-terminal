@@ -2199,6 +2199,7 @@ fn session_side_view(state: &AppState, session: SessionId) -> Option<String> {
 }
 
 fn close_orphaned_files_panel(state: &AppState, previous: Option<String>, keep: Option<&str>) {
+    release_docker_screen_shells(state);
     let Some(prev) = previous else {
         return;
     };
@@ -2214,6 +2215,23 @@ fn close_orphaned_files_panel(state: &AppState, previous: Option<String>, keep: 
             close_files_panel(state, id);
         }
     }
+}
+
+/// O shell da tela de Docker mora nela: sem tela de Docker aberta em
+/// workspace nenhum, os `docker exec` dela morrem (process group inteiro).
+fn release_docker_screen_shells(state: &AppState) {
+    let open = state.layout.state().workspaces.iter().any(|w| {
+        w.side_view
+            .as_deref()
+            .is_some_and(|v| v.starts_with(layout::VIEW_DOCKER_PREFIX))
+    });
+    if open {
+        return;
+    }
+    for id in state.docker.screen_shells() {
+        state.sessions.dispose(&state.pty_pool, id);
+    }
+    state.docker.forget_screen_shells();
 }
 
 /// Uma aba de conteúdo fechou: solta o que só ela segurava — o `docker logs
@@ -5186,49 +5204,7 @@ fn open_container_tab(
         crate::ssh::command::require_session_if_password(alias).map_err(|e| e.to_string())?;
     }
     let bin = docker::docker_bin().ok_or("binário docker não encontrado")?;
-    let (args, title) = match tab {
-        docker::ContainerTab::Logs => (
-            vec![
-                "logs".to_string(),
-                "-f".to_string(),
-                "--tail".to_string(),
-                "200".to_string(),
-                container_id.to_string(),
-            ],
-            format!("logs: {name}"),
-        ),
-        docker::ContainerTab::Shell => (
-            vec![
-                "exec".to_string(),
-                "-it".to_string(),
-                // O nome vai por env, nunca interpolado no script: o prompt
-                // azul diz "isto é o container" sem abrir porta para injeção.
-                "-e".to_string(),
-                format!(
-                    "TYBA_CTR={}",
-                    name.chars()
-                        .filter(|c| c.is_ascii_alphanumeric() || "_.-".contains(*c))
-                        .collect::<String>()
-                ),
-                container_id.to_string(),
-                "sh".to_string(),
-                "-c".to_string(),
-                CONTAINER_SHELL_SCRIPT.to_string(),
-            ],
-            format!("sh: {name}"),
-        ),
-    };
-
-    // `-H` é flag global do docker e vem antes do subcomando: evita carregar
-    // env pelo spawn e deixa o alvo explícito na própria linha de comando.
-    let args = match docker::docker_host_env(host) {
-        Some(target) => {
-            let mut with_host = vec!["-H".to_string(), target];
-            with_host.extend(args);
-            with_host
-        }
-        None => args,
-    };
+    let (args, title) = container_command(container_id, tab, &name, host);
 
     let session = match &remote {
         // Container do host tem workspace próprio: `create_tab` sem alvo cai no
@@ -5297,6 +5273,60 @@ fn open_container_tab(
     };
     state.docker.remember_tab(container_id, tab, session);
     Ok(())
+}
+
+/// Linha de comando do `docker` para a aba/tela de container: `logs -f` ou o
+/// `exec -it … sh` do shell, já com `-H` do host remoto. Devolve (args, título).
+fn container_command(
+    container_id: &str,
+    tab: docker::ContainerTab,
+    name: &str,
+    host: Option<&str>,
+) -> (Vec<String>, String) {
+    let (args, title) = match tab {
+        docker::ContainerTab::Logs => (
+            vec![
+                "logs".to_string(),
+                "-f".to_string(),
+                "--tail".to_string(),
+                "200".to_string(),
+                container_id.to_string(),
+            ],
+            format!("logs: {name}"),
+        ),
+        docker::ContainerTab::Shell | docker::ContainerTab::ScreenShell => (
+            vec![
+                "exec".to_string(),
+                "-it".to_string(),
+                // O nome vai por env, nunca interpolado no script: o prompt
+                // azul diz "isto é o container" sem abrir porta para injeção.
+                "-e".to_string(),
+                format!(
+                    "TYBA_CTR={}",
+                    name.chars()
+                        .filter(|c| c.is_ascii_alphanumeric() || "_.-".contains(*c))
+                        .collect::<String>()
+                ),
+                container_id.to_string(),
+                "sh".to_string(),
+                "-c".to_string(),
+                CONTAINER_SHELL_SCRIPT.to_string(),
+            ],
+            format!("sh: {name}"),
+        ),
+    };
+
+    // `-H` é flag global do docker e vem antes do subcomando: evita carregar
+    // env pelo spawn e deixa o alvo explícito na própria linha de comando.
+    let args = match docker::docker_host_env(host) {
+        Some(target) => {
+            let mut with_host = vec!["-H".to_string(), target];
+            with_host.extend(args);
+            with_host
+        }
+        None => args,
+    };
+    (args, title)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -5368,15 +5398,18 @@ struct EditorTabOpened {
     view: String,
 }
 
-/// Abre (ou foca) a aba de editor de um arquivo. `path` pode ser absoluto (link
-/// de log já mapeado para o host) ou relativo à raiz/repo da sessão. Sem
+/// Abre (ou foca) um arquivo na tela de Arquivos da sessão — todo "abrir
+/// arquivo" do app cai aqui (telas-cheias). `path` pode ser absoluto (link de
+/// log já mapeado para o host) ou relativo à raiz/repo da sessão. Sem
 /// `session`, tenta as sessões do workspace ativo, da em foco para as demais.
+/// `preview`: aba em pré-visualização (clique simples na árvore).
 #[tauri::command]
 async fn open_editor_tab(
     app: AppHandle,
     state: State<'_, AppState>,
     session: Option<SessionId>,
     path: String,
+    preview: Option<bool>,
 ) -> Result<EditorTabOpened, String> {
     let candidates = match session {
         Some(s) => vec![s],
@@ -5411,11 +5444,13 @@ async fn open_editor_tab(
         }) {
             Ok(rel) => {
                 let view = layout::editor_view(sid, &rel);
-                let ws = state.layout.workspace_of_session(sid);
+                let files_view = layout::files_view(sid);
+                let previous = session_side_view(&state, sid);
                 state
                     .layout
-                    .open_content_tab(ws, &view)
+                    .open_file_screen(sid, &view, preview.unwrap_or(false))
                     .map_err(|e| e.to_string())?;
+                close_orphaned_files_panel(&state, previous, Some(&files_view));
                 emit_layout(&app, &state);
                 return Ok(EditorTabOpened {
                     session: sid,
@@ -5427,6 +5462,262 @@ async fn open_editor_tab(
         }
     }
     Err(last_err)
+}
+
+/// Foca uma aba interna da tela de Arquivos.
+#[tauri::command]
+fn files_screen_activate(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    workspace: layout::WorkspaceId,
+    view: String,
+) -> Result<(), String> {
+    let changed = state
+        .layout
+        .with_screens(workspace, |s| s.files.activate(&view))
+        .map_err(|e| e.to_string())?;
+    if changed {
+        emit_layout(&app, &state);
+    }
+    Ok(())
+}
+
+/// Tira a aba da pré-visualização (o buffer ficou sujo, duplo clique).
+#[tauri::command]
+fn files_screen_pin(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    workspace: layout::WorkspaceId,
+    view: String,
+) -> Result<(), String> {
+    let changed = state
+        .layout
+        .with_screens(workspace, |s| s.files.pin(&view))
+        .map_err(|e| e.to_string())?;
+    if changed {
+        emit_layout(&app, &state);
+    }
+    Ok(())
+}
+
+/// Fecha uma aba interna da tela de Arquivos. Sem aba nem tela da sessão, o
+/// watcher e o LSP dela são soltos.
+#[tauri::command]
+fn files_screen_close(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    workspace: layout::WorkspaceId,
+    view: String,
+) -> Result<(), String> {
+    state
+        .layout
+        .with_screens(workspace, |s| s.files.close(&view))
+        .map_err(|e| e.to_string())?;
+    if let Some(session) = layout::editor_view_session(&view) {
+        let screen_open = state
+            .layout
+            .state()
+            .workspaces
+            .iter()
+            .any(|w| w.side_view.as_deref() == Some(layout::files_view(session).as_str()));
+        if !screen_open && !state.layout.has_editor_tabs(session) {
+            close_files_panel(&state, session);
+        }
+    }
+    emit_layout(&app, &state);
+    Ok(())
+}
+
+#[tauri::command]
+fn files_screen_section(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    workspace: layout::WorkspaceId,
+    section: layout::screens::FilesSection,
+) -> Result<(), String> {
+    state
+        .layout
+        .with_screens(workspace, |s| s.files.section = section)
+        .map_err(|e| e.to_string())?;
+    emit_layout(&app, &state);
+    Ok(())
+}
+
+/// "Buscar no projeto": texto nos arquivos rastreados da sessão (`git grep`).
+/// Sessão remota ainda não tem.
+#[tauri::command]
+async fn files_grep(
+    app: AppHandle,
+    id: SessionId,
+    query: String,
+    limit: Option<usize>,
+) -> Result<files::grep::GrepOutcome, crate::error::AppError> {
+    let cap = limit.unwrap_or(200).min(1000);
+    off_main(app, move |app, state| {
+        if remote_target(&state, id).is_some() {
+            return Err(crate::error::AppError::new("files.grep_remote"));
+        }
+        let (root, _) = state
+            .files
+            .ensure(app, id, || resolve_files_root(&state, id))
+            .map_err(|e| crate::error::AppError::new("files.grep_failed").with("detail", e))?;
+        files::grep::grep(&root, &query, cap)
+            .map_err(|e| crate::error::AppError::new("files.grep_failed").with("detail", e))
+    })
+    .await
+    .map_err(|e| crate::error::AppError::new("files.grep_failed").with("detail", e))?
+}
+
+/// Seção do trilho da tela de Docker.
+#[tauri::command]
+fn docker_screen_section(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    workspace: layout::WorkspaceId,
+    section: layout::screens::DockerSection,
+) -> Result<(), String> {
+    state
+        .layout
+        .with_screens(workspace, |s| s.docker.section = section)
+        .map_err(|e| e.to_string())?;
+    emit_layout(&app, &state);
+    Ok(())
+}
+
+/// Container escolhido na tela de Docker. Id fora do formato é recusado.
+#[tauri::command]
+fn docker_screen_select(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    workspace: layout::WorkspaceId,
+    container: Option<String>,
+) -> Result<(), String> {
+    if let Some(id) = container.as_deref() {
+        if !docker::is_valid_container_id(id) {
+            return Err("container inválido".into());
+        }
+    }
+    state
+        .layout
+        .with_screens(workspace, |s| s.docker.container = container)
+        .map_err(|e| e.to_string())?;
+    // `emit_layout` também solta/segura o `docker logs -f`.
+    emit_layout(&app, &state);
+    Ok(())
+}
+
+/// Logs | Shell | Arquivos | Detalhes do container escolhido.
+#[tauri::command]
+fn docker_screen_pane(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    workspace: layout::WorkspaceId,
+    pane: layout::screens::ContainerPane,
+) -> Result<(), String> {
+    state
+        .layout
+        .with_screens(workspace, |s| s.docker.pane = pane)
+        .map_err(|e| e.to_string())?;
+    emit_layout(&app, &state);
+    Ok(())
+}
+
+/// O shell (PTY de `docker exec`) que mora DENTRO da tela de Docker: sem aba,
+/// um por container, reaproveitado enquanto vivo. Morre quando a tela fecha.
+#[tauri::command]
+async fn docker_screen_shell(
+    app: AppHandle,
+    container_id: String,
+    host: Option<String>,
+) -> Result<SessionId, String> {
+    off_main(app, move |app, state| {
+        screen_container_shell(app, &state, &container_id, host.as_deref())
+    })
+    .await?
+}
+
+fn screen_container_shell(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+    container_id: &str,
+    host: Option<&str>,
+) -> Result<SessionId, String> {
+    let tab = docker::ContainerTab::ScreenShell;
+    let name = state
+        .docker
+        .ensure_known(container_id, host)
+        .map_err(|e| e.to_string())?;
+    if let Some(existing) = state.docker.tab_session(container_id, tab) {
+        match state.sessions.get(existing).map(|s| s.status) {
+            Some(SessionStatus::Exited { .. } | SessionStatus::Failed { .. }) => {
+                state.sessions.dispose(&state.pty_pool, existing);
+            }
+            Some(_) => return Ok(existing),
+            None => {}
+        }
+    }
+    if let Some(alias) = host {
+        crate::ssh::command::require_session_if_password(alias).map_err(|e| e.to_string())?;
+    }
+    let host_id = match host {
+        Some(alias) => Some(
+            state
+                .store
+                .load_hosts()
+                .ok()
+                .and_then(|hosts| hosts.into_iter().find(|h| h.alias == alias))
+                .map(|h| h.id)
+                .ok_or("host não encontrado")?,
+        ),
+        None => None,
+    };
+    let bin = docker::docker_bin().ok_or("binário docker não encontrado")?;
+    let (args, title) = container_command(container_id, tab, &name, host);
+    let title = match host {
+        Some(alias) => format!("{alias} · {title}"),
+        None => title,
+    };
+    let handle = app.clone();
+    let session = state
+        .sessions
+        .create_command_session(
+            app.clone(),
+            &state.pty_pool,
+            bin.as_path(),
+            &args,
+            title,
+            None,
+            100,
+            30,
+            SessionKind::Container {
+                host_id,
+                container_id: container_id.to_string(),
+            },
+            move |id| session_exited(&handle, id),
+        )
+        .map_err(|e| e.to_string())?;
+    state.docker.remember_tab(container_id, tab, session.id);
+    Ok(session.id)
+}
+
+/// Imagens do alvo (seção Imagens da tela de Docker, só leitura).
+#[tauri::command]
+async fn docker_list_images(
+    state: State<'_, AppState>,
+    host: Option<String>,
+) -> Result<Vec<docker::ImageInfo>, String> {
+    let docker = Arc::clone(&state.docker);
+    docker_blocking(move || docker.images(host.as_deref()).map_err(|e| e.to_string())).await?
+}
+
+/// Volumes do alvo (seção Volumes da tela de Docker, só leitura).
+#[tauri::command]
+async fn docker_list_volumes(
+    state: State<'_, AppState>,
+    host: Option<String>,
+) -> Result<Vec<docker::VolumeInfo>, String> {
+    let docker = Arc::clone(&state.docker);
+    docker_blocking(move || docker.volumes(host.as_deref()).map_err(|e| e.to_string())).await?
 }
 
 /// Diff da sessão como ABA (ao lado das de terminal), com o mesmo conteúdo do
@@ -7997,6 +8288,17 @@ pub fn run() {
             lsp_signature,
             lsp_open_external,
             close_side_view,
+            files_screen_activate,
+            files_screen_pin,
+            files_screen_close,
+            files_screen_section,
+            files_grep,
+            docker_screen_section,
+            docker_screen_select,
+            docker_screen_pane,
+            docker_screen_shell,
+            docker_list_images,
+            docker_list_volumes,
             set_side_view_expanded,
             set_side_view_ratio,
             worktree_stage,
@@ -8877,6 +9179,7 @@ mod tests {
                 side_ratio: 0.5,
                 side_expanded: false,
                 history: Vec::new(),
+                screens: Default::default(),
                 created_at: chrono::Utc::now(),
             }],
             active_workspace: None,

@@ -143,6 +143,9 @@ struct PsRow {
 pub enum ContainerTab {
     Logs,
     Shell,
+    /// O shell da tela de Docker: mesmo `docker exec`, mas sem aba — mora
+    /// dentro da tela e morre quando ela fecha.
+    ScreenShell,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -334,6 +337,55 @@ pub fn parse_ps_output(raw: &str) -> Vec<ContainerInfo> {
                 in_repo: false,
             })
         })
+        .collect()
+}
+
+/// Imagem do alvo, para a seção Imagens da tela de Docker (só leitura).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ImageInfo {
+    #[serde(rename(deserialize = "ID"), default)]
+    pub id: String,
+    #[serde(rename(deserialize = "Repository"), default)]
+    pub repository: String,
+    #[serde(rename(deserialize = "Tag"), default)]
+    pub tag: String,
+    #[serde(rename(deserialize = "Size"), default)]
+    pub size: String,
+    #[serde(rename(deserialize = "CreatedSince"), default)]
+    pub created_since: String,
+}
+
+/// Volume do alvo, para a seção Volumes da tela de Docker (só leitura).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VolumeInfo {
+    #[serde(rename(deserialize = "Name"), default)]
+    pub name: String,
+    #[serde(rename(deserialize = "Driver"), default)]
+    pub driver: String,
+    #[serde(rename(deserialize = "Mountpoint"), default)]
+    pub mountpoint: String,
+}
+
+/// Uma linha JSON por item (`--format '{{json .}}'`); linha ilegível some.
+fn parse_json_lines<T: serde::de::DeserializeOwned>(raw: &str) -> Vec<T> {
+    raw.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .filter_map(|l| serde_json::from_str(l).ok())
+        .collect()
+}
+
+pub fn parse_images(raw: &str) -> Vec<ImageInfo> {
+    parse_json_lines::<ImageInfo>(raw)
+        .into_iter()
+        .filter(|i| !i.id.is_empty())
+        .collect()
+}
+
+pub fn parse_volumes(raw: &str) -> Vec<VolumeInfo> {
+    parse_json_lines::<VolumeInfo>(raw)
+        .into_iter()
+        .filter(|v| !v.name.is_empty())
         .collect()
 }
 
@@ -1209,6 +1261,34 @@ impl DockerManager {
         })
     }
 
+    /// `docker image ls` do alvo — leitura, nenhuma ação.
+    pub fn images(&self, host: Option<&str>) -> Result<Vec<ImageInfo>, DockerError> {
+        let raw = run_docker(&["image", "ls", "--format", "{{json .}}"], PS_TIMEOUT, host)?;
+        Ok(parse_images(&raw))
+    }
+
+    /// `docker volume ls` do alvo — leitura, nenhuma ação.
+    pub fn volumes(&self, host: Option<&str>) -> Result<Vec<VolumeInfo>, DockerError> {
+        let raw = run_docker(&["volume", "ls", "--format", "{{json .}}"], PS_TIMEOUT, host)?;
+        Ok(parse_volumes(&raw))
+    }
+
+    /// Shells que moram na tela de Docker (fora de qualquer aba).
+    pub fn screen_shells(&self) -> Vec<SessionId> {
+        self.tabs
+            .lock()
+            .iter()
+            .filter(|((_, tab), _)| *tab == ContainerTab::ScreenShell)
+            .map(|(_, s)| *s)
+            .collect()
+    }
+
+    pub fn forget_screen_shells(&self) {
+        self.tabs
+            .lock()
+            .retain(|(_, tab), _| *tab != ContainerTab::ScreenShell);
+    }
+
     pub fn tab_session(&self, id: &str, tab: ContainerTab) -> Option<SessionId> {
         self.tabs.lock().get(&(id.to_string(), tab)).copied()
     }
@@ -1221,6 +1301,57 @@ impl DockerManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn images_parse_json_lines_and_skip_garbage() {
+        let raw = r#"{"ID":"sha256:abc","Repository":"node","Tag":"22-alpine","Size":"180MB","CreatedSince":"2 weeks ago"}
+não é json
+{"ID":"","Repository":"<none>"}
+"#;
+        let images = parse_images(raw);
+        assert_eq!(images.len(), 1);
+        assert_eq!(images[0].repository, "node");
+        assert_eq!(images[0].tag, "22-alpine");
+        assert_eq!(images[0].size, "180MB");
+        assert_eq!(images[0].created_since, "2 weeks ago");
+    }
+
+    #[test]
+    fn volumes_parse_json_lines() {
+        let raw = r#"{"Driver":"local","Mountpoint":"/var/lib/docker/volumes/pg/_data","Name":"pg","Scope":"local"}
+{"Driver":"local","Name":""}
+"#;
+        let volumes = parse_volumes(raw);
+        assert_eq!(volumes.len(), 1);
+        assert_eq!(volumes[0].name, "pg");
+        assert_eq!(volumes[0].driver, "local");
+    }
+
+    #[test]
+    fn image_serializes_snake_case_for_webview() {
+        let img = ImageInfo {
+            id: "x".into(),
+            repository: "r".into(),
+            tag: "t".into(),
+            size: "1MB".into(),
+            created_since: "now".into(),
+        };
+        let json = serde_json::to_string(&img).unwrap();
+        assert!(json.contains("\"created_since\":\"now\""), "{json}");
+    }
+
+    #[test]
+    fn screen_shells_are_tracked_apart_from_tabs() {
+        let mgr = DockerManager::new();
+        let tab = SessionId::new_v4();
+        let screen = SessionId::new_v4();
+        mgr.remember_tab("c1", ContainerTab::Shell, tab);
+        mgr.remember_tab("c1", ContainerTab::ScreenShell, screen);
+        assert_eq!(mgr.screen_shells(), vec![screen]);
+        mgr.forget_screen_shells();
+        assert!(mgr.screen_shells().is_empty());
+        assert_eq!(mgr.tab_session("c1", ContainerTab::Shell), Some(tab));
+    }
 
     #[test]
     fn local_target_has_no_docker_host() {
