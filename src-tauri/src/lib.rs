@@ -385,6 +385,11 @@ fn poll_agent_probers(app: &AppHandle) {
         shells.iter().copied().collect();
     let changed: std::collections::HashSet<SessionId> = changes.iter().map(|(id, _)| *id).collect();
     for (session_id, detected) in &changes {
+        // Um agente subiu no shell: o convite de retomar a conversa de antes
+        // do restart perdeu o sentido (ou acabou de ser aceito).
+        if detected.is_some() {
+            state.sessions.clear_shell_resume_offer(app, *session_id);
+        }
         // O binário mudou: a outra entrada da identidade de tela acabou de
         // mudar sem que a tela tenha mexido. Sem esta cutucada, a thread
         // emissora segue bloqueada no `recv` e o agente que subiu numa tela
@@ -1231,6 +1236,7 @@ fn resume_startup(
             _ => {}
         }
         let handle = app.clone();
+        let reopened_in = cwd.clone();
         let opts = CreateSessionOpts {
             kind: SessionKind::Shell,
             title: Some(old.title.clone()),
@@ -1252,6 +1258,19 @@ fn resume_startup(
                 // restart junto com o cwd — `forget` apaga a linha antiga.
                 if let Some(conversation) = &old.agent_conversation_id {
                     sessions.set_agent_conversation_id(app, fresh.id, conversation);
+                    // E o pane oferece retomá-la, se o `claude --resume`
+                    // digitado nesta pasta a acharia (item 3 do
+                    // claude-monitor). Só oferece: nada roda sem clique.
+                    let on_disk = home.as_deref().is_some_and(|home| {
+                        agent::claude_conversation_on_disk(
+                            &home.join(".claude").join("projects"),
+                            &reopened_in,
+                            conversation,
+                        )
+                    });
+                    if cfg!(unix) && on_disk {
+                        sessions.offer_shell_resume(app, fresh.id);
+                    }
                 }
                 remap.insert(old.id, fresh.id);
                 sessions.forget(old.id);
@@ -6144,6 +6163,56 @@ async fn resume_agent_session(
     })
 }
 
+/// Retoma, no shell restaurado, a conversa do Claude que rodava nele antes do
+/// restart (item 3 do claude-monitor). Só por clique no convite do pane.
+///
+/// O core digita `claude --resume <id>` no próprio shell: o comando passa pelo
+/// shim e pelo `_jail` como qualquer `claude` digitado, então gate, jaula e a
+/// validação do id do lado do canal (M4/M6-A) valem iguais — este caminho não
+/// sobe processo nenhum por conta própria. O id sai de
+/// [`session::SessionManager::shell_resume_target`], já validado por
+/// `conversation::is_plausible`: só `[A-Za-z0-9_-]`, nada que o shell
+/// interprete.
+///
+/// Nunca digita por cima de um programa rodando nem de um agente vivo, e o
+/// `^U` da frente limpa o que o dono tiver deixado pela metade na linha.
+#[tauri::command]
+async fn resume_shell_conversation(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: SessionId,
+) -> Result<(), String> {
+    let _ = wait_for_boot(Arc::clone(&state.boot)).await;
+    let conversation = state.sessions.shell_resume_target(id)?;
+    if state.agent_prober.detected(id).is_some() {
+        return Err("já há um agente rodando neste terminal".into());
+    }
+    if state.pty_pool.shell_at_prompt(id) != Some(true) {
+        return Err("o terminal está ocupado: espere o prompt voltar".into());
+    }
+    {
+        let _submitting = state.rich_input_submit.lock();
+        state
+            .pty_pool
+            .write(id, shell_resume_line(&conversation).as_bytes())
+            .map_err(|e| e.to_string())?;
+    }
+    state.sessions.clear_shell_resume_offer(&app, id);
+    Ok(())
+}
+
+/// A linha que o [`resume_shell_conversation`] digita: `^U` (apaga a linha do
+/// prompt), o comando e Enter.
+fn shell_resume_line(conversation: &str) -> String {
+    format!("\u{15}claude --resume {conversation}\r")
+}
+
+/// O dono dispensou o convite de retomar a conversa no shell restaurado.
+#[tauri::command]
+fn dismiss_shell_resume_offer(app: AppHandle, state: State<'_, AppState>, id: SessionId) {
+    state.sessions.clear_shell_resume_offer(&app, id);
+}
+
 /// Abre ou fecha a fila de agentes no workspace ativo.
 #[tauri::command]
 fn toggle_agent_queue(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
@@ -8049,6 +8118,8 @@ pub fn run() {
             uninstall_claude_plugin,
             can_resume_agent_session,
             resume_agent_session,
+            resume_shell_conversation,
+            dismiss_shell_resume_offer,
             open_subagent_viewer,
             close_agent_viewers,
             agent_repo_config,
@@ -8808,6 +8879,7 @@ mod tests {
             opened_by_gate: false,
             did_work: false,
             agent_usage: None,
+            shell_resume_offer: false,
         }
     }
 
@@ -9115,6 +9187,7 @@ mod tests {
             opened_by_gate: true,
             did_work: false,
             agent_usage: None,
+            shell_resume_offer: false,
             ..agent_session(uuid::Uuid::new_v4(), None)
         };
         assert!(!should_auto_close_gate_tab(&s));
@@ -9153,6 +9226,14 @@ mod tests {
     // o "agente iniciado duas vezes" que o dono viu no painel. A própria doc
     // de `drive_disk_observer` já dizia "Claude cru num shell ganha captura
     // por disco": o corte por `hosted` só nunca tinha sido escrito.
+
+    #[test]
+    fn shell_resume_line_clears_the_prompt_and_submits_the_resume() {
+        assert_eq!(
+            shell_resume_line("5f2a1c40-0000-4000-8000-00000000abcd"),
+            "\u{15}claude --resume 5f2a1c40-0000-4000-8000-00000000abcd\r"
+        );
+    }
 
     #[test]
     fn wants_disk_observer_is_true_for_a_bare_claude_code_without_hosting() {

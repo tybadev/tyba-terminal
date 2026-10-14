@@ -131,6 +131,19 @@ pub fn claude_project_dir_name(worktree: &Path) -> String {
         .collect()
 }
 
+/// Se a conversa `id` do Claude está onde um `claude --resume <id>` rodado em
+/// `cwd` a procura: `<projects>/<slug(cwd)>/<id>.jsonl`. É o que separa um
+/// convite de retomar que funciona de um que abre em "conversa não
+/// encontrada" — e o id passa por [`conversation::is_plausible`] antes de
+/// virar nome de arquivo.
+pub fn claude_conversation_on_disk(projects: &Path, cwd: &Path, id: &str) -> bool {
+    conversation::is_plausible(id)
+        && projects
+            .join(claude_project_dir_name(cwd))
+            .join(format!("{id}.jsonl"))
+            .is_file()
+}
+
 pub fn runner_binary(kind: &AgentRunnerKind) -> Option<&'static str> {
     match kind {
         AgentRunnerKind::ClaudeCode => Some("claude"),
@@ -797,6 +810,33 @@ mod tests {
         assert!(overrides
             .iter()
             .all(|o| !o.starts_with("hooks.state=") || o.contains("trusted_hash")));
+    }
+
+    #[test]
+    fn claude_conversation_on_disk_looks_in_the_slug_of_the_cwd() {
+        // Fixture sintética: id inventado, transcript vazio escrito à mão.
+        let home = tempfile::TempDir::new().unwrap();
+        let cwd = home.path().join("projeto");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let projects = home.path().join("projects");
+        let id = "5f2a1c40-0000-4000-8000-00000000abcd";
+        assert!(!claude_conversation_on_disk(&projects, &cwd, id));
+
+        let slug = projects.join(claude_project_dir_name(&cwd));
+        std::fs::create_dir_all(&slug).unwrap();
+        std::fs::write(slug.join(format!("{id}.jsonl")), "").unwrap();
+        assert!(claude_conversation_on_disk(&projects, &cwd, id));
+
+        // Outra pasta, outro slug: o `--resume` de lá não acharia.
+        let other = home.path().join("outro");
+        std::fs::create_dir_all(&other).unwrap();
+        assert!(!claude_conversation_on_disk(&projects, &other, id));
+        // Id que não é id nunca vira caminho.
+        assert!(!claude_conversation_on_disk(
+            &projects,
+            &cwd,
+            "../../etc/passwd"
+        ));
     }
 
     #[test]

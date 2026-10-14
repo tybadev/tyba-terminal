@@ -1570,6 +1570,26 @@ impl PtyPool {
         None
     }
 
+    /// O shell da sessão está no prompt: o grupo em primeiro plano do terminal
+    /// é o do próprio líder (nenhum programa rodando por cima dele) e não há
+    /// comando de várias linhas pela metade (`PS2`). É a condição para o core
+    /// digitar alguma coisa no shell em nome do dono.
+    ///
+    /// `None` quando não dá para saber (Windows, líder morto ou reusado) —
+    /// quem pergunta trata como "não".
+    #[cfg(unix)]
+    pub fn shell_at_prompt(&self, id: PtyId) -> Option<bool> {
+        let leader = self.leader_pid(id)?;
+        let foreground = self.ptys.lock().get(&id)?.master.process_group_leader()?;
+        let continuing = self.continuation(id).unwrap_or(false);
+        Some(u32::try_from(foreground).ok() == Some(leader) && !continuing)
+    }
+
+    #[cfg(not(unix))]
+    pub fn shell_at_prompt(&self, _id: PtyId) -> Option<bool> {
+        None
+    }
+
     /// O shell está esperando o resto de um comando (`PS2`)? Ver
     /// [`ScreenState::continuation`].
     pub fn continuation(&self, id: PtyId) -> Option<bool> {
@@ -3243,6 +3263,61 @@ mod tests {
         pool.ptys.lock().insert(uuid::Uuid::new_v4(), handle);
 
         (leader_pid, child_pid)
+    }
+
+    /// Uma sessão no pool cujo líder roda `script` num `sh`. Mesma montagem
+    /// do `pooled_session`, sem a leitura dos pids.
+    fn pooled_script(pool: &super::PtyPool, script: &str) -> super::PtyId {
+        use portable_pty::native_pty_system;
+        use std::sync::Arc;
+
+        let pair = native_pty_system()
+            .openpty(super::PtySize {
+                rows: 24,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .expect("openpty");
+        let mut cmd = super::CommandBuilder::new("sh");
+        cmd.arg("-c");
+        cmd.arg(script);
+        let child = pair.slave.spawn_command(cmd).expect("spawn in pty");
+        drop(pair.slave);
+        let writer = pair.master.take_writer().expect("writer");
+        let id = uuid::Uuid::new_v4();
+        let handle = super::PtyHandle {
+            master: pair.master,
+            writer: Arc::new(parking_lot::Mutex::new(writer)),
+            leader_pid: child.process_id(),
+            child,
+            leader_start: None,
+            screen: Arc::new(parking_lot::Mutex::new(super::ScreenState::new(24, 80))),
+            size: (80, 24),
+            nudge: std::sync::Weak::new(),
+            transport: super::Transport::Raw,
+            control: None,
+        };
+        pool.ptys.lock().insert(id, handle);
+        id
+    }
+
+    #[test]
+    fn shell_at_prompt_sabe_quando_um_programa_tomou_o_terminal() {
+        let pool = super::PtyPool::new();
+        // Shell sozinho no terminal: é o grupo em primeiro plano.
+        let idle = pooled_script(&pool, "sleep 60");
+        // Com controle de job, o `sleep` ganha grupo próprio e o terminal —
+        // é o `vim`/`less` aberto em cima do prompt.
+        let busy = pooled_script(&pool, "set -m; sleep 60; sleep 60");
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while pool.shell_at_prompt(busy) != Some(false) && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(pool.shell_at_prompt(idle), Some(true));
+        assert_eq!(pool.shell_at_prompt(busy), Some(false));
+        assert_eq!(pool.shell_at_prompt(super::PtyId::new_v4()), None);
+        pool.kill_all();
     }
 
     #[test]

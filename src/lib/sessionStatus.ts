@@ -195,7 +195,8 @@ export const mergeSessionUpdate = (
     sameObserved(current.observed, incoming.observed) &&
     current.connection === incoming.connection &&
     sameCanoFailure(current.connection_failure, incoming.connection_failure) &&
-    sameAgentUsage(current.agent_usage, incoming.agent_usage)
+    sameAgentUsage(current.agent_usage, incoming.agent_usage) &&
+    Boolean(current.shell_resume_offer) === Boolean(incoming.shell_resume_offer)
   ) {
     return null;
   }
@@ -205,6 +206,7 @@ export const mergeSessionUpdate = (
     attention: incoming.attention,
     observed: incoming.observed ?? null,
     agent_usage: incoming.agent_usage ?? null,
+    shell_resume_offer: incoming.shell_resume_offer ?? false,
     connection: incoming.connection,
     connection_failure: incoming.connection_failure ?? null,
   };
