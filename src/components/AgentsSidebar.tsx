@@ -107,9 +107,9 @@ export function AgentsSidebar({ rows, open, onSelect }: Props) {
             type="button"
             onClick={() => onSelect(row.session.id, row.place)}
             aria-label={`${values.workspace} — ${values.state_text}`}
-            className={`group relative flex shrink-0 flex-col gap-0.5 rounded-[4px] py-1 text-left transition-colors hover:bg-tyba-text/[.05] ${
+            className={`group relative flex shrink-0 flex-col gap-0.5 rounded-[4px] py-1 text-left transition-colors ${
               open ? "px-2" : "items-center px-0"
-            } ${marca ? "bg-tyba-amber/[.08]" : ""}`}
+            } ${marca ? "bg-tyba-amber/[.08] hover:bg-tyba-amber/[.12]" : "hover:bg-tyba-text/[.05]"}`}
           >
             {open ? (
               visibleRows(DEFAULT_AGENT_ROWS, values).map((tokens, i) => (

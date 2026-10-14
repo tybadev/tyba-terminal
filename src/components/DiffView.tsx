@@ -522,20 +522,10 @@ export function DiffView({
     const manySections = rows.filter((r) => r.kind === "section").length > 1;
     // Um arquivo por vez: só as linhas do arquivo em foco (até o próximo).
     let inFocus = !single;
-    let pendingSection: DisplayRow | null = null;
     for (const row of rows) {
-      if (row.kind === "section") {
-        if (columnShown && (single || !manySections)) continue;
-        // Um arquivo por vez sem coluna: só o título da seção do arquivo em foco.
-        if (single) {
-          pendingSection = row;
-          continue;
-        }
-      }
-      if (single && row.kind === "file") {
-        inFocus = row.key === focusKey;
-        if (inFocus && pendingSection) out.push(pendingSection);
-      }
+      // Um arquivo por vez só existe expandido, então com a coluna à vista.
+      if (row.kind === "section" && (single || (columnShown && !manySections))) continue;
+      if (single && row.kind === "file") inFocus = row.key === focusKey;
       if (!inFocus) continue;
       out.push(row);
       if (row.kind !== "line") continue;
