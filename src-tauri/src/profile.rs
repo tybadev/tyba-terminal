@@ -34,11 +34,14 @@ pub const HOME_DIR: &str = if IS_DEV {
     RELEASE_HOME_DIR
 };
 
-/// Nome nas janelas e no menu.
-pub const PRODUCT_NAME: &str = if IS_DEV { "TYBA Dev" } else { "Tyba" };
-
 /// Sufixo dos nomes de socket/pasta temporária do canal.
 pub const CHANNEL_TAG: &str = if IS_DEV { "tyba-dev" } else { "tyba" };
+
+/// Nome nas janelas e no menu: o `productName` da config do Tauri ("Tyba", ou
+/// "TYBA Dev" pelo `tauri.dev.conf.json`), não uma constante de compilação.
+pub fn product_name(config: &tauri::Config) -> String {
+    config.product_name.clone().unwrap_or_else(|| "Tyba".into())
+}
 
 /// O identificador com que o Tauri subiu tem de ser o deste binário: um build
 /// de dev aberto com o `tauri.conf.json` de release abriria o banco do app
@@ -62,7 +65,17 @@ mod tests {
         const { assert!(!IS_DEV) };
         assert_eq!(IDENTIFIER, "dev.tyba.app");
         assert_eq!(HOME_DIR, ".tyba");
-        assert_eq!(PRODUCT_NAME, "Tyba");
+    }
+
+    #[test]
+    fn product_name_comes_from_the_tauri_config() {
+        let mut config: tauri::Config =
+            serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        assert_eq!(product_name(&config), "Tyba");
+        config.product_name = Some("TYBA Dev".into());
+        assert_eq!(product_name(&config), "TYBA Dev");
+        config.product_name = None;
+        assert_eq!(product_name(&config), "Tyba");
     }
 
     #[test]

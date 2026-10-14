@@ -58,7 +58,7 @@ pub fn boot_script(boot_json: &str) -> String {
 /// a `main` aparece pelo [`CEILING`] ou pelo aviso do front.
 pub fn open<R: Runtime>(app: &AppHandle<R>, boot_json: &str) {
     let built = WebviewWindowBuilder::new(app, SPLASH_LABEL, WebviewUrl::App("splash.html".into()))
-        .title(crate::profile::PRODUCT_NAME)
+        .title(crate::profile::product_name(app.config()))
         .inner_size(360.0, 240.0)
         .center()
         .resizable(false)

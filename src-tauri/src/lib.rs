@@ -4889,7 +4889,7 @@ fn set_workspace_group(
 fn new_window(app: AppHandle) -> Result<(), String> {
     let label = format!("tyba-{}", uuid::Uuid::new_v4().simple());
     let builder = tauri::WebviewWindowBuilder::new(&app, label, tauri::WebviewUrl::default())
-        .title(profile::PRODUCT_NAME)
+        .title(profile::product_name(app.config()))
         .inner_size(1100.0, 720.0);
     #[cfg(target_os = "macos")]
     let builder = builder
@@ -7751,10 +7751,10 @@ pub fn run() {
             // Antes de abrir qualquer banco: build de dev com o identificador
             // de release abriria os dados do app instalado.
             profile::check_identifier(&app.config().identifier)?;
-            if profile::IS_DEV {
-                if let Some(main) = app.get_webview_window("main") {
-                    let _ = main.set_title(profile::PRODUCT_NAME);
-                }
+            // O título da `main` no tauri.conf.json é o de release; o nome
+            // vem do `productName` da config com que o app subiu.
+            if let Some(main) = app.get_webview_window("main") {
+                let _ = main.set_title(&profile::product_name(app.config()));
             }
             app.manage(splash::SplashLatch::default());
             splash::arm_ceiling(app.handle().clone());
