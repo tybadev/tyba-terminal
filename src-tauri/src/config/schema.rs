@@ -145,6 +145,101 @@ pub const KEY_ACTIONS: &[&str] = &[
     "promptLine",
 ];
 
+/// Atalhos padrão de cada plataforma — espelho de `MAC_BINDINGS` e
+/// `PC_BINDINGS` em `src/lib/keys.ts`; o teste `default_bindings_match_the_front`
+/// falha se divergirem. A migração usa para não gravar no arquivo o que já é
+/// padrão (o arquivo só guarda o que foge dele, e assim viaja entre sistemas).
+pub const MAC_BINDINGS: &[(&str, &str)] = &[
+    ("paletteActions", "meta+p"),
+    ("paletteSessions", "meta+shift+p"),
+    ("paletteHistory", "meta+r"),
+    ("paletteSnippets", "meta+shift+r"),
+    ("panel", "meta+b"),
+    ("files", "meta+shift+e"),
+    ("clear", "meta+l"),
+    ("filesFinder", "meta+e"),
+    ("settings", "meta+,"),
+    ("newSession", "meta+n"),
+    ("newWorktreeSession", "meta+shift+t"),
+    ("newTab", "meta+t"),
+    ("newWindow", "meta+shift+n"),
+    ("closePane", "meta+w"),
+    ("openFolder", "meta+o"),
+    ("prevSession", "meta+shift+arrowup"),
+    ("nextSession", "meta+shift+arrowdown"),
+    ("nextAttentionSession", "meta+shift+a"),
+    ("prevTab", "meta+shift+arrowleft"),
+    ("nextTab", "meta+shift+arrowright"),
+    ("tabBack", "meta+["),
+    ("splitRight", "meta+d"),
+    ("splitDown", "meta+shift+d"),
+    ("nextPane", "meta+]"),
+    ("paneLeft", "meta+alt+arrowleft"),
+    ("paneRight", "meta+alt+arrowright"),
+    ("paneUp", "meta+alt+arrowup"),
+    ("paneDown", "meta+alt+arrowdown"),
+    ("copy", "meta+c"),
+    ("paste", "meta+v"),
+    ("search", "meta+f"),
+    ("selectAll", "meta+a"),
+    ("richInput", "meta+shift+g"),
+    ("promptLine", "meta+shift+l"),
+];
+
+pub const PC_BINDINGS: &[(&str, &str)] = &[
+    ("paletteActions", "ctrl+shift+p"),
+    ("paletteSessions", "ctrl+alt+shift+p"),
+    ("paletteHistory", "ctrl+shift+r"),
+    ("paletteSnippets", "ctrl+alt+shift+r"),
+    ("panel", "ctrl+shift+b"),
+    ("files", "ctrl+shift+e"),
+    ("clear", "ctrl+alt+l"),
+    ("filesFinder", "ctrl+alt+e"),
+    ("settings", "ctrl+,"),
+    ("newSession", "ctrl+shift+n"),
+    ("newWorktreeSession", "ctrl+alt+shift+t"),
+    ("newTab", "ctrl+shift+t"),
+    ("newWindow", "ctrl+alt+shift+n"),
+    ("closePane", "ctrl+shift+w"),
+    ("openFolder", "ctrl+shift+o"),
+    ("prevSession", "ctrl+shift+arrowup"),
+    ("nextSession", "ctrl+shift+arrowdown"),
+    ("nextAttentionSession", "ctrl+alt+shift+a"),
+    ("prevTab", "ctrl+pageup"),
+    ("nextTab", "ctrl+pagedown"),
+    ("tabBack", "alt+["),
+    ("splitRight", "ctrl+alt+d"),
+    ("splitDown", "ctrl+shift+d"),
+    ("nextPane", "ctrl+tab"),
+    ("paneLeft", "ctrl+alt+arrowleft"),
+    ("paneRight", "ctrl+alt+arrowright"),
+    ("paneUp", "ctrl+alt+arrowup"),
+    ("paneDown", "ctrl+alt+arrowdown"),
+    ("copy", "ctrl+shift+c"),
+    ("paste", "ctrl+shift+v"),
+    ("search", "ctrl+shift+f"),
+    ("selectAll", "ctrl+shift+a"),
+    ("richInput", "ctrl+shift+g"),
+    ("promptLine", "ctrl+shift+l"),
+];
+
+/// Os padrões da plataforma em que o core roda — a mesma escolha do `IS_MAC`
+/// do front.
+pub fn default_bindings() -> &'static [(&'static str, &'static str)] {
+    if cfg!(target_os = "macos") {
+        MAC_BINDINGS
+    } else {
+        PC_BINDINGS
+    }
+}
+
+pub fn default_combo(action: &str) -> Option<&'static str> {
+    default_bindings()
+        .iter()
+        .find(|(a, _)| *a == action)
+        .map(|(_, c)| *c)
+}
+
 /// Ordem em que o front monta o combo (`comboOf` em `src/lib/keys.ts`).
 const MODIFIERS: &[&str] = &["meta", "ctrl", "alt", "shift"];
 const MAX_KEY_LEN: usize = 32;
@@ -704,6 +799,44 @@ mod tests {
             .filter(|s| !s.is_empty())
             .collect();
         assert_eq!(front, KEY_ACTIONS);
+    }
+
+    fn front_map(name: &str) -> Vec<(String, String)> {
+        let src = include_str!("../../../src/lib/keys.ts");
+        let start = src
+            .find(&format!("export const {name}: Bindings = {{"))
+            .unwrap();
+        let body = &src[start..];
+        let body = &body[body.find('{').unwrap() + 1..body.find("};").unwrap()];
+        body.lines()
+            .filter_map(|l| l.trim().trim_end_matches(',').split_once(": "))
+            .map(|(a, c)| (a.to_string(), c.trim_matches('"').to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn default_bindings_match_the_front() {
+        for (name, rust) in [("MAC_BINDINGS", MAC_BINDINGS), ("PC_BINDINGS", PC_BINDINGS)] {
+            let front = front_map(name);
+            let rust: Vec<(String, String)> = rust
+                .iter()
+                .map(|(a, c)| (a.to_string(), c.to_string()))
+                .collect();
+            assert_eq!(front, rust, "{name} divergiu de src/lib/keys.ts");
+            let actions: Vec<&str> = front.iter().map(|(a, _)| a.as_str()).collect();
+            let mut sorted = actions.clone();
+            sorted.sort();
+            let mut known = KEY_ACTIONS.to_vec();
+            known.sort();
+            assert_eq!(sorted, known, "{name} precisa cobrir toda ação");
+            for (a, c) in &front {
+                assert_eq!(
+                    normalize_combo(c).as_deref(),
+                    Some(c.as_str()),
+                    "{name}.{a}"
+                );
+            }
+        }
     }
 
     #[test]

@@ -141,12 +141,17 @@ fn diff(old: &Values, new: &Values) -> (bool, bool, bool) {
 
 /// Só as entradas que o arquivo aceita: um atalho antigo estranho no SQLite não
 /// pode derrubar a migração dos outros.
+///
+/// O que é igual ao padrão da plataforma também fica de fora: o SQLite guardava
+/// o mapa inteiro, e um arquivo com os 34 atalhos do Mac imporia `meta+…` no
+/// Linux.
 fn sanitize_bindings(json: &str) -> Option<String> {
     let map: BTreeMap<String, String> = serde_json::from_str(json).ok()?;
     let clean: BTreeMap<String, String> = map
         .into_iter()
         .filter(|(a, _)| schema::KEY_ACTIONS.contains(&a.as_str()))
         .filter_map(|(a, c)| schema::normalize_combo(&c).map(|c| (a, c)))
+        .filter(|(a, c)| schema::default_combo(a) != Some(c.as_str()))
         .collect();
     (!clean.is_empty()).then(|| serde_json::to_string(&clean).ok())?
 }
@@ -430,7 +435,10 @@ mod tests {
         store
             .set_setting(
                 KEY_BINDINGS,
-                r#"{"copy":"meta+c","bogus":"meta+x","paste":"v"}"#,
+                &format!(
+                    r#"{{"copy":"alt+shift+c","bogus":"meta+x","paste":"v","search":"{}"}}"#,
+                    schema::default_combo("search").unwrap()
+                ),
             )
             .unwrap();
         store.set_setting("pref.toolbar", "{}").unwrap();
@@ -441,7 +449,9 @@ mod tests {
         assert!(text.contains("mode = \"light\""), "{text}");
         assert!(text.contains("dark = \"dracula\""), "{text}");
         assert!(text.contains("terminal_size = 15"), "{text}");
-        assert!(text.contains("copy = \"meta+c\""), "{text}");
+        assert!(text.contains("copy = \"alt+shift+c\""), "{text}");
+        // igual ao padrão da plataforma: não vai para o arquivo
+        assert!(!text.contains("search ="), "{text}");
         assert!(
             !text.contains("bogus") && !text.contains("toolbar"),
             "{text}"
