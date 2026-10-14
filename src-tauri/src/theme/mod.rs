@@ -379,7 +379,9 @@ pub type SharedThemes = Arc<ThemeManager>;
 
 impl ThemeManager {
     pub fn new(config: SharedConfig, themes_dir: PathBuf) -> Self {
-        let _ = fs::create_dir_all(&themes_dir);
+        if config.usable() {
+            let _ = fs::create_dir_all(&themes_dir);
+        }
         Self { config, themes_dir }
     }
 
@@ -395,6 +397,11 @@ impl ThemeManager {
     }
 
     fn scan(&self) -> Vec<Theme> {
+        // Raiz ~/.tyba recusada (de outro dono, gravável por outros): a pasta
+        // de temas mora nela e vale o mesmo veto do config.toml.
+        if !self.config.usable() {
+            return Vec::new();
+        }
         let Ok(entries) = fs::read_dir(&self.themes_dir) else {
             return Vec::new();
         };

@@ -50,9 +50,9 @@ const TEMPLATE: &str = r#"# Configuração do TYBA.
 [theme]
 # "dark", "light" ou "system" (segue o sistema operacional)
 mode = "dark"
-# Tema de cada modo. Embutidos: tyba-dark, tyba-light, dracula, nord,
-# solarized-dark, solarized-light… Temas importados ficam em
-# ~/.tyba/themes/<id>.json.
+# Tema de cada modo. Embutidos: tyba-dark, tyba-light, dracula, gruvbox-dark,
+# github-light, solarized-dark, solarized-light, monokai… Temas importados
+# ficam em ~/.tyba/themes/<id>.json.
 dark = "tyba-dark"
 light = "tyba-light"
 
