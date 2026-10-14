@@ -42,6 +42,7 @@ import { ClaudeIcon } from "./icons/ClaudeIcon";
 import { OpenAIIcon } from "./icons/OpenAIIcon";
 import { TybaMarkMono } from "./icons/TybaMark";
 import { SubagentTranscript } from "./SubagentViewer";
+import { PANEL_HEADER } from "./SidePanelBar";
 
 interface Props {
   session: Session;
@@ -140,7 +141,7 @@ export function AgentsPanel({
     // `tyba-divide-l`, e a divisa é sombra `inset` — um fundo aqui a cobria,
     // e painel e terminal se fundiam no escuro.
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-      <header className="flex h-10 shrink-0 items-center gap-2.5 tyba-divide-b px-4">
+      <header className={PANEL_HEADER}>
         {/* A marca de uma cor só, no âmbar de agentes. */}
         <TybaMarkMono size={16} className="shrink-0 text-tyba-amber" />
         <span className="min-w-0 truncate text-[13px] text-tyba-text">

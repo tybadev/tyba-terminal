@@ -673,6 +673,25 @@ fn inferred_step(runner: &AgentRunnerKind, hook_event_name: &str) -> InferredSte
     }
 }
 
+/// O que [`record_inferred`] gravou, para o histórico de notificações
+/// acompanhar a mesma linha.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum InferredOutcome {
+    /// Linha pendente nova: `id` em `approval_history`.
+    Opened {
+        id: i64,
+        risk: RiskLevel,
+        command: String,
+    },
+    /// A linha `id` fechou como aprovada.
+    Approved {
+        id: i64,
+    },
+    /// Pendentes da sessão fecharam como negadas.
+    Denied,
+    None,
+}
+
 /// Registra no histórico o que o prompt nativo do Claude decidiu, como
 /// dedução. Falha de banco não derruba o hook: o histórico é registro, não
 /// gate. Sem `HandlerCtx` (que exige `AppHandle`) para ser testável.
@@ -683,7 +702,7 @@ fn record_inferred(
     session_id: SessionId,
     event: &HookEvent,
     now: u64,
-) {
+) -> InferredOutcome {
     let session_id = session_id.to_string();
     match inferred_step(runner, &event.hook_event_name) {
         InferredStep::Open => {
@@ -696,27 +715,59 @@ fn record_inferred(
                 worktree_root,
                 || false,
             );
-            let _ = store.insert_pending_inferred(
+            let command = plan.normalized.display_text();
+            match store.insert_pending_inferred(
                 &session_id,
-                &plan.normalized.display_text(),
+                &command,
                 event.cwd.as_deref(),
                 risk_label(plan.risk),
                 &call_key(&event.raw),
                 now,
-            );
+            ) {
+                Ok(id) => InferredOutcome::Opened {
+                    id,
+                    risk: plan.risk,
+                    command,
+                },
+                Err(_) => InferredOutcome::None,
+            }
         }
         InferredStep::Approve => {
-            let _ = store.resolve_inferred_by_call_key(
+            match store.resolve_inferred_by_call_key(
                 &session_id,
                 &call_key(&event.raw),
                 "approved",
                 now,
-            );
+            ) {
+                Ok(Some(id)) => InferredOutcome::Approved { id },
+                _ => InferredOutcome::None,
+            }
         }
         InferredStep::DenyPending => {
-            let _ = store.deny_pending_inferred_for_session(&session_id, now);
+            match store.deny_pending_inferred_for_session(&session_id, now) {
+                Ok(n) if n > 0 => InferredOutcome::Denied,
+                _ => InferredOutcome::None,
+            }
         }
-        InferredStep::None => {}
+        InferredStep::None => InferredOutcome::None,
+    }
+}
+
+/// Leva o desfecho da dedução ao histórico de notificações. O amarelo do
+/// prompt nativo entra no histórico, mas continua decidido no terminal: aqui
+/// só se grava, nunca se responde ao hook.
+fn record_inferred_notification(
+    n: &crate::notifications::Notifications,
+    session_id: SessionId,
+    outcome: &InferredOutcome,
+) -> bool {
+    match outcome {
+        InferredOutcome::Opened { id, risk, command } => {
+            n.native_prompt_opened(session_id, *id, *risk, command)
+        }
+        InferredOutcome::Approved { id } => n.native_prompt_approved(*id),
+        InferredOutcome::Denied => n.native_prompts_denied(session_id),
+        InferredOutcome::None => false,
     }
 }
 
@@ -724,7 +775,7 @@ fn handle_event(ctx: &HandlerCtx, event: HookEvent) -> HookAction {
     capture_conversation_id(ctx, &event);
     // Antes do roteamento: o `PreToolUse` pode ficar bloqueado no gate de um
     // vermelho, e a pendente anterior tem de fechar já, não depois da decisão.
-    record_inferred(
+    let outcome = record_inferred(
         &ctx.store,
         &ctx.runner_kind,
         &ctx.worktree_root,
@@ -732,6 +783,9 @@ fn handle_event(ctx: &HandlerCtx, event: HookEvent) -> HookAction {
         &event,
         now_ms(),
     );
+    crate::notifications::record(&ctx.app, |n| {
+        record_inferred_notification(n, ctx.session_id, &outcome)
+    });
     let signal = signal_for(&event.hook_event_name, event.notification_type.as_deref());
     capture_model(ctx, &event);
     if let Some(note) = note_for_event(signal.as_ref(), event.agent_id.is_some()) {
@@ -829,6 +883,9 @@ fn handle_event(ctx: &HandlerCtx, event: HookEvent) -> HookAction {
                     .get(ctx.session_id)
                     .and_then(|s| status_on_interrupt(&s.status))
                 {
+                    // Antes do `set_status`: o `running → idle` da interrupção
+                    // não é "terminou" no histórico.
+                    crate::notifications::record(&ctx.app, |n| n.interrupted(ctx.session_id));
                     ctx.sessions.set_status(&ctx.app, ctx.session_id, status);
                 }
             }
@@ -914,6 +971,8 @@ fn on_stop_failure(ctx: &HandlerCtx, event: &HookEvent) {
         .note_orchestrator_idle(ctx.session_id, summary.clone());
     // Cancela um aviso de "terminou" que um `Stop` anterior tenha agendado.
     ctx.turn_settle.fetch_add(1, Ordering::SeqCst);
+    // Antes do `set_status`: o `running → idle` que ele causa não é "terminou".
+    crate::notifications::record(&ctx.app, |n| n.stop_failure(ctx.session_id, reason));
     ctx.sessions.set_status(&ctx.app, ctx.session_id, status);
     let _ = ctx.app.emit(
         EVENT_AGENT_ALERT,
@@ -947,6 +1006,7 @@ fn on_statusline(ctx: &HandlerCtx, event: &HookEvent) -> HookAction {
         return HookAction::Ack;
     };
     let warnings = crate::agent::usage::observe_limits(&usage);
+    crate::notifications::record(&ctx.app, |n| n.usage(ctx.session_id, &usage));
     ctx.sessions
         .set_agent_usage(&ctx.app, ctx.session_id, Some(usage));
     let now = std::time::SystemTime::now()
@@ -3070,6 +3130,88 @@ mod inferred_history_tests {
         assert_eq!(decisions(&store, session), vec!["pending"]);
         feed(&store, session, vec![post_tool_use("p1", "cargo test")]);
         assert_eq!(decisions(&store, session), vec!["approved"]);
+    }
+
+    fn outcome(store: &Store, session: SessionId, raw: serde_json::Value) -> InferredOutcome {
+        record_inferred(
+            store,
+            &CLAUDE,
+            Path::new("/wt"),
+            session,
+            &event(raw),
+            1_000,
+        )
+    }
+
+    /// O desfecho leva o id da linha deduzida: é por ele que a entrada do
+    /// histórico de notificações acompanha a mesma linha.
+    #[test]
+    fn desfecho_da_deducao_leva_o_id_da_linha() {
+        let store = Store::open_in_memory().unwrap();
+        let session = SessionId::new_v4();
+        let opened = outcome(&store, session, permission_request("p1", "cargo test"));
+        let InferredOutcome::Opened { id, risk, command } = opened else {
+            panic!("{opened:?}");
+        };
+        assert_eq!(risk, RiskLevel::Yellow);
+        assert!(command.contains("cargo test"), "{command}");
+        assert_eq!(
+            outcome(&store, session, post_tool_use("p1", "cargo test")),
+            InferredOutcome::Approved { id }
+        );
+        // Sem pendente, fechar não é desfecho.
+        assert_eq!(
+            outcome(&store, session, named("UserPromptSubmit")),
+            InferredOutcome::None
+        );
+        outcome(&store, session, permission_request("p2", "npm i"));
+        assert_eq!(
+            outcome(&store, session, named("UserPromptSubmit")),
+            InferredOutcome::Denied
+        );
+        assert_eq!(
+            outcome(&store, session, named("Stop")),
+            InferredOutcome::None
+        );
+    }
+
+    /// Do hook ao histórico de notificações: o amarelo do prompt nativo entra
+    /// pendente e sai com a decisão deduzida, na mesma entrada.
+    #[test]
+    fn amarelo_do_prompt_nativo_entra_no_historico_de_notificacoes() {
+        use crate::notifications::{NotificationKind, Notifications};
+        use crate::session::SessionManager;
+
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        let sessions: crate::session::SharedSessionManager =
+            Arc::new(SessionManager::new(Arc::clone(&store)));
+        let n = Notifications::new(Arc::clone(&store), sessions);
+        let session = SessionId::new_v4();
+        let step = |raw: serde_json::Value| {
+            let o = outcome(&store, session, raw);
+            record_inferred_notification(&n, session, &o)
+        };
+        assert!(step(permission_request("p1", "cargo test")));
+        assert!(step(post_tool_use("p1", "cargo test")));
+        assert!(step(permission_request("p2", "npm i")));
+        assert!(step(named("UserPromptSubmit")));
+        assert!(!step(named("Stop")));
+
+        let all = store
+            .list_notifications(crate::approvals::now_ms() as i64)
+            .unwrap();
+        let mut decisions: Vec<(Option<String>, Option<Decision>, bool)> = all
+            .iter()
+            .filter(|e| e.kind == NotificationKind::NativeApproval)
+            .map(|e| (e.command.clone(), e.decision, e.pending))
+            .collect();
+        decisions.reverse();
+        assert_eq!(decisions.len(), 2);
+        assert!(decisions[0].0.as_deref().unwrap().contains("cargo test"));
+        assert_eq!(decisions[0].1, Some(Decision::Approved));
+        assert!(decisions[1].0.as_deref().unwrap().contains("npm i"));
+        assert_eq!(decisions[1].1, Some(Decision::Denied));
+        assert!(decisions.iter().all(|d| !d.2));
     }
 
     /// Codex não abre linha deduzida: o `PermissionRequest` dele é o gate.

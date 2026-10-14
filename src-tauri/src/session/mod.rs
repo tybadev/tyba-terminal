@@ -979,8 +979,9 @@ impl SessionManager {
     }
 
     pub fn set_status(&self, app: &AppHandle, id: SessionId, status: SessionStatus) {
-        if let Some(session) = self.apply_status(id, status) {
+        if let Some((prev, session)) = self.apply_status(id, status) {
             emit_status(app, &session);
+            crate::notifications::record(app, |n| n.status_changed(Some(&prev), &session));
         }
     }
 
@@ -992,7 +993,15 @@ impl SessionManager {
     /// passar por `set_status`, que exige um `AppHandle` concreto (Wry) —
     /// `tauri::test::mock_app()` devolve `AppHandle<MockRuntime>`, um tipo
     /// diferente. Continua sem IPC, mesmo comportamento de antes.
-    pub(crate) fn apply_status(&self, id: SessionId, status: SessionStatus) -> Option<Session> {
+    ///
+    /// Devolve também o status ANTERIOR, lido no mesmo lock de escrita: lido
+    /// num lock à parte, um `set_status` concorrente no meio gera uma
+    /// transição que nunca aconteceu.
+    pub(crate) fn apply_status(
+        &self,
+        id: SessionId,
+        status: SessionStatus,
+    ) -> Option<(SessionStatus, Session)> {
         let status = status.redacted();
         let mut sessions = self.sessions.write();
         let s = sessions.get_mut(&id)?;
@@ -1014,9 +1023,9 @@ impl SessionManager {
             return None;
         }
         s.attention = attention;
-        s.status = status;
+        let prev = std::mem::replace(&mut s.status, status);
         let _ = self.store.upsert_session(s);
-        Some(s.clone())
+        Some((prev, s.clone()))
     }
 
     /// Grava o uso que o `statusLine` reportou e avisa o front. Só memória:
@@ -1641,6 +1650,8 @@ fn write_bash_integration() -> std::io::Result<PathBuf> {
     Ok(dir.join(TYBA_BASH_RC_NAME))
 }
 
+// Só Unix: o wrapper é um script sh e só `write_agent_wrapper` (cfg(unix)) o usa.
+#[cfg(unix)]
 pub(crate) const TYBA_CLAUDE_WRAPPER: &str = include_str!("tyba-claude-wrapper.sh");
 
 /// Diretório com o wrapper `claude` do TYBA (M6-A do claude-monitor), que o
@@ -3926,6 +3937,36 @@ echo beta
             !manager.get(id).unwrap().did_work,
             "shell não é agente: nunca 'trabalhou' neste sentido"
         );
+    }
+
+    /// A transição do histórico sai do status anterior lido no MESMO lock em
+    /// que o novo é gravado; repetir o mesmo status não devolve nada.
+    #[test]
+    fn apply_status_returns_previous_status_from_the_same_write() {
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        store
+            .upsert_session(&make(
+                SessionKind::Agent {
+                    runner: AgentRunnerKind::ClaudeCode,
+                },
+                SessionStatus::Running,
+            ))
+            .unwrap();
+        let manager = SessionManager::new(Arc::clone(&store));
+        manager.restore().unwrap();
+        let id = manager.list()[0].id;
+        // O `restore` rebaixa o `Running` gravado; o teste parte de um vivo.
+        manager.apply_status(id, SessionStatus::Running).unwrap();
+
+        let idle = SessionStatus::Idle {
+            summary: Some("pronto".into()),
+        };
+        let (prev, session) = manager.apply_status(id, idle.clone()).unwrap();
+        assert_eq!(prev, SessionStatus::Running);
+        assert_eq!(session.status, idle);
+        assert!(manager.apply_status(id, idle.clone()).is_none());
+        let (prev, _) = manager.apply_status(id, SessionStatus::Running).unwrap();
+        assert_eq!(prev, idle);
     }
 
     /// A distinção que separa "esperando" de "terminou": `AwaitingInput` não
