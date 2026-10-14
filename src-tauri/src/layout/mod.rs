@@ -320,7 +320,10 @@ pub struct Tag {
     pub group: Option<String>,
 }
 
-pub const VIEW_CONTAINERS: &str = "containers";
+/// Aba do workspace Docker antigo (projetos compose), aposentada pela seção
+/// Compose da tela de Docker. Só existe para migrar layout salvo: ao carregar,
+/// a aba some e quem estava nela cai na seção Compose.
+const RETIRED_VIEW_CONTAINERS: &str = "containers";
 pub const VIEW_SETTINGS: &str = "settings";
 pub const VIEW_WORKSPACE: &str = "workspace";
 pub const VIEW_CONNECTIONS: &str = "connections";
@@ -777,6 +780,13 @@ impl LayoutManager {
         let active = saved_active
             .filter(|id| workspaces.iter().any(|w| w.id == *id))
             .or_else(|| workspaces.first().map(|w| w.id));
+        // Quem fechou o app no painel antigo de containers volta para a
+        // seção Compose da tela de Docker, onde os projetos moram agora.
+        if on_retired_dashboard(&rows, saved_active) {
+            if let Some(ws) = workspaces.iter_mut().find(|w| Some(w.id) == active) {
+                ws.screens.docker.section = screens::DockerSection::Compose;
+            }
+        }
 
         let mut inner = self.inner.write();
         inner.workspaces = workspaces;
@@ -891,21 +901,6 @@ impl LayoutManager {
         };
         let ws_id = workspace.id;
         inner.workspaces.push(workspace);
-        inner.active = Some(ws_id);
-        drop(inner);
-        self.persist()
-    }
-
-    pub fn open_docker_dashboard(&self) -> Result<(), LayoutError> {
-        let mut inner = self.inner.write();
-        let ws_id = ensure_docker_workspace(&mut inner);
-        let idx = ws_index(&inner.workspaces, ws_id)?;
-        let view_tab = inner.workspaces[idx]
-            .tabs
-            .iter()
-            .find(|t| t.view.as_deref() == Some(VIEW_CONTAINERS))
-            .map(|t| t.id);
-        inner.workspaces[idx].active_tab = view_tab.or(inner.workspaces[idx].active_tab);
         inner.active = Some(ws_id);
         drop(inner);
         self.persist()
@@ -1825,28 +1820,16 @@ fn split_leaf_with_viewer(
     }
 }
 
+/// O workspace Docker: onde cai a aba de container sem workspace ativo. Nasce
+/// vazio — quem pede cria a aba em seguida — e some quando a última fecha.
 fn ensure_docker_workspace(inner: &mut Inner) -> WorkspaceId {
-    if let Some(idx) = inner
+    if let Some(ws) = inner
         .workspaces
         .iter()
-        .position(|w| w.kind == WorkspaceKind::Docker)
+        .find(|w| w.kind == WorkspaceKind::Docker)
     {
-        let ws = &mut inner.workspaces[idx];
-        if !ws
-            .tabs
-            .iter()
-            .any(|t| t.view.as_deref() == Some(VIEW_CONTAINERS))
-        {
-            let tab = Tab::from_view(VIEW_CONTAINERS);
-            let tab_id = tab.id;
-            ws.tabs.insert(0, tab);
-            if ws.active_tab.is_none() {
-                ws.active_tab = Some(tab_id);
-            }
-        }
-        return inner.workspaces[idx].id;
+        return ws.id;
     }
-    let tab = Tab::from_view(VIEW_CONTAINERS);
     let workspace = Workspace {
         id: Uuid::new_v4(),
         name: DOCKER_WORKSPACE_NAME.to_string(),
@@ -1856,8 +1839,8 @@ fn ensure_docker_workspace(inner: &mut Inner) -> WorkspaceId {
         group: None,
         kind: WorkspaceKind::Docker,
         launch_config_id: None,
-        active_tab: Some(tab.id),
-        tabs: vec![tab],
+        active_tab: None,
+        tabs: Vec::new(),
         side_view: None,
         side_ratio: DEFAULT_SIDE_RATIO,
         side_expanded: false,
@@ -2016,6 +1999,11 @@ fn build_tab(row: &TabRow, panes: &[PaneRow], valid: &HashSet<SessionId>) -> Opt
         if view.starts_with(VIEW_DIFF_PREFIX) {
             return None;
         }
+        // O painel antigo de containers virou a seção Compose da tela de
+        // Docker (ver `load_remapped`).
+        if view == RETIRED_VIEW_CONTAINERS {
+            return None;
+        }
         // Editor de sessão que não voltou: sem a raiz dela, o arquivo não abre.
         if content_view_session(view).is_some_and(|s| !valid.contains(&s)) {
             return None;
@@ -2049,6 +2037,22 @@ fn build_tab(row: &TabRow, panes: &[PaneRow], valid: &HashSet<SessionId>) -> Opt
     })
 }
 
+/// O workspace ativo salvo estava com a aba aposentada de containers em foco?
+fn on_retired_dashboard(rows: &LayoutRows, active: Option<WorkspaceId>) -> bool {
+    let Some(active) = active.map(|id| id.to_string()) else {
+        return false;
+    };
+    rows.workspaces
+        .iter()
+        .filter(|w| w.id == active)
+        .filter_map(|w| w.active_tab.as_deref())
+        .any(|tab| {
+            rows.tabs
+                .iter()
+                .any(|t| t.id == tab && t.view.as_deref() == Some(RETIRED_VIEW_CONTAINERS))
+        })
+}
+
 pub fn rows_to_workspaces(rows: &LayoutRows, valid: &HashSet<SessionId>) -> Vec<Workspace> {
     let mut ws_rows: Vec<&WorkspaceRow> = rows.workspaces.iter().collect();
     ws_rows.sort_by_key(|w| w.position);
@@ -2080,6 +2084,11 @@ pub fn rows_to_workspaces(rows: &LayoutRows, valid: &HashSet<SessionId>) -> Vec<
                 .and_then(|s| Uuid::parse_str(s).ok())
                 .filter(|id| tabs.iter().any(|t| t.id == *id))
                 .or_else(|| tabs.first().map(|t| t.id));
+            let kind = WorkspaceKind::parse(w.kind.as_deref());
+            // Workspace Docker sem aba (era só o painel de containers): some.
+            if kind == WorkspaceKind::Docker && tabs.is_empty() {
+                return None;
+            }
             let created_at = DateTime::parse_from_rfc3339(&w.created_at)
                 .ok()?
                 .with_timezone(&Utc);
@@ -2094,7 +2103,7 @@ pub fn rows_to_workspaces(rows: &LayoutRows, valid: &HashSet<SessionId>) -> Vec<
                 repo_root: w.repo_root.clone(),
                 color: w.color.clone(),
                 group: w.group_name.clone(),
-                kind: WorkspaceKind::parse(w.kind.as_deref()),
+                kind,
                 launch_config_id: w
                     .launch_config_id
                     .as_deref()
@@ -2464,7 +2473,7 @@ mod tests {
     }
 
     #[test]
-    fn docker_workspace_is_created_once_with_view_tab() {
+    fn docker_workspace_is_created_once_and_empty() {
         let mgr = manager();
         let first = mgr.docker_workspace().unwrap();
         let second = mgr.docker_workspace().unwrap();
@@ -2473,62 +2482,101 @@ mod tests {
         let ws = state.workspaces.iter().find(|w| w.id == first).unwrap();
         assert_eq!(ws.kind, WorkspaceKind::Docker);
         assert_eq!(ws.name, DOCKER_WORKSPACE_NAME);
-        assert_eq!(ws.tabs.len(), 1);
-        assert_eq!(ws.tabs[0].view.as_deref(), Some(VIEW_CONTAINERS));
-        assert!(ws.tabs[0].root.is_none());
+        assert!(ws.tabs.is_empty());
     }
 
     #[test]
-    fn open_dashboard_activates_docker_workspace_and_view_tab() {
-        let mgr = manager();
-        ws(&mgr);
-        let docker_id = mgr.docker_workspace().unwrap();
-        let session = sid();
-        let logs_tab = mgr.create_tab(session, Some(docker_id)).unwrap();
-        mgr.open_docker_dashboard().unwrap();
-        let state = mgr.state();
-        assert_eq!(state.active_workspace, Some(docker_id));
-        let ws = state.workspaces.iter().find(|w| w.id == docker_id).unwrap();
-        assert_ne!(ws.active_tab, Some(logs_tab));
-        let active = ws
-            .tabs
-            .iter()
-            .find(|t| Some(t.id) == ws.active_tab)
-            .unwrap();
-        assert_eq!(active.view.as_deref(), Some(VIEW_CONTAINERS));
-    }
-
-    #[test]
-    fn closing_view_tab_closes_docker_workspace_and_ensure_recreates_it() {
+    fn closing_last_container_tab_closes_docker_workspace() {
         let mgr = manager();
         let docker_id = mgr.docker_workspace().unwrap();
-        let tab = mgr.state().workspaces[0].tabs[0].id;
-        let bound = mgr.close_tab(tab).unwrap();
-        assert!(bound.is_empty());
+        let tab = mgr.create_tab(sid(), Some(docker_id)).unwrap();
+        mgr.close_tab(tab).unwrap();
         assert!(mgr.state().workspaces.is_empty());
-        let recreated = mgr.docker_workspace().unwrap();
-        assert_ne!(recreated, docker_id);
-        assert_eq!(mgr.state().workspaces[0].tabs.len(), 1);
+        assert_ne!(mgr.docker_workspace().unwrap(), docker_id);
+    }
+
+    /// Layout salvo com o workspace Docker antigo (aba `containers`).
+    fn retired_dashboard(extra_tab: Option<SessionId>) -> Workspace {
+        let view = Tab::from_view(RETIRED_VIEW_CONTAINERS);
+        let mut tabs = vec![view.clone()];
+        if let Some(s) = extra_tab {
+            tabs.push(Tab::from_session(s));
+        }
+        Workspace {
+            id: Uuid::new_v4(),
+            name: DOCKER_WORKSPACE_NAME.to_string(),
+            name_locked: true,
+            repo_root: None,
+            color: None,
+            group: None,
+            kind: WorkspaceKind::Docker,
+            launch_config_id: None,
+            active_tab: Some(view.id),
+            tabs,
+            side_view: None,
+            side_ratio: DEFAULT_SIDE_RATIO,
+            side_expanded: false,
+            history: Vec::new(),
+            screens: Default::default(),
+            created_at: Utc::now(),
+        }
     }
 
     #[test]
-    fn view_tab_and_kind_round_trip_through_store() {
+    fn retired_dashboard_workspace_is_dropped_and_lands_on_compose() {
         let store = Arc::new(Store::open_in_memory().unwrap());
-        {
+        let s = sid();
+        let user = {
             let mgr = LayoutManager::new(Arc::clone(&store));
-            mgr.docker_workspace().unwrap();
-        }
+            let user = mgr.create_workspace("api", None, s).unwrap();
+            // Inserir ativa o Docker: o app fechou no painel antigo.
+            mgr.insert_workspace(retired_dashboard(None)).unwrap();
+            user
+        };
         let mgr = LayoutManager::new(Arc::clone(&store));
-        mgr.load(&HashSet::new());
+        mgr.load(&HashSet::from([s]));
         let state = mgr.state();
         assert_eq!(state.workspaces.len(), 1);
-        assert_eq!(state.workspaces[0].kind, WorkspaceKind::Docker);
-        assert_eq!(state.workspaces[0].tabs.len(), 1);
+        assert_eq!(state.active_workspace, Some(user));
         assert_eq!(
-            state.workspaces[0].tabs[0].view.as_deref(),
-            Some(VIEW_CONTAINERS)
+            state.workspaces[0].screens.docker.section,
+            screens::DockerSection::Compose
         );
-        assert!(state.workspaces[0].tabs[0].root.is_none());
+    }
+
+    #[test]
+    fn retired_view_tab_goes_but_container_tabs_stay() {
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        let s = sid();
+        {
+            let mgr = LayoutManager::new(Arc::clone(&store));
+            mgr.insert_workspace(retired_dashboard(Some(s))).unwrap();
+        }
+        let mgr = LayoutManager::new(Arc::clone(&store));
+        mgr.load(&HashSet::from([s]));
+        let state = mgr.state();
+        assert_eq!(state.workspaces.len(), 1);
+        let ws = &state.workspaces[0];
+        assert_eq!(ws.kind, WorkspaceKind::Docker);
+        assert_eq!(ws.tabs.len(), 1);
+        assert!(ws.tabs[0].view.is_none());
+        assert_eq!(ws.active_tab, Some(ws.tabs[0].id));
+    }
+
+    #[test]
+    fn untouched_layout_keeps_containers_section() {
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        let s = sid();
+        {
+            let mgr = LayoutManager::new(Arc::clone(&store));
+            mgr.create_workspace("api", None, s).unwrap();
+        }
+        let mgr = LayoutManager::new(Arc::clone(&store));
+        mgr.load(&HashSet::from([s]));
+        assert_eq!(
+            mgr.state().workspaces[0].screens.docker.section,
+            screens::DockerSection::Containers
+        );
     }
 
     #[test]

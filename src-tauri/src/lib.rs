@@ -1972,8 +1972,7 @@ async fn open_git_panel(app: AppHandle, id: SessionId) -> Result<(), String> {
     .await?
 }
 
-/// Painel Docker da sessão no slot lateral único (o painel completo segue
-/// sendo o workspace Docker, `docker_open_dashboard`).
+/// Tela de Docker da sessão (o `side_view` `docker:<sessão>`).
 #[tauri::command]
 fn open_docker_panel(
     app: AppHandle,
@@ -5167,7 +5166,6 @@ fn open_container_tab(
     container_id: &str,
     tab: docker::ContainerTab,
     host: Option<&str>,
-    in_active_workspace: bool,
 ) -> Result<(), String> {
     let name = state
         .docker
@@ -5197,13 +5195,13 @@ fn open_container_tab(
             .find(|h| h.alias == alias)?;
         Some(host)
     });
-    // Pelo painel lateral (aba de conteúdo), a aba nasce ao lado das do
-    // workspace em uso; pelo painel de containers, no workspace do Docker.
+    // A aba nasce ao lado das do workspace em uso; sem workspace ativo, no
+    // workspace do Docker.
     let active = state.layout.state().active_workspace;
-    let workspace_id = match (&remote, in_active_workspace, active) {
-        (Some(_), _, _) => None,
-        (None, true, Some(ws)) => Some(ws),
-        (None, _, _) => Some(state.layout.docker_workspace().map_err(|e| e.to_string())?),
+    let workspace_id = match (&remote, active) {
+        (Some(_), _) => None,
+        (None, Some(ws)) => Some(ws),
+        (None, None) => Some(state.layout.docker_workspace().map_err(|e| e.to_string())?),
     };
 
     if let Some(alias) = host {
@@ -5378,25 +5376,6 @@ fn spawn_tab_session(
     Ok(session.id)
 }
 
-#[tauri::command]
-async fn docker_open_shell(
-    app: AppHandle,
-    container_id: String,
-    host: Option<String>,
-) -> Result<(), String> {
-    off_main(app, move |app, state| {
-        open_container_tab(
-            app,
-            &state,
-            &container_id,
-            docker::ContainerTab::Shell,
-            host.as_deref(),
-            false,
-        )
-    })
-    .await?
-}
-
 #[derive(serde::Serialize)]
 struct EditorTabOpened {
     session: SessionId,
@@ -5421,9 +5400,21 @@ async fn open_editor_tab(
         Some(s) => vec![s],
         None => state.layout.active_sessions(),
     };
+    open_in_files_screen(&app, &state, candidates, &path, preview.unwrap_or(false)).await
+}
+
+/// O corpo de `open_editor_tab`: a primeira sessão de `candidates` cuja raiz
+/// contém `path` recebe o arquivo na tela de Arquivos.
+async fn open_in_files_screen(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+    candidates: Vec<SessionId>,
+    path: &str,
+    preview: bool,
+) -> Result<EditorTabOpened, String> {
     let mut last_err = "nenhuma sessão para abrir o arquivo".to_string();
     for sid in candidates {
-        let (root, remote) = match remote_target(&state, sid) {
+        let (root, remote) = match remote_target(state, sid) {
             Some(t) => {
                 let (rf, alias, tmux) = t?;
                 let root = open_remote_panel(rf, sid, alias, tmux).await?.info().root;
@@ -5431,7 +5422,7 @@ async fn open_editor_tab(
             }
             None => match state
                 .files
-                .ensure(&app, sid, || resolve_files_root(&state, sid))
+                .ensure(app, sid, || resolve_files_root(state, sid))
             {
                 Ok((root, _)) => (root, false),
                 Err(e) => {
@@ -5445,19 +5436,17 @@ async fn open_editor_tab(
         } else {
             files::find_repo_root(&root)
         };
-        match files::editor_rel_path(&root, repo_root.as_deref(), &path, |p| {
-            remote || p.is_file()
-        }) {
+        match files::editor_rel_path(&root, repo_root.as_deref(), path, |p| remote || p.is_file()) {
             Ok(rel) => {
                 let view = layout::editor_view(sid, &rel);
                 let files_view = layout::files_view(sid);
-                let previous = session_side_view(&state, sid);
+                let previous = session_side_view(state, sid);
                 state
                     .layout
-                    .open_file_screen(sid, &view, preview.unwrap_or(false))
+                    .open_file_screen(sid, &view, preview)
                     .map_err(|e| e.to_string())?;
-                close_orphaned_files_panel(&state, previous, Some(&files_view));
-                emit_layout(&app, &state);
+                close_orphaned_files_panel(state, previous, Some(&files_view));
+                emit_layout(app, state);
                 return Ok(EditorTabOpened {
                     session: sid,
                     rel,
@@ -5623,6 +5612,65 @@ fn docker_screen_pane(
     state
         .layout
         .with_screens(workspace, |s| s.docker.pane = pane)
+        .map_err(|e| e.to_string())?;
+    emit_layout(&app, &state);
+    Ok(())
+}
+
+/// Projeto escolhido na seção Compose. Nome fora do formato é recusado.
+#[tauri::command]
+fn docker_screen_project(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    workspace: layout::WorkspaceId,
+    project: Option<String>,
+) -> Result<(), String> {
+    if project
+        .as_deref()
+        .is_some_and(|p| !docker::is_valid_project_name(p))
+    {
+        return Err("projeto inválido".into());
+    }
+    state
+        .layout
+        .with_screens(workspace, |s| s.docker.project = project)
+        .map_err(|e| e.to_string())?;
+    emit_layout(&app, &state);
+    Ok(())
+}
+
+/// "Ocultar parados" da seção Compose.
+#[tauri::command]
+fn docker_screen_hide_stopped(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    workspace: layout::WorkspaceId,
+    hide: bool,
+) -> Result<(), String> {
+    state
+        .layout
+        .with_screens(workspace, |s| s.docker.hide_stopped = hide)
+        .map_err(|e| e.to_string())?;
+    emit_layout(&app, &state);
+    Ok(())
+}
+
+/// Logs/Shell de um serviço na seção Compose: o container em Containers, de
+/// uma vez (seção, container e painel).
+#[tauri::command]
+fn docker_screen_show(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    workspace: layout::WorkspaceId,
+    container: String,
+    pane: layout::screens::ContainerPane,
+) -> Result<(), String> {
+    if !docker::is_valid_container_id(&container) {
+        return Err("container inválido".into());
+    }
+    state
+        .layout
+        .with_screens(workspace, |s| s.docker.show_container(container, pane))
         .map_err(|e| e.to_string())?;
     emit_layout(&app, &state);
     Ok(())
@@ -5815,7 +5863,6 @@ async fn container_open_tab(
             &container_id,
             docker::ContainerTab::Shell,
             host.as_deref(),
-            true,
         ),
         // Logs e arquivos estruturados leem o docker local; o do host remoto
         // continua no terminal de `docker logs -f`.
@@ -5825,7 +5872,6 @@ async fn container_open_tab(
             &container_id,
             docker::ContainerTab::Logs,
             host.as_deref(),
-            true,
         ),
         ("logs", None) => {
             let view = format!("{}{container_id}", layout::VIEW_CONTAINER_LOGS_PREFIX);
@@ -6037,49 +6083,17 @@ fn open_view_tab(app: AppHandle, state: State<'_, AppState>, view: String) -> Re
     Ok(())
 }
 
+/// `docker compose up -d|restart|down` de um projeto local, sem terminal: a
+/// tela de Docker espera o fim e mostra o erro, se houver. `down` só chega
+/// aqui depois da confirmação da tela.
 #[tauri::command]
-fn docker_open_dashboard(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
-    state
-        .layout
-        .open_docker_dashboard()
-        .map_err(|e| e.to_string())?;
-    emit_layout(&app, &state);
-    Ok(())
-}
-
-#[tauri::command]
-fn docker_compose_op(
-    app: AppHandle,
+async fn docker_compose_op(
     state: State<'_, AppState>,
     project: String,
     op: docker::ComposeOp,
 ) -> Result<(), String> {
-    let info = state
-        .docker
-        .project_info(&project)
-        .map_err(|e| e.to_string())?;
-    docker::validate_working_dir(&info.working_dir).map_err(|e| e.to_string())?;
-    let bin = docker::docker_bin().ok_or("binário docker não encontrado")?;
-    let workspace_id = Some(state.layout.docker_workspace().map_err(|e| e.to_string())?);
-
-    let script = format!(
-        "'{}' {}; ec=$?; if [ $ec -ne 0 ]; then printf '\\n[falhou — enter para fechar]\\n'; read _; fi",
-        bin.display(),
-        op.compose_args(),
-    );
-    let title = format!("compose {}: {}", op.label(), project);
-    spawn_tab_session(
-        &app,
-        &state,
-        std::path::Path::new("/bin/sh"),
-        &["-c".to_string(), script],
-        title,
-        Some(std::path::Path::new(&info.working_dir)),
-        &project,
-        workspace_id,
-        SessionKind::Shell,
-    )?;
-    Ok(())
+    let docker = Arc::clone(&state.docker);
+    docker_blocking(move || docker.compose_op(&project, op).map_err(|e| e.to_string())).await?
 }
 
 #[tauri::command]
@@ -6140,12 +6154,19 @@ fn docker_open_project(
     Ok(())
 }
 
+/// Abre o(s) arquivo(s) compose do projeto na tela de Arquivos da sessão —
+/// todo "abrir arquivo" cai lá. Só sessão local (o caminho é desta máquina) e
+/// só dentro da raiz dela; o primeiro arquivo fica em foco.
 #[tauri::command]
-fn docker_open_compose_file(
+async fn docker_open_compose_file(
     app: AppHandle,
     state: State<'_, AppState>,
+    session: SessionId,
     project: String,
 ) -> Result<(), String> {
+    if remote_target(&state, session).is_some() {
+        return Err("compose só na máquina local".into());
+    }
     let info = state
         .docker
         .project_info(&project)
@@ -6157,28 +6178,12 @@ fn docker_open_compose_file(
     for file in &files {
         docker::validate_compose_file(file).map_err(|e| e.to_string())?;
     }
-    docker::validate_working_dir(&info.working_dir).map_err(|e| e.to_string())?;
-    let workspace_id = Some(state.layout.docker_workspace().map_err(|e| e.to_string())?);
-
-    let shell = session::default_shell();
-    let quoted = files
-        .iter()
-        .map(|file| format!("'{file}'"))
-        .collect::<Vec<_>>()
-        .join(" ");
-    let script = format!("exec \"${{EDITOR:-vi}}\" {quoted}");
-    let title = format!("compose: {project}");
-    spawn_tab_session(
-        &app,
-        &state,
-        std::path::Path::new(&shell),
-        &["-lc".to_string(), script],
-        title,
-        Some(std::path::Path::new(&info.working_dir)),
-        &project,
-        workspace_id,
-        SessionKind::Shell,
-    )?;
+    for file in &files {
+        open_in_files_screen(&app, &state, vec![session], file, false).await?;
+    }
+    if files.len() > 1 {
+        open_in_files_screen(&app, &state, vec![session], &files[0], false).await?;
+    }
     Ok(())
 }
 
@@ -8338,6 +8343,9 @@ pub fn run() {
             files_screen_section,
             files_grep,
             docker_screen_section,
+            docker_screen_project,
+            docker_screen_hide_stopped,
+            docker_screen_show,
             docker_screen_select,
             docker_screen_pane,
             docker_screen_shell,
@@ -8461,7 +8469,6 @@ pub fn run() {
             list_shells,
             docker_available,
             docker_list_containers,
-            docker_open_shell,
             open_editor_tab,
             open_diff_content_tab,
             back_tab,
@@ -8483,7 +8490,6 @@ pub fn run() {
             docker_compose_op,
             docker_open_project,
             docker_open_compose_file,
-            docker_open_dashboard,
             open_view_tab,
             splash::splash_done,
         ])

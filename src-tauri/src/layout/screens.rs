@@ -183,6 +183,7 @@ fn view_session(view: &str) -> Option<&str> {
 pub enum DockerSection {
     #[default]
     Containers,
+    Compose,
     Images,
     Volumes,
 }
@@ -203,9 +204,21 @@ pub struct DockerScreen {
     pub section: DockerSection,
     pub container: Option<String>,
     pub pane: ContainerPane,
+    /// Projeto compose escolhido na seção Compose.
+    pub project: Option<String>,
+    /// "Ocultar parados" da seção Compose: some o projeto sem nada rodando.
+    pub hide_stopped: bool,
 }
 
 impl DockerScreen {
+    /// Logs ou Shell de um serviço na seção Compose: pula para o container na
+    /// seção Containers (sem abas, a tela é uma só).
+    pub fn show_container(&mut self, container: String, pane: ContainerPane) {
+        self.section = DockerSection::Containers;
+        self.container = Some(container);
+        self.pane = pane;
+    }
+
     /// Container com `docker logs -f` justificado por esta tela: escolhido e
     /// na seção Logs. Em qualquer outra, o seguidor pode morrer.
     pub fn following(&self) -> Option<&str> {
@@ -400,6 +413,24 @@ mod tests {
     }
 
     #[test]
+    fn service_link_jumps_to_container_section() {
+        let mut d = DockerScreen {
+            section: DockerSection::Compose,
+            project: Some("poc".into()),
+            ..Default::default()
+        };
+        d.show_container("c1".into(), ContainerPane::Shell);
+        assert_eq!(d.section, DockerSection::Containers);
+        assert_eq!(d.container.as_deref(), Some("c1"));
+        assert_eq!(d.pane, ContainerPane::Shell);
+        // O projeto fica: voltar a Compose cai no mesmo.
+        assert_eq!(d.project.as_deref(), Some("poc"));
+        d.pane = ContainerPane::Details;
+        d.show_container("c2".into(), ContainerPane::Logs);
+        assert_eq!(d.following(), Some("c2"));
+    }
+
+    #[test]
     fn sections_serialize_lowercase() {
         assert_eq!(
             serde_json::to_string(&FilesSection::Recent).unwrap(),
@@ -412,6 +443,10 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<DockerSection>("\"volumes\"").unwrap(),
             DockerSection::Volumes
+        );
+        assert_eq!(
+            serde_json::from_str::<DockerSection>("\"compose\"").unwrap(),
+            DockerSection::Compose
         );
     }
 }

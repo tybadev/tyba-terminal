@@ -167,21 +167,41 @@ pub enum ComposeOp {
 }
 
 impl ComposeOp {
-    pub fn label(self) -> &'static str {
+    /// O verbo do compose (depois de `compose -p … -f …`).
+    pub fn verb(self) -> &'static [&'static str] {
         match self {
-            ComposeOp::Up => "up",
-            ComposeOp::Down => "down",
-            ComposeOp::Restart => "restart",
+            ComposeOp::Up => &["up", "-d"],
+            ComposeOp::Down => &["down"],
+            ComposeOp::Restart => &["restart"],
         }
     }
+}
 
-    pub fn compose_args(self) -> &'static str {
-        match self {
-            ComposeOp::Up => "compose up -d",
-            ComposeOp::Down => "compose down",
-            ComposeOp::Restart => "compose restart",
-        }
+/// `docker compose up -d` pode puxar imagem e construir: o teto é longo, mas
+/// existe — um compose pendurado não segura a tela para sempre.
+const COMPOSE_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// Argumentos de `docker compose` para o projeto: nome e arquivos explícitos,
+/// para agir no projeto que subiu (e não no compose padrão da pasta, que pode
+/// ser outro). Nome e arquivos já validados por quem chama.
+pub fn compose_args(project: &str, files: &[String], op: ComposeOp) -> Vec<String> {
+    let mut args = vec!["compose".to_string(), format!("--project-name={project}")];
+    for file in files {
+        args.push(format!("--file={file}"));
     }
+    args.extend(op.verb().iter().map(|a| a.to_string()));
+    args
+}
+
+/// O motivo de um compose que falhou: a última linha não vazia do stderr (as
+/// primeiras são progresso e avisos).
+pub fn compose_failure(stderr: &str) -> String {
+    stderr
+        .lines()
+        .map(str::trim)
+        .rfind(|l| !l.is_empty())
+        .unwrap_or("erro desconhecido")
+        .to_string()
 }
 
 /// Ação de um container só (o painel lateral Docker). O compose inteiro segue
@@ -272,6 +292,16 @@ pub fn resolve_compose_files(working_dir: &str, config_files: &str) -> Vec<Strin
             }
         })
         .collect()
+}
+
+/// Nome de projeto compose como o compose aceita (letras, dígitos, `-`, `_`;
+/// `.` de versões antigas), começando por letra ou dígito — nunca parece flag.
+pub fn is_valid_project_name(name: &str) -> bool {
+    name.len() <= 128
+        && name.starts_with(|c: char| c.is_ascii_alphanumeric())
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
 }
 
 pub fn is_valid_container_id(id: &str) -> bool {
@@ -532,10 +562,7 @@ fn run_docker(args: &[&str], timeout: Duration, host: Option<&str>) -> Result<St
     let timeout = timeout_for(timeout, host);
     let bin = docker_bin().ok_or(DockerError::NotInstalled)?;
     let mut cmd = Command::new(bin);
-    cmd.args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+    cmd.args(args);
     // O helper do docker chama o `ssh` com stdin nulo: host de senha só
     // conecta pelo master de uma sessão aberta. Sem master, falha na hora
     // (`ssh.password_needs_session`) em vez de esperar o timeout.
@@ -546,6 +573,25 @@ fn run_docker(args: &[&str], timeout: Duration, host: Option<&str>) -> Result<St
         crate::ssh::command::apply_env(&mut cmd);
         cmd.env("DOCKER_HOST", target);
     }
+    wait_output(cmd, timeout, |stderr| {
+        stderr
+            .lines()
+            .next()
+            .unwrap_or("erro desconhecido")
+            .to_string()
+    })
+}
+
+/// Roda até o fim (ou o teto) com stdout/stderr em pipe. Falha vira
+/// `Failed(reason(stderr))`.
+fn wait_output(
+    mut cmd: Command,
+    timeout: Duration,
+    reason: impl Fn(&str) -> String,
+) -> Result<String, DockerError> {
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     crate::repo::no_console_window(&mut cmd);
     let mut child = cmd.spawn()?;
     let (out, err) = drain(&mut child);
@@ -558,9 +604,9 @@ fn run_docker(args: &[&str], timeout: Duration, host: Option<&str>) -> Result<St
                 if status.success() {
                     return Ok(String::from_utf8_lossy(&stdout).into_owned());
                 }
-                let reason = String::from_utf8_lossy(&stderr);
-                let reason = reason.lines().next().unwrap_or("erro desconhecido");
-                return Err(DockerError::Failed(reason.to_string()));
+                return Err(DockerError::Failed(reason(&String::from_utf8_lossy(
+                    &stderr,
+                ))));
             }
             None => {
                 if start.elapsed() >= timeout {
@@ -1034,7 +1080,10 @@ impl DockerManager {
             }
         }
         self.prune_tabs();
-        {
+        // O retrato dos projetos é o que `compose_op` executa: só da máquina
+        // local. A lista de um host SSH traz caminhos de lá, que aqui podem
+        // existir por acaso e virar `compose down` na pasta errada.
+        if host.is_none() {
             let mut projects = self.projects.lock();
             projects.clear();
             for c in &containers {
@@ -1165,6 +1214,31 @@ impl DockerManager {
             .get(name)
             .cloned()
             .ok_or_else(|| DockerError::UnknownProject(name.to_string()))
+    }
+
+    /// `docker compose up -d|restart|down` de um projeto que o último `list`
+    /// local viu, na pasta dele e sem terminal: o resultado volta para a tela.
+    /// Só local — o caminho do compose é desta máquina.
+    pub fn compose_op(&self, project: &str, op: ComposeOp) -> Result<(), DockerError> {
+        if !is_valid_project_name(project) {
+            return Err(DockerError::UnknownProject(
+                project.chars().take(64).collect(),
+            ));
+        }
+        let info = self.project_info(project)?;
+        validate_working_dir(&info.working_dir)?;
+        for file in &info.config_files {
+            validate_compose_file(file)?;
+        }
+        let bin = docker_bin().ok_or(DockerError::NotInstalled)?;
+        let mut cmd = Command::new(bin);
+        cmd.args(compose_args(project, &info.config_files, op))
+            .current_dir(&info.working_dir)
+            // Credential helper (`docker-credential-desktop`) e plugins moram no
+            // PATH do login: sem ele, o pull do `up` falha no app aberto pelo Dock.
+            .env("PATH", crate::shell_path::agent_path());
+        wait_output(cmd, COMPOSE_TIMEOUT, compose_failure)?;
+        Ok(())
     }
 
     /// Nome do container, relistando uma vez se ele ainda não está no retrato
@@ -1315,6 +1389,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn compose_failure_is_last_meaningful_line() {
+        let stderr = "time=\"x\" level=warning msg=\"version is obsolete\"\n Network poc_default  Creating\nError response from daemon: port is already allocated\n\n";
+        assert_eq!(
+            compose_failure(stderr),
+            "Error response from daemon: port is already allocated"
+        );
+        assert_eq!(compose_failure("  \n"), "erro desconhecido");
+    }
+
+    #[test]
+    fn project_names_are_validated() {
+        assert!(is_valid_project_name("poc-git"));
+        assert!(is_valid_project_name("muriki_api.v2"));
+        assert!(!is_valid_project_name(""));
+        assert!(!is_valid_project_name("a b"));
+        assert!(!is_valid_project_name("../x"));
+        assert!(!is_valid_project_name("x;rm"));
+        assert!(!is_valid_project_name("-p"));
+        assert!(!is_valid_project_name(&"a".repeat(129)));
+    }
+
+    #[test]
     fn images_parse_json_lines_and_skip_garbage() {
         let raw = r#"{"ID":"sha256:abc","Repository":"node","Tag":"22-alpine","Size":"180MB","CreatedSince":"2 weeks ago"}
 não é json
@@ -1454,10 +1550,30 @@ not-json-line
 
     #[test]
     fn compose_op_maps_args_and_labels() {
-        assert_eq!(ComposeOp::Up.compose_args(), "compose up -d");
-        assert_eq!(ComposeOp::Down.compose_args(), "compose down");
-        assert_eq!(ComposeOp::Restart.compose_args(), "compose restart");
-        assert_eq!(ComposeOp::Down.label(), "down");
+        assert_eq!(
+            compose_args("poc", &[], ComposeOp::Up),
+            vec!["compose", "--project-name=poc", "up", "-d"]
+        );
+        assert_eq!(
+            compose_args(
+                "poc",
+                &["/r/compose.yml".into(), "/r/compose.override.yml".into()],
+                ComposeOp::Down
+            ),
+            vec![
+                "compose",
+                "--project-name=poc",
+                "--file=/r/compose.yml",
+                "--file=/r/compose.override.yml",
+                "down"
+            ]
+        );
+        assert_eq!(
+            compose_args("poc", &[], ComposeOp::Restart)
+                .last()
+                .map(String::as_str),
+            Some("restart")
+        );
         assert!(matches!(
             serde_json::from_str::<ComposeOp>("\"down\"").unwrap(),
             ComposeOp::Down
