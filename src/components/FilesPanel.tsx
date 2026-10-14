@@ -9,13 +9,13 @@ import {
   Crosshair,
   FilePlus,
   Folder,
+  FolderOpen,
   FolderSimplePlus,
   HardDrives,
   MagnifyingGlass,
   PencilSimple,
   PlusMinus,
   TrashSimple,
-  TreeView,
   X,
 } from "@phosphor-icons/react";
 
@@ -487,7 +487,7 @@ export function FilesPanel({
       {/* Fundo do painel lateral que o contém; cabeçalho como o dos mockups
           Painel*: `padding: 12px 16px`, ícone 16, título 13px. */}
       <header className={PANEL_HEADER}>
-        <TreeView size={16} className="shrink-0 text-tyba-cyan" />
+        <FolderOpen size={16} className="shrink-0 text-tyba-cyan" />
         <span className="shrink-0 text-[13px] text-tyba-text">
           {t("filesTitle")}
         </span>
