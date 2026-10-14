@@ -296,22 +296,28 @@ impl ConfigManager {
         self.root_error.is_none()
     }
 
-    fn read(&self) -> Result<Option<String>, String> {
+    /// O texto e o que a gravação seguinte deve encontrar no lugar dele.
+    fn read(&self) -> Result<(Option<String>, fsguard::Expect), String> {
         if let Some(e) = &self.root_error {
             return Err(e.clone());
         }
-        fsguard::read_linked(&self.root, &self.path, MAX_BYTES)
+        Ok(
+            match fsguard::read_linked_with_id(&self.root, &self.path, MAX_BYTES)? {
+                Some((text, id)) => (Some(text), fsguard::Expect::Same(id)),
+                None => (None, fsguard::Expect::Absent),
+            },
+        )
     }
 
     fn migrate(&self, store: &Store) -> Result<(), String> {
         if store.get_setting(MIGRATED_KEY).ok().flatten().is_some() {
             return Ok(());
         }
-        let existing = self.read()?;
+        let (existing, expect) = self.read()?;
         let out = migrate_text(existing.as_deref(), store)
             .map_err(|e| format!("config.toml: {e}. A migração espera o arquivo ser corrigido."))?;
         if existing.as_deref() != Some(out.as_str()) {
-            fsguard::write_linked(&self.root, &self.path, &out)?;
+            fsguard::write_linked(&self.root, &self.path, &out, expect)?;
         }
         store
             .set_setting(MIGRATED_KEY, "1")
@@ -343,7 +349,7 @@ impl ConfigManager {
     /// quebrado mantém o último estado bom e avisa.
     pub fn load(&self) -> Changes {
         let mut state = self.state.lock();
-        match self.read() {
+        match self.read().map(|(text, _)| text) {
             Ok(Some(text)) => {
                 if state.last_text.as_deref() == Some(text.as_str()) {
                     return Changes::default();
@@ -413,11 +419,12 @@ impl ConfigManager {
     pub fn set(&self, key: &str, value: &str) -> Result<Changes, String> {
         let mut state = self.state.lock();
         // Arquivo apagado renasce do modelo comentado, não vazio.
-        let text = self.read()?.unwrap_or_else(|| TEMPLATE.to_string());
+        let (text, expect) = self.read()?;
+        let text = text.unwrap_or_else(|| TEMPLATE.to_string());
         let out = edit::set(&text, key, value)?;
         let parsed = schema::parse(&out)?;
         if out != text {
-            fsguard::write_linked(&self.root, &self.path, &out)?;
+            fsguard::write_linked(&self.root, &self.path, &out, expect)?;
         }
         Ok(Self::apply(
             &mut state,
