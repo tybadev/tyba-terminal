@@ -173,7 +173,7 @@ export interface LoadingStateProps {
   slowCause?: string;
   /** A ação da demora. Sem ela, "Tentar de novo" se houver `onRetry`. */
   slowAction?: LoadingAction;
-  /** Falhou: o erro (já traduzido e redigido pelo core) e "Tentar de novo". */
+  /** Falhou: o erro (já traduzido — o que o core devolveu) e "Tentar de novo". */
   error?: string | null;
   onRetry?: () => void;
   /** Só quando o core sabe o total. */

@@ -6450,6 +6450,10 @@ export default function App() {
                               focusNonce={lineFocusNonces[s.id] ?? 0}
                               state={line.state}
                               boot={shellBoots[s.id] ?? null}
+                              booting={
+                                promptModes[s.id] !== true &&
+                                !isFinishedStatus(s.status)
+                              }
                               bootHost={
                                 s.kind.type === "ssh"
                                   ? (sshHosts.find(

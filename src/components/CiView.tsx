@@ -110,7 +110,7 @@ export function CiView({
   // rodando → concluído) e depois do rerun; só a troca de run limpa a tela.
   const runKey = run ? `${run.id}:${run.status}:${run.conclusion ?? ""}` : null;
   const [jobsTick, setJobsTick] = useState(0);
-  const [runsAt] = useState(() => Date.now());
+  const [runsAt, setRunsAt] = useState(() => Date.now());
   const [jobsAt, setJobsAt] = useState(() => Date.now());
   const [logAt, setLogAt] = useState(() => Date.now());
   const jobsRunId = useRef<number | null>(null);
@@ -223,9 +223,22 @@ export function CiView({
         </span>
       </div>
 
-      {error && <p className="p-6 text-[12px] text-tyba-red">{error}</p>}
-      {runs === undefined && !error && (
-        <ForgeLoading step={t("loadForgeRuns")} startedAt={runsAt} rows={4} className="min-h-0 flex-1" />
+      {/* Falha de refresh com runs na tela fica no aviso; a primeira carga
+          falha dentro do carregamento, com "Tentar de novo". */}
+      {error && runs !== undefined && <p className="p-6 text-[12px] text-tyba-red">{error}</p>}
+      {runs === undefined && (
+        <ForgeLoading
+          step={t("loadForgeRuns")}
+          startedAt={runsAt}
+          error={error}
+          onRetry={() => {
+            setError(null);
+            setRunsAt(Date.now());
+            load(true);
+          }}
+          rows={4}
+          className="min-h-0 flex-1"
+        />
       )}
       {runs === null && <p className="p-6 text-[12px] text-tyba-text-faint">{t("ciUnsupported")}</p>}
       {runs && shown.length === 0 && <p className="p-6 text-[12px] text-tyba-text-faint">{t("ciEmpty")}</p>}

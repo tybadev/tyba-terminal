@@ -111,6 +111,9 @@ export function PrListView({
   const [page, setPage] = useState<PrPage | null | undefined>(undefined);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  // Só o clique em "carregar mais" acende o rótulo de "buscando mais": o poll
+  // e o `forge://changed` também ligam `loading`, sem o usuário ter pedido.
+  const [loadingMore, setLoadingMore] = useState(false);
   const [loadAt, setLoadAt] = useState(() => Date.now());
   const [query, setQuery] = useState("");
   const [now, setNow] = useState(() => Date.now());
@@ -134,7 +137,11 @@ export function PrListView({
           setError(null);
         })
         .catch((e) => seq === requestSeq.current && setError(translateError(e, t)))
-        .finally(() => seq === requestSeq.current && setLoading(false));
+        .finally(() => {
+          if (seq !== requestSeq.current) return;
+          setLoading(false);
+          setLoadingMore(false);
+        });
     },
     [session.id, filter, limit, t],
   );
@@ -371,7 +378,10 @@ export function PrListView({
             em={["GitHub", "GitLab"]}
             startedAt={loadAt}
             error={error}
-            onRetry={() => load(true)}
+            onRetry={() => {
+              setError(null);
+              load(true);
+            }}
             shape="prs"
             rows={5}
           />
@@ -404,10 +414,13 @@ export function PrListView({
                 <button
                   type="button"
                   disabled={loading}
-                  onClick={() => setLimit((l) => nextPrLimit(l) ?? l)}
+                  onClick={() => {
+                    setLoadingMore(true);
+                    setLimit((l) => nextPrLimit(l) ?? l);
+                  }}
                   className="rounded-[6px] border border-tyba-border-strong px-3 py-1 text-[12px] text-tyba-text-muted hover:text-tyba-text disabled:opacity-50"
                 >
-                  {loading
+                  {loadingMore
                     ? t("loadForgeMore", { count: (nextPrLimit(limit) ?? limit) - limit })
                     : t("prLoadMore")}
                 </button>

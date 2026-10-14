@@ -648,19 +648,26 @@ export function GitHistoryView({ session }: { session: Session }) {
                 );
               })}
             </div>
-            {loading && rows.length === 0 && (
+            {/* Primeira leitura falhou: o erro fica no carregamento, com
+                "Tentar de novo"; uma releitura em curso volta ao filamento. */}
+            {(loading || error) && rows.length === 0 && (
               <GitLoading
                 op="gitLog"
                 step={t("loadGitLog", { repo: repoName })}
                 em={[repoName]}
                 startedAt={loadAt}
+                error={loading ? null : error}
+                onRetry={() => {
+                  setError(null);
+                  loadFirst();
+                }}
                 shape="list"
                 rows={8}
               />
             )}
-            {!loading && rows.length === 0 && (
+            {!loading && !error && rows.length === 0 && (
               <div className="p-6 text-center text-[12px] text-tyba-text-faint">
-                {error ?? (hasFilter ? t("gitLogEmptyFiltered") : t("gitLogEmpty"))}
+                {hasFilter ? t("gitLogEmptyFiltered") : t("gitLogEmpty")}
               </div>
             )}
           </div>

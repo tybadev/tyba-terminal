@@ -22,6 +22,7 @@ import { containerName, rememberContainerName } from "@/lib/contentTabs";
 import { writeClipboardText } from "@/lib/clipboard";
 import { formatSize, pathCrumbs } from "@/lib/containerFs";
 import { pushToast, toastError } from "@/lib/toast";
+import { translateError } from "@/lib/errors";
 import { PANEL_HEADER } from "./SidePanelBar";
 import { LoadingState } from "./ui/loading";
 
@@ -54,6 +55,7 @@ export function ContainerFilesPanel({ containerId, onClose }: Props) {
   const [selected, setSelected] = useState<string | null>(null);
   const [file, setFile] = useState<ContainerFsFile | null>(null);
   const [fileAt, setFileAt] = useState(() => Date.now());
+  const [fileError, setFileError] = useState<string | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -105,10 +107,12 @@ export function ContainerFilesPanel({ containerId, onClose }: Props) {
   const select = (path: string) => {
     setSelected(path);
     setFile(null);
+    setFileError(null);
     setFileAt(Date.now());
+    // A falha fica no lugar do arquivo, com "Tentar de novo" — sem toast repetindo.
     void dockerFsRead(containerId, path)
       .then(setFile)
-      .catch((e) => toastError(t("containerFileReadError"), e));
+      .catch((e) => setFileError(`${t("containerFileReadError")}: ${translateError(e, t)}`));
   };
 
   const copy = async () => {
@@ -279,6 +283,8 @@ export function ContainerFilesPanel({ containerId, onClose }: Props) {
               em={[selected ?? ""]}
               startedAt={fileAt}
               slowCause={t("loadDockerSlowLocal")}
+              error={fileError}
+              onRetry={() => selected && select(selected)}
               shape="lines"
               className="min-h-0 flex-1"
             />

@@ -90,6 +90,12 @@ interface Props {
   boot?: ShellBoot | null;
   bootHost?: string | null;
   /**
+   * O shell ainda não reportou o primeiro prompt e a sessão segue viva. O
+   * `waiting` também cobre casos fora do boot (broadcast SSH, …); só com isto
+   * a linha mostra o filamento e a etapa do boot.
+   */
+  booting?: boolean;
+  /**
    * Texto vindo de fora (paleta de histórico, snippet, colar).
    *
    * Com o terminal somente-leitura, injetar via `term.paste` seria engolido em
@@ -143,6 +149,7 @@ export function CommandLine({
   state,
   boot = null,
   bootHost = null,
+  booting = false,
   inject,
   draft = "",
   onDraftChange,
@@ -164,12 +171,15 @@ export function CommandLine({
   // relógio só anda em espera; a referência de início é o spawn (do core) ou,
   // sem ele, a montagem da linha.
   const [mountedAt] = useState(() => Date.now());
-  const bootNow = useNow(state === "waiting");
+  const bootVisible = state === "waiting" && booting;
+  const bootNow = useNow(bootVisible);
   const bootStart = boot?.started_at_ms ?? mountedAt;
   const bootStep = shellBootStep(boot, bootHost);
-  const bootPlaceholder = isSlow(bootStart, bootNow, "shell", bootHost !== null)
-    ? t("shellBootSlow", { s: elapsedSeconds(bootStart, bootNow) })
-    : t(bootStep.key, bootStep.params);
+  const bootPlaceholder = !bootVisible
+    ? ""
+    : isSlow(bootStart, bootNow, "shell", bootHost !== null)
+      ? t("shellBootSlow", { s: elapsedSeconds(bootStart, bootNow) })
+      : t(bootStep.key, bootStep.params);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const [text, setText] = useState(draft);
   // No fim do rascunho, não no começo. Voltar para um pane e digitar no meio
@@ -715,7 +725,7 @@ export function CommandLine({
     >
       {/* Shell subindo: o filamento corre na aresta de cima enquanto o rc
           carrega. Absoluto, para não mexer na altura da linha (resize). */}
-      {state === "waiting" && (
+      {bootVisible && (
         <div
           aria-hidden
           className="tyba-flow-line tyba-flow-line--live pointer-events-none absolute inset-x-0 top-0"

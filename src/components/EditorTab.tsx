@@ -17,6 +17,7 @@ import {
   filesEditEnd,
   filesGutter,
   filesOpenExternal,
+  filesPanelInfo,
   filesWrite,
   lspChange,
   lspCloseDoc,
@@ -121,6 +122,20 @@ export function EditorTab({
   dirtyRef.current = dirty;
   const revealVersion = useContentTabsVersion();
   const remote = session.kind.type === "ssh";
+  // No servidor, a etapa diz qual: o alias vem do core, uma vez por sessão.
+  const [host, setHost] = useState<string | null>(null);
+  useEffect(() => {
+    if (!remote) return;
+    let alive = true;
+    void filesPanelInfo(session.id)
+      .then((info) => {
+        if (alive) setHost(info.host);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [session.id, remote]);
   // `lsp_open` é async no core (pode subir o server, fora da main thread):
   // o que fala do documento — mudança, pedido, salvar, fechar — sai depois
   // dele, na ordem em que foi pedido.
@@ -579,10 +594,16 @@ export function EditorTab({
           <LoadingState
             op="editor"
             remote={remote}
-            step={t("loadFilesRead", { path: rel })}
-            em={[rel]}
+            step={
+              remote && host
+                ? t("loadFilesReadRemote", { host, path: rel })
+                : t("loadFilesRead", { path: rel })
+            }
+            em={remote && host ? [host, rel] : [rel]}
             startedAt={loaded.at}
-            slowCause={remote ? undefined : t("loadFilesSlow")}
+            slowCause={
+              !remote ? t("loadFilesSlow") : host ? t("loadRemoteSlow", { host }) : undefined
+            }
             shape="lines"
             rows={8}
             className="absolute inset-0"

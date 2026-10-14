@@ -42,6 +42,7 @@ import { baseName, langGlyph } from "@/lib/contentTabs";
 import { fileIcon } from "@/lib/fileIcon";
 import { isSensitivePath } from "@/lib/sensitivePaths";
 import { toastError } from "@/lib/toast";
+import { translateError } from "@/lib/errors";
 import { LspStatusChip, useLspStatus } from "./LspStatusUi";
 import { LoadingState } from "./ui/loading";
 import { compactPath } from "@/lib/workspaceCwd";
@@ -170,6 +171,8 @@ export function FilesTree({
   const [treeError, setTreeError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [busyAt, setBusyAt] = useState(() => Date.now());
+  // A raiz não pôde ser lida (sem permissão, SSH caiu): é falha, não "Pasta vazia".
+  const [rootError, setRootError] = useState<string | null>(null);
 
   const remote = info?.remote ?? false;
   // A raiz que o core ancorou, encurtada como no resto do app; antes de ela
@@ -210,6 +213,7 @@ export function FilesTree({
     setDirMeta({});
     setExpandedDirs(new Set());
     setSelected(null);
+    setRootError(null);
     void filesPanelInfo(session.id)
       .then((i) => {
         if (alive) setInfo(i);
@@ -223,7 +227,9 @@ export function FilesTree({
         setEntriesByDir({ "": listing.entries });
         setDirMeta({ "": { total: listing.total, truncated: listing.truncated } });
       })
-      .catch(() => {})
+      .catch((e) => {
+        if (alive) setRootError(translateError(e, t));
+      })
       .finally(() => {
         if (alive) setBusy(false);
       });
@@ -293,9 +299,13 @@ export function FilesTree({
         dirs.map((dir) =>
           filesListDir(session.id, dir)
             .then((listing) => ({ dir, listing }))
-            .catch(() => null),
+            .catch((e) => {
+              if (dir === "") setRootError(translateError(e, t));
+              return null;
+            }),
         ),
       );
+      if (results[0]) setRootError(null);
       setEntriesByDir((prev) => {
         const next = { ...prev };
         for (const r of results) if (r) next[r.dir] = r.listing.entries;
@@ -319,7 +329,7 @@ export function FilesTree({
     } finally {
       setBusy(false);
     }
-  }, [session.id, expandedDirs]);
+  }, [session.id, expandedDirs, t]);
 
 
   const reanchor = useCallback(async () => {
@@ -328,6 +338,7 @@ export function FilesTree({
     setSelected(null);
     const listing = await filesListDir(session.id, "").catch(() => null);
     if (listing) {
+      setRootError(null);
       setEntriesByDir({ "": listing.entries });
       setDirMeta({ "": { total: listing.total, truncated: listing.truncated } });
     }
@@ -660,7 +671,7 @@ export function FilesTree({
           {treeError && (
             <div className="px-3 py-1 text-[10px] text-tyba-red">{treeError}</div>
           )}
-          {busy && rows.length === 0 ? (
+          {(busy || rootError) && rows.length === 0 ? (
             <LoadingState
               op="files"
               remote={remote}
@@ -674,6 +685,7 @@ export function FilesTree({
               slowCause={
                 remote && info?.host ? t("loadRemoteSlow", { host: info.host }) : t("loadFilesSlow")
               }
+              error={busy ? null : rootError}
               onRetry={() => void doRefresh()}
               shape="tree"
               className="-mx-1.5 -my-2"

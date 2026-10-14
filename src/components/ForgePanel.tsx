@@ -176,8 +176,9 @@ export function CiTab({ sessionId, wide = false }: { sessionId: SessionId; wide?
       setRuns(result ?? []);
       setError(null);
     } catch (e) {
+      // Sem `setRuns([])`: na primeira carga, `runs` segue `null` e a falha
+      // aparece no carregamento, com "Tentar de novo".
       setError(translateError(e, t));
-      setRuns([]);
     }
   }, [sessionId, t]);
 
@@ -191,21 +192,23 @@ export function CiTab({ sessionId, wide = false }: { sessionId: SessionId; wide?
     return () => window.clearInterval(timer);
   }, [runs, load]);
 
-  if (error) {
-    return <div className="px-2 py-5 text-center text-xs text-tyba-red">{error}</div>;
-  }
   if (runs === null) {
     return (
       <ForgeLoading
         step={t("loadForgeRuns")}
         startedAt={startedAt}
+        error={error}
         onRetry={() => {
+          setError(null);
           setStartedAt(Date.now());
           void load();
         }}
         rows={3}
       />
     );
+  }
+  if (error) {
+    return <div className="px-2 py-5 text-center text-xs text-tyba-red">{error}</div>;
   }
   if (!supported) return <Message>{t("ciUnsupported")}</Message>;
   if (runs.length === 0) return <Message>{t("ciEmpty")}</Message>;

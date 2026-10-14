@@ -12,6 +12,7 @@ import type {
   TranscriptEntry,
 } from "@/lib/ipc";
 import { onSubagentTranscript, subagentTranscript } from "@/lib/ipc";
+import { translateError } from "@/lib/errors";
 
 const MAX_ENTRIES = 1000;
 
@@ -123,6 +124,9 @@ export function SubagentTranscript({
   const [entries, setEntries] = useState<TranscriptEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [loadAt, setLoadAt] = useState(() => Date.now());
+  const [error, setError] = useState<string | null>(null);
+  // Bumpado pelo "Tentar de novo": refaz a leitura inicial do transcript.
+  const [reload, setReload] = useState(0);
   const [trimmed, setTrimmed] = useState(false);
   const cursorRef = useRef(0);
   const receivedRef = useRef(0);
@@ -137,6 +141,7 @@ export function SubagentTranscript({
     }
     let cancelled = false;
     setLoading(true);
+    setError(null);
     setLoadAt(Date.now());
     setEntries([]);
     setTrimmed(false);
@@ -156,14 +161,16 @@ export function SubagentTranscript({
             : res.entries,
         );
       })
-      .catch(() => {})
+      .catch((e) => {
+        if (!cancelled) setError(translateError(e, t));
+      })
       .finally(() => {
         if (!cancelled) setLoading(false);
       });
     return () => {
       cancelled = true;
     };
-  }, [sessionId, agentId]);
+  }, [sessionId, agentId, reload]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!agentId) return;
@@ -220,17 +227,19 @@ export function SubagentTranscript({
               </p>
             </div>
           )}
-          {loading && entries.length === 0 && (
+          {(loading || error) && entries.length === 0 && (
             <LoadingState
               op="subagent"
               step={t("loadSubagent")}
               startedAt={loadAt}
               slowCause={t("loadSubagentSlow")}
+              error={error}
+              onRetry={() => setReload((n) => n + 1)}
               shape="lines"
               rows={6}
             />
           )}
-          {!loading && entries.length === 0 && (
+          {!loading && !error && entries.length === 0 && (
             <p className="px-1 py-3 text-[12px] text-tyba-text-faint">
               {t("subagentsViewerNoTranscript")}
             </p>

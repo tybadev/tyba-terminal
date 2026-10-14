@@ -277,7 +277,7 @@ const resources = {
       shellBootShell: "terminal aberto · iniciando o {{shell}}…",
       shellBootRemote: "no servidor {{host}}: esperando o primeiro prompt…",
       shellBootSlow:
-        "Demorando mais que o normal ({{s}} s): plugins no rc costumam ser a causa. Pode digitar — o Enter espera o shell.",
+        "rc lento ({{s}} s) — plugins? Pode digitar: o Enter espera o shell.",
       loadForgePrs: "{{forge}} · buscando os pull requests",
       loadForgeMrs: "{{forge}} · buscando os merge requests",
       loadForgePrsAny: "buscando os pull requests",
@@ -2153,7 +2153,7 @@ const resources = {
       shellBootShell: "terminal open · starting {{shell}}…",
       shellBootRemote: "on server {{host}}: waiting for the first prompt…",
       shellBootSlow:
-        "Taking longer than usual ({{s}} s): rc plugins are the usual cause. You can type — Enter waits for the shell.",
+        "slow rc ({{s}} s) — plugins? You can type: Enter waits for the shell.",
       loadForgePrs: "{{forge}} · fetching pull requests",
       loadForgeMrs: "{{forge}} · fetching merge requests",
       loadForgePrsAny: "fetching pull requests",

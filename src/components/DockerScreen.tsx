@@ -186,9 +186,11 @@ function DetailsPane({ containerId, host }: { containerId: string; host: string 
   const { t } = useTranslation();
   const [detail, setDetail] = useState<ContainerDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [startedAt] = useState(() => Date.now());
+  // `startedAt` também é o gatilho de "Tentar de novo": mudou, relê.
+  const [startedAt, setStartedAt] = useState(() => Date.now());
   useEffect(() => {
     let alive = true;
+    setError(null);
     void dockerContainerDetail(containerId, host)
       .then((d) => {
         if (alive) setDetail(d);
@@ -199,16 +201,15 @@ function DetailsPane({ containerId, host }: { containerId: string; host: string 
     return () => {
       alive = false;
     };
-  }, [containerId, host, t]);
-  if (error) {
-    return <p className="px-[18px] py-3 text-[12px] text-tyba-red">{error}</p>;
-  }
+  }, [containerId, host, t, startedAt]);
   if (!detail) {
     return (
       <DockerLoading
         host={host}
         cmd={`inspect ${containerId.slice(0, 12)}`}
         startedAt={startedAt}
+        error={error}
+        onRetry={() => setStartedAt(Date.now())}
         shape="lines"
         className="absolute inset-0"
       />

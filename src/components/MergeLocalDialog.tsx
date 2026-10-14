@@ -48,6 +48,8 @@ export function MergeLocalDialog({
   const [resolveBusy, setResolveBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loadAt, setLoadAt] = useState(() => Date.now());
+  // Bumpado pelo "Tentar de novo": repede o preview.
+  const [reload, setReload] = useState(0);
 
   useEffect(() => {
     if (!open) return;
@@ -60,7 +62,7 @@ export function MergeLocalDialog({
     void worktreeMergePreview(session.id)
       .then(setPreview)
       .catch((e) => setLoadError(translateError(e, t)));
-  }, [open, session.id]);
+  }, [open, session.id, reload]);
 
   if (!open) return null;
 
@@ -133,18 +135,14 @@ export function MergeLocalDialog({
           )}
         </DialogHeader>
 
-        {loadError && (
-          <div className="rounded-[4px] border border-tyba-red/40 bg-tyba-red/10 p-2 text-[12px] text-tyba-red">
-            {loadError}
-          </div>
-        )}
-
-        {!preview && !loadError && (
+        {!preview && (
           <GitLoading
             op="merge"
             step={t("loadMergePreview", { branch: session.worktree?.branch ?? "…" })}
             em={[session.worktree?.branch ?? ""]}
             startedAt={loadAt}
+            error={loadError}
+            onRetry={() => setReload((n) => n + 1)}
             shape="lines"
             rows={3}
             className="rounded-[6px] border border-tyba-border"

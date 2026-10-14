@@ -39,6 +39,8 @@ export function PrCommentsPanel({ sessionId, pr, onSendToAgent }: Props) {
   const [sendError, setSendError] = useState<string | null>(null);
   const [previewOpen, setPreviewOpen] = useState(true);
   const [loadAt, setLoadAt] = useState(() => Date.now());
+  // Bumpado pelo "Tentar de novo": repede os comentários.
+  const [reload, setReload] = useState(0);
 
   useEffect(() => {
     setLoadAt(Date.now());
@@ -49,7 +51,7 @@ export function PrCommentsPanel({ sessionId, pr, onSendToAgent }: Props) {
     void forgePrComments(sessionId, pr.number)
       .then(setComments)
       .catch((e) => setLoadError(translateError(e, t)));
-  }, [sessionId, pr.number]);
+  }, [sessionId, pr.number, reload]);
 
   const selectedComments = useMemo(
     () => (comments ?? []).filter((c) => selected.has(c.id)),
@@ -110,14 +112,13 @@ export function PrCommentsPanel({ sessionId, pr, onSendToAgent }: Props) {
         )}
       </div>
 
-      {loadError && (
-        <div className="text-[12px] text-tyba-red">{loadError}</div>
-      )}
-      {!comments && !loadError && (
+      {!comments && (
         <ForgeLoading
           step={t("loadForgeComments", { number: pr.number })}
           em={[`#${pr.number}`]}
           startedAt={loadAt}
+          error={loadError}
+          onRetry={() => setReload((n) => n + 1)}
           shape="list"
           rows={3}
           className="-mx-3"
