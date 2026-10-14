@@ -422,16 +422,21 @@ fn split_log_line(line: &str) -> (Option<&str>, &str) {
     (Some(step), body)
 }
 
-/// Tira os prefixos, acha o primeiro passo com `##[error]`, guarda o FIM do
-/// log até `max` bytes (começando numa linha inteira) e mascara segredos.
+/// Tira os prefixos, acha o primeiro passo com `##[error]` (e a linha dele),
+/// guarda o FIM do log até `max` bytes (começando numa linha inteira) e
+/// mascara segredos. Se o corte levou a linha do erro, `error_line` é `None`.
 pub fn parse_run_log(stdout: &[u8], max: usize) -> RunLog {
     let raw = String::from_utf8_lossy(stdout);
     let mut failed_step: Option<&str> = None;
+    let mut error_line: Option<usize> = None;
     let mut text = String::with_capacity(raw.len());
-    for line in raw.lines() {
+    for (idx, line) in raw.lines().enumerate() {
         let (step, body) = split_log_line(line);
-        if failed_step.is_none() && body.contains("##[error]") {
-            failed_step = step.filter(|s| !s.is_empty() && *s != "UNKNOWN STEP");
+        if body.contains("##[error]") {
+            error_line = error_line.or(Some(idx));
+            if failed_step.is_none() {
+                failed_step = step.filter(|s| !s.is_empty() && *s != "UNKNOWN STEP");
+            }
         }
         text.push_str(body);
         text.push('\n');
@@ -445,6 +450,8 @@ pub fn parse_run_log(stdout: &[u8], max: usize) -> RunLog {
         if let Some(nl) = text[cut..].find('\n') {
             cut += nl + 1;
         }
+        let dropped = text[..cut].matches('\n').count();
+        error_line = error_line.and_then(|i| i.checked_sub(dropped));
         text.drain(..cut);
     }
     let redact = crate::session::redact::redact;
@@ -452,6 +459,7 @@ pub fn parse_run_log(stdout: &[u8], max: usize) -> RunLog {
         text: redact(&text).into_owned(),
         truncated,
         failed_step: failed_step.map(|s| redact(s).into_owned()),
+        error_line,
     }
 }
 
@@ -716,6 +724,36 @@ build\tPost checkout\t2026-01-02T10:00:04.0000000Z ##[error]outro erro depois\n"
         assert_eq!(lines[0], "Current runner version: '2.300.0'");
         assert_eq!(lines[1], "running 3 tests");
         assert_eq!(lines[3], "##[error]Process completed with exit code 1.");
+        assert_eq!(log.error_line, Some(3));
+    }
+
+    #[test]
+    fn run_log_error_line_conta_no_texto_cortado() {
+        let mut raw = String::new();
+        for i in 0..50 {
+            raw.push_str(&format!(
+                "j\tpasso\t2026-01-02T10:00:00.0000000Z linha {i}\n"
+            ));
+        }
+        raw.push_str("j\tpasso\t2026-01-02T10:00:01.0000000Z ##[error]quebrou\n");
+        raw.push_str("j\tpasso\t2026-01-02T10:00:02.0000000Z fim\n");
+        let log = parse_run_log(raw.as_bytes(), 60);
+        assert!(log.truncated);
+        let i = log.error_line.expect("a linha do erro ficou no corte");
+        assert_eq!(log.text.lines().nth(i), Some("##[error]quebrou"));
+        // Sem corte, conta desde o começo.
+        assert_eq!(
+            parse_run_log(raw.as_bytes(), RUN_LOG_MAX_BYTES).error_line,
+            Some(50)
+        );
+        // O corte levou a linha do erro: não aponta para outra.
+        let mut raw2 = String::from("j\tp\t2026-01-02T10:00:00.0000000Z ##[error]cedo\n");
+        for i in 0..50 {
+            raw2.push_str(&format!("linha {i}\n"));
+        }
+        let log = parse_run_log(raw2.as_bytes(), 60);
+        assert_eq!(log.error_line, None);
+        assert_eq!(log.failed_step.as_deref(), Some("p"));
     }
 
     #[test]
@@ -738,6 +776,7 @@ build\tPost checkout\t2026-01-02T10:00:04.0000000Z ##[error]outro erro depois\n"
         assert!(log.text.ends_with("linha 999\n"));
         // Sem prefixo do gh, a linha passa inteira e não há passo.
         assert_eq!(log.failed_step, None);
+        assert_eq!(log.error_line, None);
     }
 
     #[test]

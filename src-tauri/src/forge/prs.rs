@@ -23,16 +23,19 @@ use super::{cli_missing, remote_of, resolve_kind, ForgeKind, CACHE_TTL};
 use crate::error::AppError;
 use crate::session::SessionId;
 
-const LIST_LIMIT: &str = "100";
-const RECENT_MERGED_LIMIT: &str = "5";
+/// Padrão e teto do `limit` da lista ("carregar mais" pede 200, 300…).
+pub const LIST_LIMIT: u32 = 100;
+pub const LIST_LIMIT_MAX: u32 = 1000;
+const RECENT_MERGED_LIMIT: u32 = 5;
 
 const LIST_FIELDS: &str = "number,title,url,state,isDraft,author,headRefName,baseRefName,\
 updatedAt,mergedAt,mergedBy,statusCheckRollup,reviewDecision,latestReviews,reviewRequests,\
-comments,additions,deletions";
+comments,additions,deletions,isCrossRepository,headRepositoryOwner";
 
 const DETAIL_FIELDS: &str = "number,title,url,state,isDraft,author,headRefName,baseRefName,\
 headRefOid,createdAt,body,additions,deletions,changedFiles,commits,files,statusCheckRollup,reviews,\
-reviewRequests,comments,reviewDecision,mergeable,mergeStateStatus";
+reviewRequests,comments,reviewDecision,mergeable,mergeStateStatus,isCrossRepository,\
+headRepositoryOwner";
 
 // --- contrato (espelha `src/lib/ipc.ts`, seção "PRs ricos") -----------------
 
@@ -124,6 +127,12 @@ pub struct PrListItem {
     pub comments: u32,
     pub additions: u64,
     pub deletions: u64,
+    /// PR vindo de fork (`isCrossRepository`).
+    pub cross_repo: bool,
+    /// O head está no próprio repo (não é fork e o dono do head é o owner do
+    /// repo): só assim o PR pode se ligar a uma sessão. Não vai para a UI.
+    #[serde(skip)]
+    pub own_head: bool,
     pub session: Option<PrSessionLink>,
 }
 
@@ -140,6 +149,8 @@ pub struct PrPage {
     pub items: Vec<PrListItem>,
     pub recent_merged: Vec<PrListItem>,
     pub counts: PrCounts,
+    /// A lista (ou a de abertos, de onde saem as contagens) bateu no `limit`.
+    pub capped: bool,
     pub repo: String,
     pub forge: ForgeKind,
     pub fetched_at: String,
@@ -219,6 +230,10 @@ pub struct PrDetail {
     pub review: Option<PrReviewDecision>,
     pub mergeable: PrMergeable,
     pub merge_state: String,
+    pub cross_repo: bool,
+    /// Ver [`PrListItem::own_head`].
+    #[serde(skip)]
+    pub own_head: bool,
     pub session: Option<PrSessionLink>,
 }
 
@@ -346,6 +361,10 @@ struct GhListPr {
     additions: u64,
     #[serde(default)]
     deletions: u64,
+    #[serde(default)]
+    is_cross_repository: bool,
+    #[serde(default)]
+    head_repository_owner: Option<GhActor>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -419,6 +438,10 @@ struct GhDetailPr {
     mergeable: String,
     #[serde(default)]
     merge_state_status: String,
+    #[serde(default)]
+    is_cross_repository: bool,
+    #[serde(default)]
+    head_repository_owner: Option<GhActor>,
 }
 
 /// Comentário em linha da REST API (`pulls/{n}/comments`).
@@ -590,7 +613,21 @@ fn thread_comment(comment: GhIssueComment) -> PrThreadComment {
     }
 }
 
-fn list_item(pr: GhListPr, me: &str) -> PrListItem {
+/// Head no próprio repo: não é fork E o dono do head é o owner do repo. Um
+/// fork pode ter uma branch com o mesmo nome da de uma sessão; sem isto, o PR
+/// dele apareceria como aberto pela sessão. Dono desconhecido não liga.
+fn own_head(cross_repo: bool, head_owner: Option<&GhActor>, repo_owner: &str) -> bool {
+    !cross_repo
+        && !repo_owner.is_empty()
+        && head_owner.is_some_and(|o| o.login.eq_ignore_ascii_case(repo_owner))
+}
+
+fn list_item(pr: GhListPr, me: &str, repo_owner: &str) -> PrListItem {
+    let own_head = own_head(
+        pr.is_cross_repository,
+        pr.head_repository_owner.as_ref(),
+        repo_owner,
+    );
     let checks = checks(pr.status_check_rollup);
     let approvals = pr
         .latest_reviews
@@ -627,15 +664,21 @@ fn list_item(pr: GhListPr, me: &str) -> PrListItem {
         comments: pr.comments.map(|c| c.len()).unwrap_or(0) as u32,
         additions: pr.additions,
         deletions: pr.deletions,
+        cross_repo: pr.is_cross_repository,
+        own_head,
         session: None,
     }
 }
 
-/// `me` é o login do usuário no `gh`: decide `review_requested`.
-pub fn parse_list(stdout: &[u8], me: &str) -> Result<Vec<PrListItem>, String> {
+/// `me` é o login do usuário no `gh`: decide `review_requested`. `repo_owner`
+/// é o owner do repo consultado: decide `own_head`.
+pub fn parse_list(stdout: &[u8], me: &str, repo_owner: &str) -> Result<Vec<PrListItem>, String> {
     let prs: Vec<GhListPr> = serde_json::from_slice(stdout)
         .map_err(|e| format!("resposta inesperada de `gh pr list`: {e}"))?;
-    Ok(prs.into_iter().map(|pr| list_item(pr, me)).collect())
+    Ok(prs
+        .into_iter()
+        .map(|pr| list_item(pr, me, repo_owner))
+        .collect())
 }
 
 /// Contagens das abas: sempre sobre a lista de abertos.
@@ -650,10 +693,16 @@ pub fn counts(open: &[PrListItem], me: &str) -> PrCounts {
 }
 
 /// O detalhe sem as threads, que vêm de outra chamada ([`parse_threads`]).
-pub fn parse_detail(stdout: &[u8]) -> Result<PrDetail, String> {
+pub fn parse_detail(stdout: &[u8], repo_owner: &str) -> Result<PrDetail, String> {
     let pr: GhDetailPr = serde_json::from_slice(stdout)
         .map_err(|e| format!("resposta inesperada de `gh pr view`: {e}"))?;
     Ok(PrDetail {
+        cross_repo: pr.is_cross_repository,
+        own_head: own_head(
+            pr.is_cross_repository,
+            pr.head_repository_owner.as_ref(),
+            repo_owner,
+        ),
         number: pr.number,
         title: pr.title,
         url: pr.url,
@@ -825,23 +874,48 @@ fn viewer_login(repo_root: &Path, remote: &Remote) -> Result<String, AppError> {
     Ok(login)
 }
 
+/// `limit` do pedido, no intervalo aceito (padrão [`LIST_LIMIT`]).
+pub fn clamp_limit(limit: Option<u32>) -> u32 {
+    limit.unwrap_or(LIST_LIMIT).clamp(1, LIST_LIMIT_MAX)
+}
+
+fn list_args(repo: &str, filter: &[&str], limit: u32) -> Vec<String> {
+    let mut args: Vec<String> = ["pr", "list", "--repo", repo, "--limit"]
+        .map(String::from)
+        .to_vec();
+    args.push(limit.to_string());
+    args.extend(filter.iter().map(|f| f.to_string()));
+    args.extend(["--json".into(), LIST_FIELDS.into()]);
+    args
+}
+
+/// Há mais PRs do que vieram: a lista pedida ou a de abertos (contagens)
+/// bateu no `limit`.
+pub fn is_capped(items: usize, open: usize, limit: u32) -> bool {
+    let limit = limit as usize;
+    items >= limit || open >= limit
+}
+
 fn list(
     repo_root: &Path,
     remote: &Remote,
     me: &str,
     filter: &[&str],
-    limit: &str,
+    limit: u32,
 ) -> Result<Vec<PrListItem>, AppError> {
-    let repo = repo_flag(remote);
-    let mut args = vec!["pr", "list", "--repo", &repo, "--limit", limit];
-    args.extend_from_slice(filter);
-    args.extend_from_slice(&["--json", LIST_FIELDS]);
-    parse_list(&gh(repo_root, &args)?, me).map_err(cli_failed)
+    let args = list_args(&repo_flag(remote), filter, limit);
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    parse_list(&gh(repo_root, &args)?, me, &remote.owner).map_err(cli_failed)
 }
 
-fn fetch_page(repo_root: &Path, remote: &Remote, filter: PrFilter) -> Result<PrPage, AppError> {
+fn fetch_page(
+    repo_root: &Path,
+    remote: &Remote,
+    filter: PrFilter,
+    limit: u32,
+) -> Result<PrPage, AppError> {
     let me = viewer_login(repo_root, remote)?;
-    let open = list(repo_root, remote, &me, &["--state", "open"], LIST_LIMIT)?;
+    let open = list(repo_root, remote, &me, &["--state", "open"], limit)?;
     let (items, recent_merged) = match filter {
         PrFilter::Open => {
             let merged = list(
@@ -854,7 +928,7 @@ fn fetch_page(repo_root: &Path, remote: &Remote, filter: PrFilter) -> Result<PrP
             (open.clone(), merged)
         }
         PrFilter::Mine => (
-            list(repo_root, remote, &me, &["--author", "@me"], LIST_LIMIT)?,
+            list(repo_root, remote, &me, &["--author", "@me"], limit)?,
             Vec::new(),
         ),
         PrFilter::Review => (
@@ -863,17 +937,18 @@ fn fetch_page(repo_root: &Path, remote: &Remote, filter: PrFilter) -> Result<PrP
                 remote,
                 &me,
                 &["--search", "review-requested:@me"],
-                LIST_LIMIT,
+                limit,
             )?,
             Vec::new(),
         ),
         PrFilter::Closed => (
-            list(repo_root, remote, &me, &["--state", "closed"], LIST_LIMIT)?,
+            list(repo_root, remote, &me, &["--state", "closed"], limit)?,
             Vec::new(),
         ),
     };
     Ok(PrPage {
         counts: counts(&open, &me),
+        capped: is_capped(items.len(), open.len(), limit),
         items,
         recent_merged,
         repo: remote.project(),
@@ -898,7 +973,7 @@ fn fetch_detail(repo_root: &Path, remote: &Remote, number: u64) -> Result<PrDeta
             &n,
         ],
     )?;
-    let mut detail = parse_detail(&view).map_err(cli_failed)?;
+    let mut detail = parse_detail(&view, &remote.owner).map_err(cli_failed)?;
     let endpoint = format!(
         "repos/{}/{}/pulls/{number}/comments?per_page=100",
         remote.owner, remote.repo
@@ -919,8 +994,8 @@ fn now_iso() -> String {
 
 type Cache<K, V> = Mutex<HashMap<K, (Instant, V)>>;
 
-fn page_cache() -> &'static Cache<(String, PrFilter), PrPage> {
-    static CACHE: std::sync::OnceLock<Cache<(String, PrFilter), PrPage>> =
+fn page_cache() -> &'static Cache<(String, PrFilter, u32), PrPage> {
+    static CACHE: std::sync::OnceLock<Cache<(String, PrFilter, u32), PrPage>> =
         std::sync::OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
@@ -949,14 +1024,20 @@ where
 }
 
 /// `None`: a forja não tem lista rica aqui (GitLab, sem forja, sem `gh`).
-/// `fresh=false` aceita o cache de 30s.
-pub fn page(repo_root: &Path, filter: PrFilter, fresh: bool) -> Result<Option<PrPage>, AppError> {
+/// `fresh=false` aceita o cache de 30s. `limit` passa por [`clamp_limit`].
+pub fn page(
+    repo_root: &Path,
+    filter: PrFilter,
+    limit: Option<u32>,
+    fresh: bool,
+) -> Result<Option<PrPage>, AppError> {
     let Some(remote) = github_remote(repo_root) else {
         return Ok(None);
     };
-    let key = (repo_flag(&remote), filter);
+    let limit = clamp_limit(limit);
+    let key = (repo_flag(&remote), filter, limit);
     cached(page_cache(), key, fresh, || {
-        fetch_page(repo_root, &remote, filter)
+        fetch_page(repo_root, &remote, filter, limit)
     })
     .map(Some)
 }
@@ -1150,7 +1231,7 @@ fn invalidate(repo: &str, number: u64) {
     detail_cache()
         .lock()
         .retain(|(r, n), _| !(r == repo && *n == number));
-    page_cache().lock().retain(|(r, _), _| r != repo);
+    page_cache().lock().retain(|(r, _, _), _| r != repo);
 }
 
 /// Sobra uma janela entre a checagem do head e o review: o `gh pr review` não
@@ -1198,7 +1279,7 @@ mod tests {
 
     #[test]
     fn list_maps_state_draft_and_merged() {
-        let items = parse_list(LIST.as_bytes(), "eu-mesmo").unwrap();
+        let items = parse_list(LIST.as_bytes(), "eu-mesmo", "exemplo").unwrap();
         assert_eq!(items.len(), 3);
         assert_eq!(items[0].state, PrState::Open);
         assert_eq!(items[1].state, PrState::Draft);
@@ -1216,7 +1297,7 @@ mod tests {
 
     #[test]
     fn list_aggregates_ci_from_the_rollup() {
-        let items = parse_list(LIST.as_bytes(), "eu-mesmo").unwrap();
+        let items = parse_list(LIST.as_bytes(), "eu-mesmo", "exemplo").unwrap();
         // build ✓, skipped conta como passou; lint ✗; e2e e o StatusContext pendentes.
         assert_eq!(
             items[0].ci,
@@ -1234,7 +1315,7 @@ mod tests {
 
     #[test]
     fn list_counts_approvals_review_and_comments() {
-        let items = parse_list(LIST.as_bytes(), "eu-mesmo").unwrap();
+        let items = parse_list(LIST.as_bytes(), "eu-mesmo", "exemplo").unwrap();
         assert_eq!(items[0].approvals, 1);
         assert_eq!(items[0].review, Some(PrReviewDecision::Approved));
         assert_eq!(items[1].review, None, "reviewDecision vazio vira null");
@@ -1250,7 +1331,7 @@ mod tests {
 
     #[test]
     fn counts_come_from_the_open_list() {
-        let items = parse_list(LIST.as_bytes(), "eu-mesmo").unwrap();
+        let items = parse_list(LIST.as_bytes(), "eu-mesmo", "exemplo").unwrap();
         let open: Vec<_> = items.into_iter().take(2).collect();
         assert_eq!(
             counts(&open, "eu-mesmo"),
@@ -1267,7 +1348,7 @@ mod tests {
 
     #[test]
     fn list_serializes_with_the_ts_contract_names() {
-        let items = parse_list(LIST.as_bytes(), "eu-mesmo").unwrap();
+        let items = parse_list(LIST.as_bytes(), "eu-mesmo", "exemplo").unwrap();
         let v = serde_json::to_value(&items[1]).unwrap();
         assert_eq!(v["state"], "draft");
         assert_eq!(v["review"], serde_json::Value::Null);
@@ -1279,7 +1360,7 @@ mod tests {
 
     #[test]
     fn detail_maps_checks_with_workflow_and_mergeable() {
-        let d = parse_detail(VIEW.as_bytes()).unwrap();
+        let d = parse_detail(VIEW.as_bytes(), "exemplo").unwrap();
         assert_eq!(d.number, 42);
         assert_eq!(d.head_sha, "2222222222222222222222222222222222222222");
         assert_eq!(d.state, PrState::Open);
@@ -1312,7 +1393,7 @@ mod tests {
 
     #[test]
     fn detail_maps_commits_reviews_reviewers_and_comments() {
-        let d = parse_detail(VIEW.as_bytes()).unwrap();
+        let d = parse_detail(VIEW.as_bytes(), "exemplo").unwrap();
         assert_eq!(d.commits.len(), 2);
         assert_eq!(d.commits[0].subject, "feat: primeiro passo");
         assert_eq!(d.commits[0].author, "ana-dev");
@@ -1361,8 +1442,8 @@ mod tests {
 
     #[test]
     fn parsers_reject_garbage() {
-        assert!(parse_list(b"nao sou json", "").is_err());
-        assert!(parse_detail(b"[]").is_err());
+        assert!(parse_list(b"nao sou json", "", "").is_err());
+        assert!(parse_detail(b"[]", "").is_err());
         assert!(parse_threads(b"{}").is_err());
         assert!(parse_threads(b"").unwrap().is_empty());
     }
@@ -1394,9 +1475,85 @@ mod tests {
                     .success();
                 assert!(ok);
             }
-            assert_eq!(page(dir.path(), PrFilter::Open, false).unwrap(), None);
+            assert_eq!(page(dir.path(), PrFilter::Open, None, false).unwrap(), None);
             assert_eq!(detail(dir.path(), 1, false).unwrap(), None);
         }
+    }
+
+    #[test]
+    fn fork_pr_with_a_session_branch_name_is_not_own_head() {
+        // Mesmo nome de branch de uma sessão; só o primeiro é do próprio repo.
+        let json = br#"[
+          {"number": 1, "headRefName": "tyba/x-ab12", "isCrossRepository": false,
+           "headRepositoryOwner": {"id": "U_1", "login": "Exemplo"}},
+          {"number": 2, "headRefName": "tyba/x-ab12", "isCrossRepository": true,
+           "headRepositoryOwner": {"id": "U_2", "login": "atacante"}},
+          {"number": 3, "headRefName": "tyba/x-ab12", "isCrossRepository": false,
+           "headRepositoryOwner": {"id": "U_2", "login": "atacante"}},
+          {"number": 4, "headRefName": "tyba/x-ab12", "isCrossRepository": true,
+           "headRepositoryOwner": {"id": "U_1", "login": "exemplo"}},
+          {"number": 5, "headRefName": "tyba/x-ab12"}
+        ]"#;
+        let items = parse_list(json, "", "exemplo").unwrap();
+        let own: Vec<bool> = items.iter().map(|i| i.own_head).collect();
+        assert_eq!(own, [true, false, false, false, false]);
+        let cross: Vec<bool> = items.iter().map(|i| i.cross_repo).collect();
+        assert_eq!(cross, [false, true, false, true, false]);
+        let v = serde_json::to_value(&items[1]).unwrap();
+        assert_eq!(v["cross_repo"], true);
+        assert!(v.get("own_head").is_none(), "own_head não vai para a UI");
+
+        let fork = br#"{"number": 9, "isCrossRepository": true,
+          "headRepositoryOwner": {"login": "atacante"}}"#;
+        let d = parse_detail(fork, "exemplo").unwrap();
+        assert!(d.cross_repo && !d.own_head);
+        let own = br#"{"number": 9, "isCrossRepository": false,
+          "headRepositoryOwner": {"login": "exemplo"}}"#;
+        assert!(parse_detail(own, "exemplo").unwrap().own_head);
+        // Owner do repo desconhecido: não liga.
+        assert!(!parse_detail(own, "").unwrap().own_head);
+    }
+
+    #[test]
+    fn list_and_detail_ask_gh_for_the_fork_fields() {
+        for fields in [LIST_FIELDS, DETAIL_FIELDS] {
+            let fields: Vec<&str> = fields.split(',').collect();
+            assert!(fields.contains(&"isCrossRepository"));
+            assert!(fields.contains(&"headRepositoryOwner"));
+        }
+    }
+
+    #[test]
+    fn limit_goes_to_gh_pr_list_and_is_clamped() {
+        assert_eq!(clamp_limit(None), 100);
+        assert_eq!(clamp_limit(Some(0)), 1);
+        assert_eq!(clamp_limit(Some(300)), 300);
+        assert_eq!(clamp_limit(Some(5000)), 1000);
+        let args = list_args(REPO, &["--author", "@me"], 300);
+        assert_eq!(
+            args,
+            [
+                "pr",
+                "list",
+                "--repo",
+                REPO,
+                "--limit",
+                "300",
+                "--author",
+                "@me",
+                "--json",
+                LIST_FIELDS
+            ]
+        );
+    }
+
+    #[test]
+    fn capped_when_the_list_or_the_open_list_hits_the_limit() {
+        assert!(!is_capped(99, 99, 100));
+        assert!(is_capped(100, 100, 100), "a lista pedida bateu no limite");
+        assert!(is_capped(3, 100, 100), "a de abertos (contagens) bateu");
+        assert!(is_capped(200, 40, 200));
+        assert!(!is_capped(0, 0, 1));
     }
 
     #[test]
@@ -1569,18 +1726,20 @@ mod tests {
             items: Vec::new(),
             recent_merged: Vec::new(),
             counts: PrCounts::default(),
+            capped: false,
             repo: "invalida/teste".into(),
             forge: ForgeKind::GitHub,
             fetched_at: String::new(),
         };
         let now = Instant::now();
-        let detail = parse_detail(VIEW.as_bytes()).unwrap();
+        let detail = parse_detail(VIEW.as_bytes(), "exemplo").unwrap();
         {
             let mut pages = page_cache().lock();
-            pages.insert((repo.into(), PrFilter::Open), (now, page.clone()));
-            pages.insert((repo.into(), PrFilter::Mine), (now, page.clone()));
+            pages.insert((repo.into(), PrFilter::Open, 100), (now, page.clone()));
+            pages.insert((repo.into(), PrFilter::Open, 200), (now, page.clone()));
+            pages.insert((repo.into(), PrFilter::Mine, 100), (now, page.clone()));
             pages.insert(
-                ("github.com/outro/repo".into(), PrFilter::Open),
+                ("github.com/outro/repo".into(), PrFilter::Open, 100),
                 (now, page),
             );
             let mut details = detail_cache().lock();
@@ -1589,8 +1748,8 @@ mod tests {
         }
         invalidate(repo, 42);
         let pages = page_cache().lock();
-        assert!(!pages.keys().any(|(r, _)| r == repo));
-        assert!(pages.contains_key(&("github.com/outro/repo".to_string(), PrFilter::Open)));
+        assert!(!pages.keys().any(|(r, _, _)| r == repo));
+        assert!(pages.contains_key(&("github.com/outro/repo".to_string(), PrFilter::Open, 100)));
         let details = detail_cache().lock();
         assert!(!details.contains_key(&(repo.to_string(), 42)));
         assert!(details.contains_key(&(repo.to_string(), 43)));

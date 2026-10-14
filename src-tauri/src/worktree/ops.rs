@@ -200,15 +200,49 @@ fn is_ancestor(worktree: &Path, ancestor: &str, of: &str) -> Result<bool, String
     }
 }
 
+/// O HEAD é alcançável por alguma ref remota (`refs/remotes/*`), com ou sem
+/// upstream configurado.
+fn head_on_a_remote(worktree: &Path) -> Result<bool, String> {
+    let refs = git_text(
+        {
+            let mut c = git_in(worktree);
+            c.args([
+                "for-each-ref",
+                "--contains",
+                "HEAD",
+                "--count=1",
+                "--format=%(refname)",
+                "refs/remotes",
+            ]);
+            c
+        },
+        "git for-each-ref --contains",
+    )?;
+    Ok(!refs.is_empty())
+}
+
 /// `git commit --amend -m`, com as regras do `commit`. Recusa se o HEAD já
-/// está no upstream: reescrever o que foi publicado obriga a um force-push.
-/// Sem upstream (ou HEAD solto), não há o que proteger e permite.
-pub fn commit_amend(worktree: &Path, message: &str) -> Result<(), AppError> {
+/// está no remoto — no upstream ou em QUALQUER ref remota (uma sessão nova
+/// nasce com HEAD == base, que já está em `origin/main`) —: reescrever o que
+/// foi publicado obriga a um force-push. `base` é o `base_ref` da sessão de
+/// worktree: HEAD nele quer dizer que a sessão não tem commit para emendar.
+/// Se a checagem falha, recusa.
+pub fn commit_amend(worktree: &Path, message: &str, base: Option<&str>) -> Result<(), AppError> {
     let message = message.trim();
     if message.is_empty() {
         return Err(git_failed("git.amend_failed", "mensagem de commit vazia"));
     }
-    if is_ancestor(worktree, "HEAD", "@{upstream}").unwrap_or(false) {
+    if let Some(base) = base {
+        let head = super::head_sha(worktree).map_err(|e| git_failed("git.amend_failed", e))?;
+        if head.eq_ignore_ascii_case(base.trim()) {
+            return Err(git_failed(
+                "git.amend_failed",
+                "não há commit da sessão para emendar",
+            ));
+        }
+    }
+    let on_remote = head_on_a_remote(worktree).map_err(|e| git_failed("git.amend_failed", e))?;
+    if on_remote || is_ancestor(worktree, "HEAD", "@{upstream}").unwrap_or(false) {
         return Err(AppError::new("git.amend_published"));
     }
     let mut c = git_in_rw(worktree);
@@ -1149,26 +1183,72 @@ mod tests {
         let origin = temp_repo();
         let repo = cloned(&origin);
         // HEAD == origin/main: já publicado.
-        let err = commit_amend(&repo, "outra mensagem").unwrap_err();
+        let err = commit_amend(&repo, "outra mensagem", None).unwrap_err();
         assert_eq!(err.code, "git.amend_published", "{err}");
 
         fs::write(repo.join("a.txt"), "local\n").unwrap();
         git_ok(&repo, &["commit", "-qam", "local"]);
         assert_eq!(
-            commit_amend(&repo, "  ").unwrap_err().code,
+            commit_amend(&repo, "  ", None).unwrap_err().code,
             "git.amend_failed"
         );
         let before = sha(&repo, "HEAD");
-        commit_amend(&repo, "local reescrito").unwrap();
+        commit_amend(&repo, "local reescrito", None).unwrap();
         assert_ne!(sha(&repo, "HEAD"), before);
         assert_eq!(sha(&repo, "HEAD~1"), sha(&repo, "origin/main"));
 
         // Sem upstream, permite.
         let solo = temp_repo();
-        commit_amend(&solo, "init reescrito").unwrap();
+        commit_amend(&solo, "init reescrito", None).unwrap();
         for d in [origin, repo, solo] {
             fs::remove_dir_all(&d).ok();
         }
+    }
+
+    #[test]
+    fn amend_refuses_head_on_any_remote_ref_even_without_upstream() {
+        let origin = temp_repo();
+        let repo = cloned(&origin);
+        // Como uma sessão nova: branch sem upstream, HEAD == origin/main.
+        git_ok(&repo, &["switch", "-q", "-c", "tyba/x-ab12", "--no-track"]);
+        let err = commit_amend(&repo, "reescreve a main", None).unwrap_err();
+        assert_eq!(err.code, "git.amend_published", "{err}");
+
+        // Commit novo local, sem upstream: permite.
+        fs::write(repo.join("a.txt"), "local\n").unwrap();
+        git_ok(&repo, &["commit", "-qam", "local"]);
+        commit_amend(&repo, "local reescrito", None).unwrap();
+        assert_eq!(sha(&repo, "HEAD~1"), sha(&repo, "origin/main"));
+
+        // Upstream que sumiu da origem não libera: o commit ainda está em
+        // outra ref remota.
+        git_ok(&origin, &["branch", "publicada", "main"]);
+        git_ok(&repo, &["switch", "-q", "-c", "outra", "origin/main"]);
+        git_ok(&repo, &["fetch", "-q", "origin"]);
+        git_ok(&repo, &["branch", "-q", "-u", "origin/publicada"]);
+        git_ok(&origin, &["branch", "-D", "publicada"]);
+        git_ok(&repo, &["fetch", "-q", "--prune", "origin"]);
+        let err = commit_amend(&repo, "x", None).unwrap_err();
+        assert_eq!(err.code, "git.amend_published", "{err}");
+        for d in [origin, repo] {
+            fs::remove_dir_all(&d).ok();
+        }
+    }
+
+    #[test]
+    fn amend_refuses_when_head_is_the_session_base() {
+        // Sem remoto nenhum: só a regra do base.
+        let solo = temp_repo();
+        let base = sha(&solo, "HEAD");
+        let err = commit_amend(&solo, "x", Some(&base)).unwrap_err();
+        assert_eq!(err.code, "git.amend_failed", "{err}");
+        assert_eq!(err.params["detail"], "não há commit da sessão para emendar");
+
+        fs::write(solo.join("a.txt"), "sessao\n").unwrap();
+        git_ok(&solo, &["commit", "-qam", "da sessão"]);
+        commit_amend(&solo, "da sessão, reescrito", Some(&base)).unwrap();
+        assert_eq!(sha(&solo, "HEAD~1"), base);
+        fs::remove_dir_all(&solo).ok();
     }
 
     #[test]

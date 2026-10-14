@@ -96,6 +96,8 @@ pub struct RunLog {
     /// O começo foi cortado para caber no teto (o fim, onde está o erro, fica).
     pub truncated: bool,
     pub failed_step: Option<String>,
+    /// Índice (0-based, em `text` já cortado) da primeira linha `##[error]`.
+    pub error_line: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

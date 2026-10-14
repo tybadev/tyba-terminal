@@ -2951,7 +2951,8 @@ async fn worktree_commit(
     worktree::ops::commit(&ctx.path, &message)
 }
 
-/// Mesmas regras do `worktree_commit`; recusa amend de commit já publicado.
+/// Mesmas regras do `worktree_commit`; recusa amend de commit já publicado
+/// (em qualquer ref remota) e, em sessão de worktree, do próprio base.
 #[tauri::command]
 async fn worktree_commit_amend(
     state: State<'_, AppState>,
@@ -2959,8 +2960,14 @@ async fn worktree_commit_amend(
     message: String,
 ) -> Result<(), AppError> {
     let ctx = session_repo_context(&state, id).map_err(session_setup_error)?;
+    // Sessão de worktree: HEAD no base salvo na criação = nada da sessão.
+    let base = state
+        .sessions
+        .get(id)
+        .and_then(|s| s.worktree)
+        .map(|wt| wt.base_ref);
     let path = ctx.path;
-    forge_blocking(move || worktree::ops::commit_amend(&path, &message)).await
+    forge_blocking(move || worktree::ops::commit_amend(&path, &message, base.as_deref())).await
 }
 
 /// Rede por clique do usuário (como `session_fetch`), não ação automática.
@@ -3165,16 +3172,20 @@ async fn forge_run_rerun(
     forge_blocking(move || forge::github::run_rerun(&path, run_id, failed_only)).await
 }
 
-/// Sessão do TYBA cujo worktree está na branch `head` do PR — no mesmo repo da
-/// sessão que perguntou, quando ela sabe qual é.
+/// Sessão do TYBA cujo worktree está na branch `head` do PR, no mesmo repo da
+/// sessão que perguntou. Nome de branch sozinho não basta: um fork pode criar
+/// uma `tyba/<slug>-<sufixo>` igual, então PR cujo head não é do próprio repo
+/// (`own_head`) nunca liga — e sem `repo_root` de quem pergunta também não.
 fn pr_session_link(
     sessions: &[session::Session],
     repo_root: Option<&std::path::Path>,
     head: &str,
+    own_head: bool,
 ) -> Option<forge::prs::PrSessionLink> {
+    let root = repo_root.filter(|_| own_head)?;
     let s = sessions.iter().find(|s| {
         s.worktree.as_ref().is_some_and(|wt| wt.branch == head)
-            && repo_root.is_none_or(|root| s.repo_root.as_deref() == Some(root))
+            && s.repo_root.as_deref() == Some(root)
     })?;
     let agent = match &s.kind {
         session::SessionKind::Agent { runner } => Some(match runner {
@@ -3199,15 +3210,17 @@ async fn forge_pr_page(
     id: SessionId,
     filter: forge::prs::PrFilter,
     fresh: bool,
+    limit: Option<u32>,
 ) -> Result<Option<forge::prs::PrPage>, AppError> {
     let ctx = session_repo_context(&state, id).map_err(session_setup_error)?;
     let repo_root = state.sessions.get(id).and_then(|s| s.repo_root);
     let sessions = state.sessions.list();
     let path = ctx.path;
-    let mut page = forge_blocking(move || forge::prs::page(&path, filter, fresh)).await?;
+    let mut page = forge_blocking(move || forge::prs::page(&path, filter, limit, fresh)).await?;
     if let Some(page) = page.as_mut() {
         for item in page.items.iter_mut().chain(page.recent_merged.iter_mut()) {
-            item.session = pr_session_link(&sessions, repo_root.as_deref(), &item.head);
+            item.session =
+                pr_session_link(&sessions, repo_root.as_deref(), &item.head, item.own_head);
         }
     }
     Ok(page)
@@ -3226,7 +3239,12 @@ async fn forge_pr_detail(
     let path = ctx.path;
     let mut detail = forge_blocking(move || forge::prs::detail(&path, number, fresh)).await?;
     if let Some(detail) = detail.as_mut() {
-        detail.session = pr_session_link(&sessions, repo_root.as_deref(), &detail.head);
+        detail.session = pr_session_link(
+            &sessions,
+            repo_root.as_deref(),
+            &detail.head,
+            detail.own_head,
+        );
     }
     Ok(detail)
 }
@@ -8790,6 +8808,38 @@ mod tests {
             did_work: false,
             agent_usage: None,
         }
+    }
+
+    #[test]
+    fn pr_links_to_a_session_only_from_the_own_repo_and_with_repo_root() {
+        let root = std::path::PathBuf::from("/repos/app");
+        let mut s = agent_session(uuid::Uuid::new_v4(), Some("/wt/x".into()));
+        s.repo_root = Some(root.clone());
+        let sessions = vec![s.clone()];
+        // PR do próprio repo, mesma branch: liga.
+        let link = pr_session_link(&sessions, Some(&root), "tyba/x", true).unwrap();
+        assert_eq!(link.session, s.id);
+        assert_eq!(link.agent.as_deref(), Some("claude"));
+        // PR de fork com o mesmo nome de branch: não liga.
+        assert_eq!(
+            pr_session_link(&sessions, Some(&root), "tyba/x", false),
+            None
+        );
+        // Quem pergunta não sabe o repo: não liga.
+        assert_eq!(pr_session_link(&sessions, None, "tyba/x", true), None);
+        // Sessão de outro repo com a mesma branch: não liga.
+        let outro = std::path::PathBuf::from("/repos/outro");
+        assert_eq!(
+            pr_session_link(&sessions, Some(&outro), "tyba/x", true),
+            None
+        );
+        // Sessão sem repo_root: não liga.
+        let mut sem_root = s;
+        sem_root.repo_root = None;
+        assert_eq!(
+            pr_session_link(&[sem_root], Some(&root), "tyba/x", true),
+            None
+        );
     }
 
     fn leaf(session: SessionId) -> layout::PaneNode {
