@@ -10,11 +10,13 @@
 //! testes obrigatórios (convenção do repo).
 
 pub mod agent_events;
+pub mod subagent_completion;
 pub mod subagent_transcript;
 pub mod transcript;
 
 pub mod auth_scan;
 pub mod manifest;
+pub mod observed_hold;
 pub mod observed_notify;
 pub mod observer;
 pub mod program_status;

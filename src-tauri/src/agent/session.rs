@@ -409,6 +409,15 @@ fn on_pre_tool_use(ctx: &HandlerCtx, event: &HookEvent) -> HookAction {
             );
             ctx.sessions
                 .set_status(&ctx.app, ctx.session_id, SessionStatus::Running);
+            // O `AwaitingInput` da aprovação apagou o "subagentes trabalhando";
+            // se quem pediu foi um subagente com o turno do orquestrador
+            // encerrado, a sessão continua segura só por eles.
+            if label_held_after_running(
+                event.agent_id.is_some(),
+                ctx.subagents.orchestrator_idle(ctx.session_id),
+            ) {
+                mark_held_by_subagents(ctx);
+            }
             match outcome {
                 Ok((_request, resolution)) => {
                     if resolution.decision.is_approval() {
@@ -524,6 +533,53 @@ fn model_of(event: &HookEvent) -> Option<&str> {
 /// pelo watcher do transcript. Qualquer outro motivo (saída, logout) encerra.
 fn session_end_ends_subagents(raw: &serde_json::Value) -> bool {
     raw.get("reason").and_then(serde_json::Value::as_str) != Some("clear")
+}
+
+/// `SubagentStart` com a sessão ociosa: um subagente em background acordado
+/// pela própria tarefa volta a trabalhar, e a sessão volta a `Running`. Só
+/// sai de `Idle` — prompt aberto, saída e falha continuam mandando.
+/// A sessão segue `Running` só por subagente (turno do orquestrador
+/// encerrado): a UI troca "em andamento" por "subagentes trabalhando". Prompt
+/// aberto (`AwaitingInput`) não ganha a marca — esperar alguém vence.
+///
+/// Só sessão de agente: num shell (claude hospedado) o que a UI mostra é o
+/// palpite de tela, e a marca ali vem do `ObservedHold`, que olha a mesma
+/// tela — duas fontes escrevendo o campo brigariam a cada poll.
+fn mark_held_by_subagents(ctx: &HandlerCtx) {
+    let held = ctx.sessions.get(ctx.session_id).is_some_and(|s| {
+        held_by_subagents(
+            matches!(s.kind, SessionKind::Agent { .. }),
+            &s.status,
+            ctx.subagents.has_active(ctx.session_id),
+        )
+    });
+    if held {
+        ctx.sessions
+            .set_subagents_working(&ctx.app, ctx.session_id, true);
+    }
+}
+
+/// A marca exige subagente ativo de fato: numa corrida com o watcher o último
+/// pode ter fechado entre o sinal e aqui, e a marca ficaria sem ninguém.
+fn held_by_subagents(is_agent: bool, status: &SessionStatus, has_active: bool) -> bool {
+    is_agent && matches!(status, SessionStatus::Running) && has_active
+}
+
+/// Depois de voltar a `Running` por evento de subagente (ferramenta, decisão
+/// de aprovação), a marca volta se o orquestrador segue com o turno
+/// encerrado. Evento do próprio orquestrador nunca a repõe.
+fn label_held_after_running(from_subagent: bool, orchestrator_idle: bool) -> bool {
+    from_subagent && orchestrator_idle
+}
+
+fn status_on_subagent_start(current: &SessionStatus, active: bool) -> Option<SessionStatus> {
+    (active && matches!(current, SessionStatus::Idle { .. })).then_some(SessionStatus::Running)
+}
+
+/// `Stop` com subagente ativo segura a sessão em `Running` — menos quando há
+/// um prompt aberto (nativo, aprovação, resposta): esse continua mandando.
+fn status_on_held_stop(current: &SessionStatus) -> Option<SessionStatus> {
+    (!matches!(current, SessionStatus::AwaitingInput { .. })).then_some(SessionStatus::Running)
 }
 
 /// Para onde um evento de hook vai depois do sinal de status.
@@ -834,6 +890,16 @@ fn handle_event(ctx: &HandlerCtx, event: HookEvent) -> HookAction {
                 if let Some(coordination) = coordination {
                     crate::coordinate_subagent_viewer(&ctx.app, ctx.session_id, coordination);
                 }
+                let active = ctx.subagents.has_active(ctx.session_id);
+                if let Some(next) = ctx
+                    .sessions
+                    .get(ctx.session_id)
+                    .and_then(|s| status_on_subagent_start(&s.status, active))
+                {
+                    ctx.sessions.set_status(&ctx.app, ctx.session_id, next);
+                    // Saiu de `Idle` por subagente, não pelo orquestrador.
+                    mark_held_by_subagents(ctx);
+                }
             }
         }
         Some(AgentSignal::SubagentEnded) => {
@@ -850,7 +916,13 @@ fn handle_event(ctx: &HandlerCtx, event: HookEvent) -> HookAction {
                     event.agent_type.clone(),
                     last_assistant_message,
                 );
-                if let Some(summary) = idle {
+                // Só desce quem estava segurado em `Running`: um prompt
+                // nativo aberto nesse meio-tempo continua mandando.
+                let held = ctx
+                    .sessions
+                    .get(ctx.session_id)
+                    .is_some_and(|s| matches!(s.status, SessionStatus::Running));
+                if let (Some(summary), true) = (idle, held) {
                     ctx.sessions.set_status(
                         &ctx.app,
                         ctx.session_id,
@@ -890,9 +962,12 @@ fn handle_event(ctx: &HandlerCtx, event: HookEvent) -> HookAction {
             // até o último terminar.
             ctx.turn_settle.fetch_add(1, Ordering::SeqCst);
             let summary = Some(INTERRUPTED_SUMMARY.to_string());
-            ctx.subagents
-                .note_orchestrator_idle(ctx.session_id, summary);
-            if !ctx.subagents.has_active(ctx.session_id) {
+            if ctx
+                .subagents
+                .on_orchestrator_stop(&ctx.app, ctx.session_id, summary)
+            {
+                mark_held_by_subagents(ctx);
+            } else {
                 if let Some(status) = ctx
                     .sessions
                     .get(ctx.session_id)
@@ -909,10 +984,25 @@ fn handle_event(ctx: &HandlerCtx, event: HookEvent) -> HookAction {
             use std::sync::atomic::Ordering;
             match status_for(&signal) {
                 Some(SessionStatus::Running) => {
-                    ctx.subagents.note_orchestrator_working(ctx.session_id);
-                    ctx.turn_settle.fetch_add(1, Ordering::SeqCst);
+                    // Ferramenta de subagente (`agent_id` no payload) não é o
+                    // orquestrador voltando a trabalhar: o turno dele segue
+                    // encerrado, e o motivo do `Running` continua sendo os
+                    // subagentes.
+                    let from_subagent = event.agent_id.is_some();
+                    if !from_subagent {
+                        ctx.subagents.note_orchestrator_working(ctx.session_id);
+                        ctx.sessions
+                            .set_subagents_working(&ctx.app, ctx.session_id, false);
+                        ctx.turn_settle.fetch_add(1, Ordering::SeqCst);
+                    }
                     ctx.sessions
                         .set_status(&ctx.app, ctx.session_id, SessionStatus::Running);
+                    if label_held_after_running(
+                        from_subagent,
+                        ctx.subagents.orchestrator_idle(ctx.session_id),
+                    ) {
+                        mark_held_by_subagents(ctx);
+                    }
                 }
                 Some(status @ SessionStatus::AwaitingInput { .. }) => {
                     // O `idle_prompt` não rebaixa o prompt nativo a `Reply`: a
@@ -930,15 +1020,24 @@ fn handle_event(ctx: &HandlerCtx, event: HookEvent) -> HookAction {
                     let turn = turn_summary(&event);
                     let summary = turn.text;
                     let needs_settle = !turn.settled;
-                    ctx.subagents
-                        .note_orchestrator_idle(ctx.session_id, summary.clone());
-                    // Subagente async ativo segura a sessão em Running mesmo com o
-                    // turno do orquestrador encerrado — só desce a Idle quando o
-                    // último subagente termina (via hook ou fim por arquivo).
-                    if ctx.subagents.has_active(ctx.session_id) {
+                    // Subagente ativo segura a sessão em Running mesmo com o
+                    // turno do orquestrador encerrado — com subagente
+                    // trabalhando a sessão não está ociosa (decisão 4 revista).
+                    // Só desce a Idle quando o último termina (hook, sidecar
+                    // ou notificação na fila do pai).
+                    if ctx
+                        .subagents
+                        .on_orchestrator_stop(&ctx.app, ctx.session_id, summary.clone())
+                    {
                         ctx.turn_settle.fetch_add(1, Ordering::SeqCst);
-                        ctx.sessions
-                            .set_status(&ctx.app, ctx.session_id, SessionStatus::Running);
+                        if let Some(next) = ctx
+                            .sessions
+                            .get(ctx.session_id)
+                            .and_then(|s| status_on_held_stop(&s.status))
+                        {
+                            ctx.sessions.set_status(&ctx.app, ctx.session_id, next);
+                        }
+                        mark_held_by_subagents(ctx);
                     } else {
                         ctx.sessions.set_status(
                             &ctx.app,
@@ -982,8 +1081,10 @@ fn on_stop_failure(ctx: &HandlerCtx, event: &HookEvent) {
     let SessionStatus::Idle { summary } = &status else {
         return;
     };
+    // Descarta placeholder não confirmado; o retorno não importa — o status
+    // da falha prevalece.
     ctx.subagents
-        .note_orchestrator_idle(ctx.session_id, summary.clone());
+        .on_orchestrator_stop(&ctx.app, ctx.session_id, summary.clone());
     // Cancela um aviso de "terminou" que um `Stop` anterior tenha agendado.
     ctx.turn_settle.fetch_add(1, Ordering::SeqCst);
     // Antes do `set_status`: o `running → idle` que ele causa não é "terminou".
@@ -2461,6 +2562,68 @@ mod build_hosted_command_tests {
                 .any(|(k, _)| k == "TYBA_TEST_SHOULD_NEVER_LEAK"),
             "o env hospedado vazou algo fora da allowlist: {:?}",
             plan.env
+        );
+    }
+}
+
+#[cfg(test)]
+mod subagent_status_tests {
+    use super::*;
+
+    fn awaiting() -> SessionStatus {
+        SessionStatus::AwaitingInput {
+            hint: None,
+            reason: Default::default(),
+        }
+    }
+
+    #[test]
+    fn subagent_start_wakes_only_an_idle_session() {
+        let idle = SessionStatus::Idle { summary: None };
+        assert_eq!(
+            status_on_subagent_start(&idle, true),
+            Some(SessionStatus::Running)
+        );
+        assert_eq!(status_on_subagent_start(&idle, false), None);
+        for current in [
+            SessionStatus::Running,
+            awaiting(),
+            SessionStatus::Exited { code: 0 },
+            SessionStatus::Failed { reason: "x".into() },
+        ] {
+            assert_eq!(
+                status_on_subagent_start(&current, true),
+                None,
+                "{current:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn held_label_needs_an_active_subagent() {
+        assert!(held_by_subagents(true, &SessionStatus::Running, true));
+        assert!(!held_by_subagents(true, &SessionStatus::Running, false));
+        assert!(!held_by_subagents(false, &SessionStatus::Running, true));
+        assert!(!held_by_subagents(true, &awaiting(), true));
+    }
+
+    #[test]
+    fn held_label_returns_only_for_subagent_events_after_the_turn() {
+        assert!(label_held_after_running(true, true));
+        assert!(!label_held_after_running(true, false));
+        assert!(!label_held_after_running(false, true));
+    }
+
+    #[test]
+    fn held_stop_keeps_an_open_prompt() {
+        assert_eq!(status_on_held_stop(&awaiting()), None);
+        assert_eq!(
+            status_on_held_stop(&SessionStatus::Running),
+            Some(SessionStatus::Running)
+        );
+        assert_eq!(
+            status_on_held_stop(&SessionStatus::Idle { summary: None }),
+            Some(SessionStatus::Running)
         );
     }
 }

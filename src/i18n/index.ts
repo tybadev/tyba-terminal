@@ -511,6 +511,8 @@ const resources = {
       agentsCountDone_other: "{{count}} concluídos",
       agentsCountFailed_one: "{{count}} interrompido",
       agentsCountFailed_other: "{{count}} interrompidos",
+      agentsCountBlocked_one: "{{count}} parado",
+      agentsCountBlocked_other: "{{count}} parados",
       agentsNoGate: "sem gate — comandos não passam pela aprovação",
       agentsSessionGone: "A sessão destes agentes não existe mais.",
       shellAgentNotice:
@@ -594,6 +596,7 @@ const resources = {
       subagentsStatusStarting: "iniciando",
       subagentsStatusRunning: "rodando",
       subagentsStatusDone: "concluído",
+      subagentsStatusBlocked: "parado",
       filesEmptyDir: "Pasta vazia.",
       filesMore: "+{{count}} itens não exibidos",
       filesFinder: "Ir para arquivo",
@@ -945,6 +948,7 @@ const resources = {
       agentReadyTimeoutBody:
         "O prompt inicial ficou no composer — revise e envie.",
       sessionInProgress: "em andamento",
+      sessionSubagentsWorking: "subagentes trabalhando",
       sessionBlocked: "bloqueado",
       sessionAwaiting: "aguardando",
       sessionNeedsPermission: "pede permissão",
@@ -2473,6 +2477,8 @@ const resources = {
       agentsCountDone_other: "{{count}} done",
       agentsCountFailed_one: "{{count}} interrupted",
       agentsCountFailed_other: "{{count}} interrupted",
+      agentsCountBlocked_one: "{{count}} stopped",
+      agentsCountBlocked_other: "{{count}} stopped",
       agentsNoGate: "no gate — commands bypass approval",
       agentsSessionGone: "The session for these agents no longer exists.",
       shellAgentNotice:
@@ -2554,6 +2560,7 @@ const resources = {
       subagentsStatusStarting: "starting",
       subagentsStatusRunning: "running",
       subagentsStatusDone: "done",
+      subagentsStatusBlocked: "stopped",
       filesEmptyDir: "Empty folder.",
       filesMore: "+{{count}} items not shown",
       filesFinder: "Go to file",
@@ -2903,6 +2910,7 @@ const resources = {
       agentReadyTimeoutBody:
         "The initial prompt stayed in the composer — review and send it.",
       sessionInProgress: "in progress",
+      sessionSubagentsWorking: "subagents working",
       sessionBlocked: "blocked",
       sessionAwaiting: "awaiting",
       sessionNeedsPermission: "needs permission",

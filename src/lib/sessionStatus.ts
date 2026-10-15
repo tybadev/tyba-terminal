@@ -123,6 +123,20 @@ export const statusVisual = (
 };
 
 /**
+ * "Subagentes trabalhando" no lugar de "em andamento" quando o core diz que a
+ * sessão roda só por subagente (`Session.subagents_working`: o turno do
+ * orquestrador acabou). Só troca o rótulo do estado "rodando": esperar alguém,
+ * falhar ou concluir dizem o que dizem.
+ */
+export const withSubagentsReason = <T extends StatusVisual | null>(
+  visual: T,
+  subagentsWorking: boolean,
+): T =>
+  visual && subagentsWorking && visual.labelKey === "sessionInProgress"
+    ? { ...visual, labelKey: "sessionSubagentsWorking" }
+    : visual;
+
+/**
  * O selo de atenção de uma aba: a sessão da aba que está esperando alguém
  * (`awaiting_input`), com a espera por decisão (vermelho, prompt nativo) antes
  * da espera por resposta. `null` quando ninguém ali espera.

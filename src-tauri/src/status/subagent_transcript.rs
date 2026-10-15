@@ -10,11 +10,7 @@ use serde::Serialize;
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, Runtime};
 
-use crate::agent::subagents::{
-    finish_by_file, finish_by_file_interrupted, session_orchestrator_idle, SharedCoordinator,
-    SharedSessions,
-};
-use crate::approvals::now_ms;
+use crate::agent::subagents::{session_orchestrator_idle, SharedCoordinator, SharedSessions};
 use crate::session::redact::redact;
 use crate::session::SessionId;
 use crate::status::transcript::clean_summary;
@@ -348,6 +344,9 @@ pub struct WatchSpec {
     pub description: Option<String>,
     pub parent_path: Option<PathBuf>,
     pub path: Option<PathBuf>,
+    /// Tamanho do sidecar quando o subagente foi acordado; ver
+    /// `SubagentRun::stale_end_len`.
+    pub stale_end_len: Option<u64>,
 }
 
 #[derive(Clone)]
@@ -361,6 +360,7 @@ struct WatchTarget {
     last_len: Option<u64>,
     stable_cycles: u32,
     finished: bool,
+    stale_end_len: Option<u64>,
 }
 
 impl WatchTarget {
@@ -375,6 +375,7 @@ impl WatchTarget {
             last_len: None,
             stable_cycles: 0,
             finished: false,
+            stale_end_len: spec.stale_end_len,
         }
     }
 
@@ -410,6 +411,9 @@ pub(crate) fn final_assistant_summary(path: &Path) -> Option<String> {
     } else {
         text.as_ref()
     };
+    // `tool_result` no fim só encerra se for a resposta do `SubagentHandback`
+    // logo antes dele (Claude Code 2.1.29x entrega o relatório por ela).
+    let mut trailing_results: Option<Vec<String>> = None;
     for line in tail.lines().rev() {
         let trimmed = line.trim();
         if trimmed.is_empty() {
@@ -419,12 +423,50 @@ pub(crate) fn final_assistant_summary(path: &Path) -> Option<String> {
             continue;
         };
         match v.get("type").and_then(Value::as_str) {
-            Some("assistant") => return final_assistant_text(&v),
-            Some("user") => return None,
+            Some("assistant") => {
+                return match &trailing_results {
+                    Some(ids) => handback_message(&v, ids),
+                    None => final_assistant_text(&v),
+                };
+            }
+            Some("user") => {
+                if trailing_results.is_some() {
+                    return None;
+                }
+                trailing_results = Some(tool_result_ids(&v)?);
+            }
             _ => continue,
         }
     }
     None
+}
+
+const HANDBACK_TOOL: &str = "SubagentHandback";
+
+fn tool_result_ids(v: &Value) -> Option<Vec<String>> {
+    let blocks = v.get("message")?.get("content")?.as_array()?;
+    let ids: Vec<String> = blocks
+        .iter()
+        .filter(|b| b.get("type").and_then(Value::as_str) == Some("tool_result"))
+        .filter_map(|b| b.get("tool_use_id").and_then(Value::as_str))
+        .map(str::to_string)
+        .collect();
+    (!ids.is_empty()).then_some(ids)
+}
+
+/// O relatório (`input.message`) da chamada `SubagentHandback` respondida por
+/// `result_ids`. Outra ferramenta no lugar ⇒ `None`: o subagente segue.
+fn handback_message(v: &Value, result_ids: &[String]) -> Option<String> {
+    let blocks = v.get("message")?.get("content")?.as_array()?;
+    let call = blocks.iter().find(|b| {
+        b.get("type").and_then(Value::as_str) == Some("tool_use")
+            && b.get("name").and_then(Value::as_str) == Some(HANDBACK_TOOL)
+            && b.get("id")
+                .and_then(Value::as_str)
+                .is_some_and(|id| result_ids.iter().any(|r| r == id))
+    })?;
+    let message = call.get("input")?.get("message")?.as_str()?;
+    clean_summary(message, FINISH_SUMMARY_MAX)
 }
 
 fn final_assistant_text(v: &Value) -> Option<String> {
@@ -613,6 +655,16 @@ fn advance_stable_cycles(
     }
 }
 
+/// Fim por arquivo só vale depois que o sidecar cresceu além do tamanho que
+/// tinha quando o subagente foi acordado — antes disso, o fim lido é o da
+/// volta anterior.
+fn end_is_fresh(file_len: Option<u64>, stale_end_len: Option<u64>) -> bool {
+    match stale_end_len {
+        None => true,
+        Some(stale) => file_len.is_some_and(|len| len > stale),
+    }
+}
+
 fn stall_is_dead(stable_cycles: u32, orchestrator_idle: bool) -> bool {
     orchestrator_idle && stable_cycles >= DEAD_SUBAGENT_STALL_CYCLES
 }
@@ -681,7 +733,10 @@ fn watch_loop<R: Runtime>(
                     advance_stable_cycles(target.stable_cycles, target.last_len, result.file_len);
                 target.stable_cycles = cycles;
                 target.last_len = last_len;
-                if !target.finished && target.stable_cycles >= STABLE_CYCLES {
+                if !target.finished
+                    && target.stable_cycles >= STABLE_CYCLES
+                    && end_is_fresh(result.file_len, target.stale_end_len)
+                {
                     if let Some(summary) = final_assistant_summary(&result.path) {
                         target.finished = true;
                         done.push(Completion {
@@ -736,30 +791,19 @@ fn finish_target<R: Runtime>(
     coordinator: &SharedCoordinator,
     completion: Completion,
 ) {
-    let outcome = if completion.interrupted {
-        finish_by_file_interrupted(sessions, session, &completion.agent_id, now_ms())
-    } else {
-        finish_by_file(
-            sessions,
-            session,
-            &completion.agent_id,
-            completion.summary,
-            now_ms(),
-        )
-    };
-    let Some((snapshot, idle)) = outcome else {
-        return;
-    };
-    crate::agent::subagents::emit_snapshot(app, session, snapshot);
-    if let Some(summary) = idle {
-        let coordinator = coordinator
-            .lock()
-            .ok()
-            .and_then(|guard| guard.as_ref().cloned());
-        if let Some(coordinator) = coordinator {
-            coordinator(session, summary);
-        }
-    }
+    crate::agent::subagents::complete_running(
+        app,
+        sessions,
+        coordinator,
+        session,
+        &completion.agent_id,
+        completion.summary,
+        if completion.interrupted {
+            crate::agent::subagents::RunEnd::Interrupted
+        } else {
+            crate::agent::subagents::RunEnd::Completed
+        },
+    );
 }
 
 fn emit_final<R: Runtime>(app: &AppHandle<R>, session: SessionId, target: WatchTarget) {
@@ -1142,6 +1186,7 @@ mod tests {
                 description: None,
                 parent_path: None,
                 path: Some(path),
+                stale_end_len: None,
             }],
             Arc::new(Mutex::new(std::collections::HashMap::new())),
             Arc::new(Mutex::new(None)),
@@ -1149,5 +1194,99 @@ mod tests {
         assert_eq!(watchers.active_sessions(), 1);
         watchers.stop_session(&handle, session);
         assert_eq!(watchers.active_sessions(), 0);
+    }
+
+    fn final_of(lines: &[serde_json::Value]) -> Option<String> {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("agent-a1b2c3d4e5.jsonl");
+        let body: String = lines.iter().map(|l| format!("{l}\n")).collect();
+        write(&path, &body);
+        final_assistant_summary(&path)
+    }
+
+    fn assistant(content: serde_json::Value, stop: &str) -> serde_json::Value {
+        serde_json::json!({ "type": "assistant", "isSidechain": true,
+            "message": { "role": "assistant", "stop_reason": stop, "content": content } })
+    }
+
+    fn tool_result(id: &str) -> serde_json::Value {
+        serde_json::json!({ "type": "user", "isSidechain": true,
+            "message": { "role": "user", "content": [
+                { "type": "tool_result", "tool_use_id": id, "content": "ok" } ] } })
+    }
+
+    fn handback(message: &str) -> serde_json::Value {
+        assistant(
+            serde_json::json!([{ "type": "tool_use", "id": "toolu_h", "name": "SubagentHandback",
+                "input": { "message": message } }]),
+            "tool_use",
+        )
+    }
+
+    #[test]
+    fn final_answer_text_is_the_end() {
+        let lines = [assistant(
+            serde_json::json!([{ "type": "text", "text": "pronto" }]),
+            "end_turn",
+        )];
+        assert_eq!(final_of(&lines).as_deref(), Some("pronto"));
+    }
+
+    #[test]
+    fn pending_tool_call_or_tool_result_is_not_the_end() {
+        let bash = assistant(
+            serde_json::json!([{ "type": "tool_use", "id": "toolu_b", "name": "Bash", "input": {} }]),
+            "tool_use",
+        );
+        assert_eq!(final_of(std::slice::from_ref(&bash)), None);
+        assert_eq!(final_of(&[bash, tool_result("toolu_b")]), None);
+    }
+
+    /// Claude Code 2.1.29x: o subagente entrega o relatório pela ferramenta
+    /// `SubagentHandback` e o arquivo termina no `tool_result` dela — sem fala
+    /// final `assistant`. O relatório é o `message` da chamada.
+    #[test]
+    fn subagent_handback_with_its_result_is_the_end() {
+        let lines = [handback("  relatório\n final "), tool_result("toolu_h")];
+        assert_eq!(final_of(&lines).as_deref(), Some("relatório final"));
+    }
+
+    #[test]
+    fn handback_still_waiting_for_its_result_is_not_the_end() {
+        assert_eq!(final_of(&[handback("relatório")]), None);
+    }
+
+    #[test]
+    fn tool_result_of_another_tool_after_handback_is_not_the_end() {
+        let bash = assistant(
+            serde_json::json!([{ "type": "tool_use", "id": "toolu_b", "name": "Bash", "input": {} }]),
+            "tool_use",
+        );
+        let lines = [
+            handback("r"),
+            tool_result("toolu_h"),
+            bash,
+            tool_result("toolu_b"),
+        ];
+        assert_eq!(final_of(&lines), None);
+    }
+
+    /// Subagente acordado cujo sidecar ainda termina no `SubagentHandback` da
+    /// volta anterior: o arquivo diz "acabou", mas esse fim é velho.
+    #[test]
+    fn stale_end_of_a_reopened_subagent_is_not_an_end() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("agent-a1.jsonl");
+        let body: String = [handback("r"), tool_result("toolu_h")]
+            .iter()
+            .map(|l| format!("{l}\n"))
+            .collect();
+        write(&path, &body);
+        assert!(final_assistant_summary(&path).is_some());
+        let len = fs::metadata(&path).unwrap().len();
+        assert!(!end_is_fresh(Some(len), Some(len)));
+        assert!(!end_is_fresh(None, Some(len)));
+        assert!(end_is_fresh(Some(len + 1), Some(len)));
+        assert!(end_is_fresh(Some(len), None));
     }
 }

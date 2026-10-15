@@ -26,6 +26,7 @@ import { formatDuration } from "@/lib/blockLayout";
 import { usageSummary } from "@/lib/agentUsage";
 import { decideApproval } from "@/lib/notifications";
 import { basename } from "@/lib/utils";
+import { withSubagentsReason } from "@/lib/sessionStatus";
 import {
   LIGHT_CLASS,
   buildAgentTree,
@@ -66,6 +67,7 @@ const LIGHT_LABEL: Record<AgentLight, string> = {
   awaiting: "agentsAwaitingApproval",
   done: "subagentsStatusDone",
   failed: "agentsInterrupted",
+  blocked: "subagentsStatusBlocked",
 };
 
 function PendingBadge({ count }: { count: number }) {
@@ -130,7 +132,10 @@ export function AgentsPanel({
   // Só o que o usuário mexeu; o resto segue o padrão (a mais nova aberta).
   const [roundOpen, setRoundOpen] = useState<Record<number, boolean>>({});
 
-  const visual = orchestratorVisual(session.status, session.attention, subagents);
+  const visual = withSubagentsReason(
+    orchestratorVisual(session.status, session.attention, subagents),
+    session.subagents_working === true,
+  );
   const toggle = (agentId: string) => {
     setOpenId((current) => (current === agentId ? null : agentId));
     if (openId !== agentId) onSelect(agentId);
@@ -318,6 +323,8 @@ function RoundHeader({
     round.counts.done > 0 && t("agentsCountDone", { count: round.counts.done }),
     round.counts.failed > 0 &&
       t("agentsCountFailed", { count: round.counts.failed }),
+    round.counts.blocked > 0 &&
+      t("agentsCountBlocked", { count: round.counts.blocked }),
   ].filter(Boolean);
   const Caret = expanded ? CaretDown : CaretRight;
   return (
@@ -386,7 +393,9 @@ function SubagentRow({
           <span className="flex min-w-0 items-center gap-2">
             <span
               className={`min-w-0 flex-1 truncate text-[13px] ${
-                row.light === "done" || row.light === "failed"
+                row.light === "done" ||
+                row.light === "failed" ||
+                row.light === "blocked"
                   ? "text-tyba-text-muted"
                   : "text-tyba-text"
               } ${id ? "group-hover:text-tyba-text" : ""}`}

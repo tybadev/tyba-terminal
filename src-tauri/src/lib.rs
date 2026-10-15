@@ -66,6 +66,9 @@ struct AppState {
     worktree_files: rich_input::FilesCache,
     hook_servers: Arc<agent::session::HookServerRegistry>,
     subagents: agent::subagents::SharedSubagents,
+    /// O palpite de tela segurado em "trabalhando" enquanto há subagente
+    /// ativo (sintoma 3 do bug dos subagentes em background).
+    observed_hold: Arc<status::observed_hold::ObservedHold>,
     agent_prober: agent::process_probe::SharedAgentProber,
     disk_observer: agent::disk_observer::SharedDiskObserver,
     tunnel_states: crate::ssh::tunnel::SharedTunnelStates,
@@ -289,6 +292,7 @@ fn install_screen_observers(
     sessions: &SharedSessionManager,
     store: &Arc<session::store::Store>,
     prober: &agent::process_probe::SharedAgentProber,
+    observed_hold: &Arc<status::observed_hold::ObservedHold>,
     manifests_dir: &std::path::Path,
 ) {
     // Uma varredura só, no boot: reler o disco a cada avaliação colocaria IO no
@@ -301,6 +305,7 @@ fn install_screen_observers(
     let probe_prober = Arc::clone(prober);
     let observed_app = app.clone();
     let observed_sessions = Arc::clone(sessions);
+    let observed_hold = Arc::clone(observed_hold);
     let notify_app = app.clone();
     let notify_sessions = Arc::clone(sessions);
     let notify_store = Arc::clone(store);
@@ -317,7 +322,10 @@ fn install_screen_observers(
                 .map(str::to_string)
         }),
         observed: Arc::new(move |id, observed| {
-            observed_sessions.set_observed(&observed_app, id, observed)
+            observed_hold.screen(id, observed, |shown, held| {
+                observed_sessions.set_observed(&observed_app, id, shown);
+                observed_sessions.set_subagents_working(&observed_app, id, held);
+            })
         }),
         // O palpite sai pelo mesmo `notify_native` do agente com hook — mesma
         // checagem de foco, mesma redação, mesma leitura de preferência.
@@ -425,6 +433,15 @@ fn poll_agent_probers(app: &AppHandle) {
     state
         .disk_observer
         .retain_live(app, &state.subagents, &live);
+    // O fim (ou o começo) de um subagente não mexe na tela: reavalia aqui o
+    // palpite segurado, senão o "trabalhando" ficaria preso até a tela mudar.
+    for session_id in &live {
+        state.observed_hold.refresh(*session_id, |shown, held| {
+            state.sessions.set_observed(app, *session_id, shown);
+            state.sessions.set_subagents_working(app, *session_id, held);
+        });
+    }
+    state.observed_hold.retain(&live);
     for (session_id, detected) in changes {
         if detected.is_none() {
             state.agent_prober.clear_raw_plugin(session_id);
@@ -8702,12 +8719,18 @@ pub fn run() {
 
             let agent_prober: agent::process_probe::SharedAgentProber =
                 Arc::new(agent::process_probe::AgentProber::default());
+            let subagents: agent::subagents::SharedSubagents =
+                Arc::new(agent::subagents::SubagentTracker::new());
+            let observed_hold = Arc::new(status::observed_hold::ObservedHold::new(Arc::clone(
+                &subagents,
+            )));
             install_screen_observers(
                 app.handle(),
                 &pty_pool,
                 &sessions,
                 &store,
                 &agent_prober,
+                &observed_hold,
                 &config_dir.join("manifests"),
             );
             install_auth_watchers(app.handle(), &pty_pool, &sessions);
@@ -8743,7 +8766,8 @@ pub fn run() {
                 rich_input_submit: parking_lot::Mutex::new(()),
                 worktree_files: rich_input::FilesCache::default(),
                 hook_servers: Arc::new(agent::session::HookServerRegistry::default()),
-                subagents: Arc::new(agent::subagents::SubagentTracker::new()),
+                subagents,
+                observed_hold,
                 agent_prober: Arc::clone(&agent_prober),
                 disk_observer: Arc::new(agent::disk_observer::DiskObserver::with_coordinator({
                     let coordinate_app = app.handle().clone();
@@ -9852,6 +9876,7 @@ mod tests {
             observed: None,
             agent_model: None,
             status_note: None,
+            subagents_working: false,
             opened_by_gate: false,
             did_work: false,
             agent_usage: None,
