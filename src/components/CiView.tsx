@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { useRelative } from "./GitHistoryView";
+import { ForgeLoading } from "./ForgeLoading";
 import { ciFailurePrompt, errorTarget, isErrorLine } from "../lib/ci";
 import { openExternalUrl, writeClipboardText } from "../lib/clipboard";
 import { requestConfirm } from "../lib/confirm";
@@ -109,6 +110,9 @@ export function CiView({
   // rodando → concluído) e depois do rerun; só a troca de run limpa a tela.
   const runKey = run ? `${run.id}:${run.status}:${run.conclusion ?? ""}` : null;
   const [jobsTick, setJobsTick] = useState(0);
+  const [runsAt, setRunsAt] = useState(() => Date.now());
+  const [jobsAt, setJobsAt] = useState(() => Date.now());
+  const [logAt, setLogAt] = useState(() => Date.now());
   const jobsRunId = useRef<number | null>(null);
   useEffect(() => {
     const changedRun = jobsRunId.current !== (run?.id ?? null);
@@ -116,6 +120,7 @@ export function CiView({
     if (changedRun) {
       setJobs(null);
       setJobId(null);
+      setJobsAt(Date.now());
     }
     if (!run) return;
     let alive = true;
@@ -144,6 +149,7 @@ export function CiView({
     if (changedJob) {
       setLog(null);
       setLogError(null);
+      setLogAt(Date.now());
     }
     if (!job) return;
     let alive = true;
@@ -217,8 +223,23 @@ export function CiView({
         </span>
       </div>
 
-      {error && <p className="p-6 text-[12px] text-tyba-red">{error}</p>}
-      {runs === undefined && !error && <p className="p-6 text-[12px] text-tyba-text-faint">{t("ciLoading")}</p>}
+      {/* Falha de refresh com runs na tela fica no aviso; a primeira carga
+          falha dentro do carregamento, com "Tentar de novo". */}
+      {error && runs !== undefined && <p className="p-6 text-[12px] text-tyba-red">{error}</p>}
+      {runs === undefined && (
+        <ForgeLoading
+          step={t("loadForgeRuns")}
+          startedAt={runsAt}
+          error={error}
+          onRetry={() => {
+            setError(null);
+            setRunsAt(Date.now());
+            load(true);
+          }}
+          rows={4}
+          className="min-h-0 flex-1"
+        />
+      )}
       {runs === null && <p className="p-6 text-[12px] text-tyba-text-faint">{t("ciUnsupported")}</p>}
       {runs && shown.length === 0 && <p className="p-6 text-[12px] text-tyba-text-faint">{t("ciEmpty")}</p>}
 
@@ -257,7 +278,14 @@ export function CiView({
 
           <div className="flex w-[260px] shrink-0 flex-col gap-1 overflow-y-auto tyba-divide-r p-3">
             <span className="tyba-label px-1.5 pb-1.5">{t("ciJobs")}</span>
-            {jobs === null && <span className="px-1.5 text-[12px] text-tyba-text-faint">{t("ciLoading")}</span>}
+            {jobs === null && (
+              <ForgeLoading
+                step={t("loadForgeJobs")}
+                startedAt={jobsAt}
+                rows={3}
+                className="-mx-1.5"
+              />
+            )}
             {jobs?.map((j) => {
               const tone = jobTone(j);
               return (
@@ -317,7 +345,16 @@ export function CiView({
             </div>
             <div ref={logRef} className="min-h-0 flex-1 overflow-auto py-2 font-mono text-[12px] leading-5">
               {logError && <p className="px-4 text-tyba-red">{logError}</p>}
-              {!log && !logError && job && <p className="px-4 text-tyba-text-faint">{t("ciLoading")}</p>}
+              {!log && !logError && job && (
+                <ForgeLoading
+                  step={t("loadForgeLog", { job: job.name })}
+                  em={[job.name]}
+                  startedAt={logAt}
+                  shape="lines"
+                  rows={10}
+                  className="-my-2"
+                />
+              )}
               {log?.truncated && <p className="px-4 pb-1 text-[11px] text-tyba-text-faint">{t("ciLogTruncated")}</p>}
               {lines.map((line, i) => (
                 <div

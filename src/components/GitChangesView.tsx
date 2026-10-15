@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { Minus, Plus, Sparkle } from "@phosphor-icons/react";
 
 import { Button } from "@/components/ui/button";
+import { GitLoading, useDiffStep } from "./GitLoading";
 import { requestConfirm } from "../lib/confirm";
 import { openEditorTab } from "../lib/contentTabs";
 import { numberHunk } from "../lib/diff";
@@ -81,6 +82,8 @@ export function GitChangesView({
   const { t } = useTranslation();
   const [diff, setDiff] = useState<SessionDiff | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadAt] = useState(() => Date.now());
+  const diffStep = useDiffStep(session);
   const [pick, setPick] = useState<Pick | null>(null);
   const [hunks, setHunks] = useState<FileHunks | null>(null);
   const [chosen, setChosen] = useState<Set<string>>(() => new Set());
@@ -315,6 +318,9 @@ export function GitChangesView({
       <div className="flex w-[360px] shrink-0 flex-col tyba-divide-r">
         <div className="min-h-0 flex-1 overflow-y-auto p-2">
           {loadError && !diff && <p className="p-3 text-[12px] text-tyba-text-faint">{t("gitPanelNoRepo")}</p>}
+          {!loadError && !diff && (
+            <GitLoading {...diffStep} startedAt={loadAt} shape="list" rows={5} className="-m-2" />
+          )}
           {/* A atualização falhou mas a lista anterior segue na tela: avisa. */}
           {loadError && diff && (
             <p role="status" className="px-2 pb-1 text-[11px] text-tyba-amber" title={loadError}>
@@ -521,7 +527,7 @@ export function GitChangesView({
           </>
         ) : (
           <div className="flex flex-1 items-center justify-center text-[12px] text-tyba-text-faint">
-            {diff ? t("gitPanelClean") : t("diffLoading")}
+            {diff && t("gitPanelClean")}
           </div>
         )}
       </div>
