@@ -58,3 +58,19 @@
 .files-markdown.tyba-md-compact p,
 .files-markdown.tyba-md-compact ul,
 .files-markdown.tyba-md-compact ol { margin: 4px 0; }
+
+/* Carregamento (feature carregamento): o filamento corre só enquanto há
+   trabalho real. Com "reduzir movimento", parado. */
+@keyframes tyba-load-flow {
+  from { background-position: 200% 0; }
+  to { background-position: -200% 0; }
+}
+.tyba-load-filament {
+  height: 2px;
+  background: var(--tyba-filament);
+  background-size: 200% 100%;
+  animation: tyba-load-flow 1.6s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .tyba-load-filament { animation: none; }
+}

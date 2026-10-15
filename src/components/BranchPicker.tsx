@@ -21,6 +21,7 @@ import {
   type SessionId,
 } from "../lib/ipc";
 import { translateError } from "../lib/errors";
+import { GitLoading } from "./GitLoading";
 
 interface Props {
   sessionId: SessionId;
@@ -61,6 +62,7 @@ export function BranchPicker({
   const [list, setList] = useState<BranchList | null>(null);
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(false);
+  const [loadAt, setLoadAt] = useState(() => Date.now());
   const [fetching, setFetching] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [armedCheckout, setArmedCheckout] = useState<string | null>(null);
@@ -69,6 +71,7 @@ export function BranchPicker({
 
   const load = useCallback(() => {
     setLoading(true);
+    setLoadAt(Date.now());
     setError(null);
     sessionBranches(sessionId)
       .then(setList)
@@ -192,9 +195,7 @@ export function BranchPicker({
         )}
         <div className="max-h-72 overflow-y-auto">
           {loading && (
-            <div className="px-2 py-4 text-center text-[11px] text-tyba-text-faint">
-              {t("diffLoading")}
-            </div>
+            <GitLoading step={t("loadBranches")} startedAt={loadAt} shape="list" rows={4} />
           )}
           {!loading && error && (
             <div className="px-2 py-4 text-center text-[11px] text-tyba-red">

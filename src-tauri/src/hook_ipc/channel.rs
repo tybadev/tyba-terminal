@@ -25,9 +25,13 @@ const SOCKET_FILE: &str = "channel.sock";
 /// entre threads de teste).
 pub fn channel_socket_path(xdg_runtime_dir: Option<&Path>, uid: &str) -> PathBuf {
     match xdg_runtime_dir {
-        Some(dir) if !dir.as_os_str().is_empty() => dir.join("tyba").join(SOCKET_FILE),
+        // `tyba` ou `tyba-dev` (ver [`crate::profile`]): o app instalado e o
+        // build de dev têm canais separados, e o `_jail` de cada um acha o seu.
+        Some(dir) if !dir.as_os_str().is_empty() => {
+            dir.join(crate::profile::CHANNEL_TAG).join(SOCKET_FILE)
+        }
         _ => std::env::temp_dir()
-            .join(format!("tyba-channel-{uid}"))
+            .join(format!("{}-channel-{uid}", crate::profile::CHANNEL_TAG))
             .join(SOCKET_FILE),
     }
 }

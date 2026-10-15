@@ -1,7 +1,8 @@
 /*
- * Splash do arranque (`splash.html`). Segue a aparência do SISTEMA, não o tema
- * escolhido no app: o tema mora no core e ler isso aqui custaria IPC antes do
- * primeiro quadro. Só o subset latin das fontes — o splash não tem outro texto.
+ * Splash do arranque (`splash.html`). Segue o tema salvo no core: o
+ * public/splash-boot.js marca `data-boot-base` (o modo escolhido) e, para
+ * esquema não-TYBA, põe as cores no :root. Sem esse dado, a aparência do
+ * sistema. Só o subset latin das fontes — o splash não tem outro texto.
  */
 @import "@fontsource/space-grotesk/latin-700.css";
 @import "@fontsource/jetbrains-mono/latin-400.css";
@@ -10,21 +11,29 @@
 :root {
   --bg: #050505;
   --fg: #ffffff;
-  --muted: rgba(255, 255, 255, 0.45);
-  --track: rgba(255, 255, 255, 0.06);
+  --muted: color-mix(in srgb, var(--fg) 45%, transparent);
+  --track: color-mix(in srgb, var(--fg) 6%, transparent);
   --green: #7cc544;
   --cyan: #2dd4bf;
   --violet: #8b5cf6;
   --aurora-alpha: 6%;
 }
 
-/* Aurora */
+/* Aurora: pelo modo salvo; sem ele, pela aparência do sistema. */
+:root[data-boot-base="light"] {
+  --bg: #fafbff;
+  --fg: #0a0a0f;
+  --muted: color-mix(in srgb, var(--fg) 50%, transparent);
+  --green: #3d8a17;
+  --cyan: #0c7c6f;
+  --violet: #7a4ce8;
+  --aurora-alpha: 11%;
+}
 @media (prefers-color-scheme: light) {
-  :root {
+  :root:not([data-boot-base]) {
     --bg: #fafbff;
     --fg: #0a0a0f;
-    --muted: rgba(10, 10, 15, 0.5);
-    --track: rgba(10, 10, 15, 0.06);
+    --muted: color-mix(in srgb, var(--fg) 50%, transparent);
     --green: #3d8a17;
     --cyan: #0c7c6f;
     --violet: #7a4ce8;
@@ -70,6 +79,21 @@ body {
   letter-spacing: 0.18em;
   /* o tracking empurra o texto para a esquerda; compensa a última letra */
   padding-left: 0.18em;
+}
+
+/* Build de desenvolvimento (`bun run tauri dev`): o splash diz que não é o app
+   instalado. O core liga o atributo, ver public/splash-boot.js. */
+:root[data-dev] .wordmark::after {
+  content: "dev";
+  display: inline-block;
+  margin-left: 10px;
+  padding: 2px 6px;
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  font: 600 10px/1 "JetBrains Mono", ui-monospace, monospace;
+  letter-spacing: 0.08em;
+  vertical-align: middle;
+  color: var(--violet);
 }
 
 .filament {

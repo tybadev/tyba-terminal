@@ -3,6 +3,7 @@ pub mod approvals;
 pub mod blocks;
 pub mod boot;
 pub mod completion;
+pub mod config;
 pub mod docker;
 pub mod editor;
 pub mod error;
@@ -15,11 +16,13 @@ pub mod layout;
 pub mod lsp;
 pub mod menu;
 pub mod notifications;
+pub mod profile;
 pub mod pty;
 pub mod repo;
 pub mod repo_config;
 pub mod rich_input;
 pub mod sandbox;
+pub mod services;
 pub mod session;
 pub mod shell_path;
 pub mod snippet;
@@ -52,6 +55,8 @@ struct AppState {
     sessions: SharedSessionManager,
     approvals: SharedApprovals,
     themes: theme::SharedThemes,
+    /// `~/.tyba/config.toml`: tema, fonte e atalhos. Ver [`config`].
+    config: config::SharedConfig,
     layout: layout::SharedLayout,
     docker: docker::SharedDocker,
     docker_logs: Arc<docker::logs::LogsManager>,
@@ -77,6 +82,8 @@ struct AppState {
     connect_gate: crate::ssh::connect_gate::SharedConnectGate,
     /// Fecha em `false` e abre quando a thread de boot termina. Ver [`boot`].
     boot: Arc<boot::BootGate>,
+    /// Serviços e portas: TERMs pendentes e o chip de portas por sessão.
+    services: services::SharedServices,
 }
 
 /// Resposta que separa "carregou e está vazio" de "ainda não carregou".
@@ -1629,6 +1636,55 @@ fn list_session_tunnels(
     Ok(tunnels)
 }
 
+/// Abre um túnel na sessão SSH: o caminho de "Novo túnel" e de "Trazer para
+/// cá" da tela de Serviços.
+fn open_tunnel_now(
+    state: &AppState,
+    session_id: SessionId,
+    tunnel: crate::ssh::tunnel::Tunnel,
+    confirmed: bool,
+) -> Result<crate::ssh::tunnel::SessionTunnel, crate::error::AppError> {
+    tunnel.validate()?;
+    if tunnel.kind.needs_confirmation() && !confirmed {
+        return Err(crate::error::AppError::new("ssh.tunnel_needs_confirmation")
+            .with("kind", tunnel.kind.flag())
+            .with("port", tunnel.listen_port.to_string()));
+    }
+    let alias = ssh_target(state, session_id)
+        .map(|(_, alias, _)| alias)
+        .ok_or_else(|| crate::error::AppError::new("ssh.session_not_found"))?;
+
+    let master = crate::ssh::tunnel::control_master_available();
+    if master {
+        crate::ssh::tunnel::open_on_master(&alias, &tunnel)?;
+    } else if !crate::ssh::tunnel::local_port_free(&tunnel) {
+        return Err(crate::error::AppError::new("ssh.tunnel_open_failed")
+            .with("port", tunnel.listen_port.to_string())
+            .with("detail", "a porta local já está em uso"));
+    }
+
+    let entry = crate::ssh::tunnel::SessionTunnel {
+        id: uuid::Uuid::new_v4().to_string(),
+        session_id,
+        tunnel,
+        state: if master {
+            crate::ssh::tunnel::TunnelState::Live
+        } else {
+            crate::ssh::tunnel::TunnelState::Opening
+        },
+        created_at: chrono::Utc::now(),
+    };
+    state.store.add_session_tunnel(&entry).map_err(store_err)?;
+    state.tunnel_states.set(&entry.id, entry.state.clone());
+
+    // Sem master o túnel só entra num Cano novo. `terminate` e não `kill`: o
+    // handle fica, e o Cano religado herda o pane.
+    if !master {
+        let _ = state.pty_pool.terminate(session_id);
+    }
+    Ok(entry)
+}
+
 #[tauri::command]
 async fn open_session_tunnel(
     app: AppHandle,
@@ -1637,45 +1693,7 @@ async fn open_session_tunnel(
     confirmed: bool,
 ) -> Result<crate::ssh::tunnel::SessionTunnel, crate::error::AppError> {
     off_main(app, move |_app, state| {
-        tunnel.validate()?;
-        if tunnel.kind.needs_confirmation() && !confirmed {
-            return Err(crate::error::AppError::new("ssh.tunnel_needs_confirmation")
-                .with("kind", tunnel.kind.flag())
-                .with("port", tunnel.listen_port.to_string()));
-        }
-        let alias = ssh_target(&state, session_id)
-            .map(|(_, alias, _)| alias)
-            .ok_or_else(|| crate::error::AppError::new("ssh.session_not_found"))?;
-
-        let master = crate::ssh::tunnel::control_master_available();
-        if master {
-            crate::ssh::tunnel::open_on_master(&alias, &tunnel)?;
-        } else if !crate::ssh::tunnel::local_port_free(&tunnel) {
-            return Err(crate::error::AppError::new("ssh.tunnel_open_failed")
-                .with("port", tunnel.listen_port.to_string())
-                .with("detail", "a porta local já está em uso"));
-        }
-
-        let entry = crate::ssh::tunnel::SessionTunnel {
-            id: uuid::Uuid::new_v4().to_string(),
-            session_id,
-            tunnel,
-            state: if master {
-                crate::ssh::tunnel::TunnelState::Live
-            } else {
-                crate::ssh::tunnel::TunnelState::Opening
-            },
-            created_at: chrono::Utc::now(),
-        };
-        state.store.add_session_tunnel(&entry).map_err(store_err)?;
-        state.tunnel_states.set(&entry.id, entry.state.clone());
-
-        // Sem master o túnel só entra num Cano novo. `terminate` e não `kill`: o
-        // handle fica, e o Cano religado herda o pane.
-        if !master {
-            let _ = state.pty_pool.terminate(session_id);
-        }
-        Ok(entry)
+        open_tunnel_now(&state, session_id, tunnel, confirmed)
     })
     .await
     .map_err(|e| crate::error::AppError::new("ssh.tunnel_control_failed").with("detail", e))?
@@ -2124,12 +2142,44 @@ fn open_tunnels_panel(
     if !matches!(session.kind, SessionKind::Ssh { .. }) {
         return Err(crate::error::AppError::new("ssh.not_an_ssh_session"));
     }
-    let previous = session_side_view(&state, id);
-    state
+    // Os túneis moram na seção Túneis da tela de Serviços.
+    open_services_screen(&state, id, Some(layout::screens::ServicesSection::Tunnels))
+        .map_err(|e| crate::error::AppError::new("layout.failed").with("detail", e))?;
+    emit_layout(&app, &state);
+    Ok(())
+}
+
+fn open_services_screen(
+    state: &AppState,
+    id: SessionId,
+    section: Option<layout::screens::ServicesSection>,
+) -> Result<(), String> {
+    let previous = session_side_view(state, id);
+    let ws = state
         .layout
-        .open_workspace_side_view(id, &layout::tunnels_view(id))
-        .map_err(|e| crate::error::AppError::new("layout.failed").with("detail", e.to_string()))?;
-    close_orphaned_files_panel(&state, previous, None);
+        .open_workspace_side_view(id, &layout::services_view(id))
+        .map_err(|e| e.to_string())?;
+    if let Some(section) = section {
+        state
+            .layout
+            .with_screens(ws, |s| s.services.section = section)
+            .map_err(|e| e.to_string())?;
+    }
+    close_orphaned_files_panel(state, previous, None);
+    Ok(())
+}
+
+/// Tela de Serviços e portas da sessão (o `side_view` `services:<sessão>`).
+#[tauri::command]
+fn open_services_panel(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: SessionId,
+) -> Result<(), String> {
+    if state.sessions.get(id).is_none() {
+        return Err(format!("sessão não encontrada: {id}"));
+    }
+    open_services_screen(&state, id, None)?;
     emit_layout(&app, &state);
     Ok(())
 }
@@ -4382,7 +4432,14 @@ async fn boot_snapshot(state: State<'_, AppState>) -> Result<BootSnapshot, Strin
         // depois de a mensagem estar gravada (ver `BootGate::mark_failed`), então
         // ler o `ready` primeiro nunca devolve `true` com falha em branco.
         boot_failure: state.boot.failure(),
-        prefs: state.store.prefs().map_err(|e| e.to_string())?,
+        prefs: {
+            // As chaves do arquivo vêm do arquivo; o SQLite ainda pode ter a
+            // cópia de antes da migração, e ela não vale mais.
+            let mut prefs = state.store.prefs().map_err(|e| e.to_string())?;
+            prefs.retain(|k, _| !config::is_file_key(k));
+            prefs.extend(state.config.prefs());
+            prefs
+        },
         sessions: state.sessions.list(),
         layout: state.layout.state(),
     })
@@ -5092,7 +5149,7 @@ fn set_workspace_group(
 fn new_window(app: AppHandle) -> Result<(), String> {
     let label = format!("tyba-{}", uuid::Uuid::new_v4().simple());
     let builder = tauri::WebviewWindowBuilder::new(&app, label, tauri::WebviewUrl::default())
-        .title("Tyba")
+        .title(profile::product_name(app.config()))
         .inner_size(1100.0, 720.0);
     #[cfg(target_os = "macos")]
     let builder = builder
@@ -5122,18 +5179,100 @@ async fn get_pref(state: State<'_, AppState>, key: String) -> Result<Option<Stri
     if !key.starts_with("pref.") {
         return Err("chave de preferência inválida".into());
     }
+    if config::is_file_key(&key) {
+        return Ok(state.config.get(&key));
+    }
     state.store.get_setting(&key).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-async fn set_pref(state: State<'_, AppState>, key: String, value: String) -> Result<(), String> {
+async fn set_pref(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    key: String,
+    value: String,
+) -> Result<(), String> {
     if !key.starts_with("pref.") {
         return Err("chave de preferência inválida".into());
+    }
+    if config::is_file_key(&key) {
+        return match state.config.set(&key, &value) {
+            Ok(changes) => {
+                emit_config_changes(&app, &state.config, &state.themes, changes);
+                Ok(())
+            }
+            Err(e) => {
+                // O front engole o erro do `set_pref` (`.catch(() => {})`):
+                // sem o aviso, a mudança sumiria em silêncio.
+                let _ = app.emit(config::EVENT_WARNINGS, vec![e.clone()]);
+                Err(e)
+            }
+        };
     }
     state
         .store
         .set_setting(&key, &value)
         .map_err(|e| e.to_string())
+}
+
+/// Avisos do `~/.tyba/config.toml` vigentes agora. Segunda via do
+/// `config://warnings`, que no arranque sai antes de o front ouvir.
+#[tauri::command]
+fn config_warnings(state: State<'_, AppState>) -> Vec<String> {
+    let mut warnings = state.config.warnings();
+    warnings.extend(state.themes.slot_warnings());
+    warnings.extend(state.themes.rename_warnings());
+    warnings
+}
+
+/// Publica o que um reload ou uma gravação do `config.toml` mudou: o tema pelo
+/// evento de sempre, as prefs e os avisos pelos do [`config`].
+fn emit_config_changes(
+    app: &AppHandle,
+    config: &config::SharedConfig,
+    themes: &theme::SharedThemes,
+    changes: config::Changes,
+) {
+    if changes.theme {
+        themes.emit(app);
+    }
+    if changes.prefs {
+        let _ = app.emit(config::EVENT_PREFS, config.prefs());
+    }
+    if changes.app_icon {
+        let _ = app.emit(config::EVENT_APP_ICON, config.app_icon());
+    }
+    if let Some(warnings) = changes.warnings {
+        let _ = app.emit(config::EVENT_WARNINGS, warnings);
+    }
+    if changes.theme {
+        let slots = themes.slot_warnings();
+        if !slots.is_empty() {
+            let _ = app.emit(config::EVENT_WARNINGS, slots);
+        }
+    }
+}
+
+/// Fim de `set_theme_mode`/`set_theme_slot`: o tema já foi emitido pelo
+/// [`theme::ThemeManager`]; aqui sai o resto do que a gravação mudou, e a falha
+/// vira aviso — o front engole o erro do comando.
+fn finish_theme_set(
+    app: &AppHandle,
+    state: &AppState,
+    result: Result<config::Changes, theme::ThemeError>,
+) -> Result<(), String> {
+    match result {
+        Ok(mut changes) => {
+            changes.theme = false;
+            emit_config_changes(app, &state.config, &state.themes, changes);
+            Ok(())
+        }
+        Err(e) => {
+            let e = e.to_string();
+            let _ = app.emit(config::EVENT_WARNINGS, vec![e.clone()]);
+            Err(e)
+        }
+    }
 }
 
 /// Review r1 (v0.6.2), MAJOR: o front chama isto quando o toast de
@@ -5752,6 +5891,251 @@ async fn files_grep(
     })
     .await
     .map_err(|e| crate::error::AppError::new("files.grep_failed").with("detail", e))?
+}
+
+/// Shells locais vivos (shell e agente) com o pid do líder: é a âncora da
+/// origem "sessão do TYBA".
+fn services_ctx(state: &AppState) -> services::Ctx {
+    let shells = state
+        .sessions
+        .list()
+        .into_iter()
+        .filter(|s| matches!(s.kind, SessionKind::Shell | SessionKind::Agent { .. }))
+        .filter_map(|s| state.pty_pool.leader_pid(s.id).map(|pid| (s.id, pid)))
+        .collect();
+    services::Ctx::current(shells)
+}
+
+fn emit_session_ports(
+    app: &AppHandle,
+    state: &AppState,
+    scan: &services::Scan,
+    ctx: &services::Ctx,
+) {
+    if state.services.set_chip(services::session_ports(scan, ctx)) {
+        let _ = app.emit(services::EVENT_SESSION_PORTS, state.services.chip());
+    }
+}
+
+/// O poll lento do chip da sidebar. Sem shell aberto, nem varre.
+fn poll_session_ports(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    let ctx = services_ctx(&state);
+    if ctx.shells.is_empty() {
+        if state.services.set_chip(Default::default()) {
+            let _ = app.emit(services::EVENT_SESSION_PORTS, state.services.chip());
+        }
+        return;
+    }
+    if let Ok(scan) = services::scan_local(false) {
+        emit_session_ports(app, &state, &scan, &ctx);
+    }
+}
+
+#[derive(serde::Serialize)]
+#[serde(tag = "target", rename_all = "snake_case")]
+enum ServicesList {
+    Local {
+        ports: Vec<services::PortEntry>,
+    },
+    Remote {
+        alias: String,
+        ports: Vec<services::remote::RemotePort>,
+    },
+}
+
+/// O que escuta na máquina da sessão: a local, ou o servidor numa sessão SSH
+/// (só leitura). Chamado a cada ~3 s com a tela aberta.
+#[tauri::command]
+async fn services_list(app: AppHandle, id: SessionId) -> Result<ServicesList, AppError> {
+    off_main(app, move |app, state| {
+        if let Some((host_id, alias, _)) = ssh_target(&state, id) {
+            let out = state
+                .host_queries
+                .get(&host_id, &alias)
+                .exec_script(&services::remote::script())?;
+            if out.code == 127 {
+                return Err(AppError::new("services.remote_no_ss"));
+            }
+            if out.code == 3 {
+                return Err(AppError::new("services.remote_ss_failed"));
+            }
+            return Ok(ServicesList::Remote {
+                alias,
+                ports: services::remote::parse_ss(&out.stdout),
+            });
+        }
+        let ctx = services_ctx(&state);
+        let scan = services::scan_local(true)?;
+        emit_session_ports(app, &state, &scan, &ctx);
+        Ok(ServicesList::Local {
+            ports: services::build_ports(&scan, &ctx),
+        })
+    })
+    .await
+    .map_err(|e| AppError::new("services.scan_failed").with("detail", e))?
+}
+
+/// Árvore do processo e quem vai junto no encerrar.
+#[tauri::command]
+async fn services_detail(app: AppHandle, pid: u32) -> Result<services::Detail, AppError> {
+    off_main(app, move |_app, state| {
+        let ctx = services_ctx(&state);
+        let scan = services::scan_processes()?;
+        Ok(services::build_detail(&scan, &ctx, pid))
+    })
+    .await
+    .map_err(|e| AppError::new("services.scan_failed").with("detail", e))?
+}
+
+/// Seção Processos: a árvore de cada sessão.
+#[tauri::command]
+async fn services_processes(app: AppHandle) -> Result<Vec<services::SessionProcs>, AppError> {
+    off_main(app, move |_app, state| {
+        let ctx = services_ctx(&state);
+        let scan = services::scan_processes()?;
+        Ok(services::build_processes(&scan, &ctx))
+    })
+    .await
+    .map_err(|e| AppError::new("services.scan_failed").with("detail", e))?
+}
+
+/// SIGTERM no grupo do processo. `start_ms` é a identidade vista na lista: o
+/// core confere de novo antes do sinal. A UI sempre confirmou antes; `group`
+/// é o grupo que a confirmação mostrou (`None` = só o processo).
+#[tauri::command]
+async fn services_kill(
+    app: AppHandle,
+    pid: u32,
+    start_ms: u64,
+    group: Option<u32>,
+) -> Result<services::KillOutcome, AppError> {
+    off_main(app, move |_app, state| {
+        let ctx = services_ctx(&state);
+        state.services.terminate(&ctx, pid, start_ms, group)
+    })
+    .await
+    .map_err(|e| AppError::new("services.kill_failed").with("detail", e))?
+}
+
+/// SIGKILL: segundo comando explícito, só ≥ 5 s depois do TERM.
+#[tauri::command]
+async fn services_force_kill(
+    app: AppHandle,
+    pid: u32,
+    start_ms: u64,
+    group: Option<u32>,
+) -> Result<services::KillOutcome, AppError> {
+    off_main(app, move |_app, state| {
+        let ctx = services_ctx(&state);
+        state.services.force(&ctx, pid, start_ms, group)
+    })
+    .await
+    .map_err(|e| AppError::new("services.kill_failed").with("detail", e))?
+}
+
+/// As portas de cada sessão (o chip da sidebar), do último retrato.
+#[tauri::command]
+fn services_session_ports(
+    state: State<'_, AppState>,
+) -> std::collections::HashMap<SessionId, Vec<u16>> {
+    state.services.chip()
+}
+
+/// "Trazer para cá": túnel local para uma porta do servidor da sessão SSH,
+/// na mesma porta se estiver livre.
+#[tauri::command]
+async fn services_bring_here(
+    app: AppHandle,
+    session_id: SessionId,
+    port: u16,
+) -> Result<crate::ssh::tunnel::SessionTunnel, AppError> {
+    off_main(app, move |_app, state| {
+        if port == 0 {
+            return Err(AppError::new("ssh.tunnel_port_invalid"));
+        }
+        let probe = |p: u16| crate::ssh::tunnel::Tunnel {
+            kind: crate::ssh::tunnel::TunnelKind::Local,
+            listen_port: p,
+            listen_host: None,
+            target_host: Some("localhost".into()),
+            target_port: Some(port),
+        };
+        // O bind de teste não basta: com SO_REUSEADDR, 127.0.0.1:P liga por
+        // cima de quem escuta em *:P. Porta que o lsof vê é ocupada.
+        let busy: std::collections::HashSet<u16> = services::listen::listeners()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|l| l.port)
+            .collect();
+        let local = services::remote::pick_local_port(port, |p| {
+            services::remote::free_locally(p, &busy, |p| {
+                crate::ssh::tunnel::local_port_free(&probe(p))
+            })
+        })
+        .ok_or_else(|| {
+            AppError::new("ssh.tunnel_open_failed")
+                .with("port", port.to_string())
+                .with("detail", "nenhuma porta local livre perto dessa")
+        })?;
+        open_tunnel_now(&state, session_id, probe(local), false)
+    })
+    .await
+    .map_err(|e| AppError::new("ssh.tunnel_control_failed").with("detail", e))?
+}
+
+/// Seção do trilho da tela de Serviços.
+#[tauri::command]
+fn services_screen_section(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    workspace: layout::WorkspaceId,
+    section: layout::screens::ServicesSection,
+) -> Result<(), String> {
+    state
+        .layout
+        .with_screens(workspace, |s| s.services.section = section)
+        .map_err(|e| e.to_string())?;
+    emit_layout(&app, &state);
+    Ok(())
+}
+
+/// "Só das minhas sessões".
+#[tauri::command]
+fn services_screen_only_mine(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    workspace: layout::WorkspaceId,
+    only_mine: bool,
+) -> Result<(), String> {
+    state
+        .layout
+        .with_screens(workspace, |s| s.services.only_mine = only_mine)
+        .map_err(|e| e.to_string())?;
+    emit_layout(&app, &state);
+    Ok(())
+}
+
+/// Porta escolhida (o detalhe).
+#[tauri::command]
+fn services_screen_select(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    workspace: layout::WorkspaceId,
+    port: Option<u16>,
+    pid: Option<u32>,
+) -> Result<(), String> {
+    let selected = match (port, pid) {
+        (Some(port), Some(pid)) => Some(layout::screens::SelectedPort { port, pid }),
+        (None, None) => None,
+        _ => return Err("porta e pid vêm juntos".into()),
+    };
+    state
+        .layout
+        .with_screens(workspace, |s| s.services.selected = selected)
+        .map_err(|e| e.to_string())?;
+    emit_layout(&app, &state);
+    Ok(())
 }
 
 /// Seção do trilho da tela de Docker.
@@ -7168,6 +7552,14 @@ fn session_prompt_mode(state: State<'_, AppState>, id: SessionId) -> bool {
 /// e acaba prometendo uma linha de comando que nunca chega.
 ///
 /// `false` também para sessão inexistente ou já morta: sem PTY não há hook.
+/// O shell que está subindo (qual, e o rc que lê): a etapa real da linha do
+/// TYBA enquanto o primeiro prompt não chega. `None` em sessão remota, de
+/// agente ou já morta.
+#[tauri::command]
+fn session_shell_boot(state: State<'_, AppState>, id: SessionId) -> Option<pty::ShellBoot> {
+    state.pty_pool.shell_boot(id)
+}
+
 #[tauri::command]
 fn session_hook_expected(state: State<'_, AppState>, id: SessionId) -> bool {
     state.pty_pool.hook_expected(id).unwrap_or(false)
@@ -7997,8 +8389,17 @@ fn render_snippet(
 }
 
 #[tauri::command]
-async fn list_themes(state: State<'_, AppState>) -> Result<Vec<theme::Theme>, String> {
-    Ok(state.themes.list())
+async fn list_themes(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Vec<theme::Theme>, String> {
+    let themes = state.themes.list();
+    // Arquivo posto à mão que a leitura acabou de renomear para o id: avisa.
+    let renamed = state.themes.take_unannounced_renames();
+    if !renamed.is_empty() {
+        let _ = app.emit(config::EVENT_WARNINGS, renamed);
+    }
+    Ok(themes)
 }
 
 #[tauri::command]
@@ -8012,7 +8413,8 @@ fn set_theme_mode(
     state: State<'_, AppState>,
     mode: theme::ThemeMode,
 ) -> Result<(), String> {
-    state.themes.set_mode(&app, mode).map_err(|e| e.to_string())
+    let result = state.themes.set_mode(&app, mode);
+    finish_theme_set(&app, &state, result)
 }
 
 #[tauri::command]
@@ -8022,10 +8424,8 @@ fn set_theme_slot(
     base: theme::ThemeBase,
     id: String,
 ) -> Result<(), String> {
-    state
-        .themes
-        .set_slot(&app, base, &id)
-        .map_err(|e| e.to_string())
+    let result = state.themes.set_slot(&app, base, &id);
+    finish_theme_set(&app, &state, result)
 }
 
 #[tauri::command]
@@ -8369,7 +8769,18 @@ pub fn run() {
         })
         .setup(|app| {
             let setup_span = boot::Span::start("setup.total");
+            // Antes de abrir qualquer banco: build de dev com o identificador
+            // de release abriria os dados do app instalado.
+            profile::check_identifier(&app.config().identifier)?;
+            // O título da `main` no tauri.conf.json é o de release; o nome
+            // vem do `productName` da config com que o app subiu.
+            if let Some(main) = app.get_webview_window("main") {
+                let _ = main.set_title(&profile::product_name(app.config()));
+            }
             app.manage(splash::SplashLatch::default());
+            // `docker logs -f` órfãos de uma execução que não saiu direito
+            // (crash, kill, reinício do dev): sem isto se acumulavam.
+            std::thread::spawn(docker::logs::reap_orphan_followers);
             splash::arm_ceiling(app.handle().clone());
             let (opened_store, store_degraded) = open_store(app.handle());
             let store = Arc::new(opened_store);
@@ -8407,10 +8818,34 @@ pub fn run() {
                 .path()
                 .app_config_dir()
                 .unwrap_or_else(|_| std::env::temp_dir().join("tyba"));
-            let themes: theme::SharedThemes = Arc::new(theme::ThemeManager::new(
-                Arc::clone(&store),
-                config_dir.join("themes"),
+            // `~/.tyba/` antes do splash: o tema que ele pinta vem do arquivo.
+            // A primeira abertura gera o arquivo a partir do SQLite e traz os
+            // temas importados da pasta antiga.
+            let user_config: config::SharedConfig = Arc::new(config::ConfigManager::open(
+                config::root_dir(ssh::home_dir().as_deref())
+                    .unwrap_or_else(|| config_dir.join("user")),
+                &store,
             ));
+            // Raiz recusada: nada se grava nela, e não há o que vigiar.
+            if user_config.usable() {
+                config::migrate_themes(&config_dir.join("themes"), &user_config.themes_dir());
+            }
+            let themes: theme::SharedThemes = Arc::new(theme::ThemeManager::new(
+                Arc::clone(&user_config),
+                user_config.themes_dir(),
+            ));
+            // O splash nasce aqui, e não no `tauri.conf.json`: precisa do tema
+            // salvo, que só existe depois de o banco abrir.
+            splash::open(app.handle(), &theme::splash_boot_json(&themes.state()));
+            if user_config.usable() {
+                let app = app.handle().clone();
+                let cfg = Arc::clone(&user_config);
+                let themes = Arc::clone(&themes);
+                config::watch::spawn(user_config.watch_files(), move || {
+                    let changes = cfg.load();
+                    emit_config_changes(&app, &cfg, &themes, changes);
+                });
+            }
 
             let agent_prober: agent::process_probe::SharedAgentProber =
                 Arc::new(agent::process_probe::AgentProber::default());
@@ -8437,7 +8872,7 @@ pub fn run() {
             lsp::spawn_reaper(Arc::clone(&lsp));
 
             let managed_data_dir = lsp::resolve_data_dir()
-                .unwrap_or_else(|| std::env::temp_dir().join("dev.tyba.app"));
+                .unwrap_or_else(|| std::env::temp_dir().join(profile::IDENTIFIER));
             let managed_lsp: lsp::managed::SharedManaged = Arc::new(
                 lsp::managed::ManagedManager::new(Arc::clone(&store), managed_data_dir),
             );
@@ -8449,6 +8884,7 @@ pub fn run() {
                 sessions: Arc::clone(&sessions),
                 approvals: Arc::new(approvals::ApprovalsManager::new()),
                 themes,
+                config: user_config,
                 layout: Arc::clone(&layout),
                 docker: Arc::new(docker::DockerManager::new()),
                 docker_logs: Arc::new(docker::logs::LogsManager::new()),
@@ -8474,6 +8910,7 @@ pub fn run() {
                 host_queries,
                 connect_gate: Arc::default(),
                 boot: Arc::clone(&boot_gate),
+                services: Arc::default(),
             });
 
             // O canal shim↔core (shim v2, passo 2, tech-spec §3/§4): socket por
@@ -8588,6 +9025,15 @@ pub fn run() {
                 })
                 .expect("failed to spawn agent probe thread");
 
+            let ports_handle = app.handle().clone();
+            std::thread::Builder::new()
+                .name("session-ports".into())
+                .spawn(move || loop {
+                    std::thread::sleep(services::CHIP_POLL);
+                    poll_session_ports(&ports_handle);
+                })
+                .expect("failed to spawn session ports thread");
+
             #[cfg(target_os = "macos")]
             if let Some(window) = app.get_webview_window("main") {
                 let hidden = window.clone();
@@ -8620,6 +9066,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             boot_snapshot,
+            config_warnings,
             boot_gate,
             agent_binary_available,
             detected_agent,
@@ -8682,6 +9129,17 @@ pub fn run() {
             open_pr_tab,
             open_diff_tab,
             open_tunnels_panel,
+            open_services_panel,
+            services_list,
+            services_detail,
+            services_processes,
+            services_kill,
+            services_force_kill,
+            services_session_ports,
+            services_bring_here,
+            services_screen_section,
+            services_screen_only_mine,
+            services_screen_select,
             open_git_panel,
             open_docker_panel,
             open_history_panel,
@@ -8802,6 +9260,7 @@ pub fn run() {
             toggle_prompt_mode,
             session_prompt_mode,
             session_hook_expected,
+            session_shell_boot,
             session_line_echo,
             session_blocks,
             search_command_history,

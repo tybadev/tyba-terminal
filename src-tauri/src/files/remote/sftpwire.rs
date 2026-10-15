@@ -628,6 +628,59 @@ impl RemoteFs for SshRemote {
             stderr: out.stderr,
         })
     }
+
+    fn exec_bounded(
+        &self,
+        argv: &[&str],
+        max_bytes: usize,
+        timeout: std::time::Duration,
+    ) -> RemoteResult<ExecOutput> {
+        let cmd_string = argv
+            .iter()
+            .map(|a| sh_quote(a))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let mut child = crate::ssh::command::std_command()
+            .args(SSH_LIVENESS_OPTS)
+            .arg(&self.alias)
+            .arg(&cmd_string)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| RemoteError::Exec(e.to_string()))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| RemoteError::Exec("sem stdout".into()))?;
+        // O teto vale do lado de cá: servidor hostil não enche a memória.
+        let reader = std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = stdout.take(max_bytes as u64).read_to_end(&mut buf);
+            buf
+        });
+        let start = std::time::Instant::now();
+        let code = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break status.code().unwrap_or(-1),
+                Ok(None) if start.elapsed() >= timeout => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(RemoteError::Exec("o servidor não respondeu a tempo".into()));
+                }
+                Ok(None) => std::thread::sleep(std::time::Duration::from_millis(20)),
+                Err(e) => return Err(RemoteError::Exec(e.to_string())),
+            }
+        };
+        let stdout = reader
+            .join()
+            .map_err(|_| RemoteError::Exec("leitor".into()))?;
+        Ok(ExecOutput {
+            code,
+            stdout,
+            stderr: Vec::new(),
+        })
+    }
 }
 
 impl Drop for SshRemote {

@@ -508,6 +508,7 @@ impl SessionManager {
         // chega jamais, e quem precisa saber disso é a interface — senão ela
         // mostra para sempre uma linha dizendo que o shell está carregando.
         let mut hook_expected = bash_rc.is_some();
+        let mut zdotdir_for_rc: Option<String> = None;
 
         if cfg!(unix) {
             if let Some(rc) = bash_rc {
@@ -534,7 +535,8 @@ impl SessionManager {
                     .or_else(|| std::env::var("HOME").ok())
                     .unwrap_or_default();
                 cmd.env("ZDOTDIR", dir);
-                cmd.env("TYBA_USER_ZDOTDIR", user_zdotdir);
+                cmd.env("TYBA_USER_ZDOTDIR", &user_zdotdir);
+                zdotdir_for_rc = Some(user_zdotdir);
             }
         }
 
@@ -568,6 +570,23 @@ impl SessionManager {
         );
         if result.is_ok() {
             pty_pool.set_hook_expected(id, hook_expected);
+            let rc = if hook_expected {
+                crate::pty::ShellBoot::rc_label(
+                    &label,
+                    zdotdir_for_rc.as_deref(),
+                    std::env::var("HOME").ok().as_deref(),
+                )
+            } else {
+                None
+            };
+            pty_pool.set_shell_boot(
+                id,
+                crate::pty::ShellBoot {
+                    shell: label.clone(),
+                    rc,
+                    started_at_ms: crate::approvals::now_ms(),
+                },
+            );
         }
         if result.is_err() {
             if let Some(wt) = &worktree {
@@ -1658,8 +1677,14 @@ fn cached_integration_path(
     }
 }
 
+/// `tyba-…` no app instalado, `tyba-dev-…` no build de dev: os dois rodam ao
+/// mesmo tempo e cada um grava a sua versão dos scripts.
+fn integration_dir_name(name: &str) -> String {
+    format!("{}-{name}-{}", crate::profile::CHANNEL_TAG, current_uid())
+}
+
 fn integration_dir(name: &str) -> std::io::Result<PathBuf> {
-    let dir = std::env::temp_dir().join(format!("tyba-{name}-{}", current_uid()));
+    let dir = std::env::temp_dir().join(integration_dir_name(name));
     create_private_dir(&dir)?;
     verify_private_dir(&dir)?;
     Ok(dir)
@@ -2193,6 +2218,17 @@ mod hook_zsh_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn integration_dir_is_per_profile() {
+        let name = integration_dir_name("zsh");
+        assert_eq!(
+            name,
+            format!("{}-zsh-{}", crate::profile::CHANNEL_TAG, current_uid())
+        );
+        // perfil de release nos testes: o nome de sempre
+        assert!(name.starts_with("tyba-zsh-"), "{name}");
+    }
 
     fn make(kind: SessionKind, status: SessionStatus) -> Session {
         Session {

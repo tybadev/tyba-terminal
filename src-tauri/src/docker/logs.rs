@@ -348,7 +348,12 @@ impl LogsManager {
     where
         S: FnOnce(Option<String>) -> Result<Child, String>,
     {
-        let existing = self.followers.lock().get(id).cloned();
+        // A trava fica do começo ao registro: duas chamadas quase juntas
+        // (clique duplo, dois componentes abrindo os logs) passavam ambas pela
+        // checagem, subiam dois `docker logs -f`, e o segundo registro tomava o
+        // lugar do primeiro — que seguia vivo, emitindo em dobro e sem dono.
+        let mut followers = self.followers.lock();
+        let existing = followers.get(id).cloned();
         if let Some(f) = &existing {
             if f.running.load(Ordering::Acquire) {
                 return Ok(LogsSnapshot {
@@ -436,7 +441,7 @@ impl LogsManager {
         });
 
         let snapshot = follower.buffer.lock().iter().cloned().collect();
-        self.followers.lock().insert(id.to_string(), follower);
+        followers.insert(id.to_string(), follower);
         Ok(LogsSnapshot {
             lines: snapshot,
             following: true,
@@ -485,8 +490,131 @@ fn kill(f: &Follower) {
     }
 }
 
+/// Linha de `ps -o pid=,ppid=,command=` que é um seguidor de logs do TYBA
+/// órfão: pai init/launchd (o TYBA morreu sem a saída normal — crash, `kill`,
+/// reinício do dev) e exatamente a forma de [`super::spawn_logs_follow`]. Um
+/// `docker logs` rodado à mão tem o shell como pai e nunca casa.
+#[cfg_attr(not(unix), allow(dead_code))]
+pub(crate) fn orphan_follower_pid(line: &str) -> Option<i32> {
+    let mut it = line.split_whitespace();
+    let pid: i32 = it.next()?.parse().ok()?;
+    let ppid: i32 = it.next()?.parse().ok()?;
+    if ppid != 1 || pid <= 1 {
+        return None;
+    }
+    let argv: Vec<&str> = it.collect();
+    let bin = *argv.first()?;
+    if bin != "docker" && !bin.ends_with("/docker") {
+        return None;
+    }
+    if argv.len() != 7 || argv[1..4] != ["logs", "-f", "--timestamps"] {
+        return None;
+    }
+    if argv[4] != "--tail" && argv[4] != "--since" {
+        return None;
+    }
+    super::is_valid_container_id(argv[6]).then_some(pid)
+}
+
+/// Encerra os seguidores órfãos de uma execução anterior que não saiu
+/// direito. Só processos do próprio usuário (`ps -x`), só a forma exata.
+#[cfg(unix)]
+pub fn reap_orphan_followers() {
+    let ps = ["/bin/ps", "/usr/bin/ps"]
+        .into_iter()
+        .find(|p| std::path::Path::new(p).exists());
+    let Some(ps) = ps else { return };
+    let Ok(out) = std::process::Command::new(ps)
+        .args(["-x", "-o", "pid=,ppid=,command="])
+        .env_clear()
+        .env("LC_ALL", "C")
+        .output()
+    else {
+        return;
+    };
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        if let Some(pid) = orphan_follower_pid(line) {
+            // SAFETY: sinal para um PID nosso, conferido logo acima.
+            unsafe {
+                libc::kill(pid, libc::SIGTERM);
+            }
+        }
+    }
+}
+
+#[cfg(not(unix))]
+pub fn reap_orphan_followers() {}
+
 #[cfg(test)]
 mod tests {
+    // Print do dono (2026-10-14): o mesmo container com 5 `docker logs -f`.
+    #[cfg(unix)]
+    #[test]
+    fn concurrent_starts_for_the_same_container_spawn_one_follower() {
+        use std::process::{Command, Stdio};
+        use std::sync::atomic::AtomicUsize;
+        let mgr = Arc::new(LogsManager::new());
+        let spawned = Arc::new(AtomicUsize::new(0));
+        let handles: Vec<_> = (0..4)
+            .map(|_| {
+                let mgr = Arc::clone(&mgr);
+                let spawned = Arc::clone(&spawned);
+                std::thread::spawn(move || {
+                    mgr.start(
+                        "same",
+                        PathMapping::default(),
+                        Arc::new(|_| {}),
+                        move |_| {
+                            spawned.fetch_add(1, Ordering::SeqCst);
+                            std::thread::sleep(std::time::Duration::from_millis(30));
+                            Command::new("/bin/sh")
+                                .args(["-c", "sleep 30"])
+                                .stdout(Stdio::piped())
+                                .stderr(Stdio::piped())
+                                .spawn()
+                                .map_err(|e| e.to_string())
+                        },
+                    )
+                    .unwrap();
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap();
+        }
+        assert_eq!(spawned.load(Ordering::SeqCst), 1, "um seguidor só");
+        mgr.stop_all();
+    }
+
+    #[test]
+    fn orphan_follower_matches_only_the_exact_tyba_shape() {
+        let id = "79465035d9daabe7de49069613ca324e2bf9fc42367c3a9ff4e648a55100cdbf";
+        let ok = format!("97271 1 /usr/local/bin/docker logs -f --timestamps --tail 1000 {id}");
+        assert_eq!(orphan_follower_pid(&ok), Some(97271));
+        let since = format!("5 1 docker logs -f --timestamps --since 2026-10-14T04:28:24Z {id}");
+        assert_eq!(orphan_follower_pid(&since), Some(5));
+        // com pai vivo (o TYBA ou um shell): nunca
+        let parented = format!("97271 4126 docker logs -f --timestamps --tail 1000 {id}");
+        assert_eq!(orphan_follower_pid(&parented), None);
+        // rodado à mão com outras flags, ou outro programa
+        assert_eq!(
+            orphan_follower_pid(&format!("8 1 docker logs -f {id}")),
+            None
+        );
+        assert_eq!(
+            orphan_follower_pid(&format!("8 1 podman logs -f --timestamps --tail 1000 {id}")),
+            None
+        );
+        assert_eq!(
+            orphan_follower_pid("8 1 docker logs -f --timestamps --tail 1000 ;rm"),
+            None
+        );
+        assert_eq!(
+            orphan_follower_pid("1 1 docker logs -f --timestamps --tail 1000 abc"),
+            None
+        );
+    }
+
     use super::*;
 
     #[test]

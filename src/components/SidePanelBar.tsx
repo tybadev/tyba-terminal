@@ -1,10 +1,10 @@
 import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import {
-  ArrowsLeftRight,
   ClockCounterClockwise,
   FolderOpen,
   GitDiff,
+  Plug,
   X,
 } from "@phosphor-icons/react";
 
@@ -29,14 +29,14 @@ const AREA: Record<PanelKind, { text: string; bar: string }> = {
   docker: { text: "text-tyba-blue", bar: "bg-tyba-blue" },
   git: { text: "text-tyba-blue", bar: "bg-tyba-blue" },
   files: { text: "text-tyba-cyan", bar: "bg-tyba-cyan" },
-  tunnels: { text: "text-tyba-cyan", bar: "bg-tyba-cyan" },
+  services: { text: "text-tyba-blue", bar: "bg-tyba-blue" },
   agents: { text: "text-tyba-amber", bar: "bg-tyba-amber-fill" },
   diff: { text: "text-tyba-violet", bar: "bg-tyba-violet" },
 };
 
 /**
  * Marca de verdade onde a coisa tem marca (Docker, Git); Phosphor no que é
- * conceito (histórico, arquivos, diff, túneis). A marca guarda o desenho e
+ * conceito (histórico, arquivos, diff, serviços). A marca guarda o desenho e
  * pinta com `currentColor`: neutra apagada, cor da área acesa.
  */
 export function PanelIcon({
@@ -53,8 +53,8 @@ export function PanelIcon({
       return <ClockCounterClockwise size={size} className={className} />;
     case "docker":
       return <DockerIcon size={size} className={className} />;
-    case "tunnels":
-      return <ArrowsLeftRight size={size} className={className} />;
+    case "services":
+      return <Plug size={size} className={className} />;
     case "files":
       return <FolderOpen size={size} className={className} />;
     case "git":

@@ -322,7 +322,21 @@ fn secret_shadow_dirs(spec: &SandboxSpec) -> Vec<PathBuf> {
         home.join(".config/containers"),
         spec.tyba_data_dir.clone(),
         home.join(".tyba"),
+        home.join(".tyba-dev"),
     ];
+    // Os dois perfis: agente do build de dev não lê o banco do app instalado,
+    // e vice-versa.
+    if let Some(parent) = spec.tyba_data_dir.parent() {
+        for id in [
+            crate::profile::RELEASE_IDENTIFIER,
+            crate::profile::DEV_IDENTIFIER,
+        ] {
+            let dir = parent.join(id);
+            if !dirs.contains(&dir) {
+                dirs.push(dir);
+            }
+        }
+    }
     dirs.dedup();
     dirs
 }
@@ -347,6 +361,13 @@ fn worktree_mounts(args: &mut Args, spec: &SandboxSpec) {
     let dot_tyba = spec.writable_root.join(".tyba");
     if dot_tyba.exists() {
         args.ro_bind(&dot_tyba);
+    }
+    // `config.toml` de dotfiles com o alvo dentro do worktree (sessão no
+    // próprio repositório de dotfiles): o bind de escrita alcançaria o alvo.
+    for target in super::config_link_targets(&spec.home) {
+        if target.starts_with(&spec.writable_root) {
+            args.ro_bind(&target);
+        }
     }
 }
 
@@ -1026,6 +1047,33 @@ mod tests {
                  ~/.claude virando bind rw pela política real da entrega B"
             );
         }
+    }
+
+    #[test]
+    fn both_profiles_data_dirs_are_shadowed() {
+        let (_tmp, mut spec) = fixture();
+        let parent = spec.tyba_data_dir.parent().unwrap().to_path_buf();
+        let release = parent.join(crate::profile::RELEASE_IDENTIFIER);
+        let dev = parent.join(crate::profile::DEV_IDENTIFIER);
+        for data_dir in [&release, &dev] {
+            spec.tyba_data_dir = data_dir.clone();
+            let dirs = secret_shadow_dirs(&spec);
+            for d in [&release, &dev] {
+                assert_eq!(
+                    dirs.iter().filter(|x| x == &d).count(),
+                    1,
+                    "{d:?}: {dirs:?}"
+                );
+            }
+        }
+        std::fs::create_dir_all(&dev).unwrap();
+        spec.tyba_data_dir = release;
+        let argv = strs(&build_args(&spec).unwrap());
+        let dev = dev.to_string_lossy().into_owned();
+        assert!(
+            argv.windows(2).any(|w| w[0] == "--tmpfs" && w[1] == dev),
+            "o data dir do outro perfil precisa ser sombreado: {argv:?}"
+        );
     }
 
     #[test]
