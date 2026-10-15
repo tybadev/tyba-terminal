@@ -8578,6 +8578,52 @@ fn maestro_delete_integration(state: State<'_, AppState>, id: String) -> Result<
         .map_err(|e| e.to_string())
 }
 
+/// ▶ Executar. Recusa no core grafo importado e não confirmado, e revalida o
+/// grafo antes de rodar — o banco não é prova de que ele ainda é válido.
+#[tauri::command]
+fn maestro_run_start(
+    state: State<'_, AppState>,
+    runs: State<'_, maestro::run::SharedRuns>,
+    graph_id: String,
+) -> Result<String, String> {
+    let stored = state
+        .store
+        .get_maestro_graph(&graph_id)
+        .map_err(|e| e.to_string())?
+        .ok_or("grafo não encontrado")?;
+    let graph = maestro::run::startable(stored)?;
+    let integrations = state
+        .store
+        .list_maestro_integrations()
+        .map_err(|e| e.to_string())?;
+    maestro::validate_graph(&graph, &integrations).map_err(|e| e.to_string())?;
+    Ok(runs.start(graph)?.id)
+}
+
+#[tauri::command]
+fn maestro_run_stop(
+    runs: State<'_, maestro::run::SharedRuns>,
+    run_id: String,
+) -> Result<(), String> {
+    runs.stop(&run_id)
+}
+
+#[tauri::command]
+fn maestro_run_get(
+    runs: State<'_, maestro::run::SharedRuns>,
+    run_id: String,
+) -> Result<Option<maestro::run::Run>, String> {
+    Ok(runs.get(&run_id))
+}
+
+#[tauri::command]
+fn maestro_runs_list(
+    runs: State<'_, maestro::run::SharedRuns>,
+    graph_id: String,
+) -> Vec<maestro::run::Run> {
+    runs.list(&graph_id)
+}
+
 /// Histórico de notificações: mais nova primeiro, até 500, dos últimos 7 dias.
 #[tauri::command]
 async fn notifications_list(
@@ -9150,6 +9196,12 @@ pub fn run() {
                 boot: Arc::clone(&boot_gate),
                 services: Arc::default(),
             });
+            let maestro_runs: maestro::run::SharedRuns = maestro::run::Runs::new(
+                maestro::run::TauriHost::new(app.handle().clone()),
+                Arc::clone(&store),
+                maestro::run::default_root(),
+            );
+            app.manage(maestro_runs);
 
             // O canal shim↔core (shim v2, passo 2, tech-spec §3/§4): socket por
             // usuário, ligado uma vez no boot, depois do `app.manage` acima —
@@ -9545,6 +9597,10 @@ pub fn run() {
             maestro_list_integrations,
             maestro_save_integration,
             maestro_delete_integration,
+            maestro_run_start,
+            maestro_run_stop,
+            maestro_run_get,
+            maestro_runs_list,
             snippet_placeholders,
             notifications_list,
             notifications_mark_read,

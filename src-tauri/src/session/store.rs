@@ -269,6 +269,15 @@ CREATE TABLE IF NOT EXISTS maestro_integration (
     imported_hash TEXT,
     consented INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS maestro_run (
+    id TEXT PRIMARY KEY,
+    graph_id TEXT NOT NULL,
+    started_at_ms INTEGER NOT NULL,
+    finished_at_ms INTEGER,
+    status TEXT NOT NULL,
+    body_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS maestro_run_by_graph ON maestro_run (graph_id, started_at_ms);
 ";
 
 /// Teto do histórico. Sem ele a tabela cresce com o uso e nunca encolhe: é a
@@ -2922,6 +2931,98 @@ impl Store {
         let conn = self.conn.lock();
         conn.execute("DELETE FROM maestro_integration WHERE id = ?1", params![id])?;
         Ok(())
+    }
+
+    /// Grava (ou substitui) o estado de uma execução do Maestro.
+    pub fn save_maestro_run(&self, run: &crate::maestro::run::Run) -> Result<(), StoreError> {
+        let body = serde_json::to_string(run)?;
+        let status = serde_json::to_value(run.status)?
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        let conn = self.conn.lock();
+        conn.execute(
+            "INSERT INTO maestro_run
+                 (id, graph_id, started_at_ms, finished_at_ms, status, body_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(id) DO UPDATE SET
+                 finished_at_ms = ?4, status = ?5, body_json = ?6",
+            params![
+                run.id,
+                run.graph_id,
+                run.started_at as i64,
+                run.finished_at.map(|t| t as i64),
+                status,
+                body,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_maestro_run(
+        &self,
+        id: &str,
+    ) -> Result<Option<crate::maestro::run::Run>, StoreError> {
+        use rusqlite::OptionalExtension;
+        let conn = self.conn.lock();
+        let body = conn
+            .query_row(
+                "SELECT body_json FROM maestro_run WHERE id = ?1",
+                params![id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        Ok(body.map(|b| serde_json::from_str(&b)).transpose()?)
+    }
+
+    /// As `limit` execuções mais recentes do grafo, da mais nova para a mais velha.
+    pub fn list_maestro_runs(
+        &self,
+        graph_id: &str,
+        limit: usize,
+    ) -> Result<Vec<crate::maestro::run::Run>, StoreError> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT body_json FROM maestro_run WHERE graph_id = ?1
+             ORDER BY started_at_ms DESC, rowid DESC LIMIT ?2",
+        )?;
+        let bodies = stmt
+            .query_map(params![graph_id, limit as i64], |row| {
+                row.get::<_, String>(0)
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(bodies
+            .iter()
+            .map(|b| serde_json::from_str(b))
+            .collect::<Result<_, _>>()?)
+    }
+
+    /// Apaga as execuções além das `keep` mais recentes do grafo e devolve os
+    /// ids apagados — a pasta de cada uma sai junto, por quem chamou.
+    pub fn prune_maestro_runs(
+        &self,
+        graph_id: &str,
+        keep: usize,
+    ) -> Result<Vec<String>, StoreError> {
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        let ids = {
+            let mut stmt = tx.prepare(
+                "SELECT id FROM maestro_run WHERE graph_id = ?1
+                 ORDER BY started_at_ms DESC, rowid DESC LIMIT -1 OFFSET ?2",
+            )?;
+            let ids = stmt
+                .query_map(params![graph_id, keep as i64], |row| {
+                    row.get::<_, String>(0)
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            ids
+        };
+        for id in &ids {
+            tx.execute("DELETE FROM maestro_run WHERE id = ?1", params![id])?;
+        }
+        tx.commit()?;
+        Ok(ids)
     }
 
     /// `table` é sempre uma das duas tabelas do Maestro, nunca entrada externa.
@@ -6707,6 +6808,44 @@ mod tests {
 
         store.delete_maestro_graph("g-1").unwrap();
         assert!(store.list_maestro_graphs().unwrap().is_empty());
+    }
+
+    #[test]
+    fn maestro_runs_keep_the_newest_and_prune_the_rest() {
+        use crate::maestro::run::{Run, RunStatus};
+        let store = Store::open_in_memory().unwrap();
+        let run = |id: &str, graph: &str, at: u64| Run {
+            id: id.into(),
+            graph_id: graph.into(),
+            started_at: at,
+            finished_at: None,
+            status: RunStatus::Running,
+            nodes: Default::default(),
+        };
+        for i in 0..5u64 {
+            store
+                .save_maestro_run(&run(&format!("r{i}"), "g-1", i))
+                .unwrap();
+        }
+        store.save_maestro_run(&run("outro", "g-2", 0)).unwrap();
+
+        let mut done = run("r4", "g-1", 4);
+        done.status = RunStatus::Done;
+        done.finished_at = Some(9);
+        store.save_maestro_run(&done).unwrap();
+        assert_eq!(store.get_maestro_run("r4").unwrap(), Some(done));
+
+        let mut pruned = store.prune_maestro_runs("g-1", 3).unwrap();
+        pruned.sort();
+        assert_eq!(pruned, vec!["r0".to_string(), "r1".to_string()]);
+        let left: Vec<String> = store
+            .list_maestro_runs("g-1", 20)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.id)
+            .collect();
+        assert_eq!(left, vec!["r4", "r3", "r2"]);
+        assert!(store.get_maestro_run("outro").unwrap().is_some());
     }
 
     #[test]

@@ -7,6 +7,8 @@
 //! A validação deste módulo é a barreira: o front só oferece ligações válidas,
 //! mas quem decide é `validate_graph`, chamado antes de gravar.
 
+pub mod run;
+
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
