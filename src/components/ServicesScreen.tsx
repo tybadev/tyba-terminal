@@ -9,7 +9,10 @@ import { openExternalUrl, writeClipboardText } from "../lib/clipboard";
 import { compactSpan, formatBytes, formatCpu } from "../lib/dockerPanel";
 import { translateError } from "../lib/errors";
 import {
+  dockerListContainers,
+  dockerScreenShow,
   listSessionTunnels,
+  openDockerPanel,
   servicesBringHere,
   servicesDetail,
   servicesForceKill,
@@ -37,6 +40,7 @@ import {
 import { IS_MAC } from "../lib/platform";
 import { escClosesScreen, SERVICES_SECTIONS } from "../lib/screens";
 import {
+  containerForPort,
   filterPorts,
   forceWaitSeconds,
   originText,
@@ -498,6 +502,11 @@ export function ServicesScreen({
             )}
             <span className="flex gap-2">
               {!p.refusal && detail?.target && killControls(p, p.port)}
+              {p.refusal === "docker" && !remote && (
+                <button type="button" className={CHIP} onClick={() => void openInDocker(p.port)}>
+                  {t("servicesOpenInDocker")}
+                </button>
+              )}
               {sessionId && (
                 <button type="button" className={CHIP} onClick={() => goToTerminal(sessionId)}>
                   {t("servicesGoToTerminal")}
@@ -509,6 +518,22 @@ export function ServicesScreen({
         </div>
       </div>
     );
+  };
+
+  /** Porta do Docker: o TYBA não encerra o daemon; leva ao container certo. */
+  const openInDocker = async (port: number) => {
+    try {
+      const containers = await dockerListContainers(null, false, null);
+      const c = containerForPort(containers, port);
+      if (!c) {
+        pushToast({ title: t("servicesDockerContainerNotFound", { port }) });
+        return;
+      }
+      await dockerScreenShow(workspaceId, c.id, "details");
+      await openDockerPanel(session.id);
+    } catch (e) {
+      setError(translateError(e, t));
+    }
   };
 
   const tunnelFor = (port: number) =>

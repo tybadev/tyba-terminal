@@ -98,3 +98,16 @@ export function workspacePorts(
 export function forceWaitSeconds(sentAt: number, forceAfterMs: number, now: number): number {
   return Math.max(0, Math.ceil((sentAt + forceAfterMs - now) / 1000));
 }
+
+
+/**
+ * O container que publica esta porta no host, pelo texto de portas do
+ * `docker ps` ("0.0.0.0:5432->5432/tcp, :::5432->5432/tcp"). `null` se nenhum.
+ */
+export function containerForPort<T extends { ports: string }>(
+  containers: T[],
+  port: number,
+): T | null {
+  const published = new RegExp(`:${port}->`);
+  return containers.find((c) => published.test(c.ports)) ?? null;
+}

@@ -11,6 +11,7 @@ import {
   refusalKey,
   workspacePorts,
 } from "./services";
+import { containerForPort } from "./services";
 
 const t = (key: string) => key;
 
@@ -103,4 +104,20 @@ test("url e chaves de recusa", () => {
   expect(portUrl(3000)).toBe("http://localhost:3000");
   expect(refusalKey("session_shell")).toBe("servicesRefuseSessionShell");
   expect(refusalKey("docker")).toBe("servicesRefuseDocker");
+});
+
+
+describe("containerForPort", () => {
+  const cs = [
+    { id: "a", ports: "0.0.0.0:6379->6379/tcp" },
+    { id: "b", ports: "0.0.0.0:5432->5432/tcp, :::5432->5432/tcp" },
+    { id: "c", ports: "15432/tcp" },
+  ];
+  test("acha o container que publica a porta no host", () => {
+    expect(containerForPort(cs, 5432)?.id).toBe("b");
+  });
+  test("porta só interna ou prefixo de outra não conta", () => {
+    expect(containerForPort(cs, 15432)).toBeNull();
+    expect(containerForPort(cs, 543)).toBeNull();
+  });
 });
