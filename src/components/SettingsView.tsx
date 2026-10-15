@@ -5,16 +5,20 @@ import { changelogUrl } from "@/lib/changelog";
 import {
   ArrowSquareOut,
   Check,
-  Code,
   Copy,
   DownloadSimple,
   FolderOpen,
   Info,
-  BracketsCurly,
+  Bell,
+  CaretDoubleLeft,
+  CaretDoubleRight,
+  GearSix,
+  PlugsConnected,
+  Robot,
+  X,
   Keyboard,
   Palette,
   Plus,
-  SlidersHorizontal,
   Stack,
   TerminalWindow,
   User,
@@ -25,6 +29,7 @@ import appIcon from "../../src-tauri/icons/128x128.png";
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { IS_MAC } from "@/lib/platform";
 import { NOTIFY_KINDS, notifyEnabled } from "@/lib/notifyPrefs";
 import { DockerIcon } from "./icons/DockerIcon";
@@ -111,14 +116,118 @@ export type DetailsPref = "on" | "off";
 type Section =
   | "general"
   | "appearance"
-  | "code"
-  | "shell"
-  | "launch"
+  | "terminal"
+  | "agents"
+  | "integrations"
+  | "notifications"
   | "shortcuts"
-  | "preferences"
   | "about";
 
+/** As seções, na ordem do trilho: cada uma é um assunto, não uma gaveta. */
+const SECTIONS: { id: Section; label: string; hint: string; icon: React.ReactNode }[] = [
+  { id: "general", label: "settingsGeneral", hint: "settingsGeneralShort", icon: <User size={16} /> },
+  { id: "appearance", label: "settingsAppearance", hint: "settingsAppearanceShort", icon: <Palette size={16} /> },
+  { id: "terminal", label: "settingsTerminal", hint: "settingsTerminalShort", icon: <TerminalWindow size={16} /> },
+  { id: "agents", label: "settingsAgents", hint: "settingsAgentsShort", icon: <Robot size={16} /> },
+  { id: "integrations", label: "settingsIntegrations", hint: "settingsIntegrationsShort", icon: <PlugsConnected size={16} /> },
+  { id: "notifications", label: "settingsNotifications", hint: "settingsNotificationsShort", icon: <Bell size={16} /> },
+  { id: "shortcuts", label: "settingsShortcuts", hint: "settingsShortcutsShort", icon: <Keyboard size={16} /> },
+  { id: "about", label: "settingsAbout", hint: "settingsAboutShort", icon: <Info size={16} /> },
+];
+
+const RAIL_PREF_KEY = "pref.settings_rail";
+
+/**
+ * O trilho de seções, à direita como nas outras telas cheias. Aberto mostra o
+ * nome; recolhido fica só o ícone, com o nome no tooltip.
+ */
+function SettingsRail({
+  section,
+  onSection,
+  collapsed,
+  onToggle,
+  onClose,
+}: {
+  section: Section;
+  onSection: (section: Section) => void;
+  collapsed: boolean;
+  onToggle: () => void;
+  onClose: () => void;
+}) {
+  const { t } = useTranslation();
+  const item = (
+    key: string,
+    icon: React.ReactNode,
+    label: string,
+    tip: string,
+    onClick: () => void,
+    active = false,
+    trailing?: React.ReactNode,
+  ) => (
+    <Tooltip key={key}>
+      <TooltipTrigger asChild>
+        <button
+          onClick={onClick}
+          aria-label={label}
+          className={`flex h-8 shrink-0 items-center gap-2.5 rounded-[7px] text-[12.5px] transition-colors ${
+            collapsed ? "w-9 justify-center" : "px-2.5"
+          } ${
+            active
+              ? "bg-tyba-green/[.12] text-tyba-green"
+              : "text-tyba-text-muted hover:bg-tyba-text/[.04] hover:text-tyba-text"
+          }`}
+        >
+          <span className="shrink-0">{icon}</span>
+          {!collapsed && (
+            <span className={`min-w-0 flex-1 truncate text-left ${active ? "text-tyba-text" : ""}`}>
+              {label}
+            </span>
+          )}
+          {!collapsed && trailing}
+        </button>
+      </TooltipTrigger>
+      {collapsed && (
+        <TooltipContent side="left">
+          {label}
+          {tip && <span className="text-tyba-text-faint"> · {tip}</span>}
+        </TooltipContent>
+      )}
+    </Tooltip>
+  );
+  return (
+    <nav
+      aria-label={t("settings")}
+      className={`flex shrink-0 flex-col gap-0.5 border-l border-tyba-border bg-tyba-raised px-2 pt-3 pb-2.5 ${
+        collapsed ? "w-[52px] items-center" : "w-[188px]"
+      }`}
+    >
+      {SECTIONS.map((s) =>
+        item(s.id, s.icon, t(s.label), t(s.hint), () => onSection(s.id), s.id === section),
+      )}
+      <span className="flex-1" />
+      {item(
+        "toggle",
+        collapsed ? <CaretDoubleLeft size={14} /> : <CaretDoubleRight size={14} />,
+        collapsed ? t("settingsRailExpand") : t("settingsRailCollapse"),
+        "",
+        onToggle,
+      )}
+      {item(
+        "close",
+        <X size={15} />,
+        t("close"),
+        "Esc",
+        onClose,
+        false,
+        <span className="text-[11px] text-tyba-text-ghost">Esc</span>,
+      )}
+    </nav>
+  );
+}
+
 interface Props {
+  /** Fecha a tela e volta para onde estava. */
+  onClose: () => void;
   launchConfigs: LaunchConfig[];
   onApplyLaunchConfig: (id: LaunchConfigId) => void;
   onEditLaunchConfig: (id: LaunchConfigId) => void;
@@ -211,32 +320,6 @@ const THEME_EXAMPLE = `{
 
 function copyThemeExample() {
   void navigator.clipboard?.writeText(THEME_EXAMPLE).catch(() => {});
-}
-
-function NavItem({
-  active,
-  icon,
-  label,
-  onClick,
-}: {
-  active: boolean;
-  icon: React.ReactNode;
-  label: string;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      className={`relative flex h-8 items-center gap-2.5 rounded-[4px] px-2.5 text-[13px] transition-colors ${
-        active
-          ? "bg-tyba-text/[.05] text-tyba-text"
-          : "text-tyba-text-faint hover:bg-tyba-text/[.03] hover:text-tyba-text-muted"
-      }`}
-    >
-      {icon}
-      {label}
-    </button>
-  );
 }
 
 function Choice({
@@ -641,6 +724,7 @@ function ShortcutRow({
 }
 
 export function SettingsView({
+  onClose,
   launchConfigs,
   onApplyLaunchConfig,
   onEditLaunchConfig,
@@ -679,9 +763,33 @@ export function SettingsView({
 }: Props) {
   const { t, i18n } = useTranslation();
   const [section, setSection] = useState<Section>("general");
+  const [railCollapsed, setRailCollapsed] = useState(false);
+  useEffect(() => {
+    void getPref(RAIL_PREF_KEY)
+      .then((v) => setRailCollapsed(v === "collapsed"))
+      .catch(() => {});
+  }, []);
+  const toggleRail = () => {
+    setRailCollapsed((was) => {
+      void setPref(RAIL_PREF_KEY, was ? "open" : "collapsed").catch(() => {});
+      return !was;
+    });
+  };
+  // Esc fecha, como nas outras telas cheias — a não ser que o foco esteja
+  // num campo (aí o Esc é dele) ou gravando um atalho.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.defaultPrevented || captureState.active) return;
+      const el = document.activeElement;
+      if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) return;
+      onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
 
   useEffect(() => {
-    if (section !== "launch") return;
+    if (section !== "agents") return;
     onRefreshLaunchConfigs();
   }, [section, onRefreshLaunchConfigs]);
   const [mode, setMode] = useState<ThemeMode>(getThemeMode);
@@ -772,67 +880,23 @@ export function SettingsView({
 
   const effectiveThemeId = themeState ? themeState[effBase].id : null;
 
+  const current = SECTIONS.find((item) => item.id === section) ?? SECTIONS[0];
+
   return (
     <div className="flex min-h-0 flex-1">
-      <aside className="tyba-divide-r flex w-48 shrink-0 flex-col gap-px px-2 pt-3">
-        <NavItem
-          active={section === "general"}
-          icon={<User size={15} />}
-          label={t("settingsGeneral")}
-          onClick={() => setSection("general")}
-        />
-        <NavItem
-          active={section === "appearance"}
-          icon={<Palette size={15} />}
-          label={t("settingsAppearance")}
-          onClick={() => setSection("appearance")}
-        />
-        <NavItem
-          active={section === "code"}
-          icon={<Code size={15} />}
-          label={t("settingsCode")}
-          onClick={() => setSection("code")}
-        />
-        <NavItem
-          active={section === "shell"}
-          icon={<BracketsCurly size={15} />}
-          label={t("settingsSnippets")}
-          onClick={() => setSection("shell")}
-        />
-        <NavItem
-          active={section === "launch"}
-          icon={<Stack size={15} />}
-          label={t("settingsLaunchConfigs")}
-          onClick={() => setSection("launch")}
-        />
-        <NavItem
-          active={section === "shortcuts"}
-          icon={<Keyboard size={15} />}
-          label={t("settingsShortcuts")}
-          onClick={() => setSection("shortcuts")}
-        />
-        <NavItem
-          active={section === "preferences"}
-          icon={<SlidersHorizontal size={15} />}
-          label={t("settingsPreferences")}
-          onClick={() => setSection("preferences")}
-        />
-        <NavItem
-          active={section === "about"}
-          icon={<Info size={15} />}
-          label={t("settingsAbout")}
-          onClick={() => setSection("about")}
-        />
-      </aside>
-
-      <div className="min-w-0 flex-1 overflow-y-auto px-8 pt-4 pb-8">
+      <div className="flex min-w-0 flex-1 flex-col">
+        <header className="flex h-[46px] shrink-0 items-center gap-3 border-b border-tyba-border bg-tyba-raised px-[18px] text-[12px]">
+          <GearSix size={16} className="shrink-0 text-tyba-green" />
+          <span className="text-[14px] font-medium text-tyba-text">{t("settings")}</span>
+          <span className="truncate text-tyba-text-faint">
+            {t(current.label)} · {t(current.hint)}
+          </span>
+        </header>
+        <div className="min-h-0 flex-1 overflow-y-auto bg-tyba-sunken px-8 pt-4 pb-8">
         {section === "general" && (
           <section className="mx-auto w-full max-w-lg">
-            <SectionHeader
-              title={t("settingsGeneral")}
-              hint={t("generalHint")}
-            />
-            <span className="tyba-label">{t("account")}</span>
+            <SectionHeader title={t("settingsGeneral")} hint={t("generalHint")} />
+                        <span className="tyba-label">{t("account")}</span>
             <div className="mt-2 mb-6 flex items-center gap-3 py-3">
               <span
                 className="rounded-full p-px"
@@ -872,143 +936,7 @@ export function SettingsView({
             <p className="pt-2 text-[11px] text-tyba-text-faint">
               {t("defaultSessionDirHint")}
             </p>
-          </section>
-        )}
-
-        {section === "shell" && <ShellSettings />}
-
-        {section === "launch" && (
-          <section className="mx-auto w-full max-w-lg">
-            <SectionHeader
-              title={t("settingsLaunchConfigs")}
-              hint={t("settingsLaunchConfigsHint")}
-            />
-            <div className="mt-4 flex flex-col gap-2">
-              {launchConfigs.length === 0 && (
-                <span className="text-[12px] text-tyba-text-faint">
-                  {t("launchNoConfigs")}
-                </span>
-              )}
-              {launchConfigs.map((config) => (
-                <div
-                  key={config.id}
-                  className="flex items-center gap-3 rounded-md border border-tyba-border p-2.5"
-                >
-                  <Stack size={15} className="shrink-0 text-tyba-violet" />
-                  <div className="flex min-w-0 flex-1 flex-col">
-                    <span className="truncate text-[13px] text-tyba-text">
-                      {config.name}
-                    </span>
-                    <span className="truncate font-mono text-[11px] text-tyba-text-faint">
-                      {config.repo_root} · {config.slots.length}{" "}
-                      {config.slots.length === 1 ? "pane" : "panes"}
-                    </span>
-                  </div>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => onApplyLaunchConfig(config.id)}
-                  >
-                    {t("launchOpen")}
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => onEditLaunchConfig(config.id)}
-                  >
-                    {t("launchEdit")}
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="text-tyba-red"
-                    onClick={() => onDeleteLaunchConfig(config.id)}
-                  >
-                    {t("launchDelete")}
-                  </Button>
-                </div>
-              ))}
-              <Button
-                variant="ghost"
-                size="sm"
-                className="self-start"
-                onClick={onNewLaunchConfig}
-              >
-                <Plus size={14} />
-                {t("launchConfigNew")}
-              </Button>
-            </div>
-          </section>
-        )}
-
-        {section === "code" && (
-          <section className="mx-auto w-full max-w-lg">
-            <SectionHeader title={t("settingsCode")} hint={t("codeHint")} />
-            <span className="tyba-label">{t("integrations")}</span>
-            <div className="mt-2 flex items-start gap-3 py-3">
-              <span className="mt-0.5 shrink-0 text-tyba-text-muted">
-                <DockerIcon size={18} />
-              </span>
-              <div className="min-w-0 flex-1">
-                <p className="text-[13px] text-tyba-text">
-                  {t("dockerIntegration")}
-                </p>
-                <p className="pt-1 text-[11px] leading-relaxed text-tyba-text-faint">
-                  {t("dockerIntegrationHint")}
-                </p>
-              </div>
-              <Switch
-                checked={showContainers}
-                onCheckedChange={onShowContainersChange}
-                aria-label={t("dockerIntegration")}
-                className="mt-0.5"
-              />
-            </div>
-
-            <div className="mt-2 flex items-start gap-3 py-3">
-              <span className="mt-0.5 shrink-0 text-tyba-text-muted">
-                <TerminalWindow size={18} />
-              </span>
-              <div className="min-w-0 flex-1">
-                <p className="text-[13px] text-tyba-text">
-                  {t("shellIntegration")}
-                </p>
-                <p className="pt-1 text-[11px] leading-relaxed text-tyba-text-faint">
-                  {t("shellIntegrationHint")}
-                </p>
-              </div>
-              <Switch
-                checked={shellIntegration}
-                onCheckedChange={onShellIntegrationChange}
-                aria-label={t("shellIntegration")}
-                className="mt-0.5"
-              />
-            </div>
-
-            <ClaudePluginSetting />
-
-            <span className="tyba-label mt-6 block">{t("defaultEditor")}</span>
-            <p className="pt-1 text-[11px] leading-relaxed text-tyba-text-faint">
-              {t("defaultEditorHint")}
-            </p>
-            <div className="mt-2 divide-y divide-tyba-border">
-              <SettingRow
-                label={t("defaultEditor")}
-                hint={editorPath ?? t("defaultEditorSystemHint")}
-              >
-                <Select
-                  value={editor}
-                  onChange={onEditorChange}
-                  className="w-56"
-                  options={[
-                    { value: "", label: t("defaultEditorSystem") },
-                    ...editors.map((e) => ({ value: e.id, label: e.name })),
-                  ]}
-                />
-              </SettingRow>
-            </div>
-
-            <span className="tyba-label mt-6 block">{t("startup")}</span>
+<span className="tyba-label mt-6 block">{t("startup")}</span>
             <p className="pt-1 text-[11px] leading-relaxed text-tyba-text-faint">
               {t("startupHint")}
             </p>
@@ -1027,51 +955,26 @@ export function SettingsView({
               </SettingRow>
             </div>
 
-            <span className="tyba-label mt-6 block">{t("reviewAgent")}</span>
-            <p className="pt-1 text-[11px] leading-relaxed text-tyba-text-faint">
-              {t("reviewAgentHint")}
-            </p>
-            <div className="mt-2 divide-y divide-tyba-border">
-              <SettingRow label={t("reviewAgent")}>
+            <span className="tyba-label mt-6 block">{t("language")}</span>
+            <div className="divide-y divide-tyba-border">
+              <SettingRow label={t("language")}>
                 <Select
-                  value={
-                    reviewAgent === "claude" || reviewAgent === "codex"
-                      ? reviewAgent
-                      : "custom"
-                  }
-                  onChange={(v) =>
-                    onReviewAgentChange(v === "custom" ? "" : v)
-                  }
-                  className="w-56"
-                  options={[
-                    { value: "claude", label: "Claude Code" },
-                    { value: "codex", label: "Codex" },
-                    { value: "custom", label: t("reviewAgentCustom") },
-                  ]}
+                  value={i18n.language}
+                  onChange={(v) => setLanguage(v as LanguageCode)}
+                  className="w-48"
+                  options={LANGUAGES.map((l) => ({
+                    value: l.code,
+                    label: l.label,
+                  }))}
                 />
               </SettingRow>
-              {reviewAgent !== "claude" && reviewAgent !== "codex" && (
-                <SettingRow
-                  label={t("reviewAgentCustomCommand")}
-                  hint={t("reviewAgentCustomHint")}
-                >
-                  <TextField
-                    value={reviewAgent}
-                    placeholder="claude --model opus"
-                    onCommit={onReviewAgentChange}
-                  />
-                </SettingRow>
-              )}
             </div>
+
           </section>
         )}
-
         {section === "appearance" && (
           <section className="mx-auto w-full max-w-lg">
-            <SectionHeader
-              title={t("settingsAppearance")}
-              hint={t("appearanceHint")}
-            />
+            <SectionHeader title={t("settingsAppearance")} hint={t("appearanceHint")} />
             <span className="tyba-label">{t("colorMode")}</span>
             <div className="flex gap-2 pt-2 pb-6">
               {THEMES.map((m) => (
@@ -1176,45 +1079,7 @@ export function SettingsView({
             <div className="pt-6">
               <AppIconPicker />
             </div>
-          </section>
-        )}
-
-        {section === "shortcuts" && (
-          <section className="mx-auto w-full max-w-lg">
-            <SectionHeader
-              title={t("settingsShortcuts")}
-              hint={t("shortcutsHint")}
-            />
-            {actionsByCategory().map(([category, actions]) =>
-              actions.length === 0 ? null : (
-                <div key={category} className="mb-5 last:mb-0">
-                  <span className="tyba-label">
-                    {t(KEY_CATEGORY_LABEL_KEYS[category])}
-                  </span>
-                  <div className="flex flex-col gap-px pt-2">
-                    {actions.map((action) => (
-                      <ShortcutRow
-                        key={action}
-                        action={action}
-                        combo={bindings[action]}
-                        onRebind={(combo) =>
-                          onBindingsChange({ ...bindings, [action]: combo })
-                        }
-                      />
-                    ))}
-                  </div>
-                </div>
-              ),
-            )}
-          </section>
-        )}
-
-        {section === "preferences" && (
-          <section className="mx-auto w-full max-w-lg">
-            <SectionHeader
-              title={t("settingsPreferences")}
-              hint={t("preferencesHint")}
-            />
+<span className="tyba-label mt-6 block">{t("settingsSidebar")}</span>
             <div className="divide-y divide-tyba-border">
               <SettingRow
                 label={t("sidebarToggleBehavior", {
@@ -1246,15 +1111,9 @@ export function SettingsView({
                   onCheckedChange={onShowGitStatusChange}
                 />
               </SettingRow>
-              <SettingRow
-                label={t("worktreeDefaultPref")}
-                hint={t("worktreeDefaultHint")}
-              >
-                <Switch
-                  checked={worktreeDefault}
-                  onCheckedChange={onWorktreeDefaultChange}
-                />
-              </SettingRow>
+                          </div>
+<span className="tyba-label mt-6 block">{t("settingsChipsBar")}</span>
+            <div className="divide-y divide-tyba-border">
               <SettingRow
                 label={t("toolbarToggle")}
                 hint={t("toolbarHint")}
@@ -1266,7 +1125,17 @@ export function SettingsView({
                   }
                 />
               </SettingRow>
-              <NotifyPrefs />
+                          </div>
+{toolbarPref.enabled && (
+              <ToolbarChipsEditor pref={toolbarPref} onChange={onToolbarPrefChange} />
+            )}
+
+          </section>
+        )}
+        {section === "terminal" && (
+          <section className="mx-auto w-full max-w-lg">
+            <SectionHeader title={t("settingsTerminal")} hint={t("settingsTerminalHint")} />
+            <div className="divide-y divide-tyba-border">
               {RICH_INPUT_TOGGLES.map(({ field, label, hint }) => (
                 <SettingRow
                   key={field}
@@ -1285,6 +1154,81 @@ export function SettingsView({
                   />
                 </SettingRow>
               ))}
+                          </div>
+<div className="mt-2 flex items-start gap-3 py-3">
+              <span className="mt-0.5 shrink-0 text-tyba-text-muted">
+                <TerminalWindow size={18} />
+              </span>
+              <div className="min-w-0 flex-1">
+                <p className="text-[13px] text-tyba-text">
+                  {t("shellIntegration")}
+                </p>
+                <p className="pt-1 text-[11px] leading-relaxed text-tyba-text-faint">
+                  {t("shellIntegrationHint")}
+                </p>
+              </div>
+              <Switch
+                checked={shellIntegration}
+                onCheckedChange={onShellIntegrationChange}
+                aria-label={t("shellIntegration")}
+                className="mt-0.5"
+              />
+            </div>
+
+            
+          </section>
+        )}
+        {section === "terminal" && <ShellSettings />}
+        {section === "agents" && (
+          <section className="mx-auto w-full max-w-lg">
+            <SectionHeader title={t("settingsAgents")} hint={t("settingsAgentsHint")} />
+            <span className="tyba-label mt-6 block">{t("reviewAgent")}</span>
+            <p className="pt-1 text-[11px] leading-relaxed text-tyba-text-faint">
+              {t("reviewAgentHint")}
+            </p>
+            <div className="mt-2 divide-y divide-tyba-border">
+              <SettingRow label={t("reviewAgent")}>
+                <Select
+                  value={
+                    reviewAgent === "claude" || reviewAgent === "codex"
+                      ? reviewAgent
+                      : "custom"
+                  }
+                  onChange={(v) =>
+                    onReviewAgentChange(v === "custom" ? "" : v)
+                  }
+                  className="w-56"
+                  options={[
+                    { value: "claude", label: "Claude Code" },
+                    { value: "codex", label: "Codex" },
+                    { value: "custom", label: t("reviewAgentCustom") },
+                  ]}
+                />
+              </SettingRow>
+              {reviewAgent !== "claude" && reviewAgent !== "codex" && (
+                <SettingRow
+                  label={t("reviewAgentCustomCommand")}
+                  hint={t("reviewAgentCustomHint")}
+                >
+                  <TextField
+                    value={reviewAgent}
+                    placeholder="claude --model opus"
+                    onCommit={onReviewAgentChange}
+                  />
+                </SettingRow>
+              )}
+            </div>
+<span className="tyba-label mt-6 block">{t("settingsSessions")}</span>
+            <div className="divide-y divide-tyba-border">
+              <SettingRow
+                label={t("worktreeDefaultPref")}
+                hint={t("worktreeDefaultHint")}
+              >
+                <Switch
+                  checked={worktreeDefault}
+                  onCheckedChange={onWorktreeDefaultChange}
+                />
+              </SettingRow>
               <SettingRow
                 label={t("richInputRegex")}
                 hint={
@@ -1306,28 +1250,164 @@ export function SettingsView({
                   />
                 </div>
               </SettingRow>
-              <SettingRow label={t("language")}>
+                          </div>
+<span className="tyba-label mt-6 block">{t("settingsLaunchConfigs")}</span>
+            <div className="mt-4 flex flex-col gap-2">
+              {launchConfigs.length === 0 && (
+                <span className="text-[12px] text-tyba-text-faint">
+                  {t("launchNoConfigs")}
+                </span>
+              )}
+              {launchConfigs.map((config) => (
+                <div
+                  key={config.id}
+                  className="flex items-center gap-3 rounded-md border border-tyba-border p-2.5"
+                >
+                  <Stack size={15} className="shrink-0 text-tyba-violet" />
+                  <div className="flex min-w-0 flex-1 flex-col">
+                    <span className="truncate text-[13px] text-tyba-text">
+                      {config.name}
+                    </span>
+                    <span className="truncate font-mono text-[11px] text-tyba-text-faint">
+                      {config.repo_root} · {config.slots.length}{" "}
+                      {config.slots.length === 1 ? "pane" : "panes"}
+                    </span>
+                  </div>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => onApplyLaunchConfig(config.id)}
+                  >
+                    {t("launchOpen")}
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => onEditLaunchConfig(config.id)}
+                  >
+                    {t("launchEdit")}
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="text-tyba-red"
+                    onClick={() => onDeleteLaunchConfig(config.id)}
+                  >
+                    {t("launchDelete")}
+                  </Button>
+                </div>
+              ))}
+              <Button
+                variant="ghost"
+                size="sm"
+                className="self-start"
+                onClick={onNewLaunchConfig}
+              >
+                <Plus size={14} />
+                {t("launchConfigNew")}
+              </Button>
+            </div>
+
+          </section>
+        )}
+        {section === "integrations" && (
+          <section className="mx-auto w-full max-w-lg">
+            <SectionHeader title={t("settingsIntegrations")} hint={t("settingsIntegrationsHint")} />
+            <div className="mt-2 flex items-start gap-3 py-3">
+              <span className="mt-0.5 shrink-0 text-tyba-text-muted">
+                <DockerIcon size={18} />
+              </span>
+              <div className="min-w-0 flex-1">
+                <p className="text-[13px] text-tyba-text">
+                  {t("dockerIntegration")}
+                </p>
+                <p className="pt-1 text-[11px] leading-relaxed text-tyba-text-faint">
+                  {t("dockerIntegrationHint")}
+                </p>
+              </div>
+              <Switch
+                checked={showContainers}
+                onCheckedChange={onShowContainersChange}
+                aria-label={t("dockerIntegration")}
+                className="mt-0.5"
+              />
+            </div>
+
+            <ClaudePluginSetting />
+<span className="tyba-label mt-6 block">{t("defaultEditor")}</span>
+            <p className="pt-1 text-[11px] leading-relaxed text-tyba-text-faint">
+              {t("defaultEditorHint")}
+            </p>
+            <div className="mt-2 divide-y divide-tyba-border">
+              <SettingRow
+                label={t("defaultEditor")}
+                hint={editorPath ?? t("defaultEditorSystemHint")}
+              >
                 <Select
-                  value={i18n.language}
-                  onChange={(v) => setLanguage(v as LanguageCode)}
-                  className="w-48"
-                  options={LANGUAGES.map((l) => ({
-                    value: l.code,
-                    label: l.label,
-                  }))}
+                  value={editor}
+                  onChange={onEditorChange}
+                  className="w-56"
+                  options={[
+                    { value: "", label: t("defaultEditorSystem") },
+                    ...editors.map((e) => ({ value: e.id, label: e.name })),
+                  ]}
                 />
               </SettingRow>
             </div>
-            {toolbarPref.enabled && (
-              <ToolbarChipsEditor pref={toolbarPref} onChange={onToolbarPrefChange} />
+
+            
+          </section>
+        )}
+        {section === "notifications" && (
+          <section className="mx-auto w-full max-w-lg">
+            <SectionHeader title={t("settingsNotifications")} hint={t("settingsNotificationsHint")} />
+            <div className="divide-y divide-tyba-border">
+              <NotifyPrefs />
+            </div>
+
+          </section>
+        )}
+        {section === "shortcuts" && (
+          <section className="mx-auto w-full max-w-lg">
+            <SectionHeader
+              title={t("settingsShortcuts")}
+              hint={t("shortcutsHint")}
+            />
+            {actionsByCategory().map(([category, actions]) =>
+              actions.length === 0 ? null : (
+                <div key={category} className="mb-5 last:mb-0">
+                  <span className="tyba-label">
+                    {t(KEY_CATEGORY_LABEL_KEYS[category])}
+                  </span>
+                  <div className="flex flex-col gap-px pt-2">
+                    {actions.map((action) => (
+                      <ShortcutRow
+                        key={action}
+                        action={action}
+                        combo={bindings[action]}
+                        onRebind={(combo) =>
+                          onBindingsChange({ ...bindings, [action]: combo })
+                        }
+                      />
+                    ))}
+                  </div>
+                </div>
+              ),
             )}
           </section>
         )}
-
         {section === "about" && (
           <AboutSection version={version} update={update} />
         )}
+        </div>
       </div>
+      <SettingsRail
+        section={section}
+        onSection={setSection}
+        collapsed={railCollapsed}
+        onToggle={toggleRail}
+        onClose={onClose}
+      />
     </div>
   );
 }
