@@ -6143,6 +6143,7 @@ export default function App() {
                   {activeTab?.view === "settings" && (
                     <div className="absolute inset-0 flex">
                       <SettingsView
+                        onClose={toggleSettings}
                         launchConfigs={launchConfigs}
                         onApplyLaunchConfig={applyLaunchConfigById}
                         onEditLaunchConfig={editLaunchConfig}
