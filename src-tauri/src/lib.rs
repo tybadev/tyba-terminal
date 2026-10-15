@@ -1292,6 +1292,7 @@ fn resume_startup(
             initial_prompt: None,
             opened_by_gate: false,
             resume_conversation: None,
+            agent_model: None,
             prepared_worktree: None,
         };
         match sessions.create_shell_session(app.clone(), pty_pool, opts, move |id| {
@@ -3555,6 +3556,7 @@ async fn forge_pr_open_session(
                 initial_prompt: None,
                 opened_by_gate: false,
                 resume_conversation: None,
+                agent_model: None,
                 prepared_worktree: Some(prepared),
             },
             move |sid| session_exited(&handle, sid),
@@ -4658,6 +4660,10 @@ struct AppliedLaunchConfig {
 struct PrefillPayload {
     session_id: SessionId,
     prompt: String,
+    /// `true` só para slot de shell com `run_on_open` — ver
+    /// [`launch_config::Slot::submits_on_open`]. Agente nunca: o prompt chega
+    /// escrito, esperando o Enter do usuário.
+    submit: bool,
 }
 
 struct SlotSpawn<'a> {
@@ -4705,6 +4711,7 @@ async fn spawn_slot(
                 initial_prompt: slot.initial_prompt.clone(),
                 opened_by_gate: false,
                 resume_conversation: None,
+                agent_model: slot.agent_model().map(str::to_string),
                 prepared_worktree: None,
             },
         )
@@ -4754,6 +4761,7 @@ async fn spawn_slot(
             initial_prompt: slot.initial_prompt.clone(),
             opened_by_gate: false,
             resume_conversation: None,
+            agent_model: slot.agent_model().map(str::to_string),
             prepared_worktree: None,
         },
     )
@@ -4892,6 +4900,7 @@ async fn apply_launch_config(
                     prefills.push(PrefillPayload {
                         session_id: session.id,
                         prompt: prompt.clone(),
+                        submit: slot.submits_on_open(),
                     });
                 }
                 bindings.insert(slot.id, session.id);
@@ -6718,8 +6727,11 @@ fn sandbox_overview() -> SandboxOverview {
 
 /// "▶ ouvir" nas Notificações: toca o som escolhido uma vez (só macOS, só os
 /// sons de `MAC_SOUNDS`).
+///
+/// `async` pela guarda de `command_threading_tests`: o `spawn` do `afplay` é
+/// subprocesso, e command síncrono roda na main thread.
 #[tauri::command]
-fn preview_notify_sound(name: String) -> Result<(), String> {
+async fn preview_notify_sound(name: String) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
         let path = agent::notify::preview_sound_path(&name).ok_or("som desconhecido")?;
@@ -6742,7 +6754,7 @@ fn preview_notify_sound(name: String) -> Result<(), String> {
 
 /// Abre os Ajustes do Sistema em Notificações (endereço fixo, só macOS).
 #[tauri::command]
-fn open_notification_settings() -> Result<(), String> {
+async fn open_notification_settings() -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
         let mut child = std::process::Command::new("/usr/bin/open")
@@ -6852,6 +6864,7 @@ fn docker_open_project(
                 initial_prompt: None,
                 opened_by_gate: false,
                 resume_conversation: None,
+                agent_model: None,
                 prepared_worktree: None,
             },
             move |id| session_exited(&handle, id),

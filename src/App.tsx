@@ -289,6 +289,7 @@ import {
   sessionGitStatus,
   setAgentMatchPattern,
   submitRichInput,
+  submitShellLine,
   setPref,
   setSideViewExpanded,
   setSideViewRatio,
@@ -785,9 +786,23 @@ export default function App() {
   useEffect(() => {
     let unlisten: (() => void) | null = null;
     let disposed = false;
-    void onLaunchConfigPrefill(({ session_id, prompt }) => {
-      setLaunchPrefills((prev) => ({ ...prev, [session_id]: prompt }));
-      setRichInputOpened((prev) => new Set(prev).add(session_id));
+    void onLaunchConfigPrefill(({ session_id, prompt, submit }) => {
+      const prefill = () => {
+        setLaunchPrefills((prev) => ({ ...prev, [session_id]: prompt }));
+        setRichInputOpened((prev) => new Set(prev).add(session_id));
+      };
+      if (!submit) {
+        prefill();
+        return;
+      }
+      // Slot de shell com "rodar ao abrir": o mesmo Enter da linha do TYBA,
+      // que espera o editor de linha do shell recém-aberto. Comando pela
+      // metade ou falha cai no prefill: o comando fica à vista, sem rodar.
+      void submitShellLine(session_id, prompt)
+        .then((outcome) => {
+          if (outcome === "incomplete") prefill();
+        })
+        .catch(prefill);
     }).then((un) => {
       if (disposed) un();
       else unlisten = un;

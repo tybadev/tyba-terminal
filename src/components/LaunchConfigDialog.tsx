@@ -116,6 +116,8 @@ export function LaunchConfigDialog({ draft, onClose, onSaved }: Props) {
       cwd_rel: null,
       isolate: false,
       initial_prompt: null,
+      model: null,
+      run_on_open: false,
     };
     setSlots((prev) => [...prev, newSlot]);
     updateRoot(splitPane(tab.root, pane, kind, uid(), newSlot.id, uid()));
@@ -131,6 +133,8 @@ export function LaunchConfigDialog({ draft, onClose, onSaved }: Props) {
       cwd_rel: null,
       isolate: false,
       initial_prompt: null,
+      model: null,
+      run_on_open: false,
     };
     setSlots((prev) => [...prev, newSlot]);
     setTabs((prev) => [

@@ -290,6 +290,11 @@ pub struct CreateSessionOpts {
     /// Só vale para `attach_existing`.
     #[serde(default)]
     pub resume_conversation: Option<String>,
+    /// Alias de modelo do slot da launch config (`opus`/`sonnet`/`haiku`). Dado
+    /// que volta do webview: quem o transforma em argv é o runner, e só depois
+    /// de [`crate::agent::claude_model_alias`]. Só vale para agente Claude.
+    #[serde(default)]
+    pub agent_model: Option<String>,
     /// Worktree já criado pelo core (PR aberto no TYBA) e o repo dele. Nunca
     /// vem do webview (`skip`): um caminho vindo de lá viraria cwd e base do
     /// diff sem nenhuma validação.
