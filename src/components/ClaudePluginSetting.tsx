@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ShieldCheck } from "@phosphor-icons/react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -11,6 +10,7 @@ import {
 } from "../lib/ipc";
 import { translateError } from "../lib/errors";
 import { toastError } from "../lib/toast";
+import { SettingLine, SettingNote, SettingStatus } from "./settings/rows";
 
 /**
  * M6-B: Configurações → Integrações → "Integração com Claude Code". O plugin
@@ -50,48 +50,32 @@ export function ClaudePluginSetting() {
         : null;
 
   return (
-    <div className="mt-2 flex items-start gap-3 py-3">
-      <span className="mt-0.5 shrink-0 text-tyba-text-muted">
-        <ShieldCheck size={18} />
-      </span>
-      <div className="min-w-0 flex-1">
-        <p className="text-[13px] text-tyba-text">{t("claudePlugin")}</p>
-        <p className="pt-1 text-[11px] leading-relaxed text-tyba-text-faint">
-          {t("claudePluginHint")}
-        </p>
-        {status && !status.available && (
-          <p className="pt-1 text-[11px] text-tyba-text-faint">
-            {t("claudePluginUnavailable")}
-          </p>
+    <>
+      <SettingLine label={t("claudePlugin")} hint={t("claudePluginHint")}>
+        {status && !status.available ? (
+          <SettingStatus tone="faint">{t("claudePluginUnavailableShort")}</SettingStatus>
+        ) : status?.installed ? (
+          <SettingStatus tone="green">{t("claudePluginInstalled")}</SettingStatus>
+        ) : (
+          <SettingStatus tone="faint">{t("claudePluginNotInstalled")}</SettingStatus>
         )}
-        {blocked && (
-          <p className="pt-1 text-[11px] text-tyba-red">{blocked}</p>
+        {status?.installed ? (
+          <Button variant="ghost" size="sm" disabled={busy} onClick={() => change(uninstallClaudePlugin)}>
+            {t("claudePluginUninstall")}
+          </Button>
+        ) : (
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={busy || !status?.available}
+            onClick={() => change(installClaudePlugin)}
+          >
+            {t("claudePluginInstallShort")}
+          </Button>
         )}
-        {status?.installed && (
-          <p className="pt-1 text-[11px] text-tyba-text-muted">
-            {t("claudePluginInstalled")}
-          </p>
-        )}
-      </div>
-      {status?.installed ? (
-        <Button
-          variant="ghost"
-          size="sm"
-          disabled={busy}
-          onClick={() => change(uninstallClaudePlugin)}
-        >
-          {t("claudePluginUninstall")}
-        </Button>
-      ) : (
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={busy || !status?.available}
-          onClick={() => change(installClaudePlugin)}
-        >
-          {t("claudePluginInstall")}
-        </Button>
-      )}
-    </div>
+      </SettingLine>
+      {status && !status.available && <SettingNote>{t("claudePluginUnavailable")}</SettingNote>}
+      {blocked && <SettingNote tone="amber">{blocked}</SettingNote>}
+    </>
   );
 }
