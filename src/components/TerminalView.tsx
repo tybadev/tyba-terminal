@@ -214,6 +214,10 @@ interface Props {
   visible: boolean;
   focused: boolean;
   rect: PaneRectStyle | null;
+  /** Programa de tela cheia (nvim, hx, htop): o terminal vai de borda a borda,
+   * sem a margem do bloco ao vivo — a margem virava moldura em volta do
+   * editor. */
+  fullBleed?: boolean;
   exited?: boolean;
   /**
    * O PTY morrer não encerra esta sessão — o core reata. Quem vive no host
@@ -478,6 +482,7 @@ export function TerminalView({
   visible,
   focused,
   rect,
+  fullBleed = false,
   exited,
   reattaches,
   transport,
@@ -1376,16 +1381,20 @@ export function TerminalView({
           // Sem contorno próprio: quem emoldura é o PAINEL (ver `App`). A borda
           // aqui só cercava a caixa do terminal, que em modo prompt é meia
           // altura — o painel focado aparecia com moldura na metade de baixo.
-          className="overflow-hidden rounded-[4px] bg-tyba-sunken px-2.5"
+          className={`overflow-hidden bg-tyba-sunken ${fullBleed ? "" : "rounded-[4px] px-2.5"}`}
           style={
             visible && rect
               ? {
-                  paddingTop: LIVE_PAD_TOP_PX,
-                  paddingBottom: LIVE_PAD_BOTTOM_PX,
+                  paddingTop: fullBleed ? 0 : LIVE_PAD_TOP_PX,
+                  paddingBottom: fullBleed ? 0 : LIVE_PAD_BOTTOM_PX,
                   position: "absolute",
-                  left: `calc(${rect.left}% + ${LIVE_INSET_X_PX}px)`,
+                  left: fullBleed
+                    ? `${rect.left}%`
+                    : `calc(${rect.left}% + ${LIVE_INSET_X_PX}px)`,
                   top: `${rect.top}%`,
-                  width: `calc(${rect.width}% - ${LIVE_INSET_X_PX * 2}px)`,
+                  width: fullBleed
+                    ? `${rect.width}%`
+                    : `calc(${rect.width}% - ${LIVE_INSET_X_PX * 2}px)`,
                   height: `${rect.height}%`,
                   // Recorte da faixa ao vivo. `height` acima é o tamanho que o
                   // `fit` mede e que vira `resizeSession` — ele NÃO entra nesta

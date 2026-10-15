@@ -2568,7 +2568,17 @@ impl Store {
     /// lido de volta do disco convivem na mesma lista.
     pub fn max_block_id(&self) -> Result<u64, StoreError> {
         let conn = self.conn.lock();
-        let max: Option<i64> = conn.query_row("SELECT MAX(id) FROM block", [], |row| row.get(0))?;
+        // `AUTOINCREMENT` nunca reusa um id, nem o de linha apagada (sessão
+        // fechada, poda): o próximo rowid sai do `sqlite_sequence`, não do
+        // `MAX(id)`. Semear pelo `MAX` deixava o id vivo do bloco abaixo do
+        // rowid gravado, e a recarga do histórico desenhava o mesmo `ls` duas
+        // vezes — com ids diferentes, o merge não reconhecia a cópia.
+        let max: Option<i64> = conn.query_row(
+            "SELECT MAX(COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'block'), 0),
+                        COALESCE((SELECT MAX(id) FROM block), 0))",
+            [],
+            |row| row.get(0),
+        )?;
         Ok(max.unwrap_or(0).max(0) as u64)
     }
 
@@ -6269,6 +6279,27 @@ mod tests {
                 .collect(),
             truncated: 0,
         }
+    }
+
+    #[test]
+    fn block_id_seed_skips_ids_of_dropped_blocks() {
+        // Sessão fechada apaga os blocos dela, mas o AUTOINCREMENT não reusa
+        // os ids: o próximo rowid é 4, não 2. Semear o id vivo pelo MAX(id)
+        // dava 2, e a recarga desenhava o bloco duas vezes.
+        let store = Store::open_in_memory().unwrap();
+        store.insert_block(&block("s1", "fica", 1)).unwrap();
+        store.insert_block(&block("s2", "some", 1)).unwrap();
+        store.insert_block(&block("s2", "some", 1)).unwrap();
+        store.drop_blocks("s2").unwrap();
+        assert_eq!(store.max_block_id().unwrap(), 3);
+        store.insert_block(&block("s1", "novo", 1)).unwrap();
+        let ids: Vec<u64> = store
+            .list_blocks("s1", 10)
+            .unwrap()
+            .iter()
+            .map(|b| b.id)
+            .collect();
+        assert_eq!(ids, vec![1, 4]);
     }
 
     #[test]

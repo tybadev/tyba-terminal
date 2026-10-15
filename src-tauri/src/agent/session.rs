@@ -158,6 +158,19 @@ fn main_window_focused(app: &AppHandle) -> bool {
         .unwrap_or(false)
 }
 
+/// A sessão que o dono está olhando agora: o painel em foco do workspace ativo.
+fn viewed_session(app: &AppHandle) -> Option<SessionId> {
+    app.try_state::<crate::AppState>()
+        .and_then(|state| state.layout.active_session())
+}
+
+/// O aviso só se cala quando o dono já está vendo a sessão. Com o TYBA em
+/// foco noutra sessão (o claude roda em muriki-api, ele olha outro shell), o
+/// "terminou" e o "precisa de você" saem igual — é o caso que mais importa.
+fn notify_suppressed(window_focused: bool, viewed: Option<SessionId>, id: SessionId) -> bool {
+    window_focused && viewed == Some(id)
+}
+
 /// O aviso do sistema, com a política já resolvida.
 ///
 /// `pub(crate)` porque o palpite de tela também sai por aqui: são fontes
@@ -172,7 +185,10 @@ pub(crate) fn notify_native(
     id: SessionId,
     body: &str,
 ) {
-    if main_window_focused(app) {
+    let focused = main_window_focused(app);
+    let viewed = viewed_session(app);
+    if notify_suppressed(focused, viewed, id) {
+        eprintln!("[tyba] aviso {kind:?} de {id} calado: a sessão está na tela");
         return;
     }
     // Preferência ilegível não silencia o aviso: `ok().flatten()` cai em `None`,
@@ -182,6 +198,7 @@ pub(crate) fn notify_native(
     let sound_raw = store.get_setting(kind.sound_key()).ok().flatten();
     let policy = notify::resolve(kind, enabled_raw.as_deref(), sound_raw.as_deref());
     if !policy.enabled {
+        eprintln!("[tyba] aviso {kind:?} de {id} desligado nas preferências");
         return;
     }
     let title = sessions
@@ -197,7 +214,12 @@ pub(crate) fn notify_native(
     if let Some(sound) = policy.sound {
         builder = builder.sound(sound);
     }
-    let _ = builder.show();
+    match builder.show() {
+        Ok(()) => eprintln!(
+            "[tyba] aviso {kind:?} de {id} enviado (janela em foco: {focused}, na tela: {viewed:?})"
+        ),
+        Err(e) => eprintln!("[tyba] aviso {kind:?} de {id} falhou: {e}"),
+    }
 }
 
 fn notify_awaiting_input(ctx: &HandlerCtx, body: &str) {
@@ -265,12 +287,17 @@ fn notify_turn_ended(ctx: &HandlerCtx, transcript_path: Option<String>, needs_se
     std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_millis(TURN_END_SETTLE_MS));
         if turn_settle.load(Ordering::SeqCst) != generation {
+            eprintln!("[tyba] fim de turno de {id} sem aviso: turno novo começou");
             return;
         }
         let Some(session) = sessions.get(id) else {
             return;
         };
         let SessionStatus::Idle { summary } = &session.status else {
+            eprintln!(
+                "[tyba] fim de turno de {id} sem aviso: status {:?}",
+                session.status
+            );
             return;
         };
         let settled = transcript_path.as_deref().and_then(|path| {
@@ -2461,6 +2488,16 @@ mod hook_route_tests {
     /// Agente livre (claude digitado): o `PreToolUse` nunca chega ao gate —
     /// sem card, sem espera —, o `PermissionRequest` só avisa, e o resto do
     /// monitor segue igual. Sessão gerenciada continua no gate.
+    #[test]
+    fn notify_is_silent_only_when_the_session_is_on_screen() {
+        let here = SessionId::new_v4();
+        let other = SessionId::new_v4();
+        assert!(notify_suppressed(true, Some(here), here));
+        assert!(!notify_suppressed(true, Some(other), here));
+        assert!(!notify_suppressed(true, None, here));
+        assert!(!notify_suppressed(false, Some(here), here));
+    }
+
     #[test]
     fn observe_only_never_routes_to_the_gate() {
         assert_eq!(

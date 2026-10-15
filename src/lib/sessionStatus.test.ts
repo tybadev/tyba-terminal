@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, it, test } from "bun:test";
 import { readFileSync } from "node:fs";
 
 import {
@@ -8,6 +8,7 @@ import {
   isFinishedStatus,
   mergeSessionUpdate,
   sameSessionStatus,
+  statusGlyph,
   statusVisual,
   tabAttention,
   withSubagentsReason,
@@ -366,5 +367,17 @@ describe("withSubagentsReason", () => {
       "sessionNeedsPermission",
     );
     expect(withSubagentsReason(null, true)).toBeNull();
+  });
+});
+
+describe("statusGlyph", () => {
+  it("cada estado tem a sua forma; rótulo sem estado não afirma nada", () => {
+    expect(statusGlyph("sessionInProgress")).toBe("progress");
+    expect(statusGlyph("sessionSubagentsWorking")).toBe("progress");
+    expect(statusGlyph("sessionFinished")).toBe("done");
+    expect(statusGlyph("sessionNeedsPermission")).toBe("waiting");
+    expect(statusGlyph("sessionFailed")).toBe("failed");
+    expect(statusGlyph("sessionIdle")).toBe("resting");
+    expect(statusGlyph("agentsBoardNoSignal")).toBe("resting");
   });
 });

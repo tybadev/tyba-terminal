@@ -2591,6 +2591,9 @@ export const onBlockFinalized = (
   listen<Block>(`block://finalized/${id}`, (e) => handler(e.payload));
 
 /** `clear`/`reset`: em modo bloco a tela é a lista, e ela some inteira. */
+/** Ctrl+L: limpa a lista de blocos da sessão, como o `clear`. */
+export const wipeBlocks = (id: SessionId) => invoke<void>("wipe_blocks", { id });
+
 export const onBlocksCleared = (
   id: SessionId,
   handler: () => void,

@@ -174,29 +174,26 @@ describe("hiddenFraction", () => {
 describe("termRect", () => {
   it("é sempre a mesma caixa, e é ela que o PTY enxerga", () => {
     // A regra que não pode cair: nenhum argumento de comando entra aqui.
+    // O painel inteiro (15/10): a saída cresce de baixo para cima e empurra
+    // os blocos antigos, em vez de parar na metade com o topo vazio.
     expect(termRect(pane)).toEqual({
       left: 0,
-      top: 50,
+      top: 0,
       width: 100,
-      height: 50,
+      height: 100,
     });
   });
 
   it("acompanha o painel, não o comando", () => {
     const half: SeamRect = { left: 10, top: 20, width: 40, height: 60 };
-    expect(termRect(half)).toEqual({
-      left: 10,
-      top: 50,
-      width: 40,
-      height: 30,
-    });
+    expect(termRect(half)).toEqual(half);
   });
 });
 
 describe("liveRect", () => {
   it("cola a saída no fim do painel, com a altura que ela usa", () => {
     const r = liveRect(pane, 0.5);
-    expect(r.height).toBeCloseTo(25);
+    expect(r.height).toBeCloseTo(50);
     expect(r.top + r.height).toBeCloseTo(100);
   });
 
@@ -234,9 +231,9 @@ describe("blocksRect", () => {
   });
 
   it("cede só a altura que a saída usa", () => {
-    // 12 linhas de 24: a faixa fica com um quarto do painel, não com metade.
+    // 12 linhas de 24: a faixa fica com metade do painel, não com ele todo.
     const used = usedFraction(12, 24);
-    expect(blocksRect(pane, true, used).height).toBeCloseTo(75);
+    expect(blocksRect(pane, true, used).height).toBeCloseTo(50);
   });
 
   it("saída curta devolve à lista o espaço que a faixa fixa desperdiçava", () => {

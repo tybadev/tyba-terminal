@@ -7645,6 +7645,14 @@ fn write_control(state: State<'_, AppState>, id: SessionId, bytes: String) -> Re
 
 /// Consulta o modo prompt em vez de esperar o evento: quem assina depois do
 /// primeiro prompt nunca receberia o `633;P` e ficaria sem a linha de comando.
+/// Ctrl+L na linha de comando: limpa a lista de blocos da sessão, pelo mesmo
+/// caminho do `clear` (apaga do disco e avisa o front), sem rodar comando nem
+/// deixar bloco.
+#[tauri::command]
+fn wipe_blocks(id: SessionId) {
+    blocks::submit(blocks::Work::Wipe(id.to_string()));
+}
+
 /// Blocos já gravados de uma sessão, para reabrir mostrando o que aconteceu
 /// antes. Nada é gravado sem ser usado (ADR de 2026-07-10).
 #[tauri::command]
@@ -9122,6 +9130,7 @@ pub fn run() {
             {
                 let state = app.state::<AppState>();
                 let coord_sessions = Arc::clone(&state.sessions);
+                let coord_store = Arc::clone(&state.store);
                 let coord_app = app.handle().clone();
                 state
                     .subagents
@@ -9130,10 +9139,25 @@ pub fn run() {
                             .get(session)
                             .is_some_and(|s| matches!(s.status, SessionStatus::Running))
                         {
+                            // É aqui que o turno de quem soltou subagentes em
+                            // segundo plano fecha de verdade: o `Stop` do
+                            // orquestrador veio antes, segurado. Sem o aviso
+                            // aqui, "6 subagentes terminaram" passava calado.
+                            let body = summary
+                                .clone()
+                                .unwrap_or_else(|| "Terminou o que tinha pra rodar".into());
                             coord_sessions.set_status(
                                 &coord_app,
                                 session,
                                 SessionStatus::Idle { summary },
+                            );
+                            agent::session::notify_native(
+                                &coord_app,
+                                &coord_sessions,
+                                &coord_store,
+                                agent::notify::NotifyKind::Done,
+                                session,
+                                &body,
                             );
                         }
                     }));
@@ -9428,6 +9452,7 @@ pub fn run() {
             session_shell_boot,
             session_line_echo,
             session_blocks,
+            wipe_blocks,
             search_command_history,
             scan_shell_history_sources,
             import_shell_history,

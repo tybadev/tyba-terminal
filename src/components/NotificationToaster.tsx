@@ -90,6 +90,11 @@ interface Props {
   /** Distância da borda direita para a pilha de cards. Com a superfície de
    * agentes aberta, a pilha anda para a esquerda dela em vez de cobri-la. */
   viewportRightPx?: number;
+  /** Sessões de shell com um claude/codex digitado rodando: o fim de turno
+   * delas avisa igual ao do agente gerenciado. */
+  typedAgentSessions: ReadonlySet<SessionId>;
+  /** Nome da sessão como a barra lateral mostra; `null` cai no título. */
+  sessionLabel: (sessionId: SessionId) => string | null;
 }
 
 export function NotificationToaster({
@@ -100,6 +105,8 @@ export function NotificationToaster({
   onGoToSession,
   hiddenApprovalIds,
   viewportRightPx,
+  typedAgentSessions,
+  sessionLabel,
 }: Props) {
   const { t } = useTranslation();
   const [toasts, setToasts] = useState<ApprovalToastItem[]>([]);
@@ -128,6 +135,8 @@ export function NotificationToaster({
   const sessionsRef = useRef(sessions);
   sessionsRef.current = sessions;
   const activeSessionRef = useRef(activeSessionId);
+  const typedAgentsRef = useRef(typedAgentSessions);
+  typedAgentsRef.current = typedAgentSessions;
   activeSessionRef.current = activeSessionId;
 
   const dismissOutcome = (key: string) => {
@@ -152,7 +161,8 @@ export function NotificationToaster({
 
   useEffect(() => {
     for (const session of sessions) {
-      if (session.kind.type !== "agent") continue;
+      const managed = session.kind.type === "agent";
+      if (!managed && !typedAgentsRef.current.has(session.id)) continue;
       const status = session.status;
       const prev = prevStates.current.get(session.id);
       const next = status.state;
@@ -186,7 +196,10 @@ export function NotificationToaster({
         setTimeout(() => {
           settleTimers.current.delete(session.id);
           const latest = sessionsRef.current.find((s) => s.id === session.id);
-          if (latest?.status.state !== "idle" || !latest.attention) return;
+          // `attention` só existe na sessão gerenciada; no claude digitado o
+          // turno fechado já é o sinal.
+          if (latest?.status.state !== "idle") return;
+          if (managed && !latest.attention) return;
           if (!document.hasFocus() || activeSessionRef.current === session.id) {
             return;
           }
@@ -351,7 +364,9 @@ export function NotificationToaster({
   const visibleToasts = visibleApprovalToasts(toasts, hiddenApprovalIds);
 
   const sessionTitle = (id: SessionId) =>
-    sessions.find((s) => s.id === id)?.title ?? id.slice(0, 8);
+    sessionLabel(id) ??
+    sessions.find((s) => s.id === id)?.title ??
+    id.slice(0, 8);
 
   const decide = (
     request: ApprovalRequest,
@@ -627,7 +642,17 @@ export function NotificationToaster({
               if (!nextOpen) dismissOutcome(outcome.key);
             }}
           >
-            <div className="flex items-start gap-2">
+            {/* O card inteiro leva à sessão: o link embaixo é o alvo do
+                teclado, mas quem usa o mouse clica no card. */}
+            <div
+              className="flex cursor-pointer items-start gap-2"
+              onClick={(event) => {
+                if ((event.target as HTMLElement).closest("button")) return;
+                dismissOutcome(outcome.key);
+                void sessionMarkSeen(outcome.sessionId).catch(() => {});
+                onGoToSession(outcome.sessionId);
+              }}
+            >
               {outcome.kind === "failed" ? (
                 <XCircle
                   aria-hidden="true"

@@ -239,3 +239,29 @@ export const connectingHostIds = (sessions: Session[]): Set<string> => {
   }
   return ids;
 };
+
+/** O ícone de estado que substitui a palavra no cartão da barra lateral. */
+export type StatusGlyph = "progress" | "done" | "waiting" | "failed" | "resting";
+
+/**
+ * Qual ícone diz o estado, a partir do rótulo que já existe: a palavra vira
+ * dica e leitor de tela, o cartão mostra só a forma. Rótulo desconhecido cai
+ * no círculo vazio — nunca afirma um estado que não sabe.
+ */
+export const statusGlyph = (labelKey: string): StatusGlyph => {
+  switch (labelKey) {
+    case "sessionInProgress":
+    case "sessionSubagentsWorking":
+      return "progress";
+    case "sessionFinished":
+      return "done";
+    case "sessionBlocked":
+    case "sessionNeedsPermission":
+    case "sessionAwaiting":
+      return "waiting";
+    case "sessionFailed":
+      return "failed";
+    default:
+      return "resting";
+  }
+};

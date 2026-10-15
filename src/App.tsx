@@ -5,6 +5,10 @@ import {
   CaretDown,
   CaretRight,
   Check,
+  CheckCircle,
+  Circle,
+  CircleDashed,
+  CircleHalf,
   DotsThree,
   FolderOpen,
   GearSix,
@@ -21,6 +25,7 @@ import {
   TerminalWindow,
   User,
   X,
+  XCircle,
 } from "@phosphor-icons/react";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -357,6 +362,8 @@ import {
   connectingHostIds,
   isFinishedStatus,
   mergeSessionUpdate,
+  statusGlyph,
+  type StatusGlyph,
 } from "./lib/sessionStatus";
 import {
   AGENTS_PANEL_LINGER_MS,
@@ -719,6 +726,26 @@ const withHostingState = (p: AgentDetectedPayload): DetectedAgentState | null =>
  * (reinstall, limpar dados do app) é mostrar o toast de novo, nunca um gate
  * a menos: não é decisão de segurança. */
 const HOSTING_INTRO_TOAST_SEEN_KEY = "tyba.shim-v2-hosting-intro-seen";
+
+/** Forma e cor de cada estado no cartão da barra lateral. */
+const STATUS_GLYPH: Record<
+  StatusGlyph,
+  { icon: typeof Circle; weight: "regular" | "fill" | "bold"; className: string }
+> = {
+  progress: {
+    icon: CircleHalf,
+    weight: "fill",
+    className: "text-tyba-blue tyba-half-flip",
+  },
+  done: { icon: CheckCircle, weight: "fill", className: "text-tyba-green" },
+  waiting: {
+    icon: CircleDashed,
+    weight: "bold",
+    className: "text-tyba-amber motion-safe:animate-pulse",
+  },
+  failed: { icon: XCircle, weight: "fill", className: "text-tyba-red" },
+  resting: { icon: Circle, weight: "regular", className: "text-tyba-text-faint" },
+};
 
 export default function App() {
   const { t, i18n } = useTranslation();
@@ -1951,6 +1978,11 @@ export default function App() {
       unlisten?.();
     };
   }, []);
+
+  const typedAgentSessions = useMemo(
+    () => new Set(detectedBySession.keys()),
+    [detectedBySession],
+  );
 
   const probedDetection = useRef<Set<string>>(new Set());
   useEffect(() => {
@@ -4208,6 +4240,7 @@ export default function App() {
           broadcastSet.includes(s.id),
         altScreen: altScreens[s.id] ?? false,
         command: sessionCommands[s.id],
+        agentRunning: detectedBySession.has(s.id),
       }),
     );
   }
@@ -4952,22 +4985,17 @@ export default function App() {
     const runningCmd = isConfig || isWtView ? null : workspaceCommand(w);
     const hoverAgent = runner ?? agentFromCommand(runningCmd);
     const agentStatus = isConfig || isWtView ? null : workspaceAgentStatus(w);
+    // O estado é o ícone (`STATUS_GLYPH`); o texto ao lado diz só o que o
+    // ícone não diz: de quem é, a pergunta pendente, o motivo da falha.
+    const agentLabel = agentStatus ? t(agentStatus.visual.labelKey) : null;
     const agentDetail = (() => {
       if (!agentStatus) return null;
-      const label = t(agentStatus.visual.labelKey);
-      // Observado não tem `hint` nem `reason`: o que a tela diz é o estado, e
-      // mais nada. O nome do agente é o que orienta — sem ele a linha diria
-      // "sem sinal" sem dizer de quem.
-      if (agentStatus.observed) {
-        return `${agentStatus.observed.agent} · ${label}`;
-      }
+      if (agentStatus.observed) return agentStatus.observed.agent;
       const status = agentStatus.session.status;
-      if (status.state === "awaiting_input" && status.hint) {
-        return `${label}: ${status.hint}`;
-      }
-      if (status.state === "failed") return `${label}: ${status.reason}`;
-      if (status.state === "running") return runningCmd ?? label;
-      return label;
+      if (status.state === "awaiting_input" && status.hint) return status.hint;
+      if (status.state === "failed") return status.reason;
+      if (status.state === "running" && runningCmd) return runningCmd;
+      return hoverAgent ?? agentLabel;
     })();
     // Cartão do mockup Proposta no visual (ativa sobe, ponto de estado à
     // direita), com os dados de sempre: caminho/host, agente ou comando,
@@ -5095,10 +5123,22 @@ export default function App() {
               {showDetails && (
                 <span className="flex w-full items-center gap-1.5">
                   {agentStatus && agentDetail ? (
-                    <span className="flex min-w-0 items-center gap-1">
-                      <span
-                        className={`size-1 shrink-0 rounded-full ${agentStatus.visual.dotClass}`}
-                      />
+                    <span
+                      className="flex min-w-0 items-center gap-1"
+                      title={agentLabel ?? undefined}
+                    >
+                      {(() => {
+                        const glyph = STATUS_GLYPH[statusGlyph(agentStatus.visual.labelKey)];
+                        const Icon = glyph.icon;
+                        return (
+                          <Icon
+                            size={11}
+                            weight={glyph.weight}
+                            aria-label={agentLabel ?? undefined}
+                            className={`shrink-0 ${glyph.className}`}
+                          />
+                        );
+                      })()}
                       <span
                         className={`min-w-0 truncate font-mono text-[11px] leading-none ${agentStatus.visual.textClass}`}
                       >
@@ -5288,6 +5328,19 @@ export default function App() {
             })
           }
           onGoToSession={goToSession}
+          typedAgentSessions={typedAgentSessions}
+          sessionLabel={(id) => {
+            // O nome que a barra lateral mostra para a sessão, não o do
+            // shell ("zsh"): é por ele que o dono acha de onde veio o aviso.
+            const location = findSessionLocation(layout.workspaces, id);
+            const w = layout.workspaces.find(
+              (ws) => ws.id === location?.workspaceId,
+            );
+            if (!w) return null;
+            if (w.name_locked) return w.name;
+            const dir = workspaceCwd(w) ?? w.repo_root;
+            return dir ? basename(dir) : w.name;
+          }}
         />
       </ErrorBoundary>
       <CommandPalette
@@ -6476,6 +6529,7 @@ export default function App() {
                             }
                             exited={isFinishedStatus(s.status)}
                             rect={terminalBox}
+                            fullBleed={altScreens[s.id] ?? false}
                             // Só com a faixa ABERTA. `liveUsed` guarda a última
                             // medida e não se apaga quando o comando termina: sem
                             // esta guarda o recorte fica valendo para sempre, e o
@@ -6808,21 +6862,42 @@ export default function App() {
                       </div>
                     </div>
                   )}
+                  {activeSession && richInputVisible && !ownsCommandLine && (() => {
+                    // Flutua sobre o rodapé do painel ativo em vez de ocupar
+                    // uma faixa abaixo dele: abrir e fechar a caixa não
+                    // redimensiona o PTY, e o agente segue com o painel todo.
+                    const rect = paneLayout?.panes.find(
+                      (p) => p.session === activeSession.id,
+                    );
+                    return (
+                      <div
+                        className="absolute z-40 px-4 pb-4"
+                        style={
+                          rect
+                            ? {
+                                left: `${rect.x}%`,
+                                width: `${rect.w}%`,
+                                bottom: `${100 - rect.y - rect.h}%`,
+                              }
+                            : { left: 0, right: 0, bottom: 0 }
+                        }
+                      >
+                        <RichInput
+                          key={activeSession.id}
+                          sessionId={activeSession.id}
+                          pref={richInputPref}
+                          focusNonce={richInputFocusNonce}
+                          openedExplicitly={richInputOpened.has(activeSession.id)}
+                          prefill={launchPrefills[activeSession.id] ?? null}
+                          onFocusChange={(focused) => {
+                            richInputFocused.current = focused;
+                          }}
+                          onClose={() => closeRichInput(activeSession.id)}
+                        />
+                      </div>
+                    );
+                  })()}
                 </div>
-                {activeSession && richInputVisible && !ownsCommandLine && (
-                  <RichInput
-                    key={activeSession.id}
-                    sessionId={activeSession.id}
-                    pref={richInputPref}
-                    focusNonce={richInputFocusNonce}
-                    openedExplicitly={richInputOpened.has(activeSession.id)}
-                    prefill={launchPrefills[activeSession.id] ?? null}
-                    onFocusChange={(focused) => {
-                      richInputFocused.current = focused;
-                    }}
-                    onClose={() => closeRichInput(activeSession.id)}
-                  />
-                )}
                 </div>
                 {sideVisible && activeWorkspace && (
                   <>

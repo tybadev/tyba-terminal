@@ -28,8 +28,13 @@ export interface SeamRect {
  *
  * É CONSTANTE: o xterm é dimensionado por ela do início ao fim da sessão. O que
  * varia é quanto dele fica à mostra, e isso é recorte, não tamanho.
+ *
+ * O painel inteiro (15/10, decisão do dono). Já foi metade: com poucos blocos o
+ * comando ao vivo ficava preso embaixo e a metade de cima vazia. Inteiro, a
+ * saída cresce de baixo para cima e empurra os blocos antigos, como no Warp —
+ * e continua sem resize por comando.
  */
-export const LIVE_FRACTION = 0.5;
+export const LIVE_FRACTION = 1;
 
 /**
  * Quanto um comando precisa durar para a faixa ao vivo abrir.

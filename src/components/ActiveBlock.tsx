@@ -28,6 +28,7 @@ export function ActiveBlockHeader({
   startedAtMs,
   rect,
   liftPx = 0,
+  paneTop = 0,
   onHeight,
 }: {
   command: string;
@@ -42,6 +43,12 @@ export function ActiveBlockHeader({
    * senão a tampa flutua no meio da saída. Ver `padSlackPx`.
    */
   liftPx?: number;
+  /**
+   * Topo do painel, em %. Com a saída enchendo o painel inteiro o header
+   * para aqui, preso, e a saída rola por baixo dele — sem o teto ele saía
+   * pela borda de cima e o comando sumia de vista.
+   */
+  paneTop?: number;
   /**
    * A altura que este header ocupa, medida.
    *
@@ -98,7 +105,9 @@ export function ActiveBlockHeader({
       style={{
         position: "absolute",
         left: `calc(${rect.left}% + ${LIVE_INSET_X_PX}px)`,
-        top: `calc(${rect.top}% - ${liftPx}px)`,
+        // `translateY(-100%)` põe a BASE do header em `top`; o `max` não
+        // deixa a base subir acima de um header de altura abaixo do topo.
+        top: `max(calc(${rect.top}% - ${liftPx}px), calc(${paneTop}% + 36px))`,
         width: `calc(${rect.width}% - ${LIVE_INSET_X_PX * 2}px)`,
         transform: "translateY(-100%)",
       }}

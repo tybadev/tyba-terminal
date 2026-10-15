@@ -1326,9 +1326,19 @@ samp {
 .tyba-pulse {
   animation: tyba-pulse 1.6s ease-in-out infinite;
 }
+/* "Em andamento" no cartão da sessão: o meio círculo pinta um lado, depois o
+   outro, alternando — o movimento é o sinal de que está rodando. */
+@keyframes tyba-half-flip {
+  0%, 49.9% { transform: scaleX(1); }
+  50%, 100% { transform: scaleX(-1); }
+}
+.tyba-half-flip {
+  animation: tyba-half-flip 1.2s steps(1, end) infinite;
+}
 @media (prefers-reduced-motion: reduce) {
   .tyba-flow-line--live,
-  .tyba-pulse { animation: none; }
+  .tyba-pulse,
+  .tyba-half-flip { animation: none; }
 }
 
 /* Esqueleto de carregamento (feature carregamento): a forma final do que vai

@@ -1095,9 +1095,9 @@ const resources = {
       sessionFailed: "falhou",
       notifyRequest: "Avisar quando um agente precisar de você",
       notifyRequestHint:
-        "Aprovação pendente ou pergunta aberta. Só sai com a janela fora de foco.",
+        "Aprovação pendente ou pergunta aberta. Cala só quando você já está vendo a sessão.",
       notifyDone: "Avisar quando um agente terminar",
-      notifyDoneHint: "Fim de turno. Só sai com a janela fora de foco.",
+      notifyDoneHint: "Fim de turno. Cala só quando você já está vendo a sessão.",
       notifyObservedRequest: "Avisar por palpite da tela",
       notifyObservedRequestHint:
         "Agente sem integração, deduzido do que está na tela. Pode errar, então nasce desligado e liga separado do aviso acima.",
@@ -3186,9 +3186,9 @@ const resources = {
       sessionFailed: "failed",
       notifyRequest: "Notify when an agent needs you",
       notifyRequestHint:
-        "Pending approval or open question. Only fires while the window is unfocused.",
+        "Pending approval or open question. Silent only while you are viewing the session.",
       notifyDone: "Notify when an agent finishes",
-      notifyDoneHint: "End of turn. Only fires while the window is unfocused.",
+      notifyDoneHint: "End of turn. Silent only while you are viewing the session.",
       notifyObservedRequest: "Notify on a screen guess",
       notifyObservedRequestHint:
         "Agent with no integration, inferred from what is on screen. It can be wrong, so it starts off and toggles apart from the notice above.",

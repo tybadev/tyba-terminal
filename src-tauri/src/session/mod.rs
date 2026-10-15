@@ -874,6 +874,11 @@ impl SessionManager {
     /// Ambiente comum a todo spawn. Devolve o cwd que a sessão vai exibir.
     fn prepare_env(&self, cmd: &mut CommandBuilder, id: SessionId) -> Option<PathBuf> {
         cmd.env("TERM", "xterm-256color");
+        // O xterm.js desenha cor de 24 bits, mas só o `TERM` não diz isso: sem
+        // `COLORTERM` o nvim e o hx caem na paleta de 256 e o fundo do tema
+        // vira o cinza 235. O app aberto pelo Finder não herda a variável de
+        // terminal nenhum, então ela nasce aqui.
+        cmd.env("COLORTERM", "truecolor");
         cmd.env("TYBA", "1");
         cmd.env("TYBA_SESSION_ID", id.to_string());
         // O shim de agente no rc precisa saber QUEM chamar. Sem isto ele não

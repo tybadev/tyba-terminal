@@ -768,8 +768,9 @@ describe("paneLine", () => {
   });
 
   it("vim num painel não tira o teclado do vizinho", () => {
+    // Tela cheia: a faixa some e o painel é todo do editor.
     expect(shellAt({ altScreen: true })).toEqual({
-      visible: true,
+      visible: false,
       state: "app",
       owns: false,
     });
@@ -801,6 +802,22 @@ describe("paneLine", () => {
       shellAt({ kind: { type: "agent", runner: "claude-code" } as never })
         .visible,
     ).toBe(false);
+  });
+
+  it("claude rodando no painel: a faixa some e o painel é todo dele", () => {
+    const running = { ...idle, running: true };
+    expect(shellAt({ command: running, agentRunning: true }).visible).toBe(
+      false,
+    );
+    expect(shellAt({ command: running }).visible).toBe(true);
+  });
+
+  it("agente em segundo plano não esconde o prompt do shell", () => {
+    expect(shellAt({ agentRunning: true })).toEqual({
+      visible: true,
+      state: "own",
+      owns: true,
+    });
   });
 });
 
