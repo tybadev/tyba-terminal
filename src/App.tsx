@@ -112,6 +112,7 @@ import {
   LaunchConfigScreen,
   type LaunchConfigDraftState,
 } from "./components/LaunchConfigScreen";
+import { MaestroScreen } from "./components/maestro/MaestroScreen";
 import { ShortcutsPanel } from "./components/ShortcutsPanel";
 import { ConnectionsView } from "./components/ConnectionsView";
 import {
@@ -2713,6 +2714,19 @@ export default function App() {
   const cwdKeyOf = (id: SessionId) =>
     sessionCwds[id]?.canonical ?? sessionCwds[id]?.cwd ?? null;
   const statusSessionRef = useRef<SessionId | null>(null);
+  // Pastas de workspace abertas para o Maestro: a da sessão ativa primeiro,
+  // depois as das outras sessões locais (SSH e container rodam em outra máquina).
+  const maestroActiveDir = activeGitStatus?.root ?? activeCwdKey;
+  const maestroDirs = useMemo(() => {
+    const dirs = new Set<string>();
+    if (maestroActiveDir) dirs.add(maestroActiveDir);
+    for (const s of sessions) {
+      if (s.kind.type !== "shell" && s.kind.type !== "agent") continue;
+      const dir = s.repo_root ?? sessionCwds[s.id]?.canonical ?? sessionCwds[s.id]?.cwd;
+      if (dir) dirs.add(dir);
+    }
+    return [...dirs];
+  }, [maestroActiveDir, sessions, sessionCwds]);
   useEffect(() => {
     if (!activeId) {
       setActiveGitStatus(null);
@@ -4268,8 +4282,10 @@ export default function App() {
     filesScreenSession !== null ||
     dockerScreenSession !== null ||
     servicesScreenSession !== null;
+  // O Maestro cobre a área inteira: o teclado é dele enquanto estiver aberto.
+  const [maestroOpen, setMaestroOpen] = useState(false);
   useEffect(() => {
-    if (!activeId || gitScreenOpen) return;
+    if (!activeId || gitScreenOpen || maestroOpen) return;
     if (ownsCommandLine) {
       focusLine(activeId);
       return;
@@ -4278,7 +4294,7 @@ export default function App() {
     // desligado): o foco vai junto, senão as teclas caem numa caixa que já não
     // é dona da linha.
     getTerm(activeId)?.term.focus();
-  }, [ownsCommandLine, activeId, focusLine, gitScreenOpen]);
+  }, [ownsCommandLine, activeId, focusLine, gitScreenOpen, maestroOpen]);
 
   // Quem responde se o PS1 saiu da tela é o SHELL, não o app: o hook relata por
   // `633;P` a cada prompt. Assumir pela preferência mentiria quando o hook não
@@ -5531,8 +5547,13 @@ export default function App() {
                 <TooltipTrigger asChild>
                   <button
                     aria-label={t("terminalView")}
-                    aria-pressed
-                    className="flex h-6 items-center gap-1.5 rounded-[6px] bg-tyba-raised px-3 text-[13px] text-tyba-text shadow-[var(--tyba-row-raised)]"
+                    aria-pressed={!maestroOpen}
+                    onClick={() => setMaestroOpen(false)}
+                    className={`flex h-6 items-center gap-1.5 rounded-[6px] px-3 text-[13px] ${
+                      maestroOpen
+                        ? "text-tyba-text-faint hover:text-tyba-text-muted"
+                        : "bg-tyba-raised text-tyba-text shadow-[var(--tyba-row-raised)]"
+                    }`}
                   >
                     <TerminalWindow size={14} aria-hidden />
                     {t("terminalView")}
@@ -5545,17 +5566,26 @@ export default function App() {
               <Tooltip>
                 <TooltipTrigger asChild>
                   <button
-                    aria-label={`${t("workspaceView")} — ${t("comingSoon")}`}
-                    aria-disabled
-                    disabled
-                    className="flex h-6 cursor-not-allowed items-center gap-1.5 rounded-[6px] px-3 text-[13px] text-tyba-text-faint"
+                    aria-label={t("workspaceView")}
+                    aria-pressed={maestroOpen}
+                    onClick={() => {
+                      // O terminal de baixo não fica com o foco: as teclas
+                      // cairiam num xterm escondido.
+                      (document.activeElement as HTMLElement | null)?.blur();
+                      setMaestroOpen(true);
+                    }}
+                    className={`flex h-6 items-center gap-1.5 rounded-[6px] px-3 text-[13px] ${
+                      maestroOpen
+                        ? "bg-tyba-raised text-tyba-text shadow-[var(--tyba-row-raised)]"
+                        : "text-tyba-text-faint hover:text-tyba-text-muted"
+                    }`}
                   >
                     <Stack size={14} aria-hidden />
                     {t("workspaceView")}
                   </button>
                 </TooltipTrigger>
                 <TooltipContent side="bottom">
-                  {t("comingSoon")}
+                  {t("workspaceView")}
                 </TooltipContent>
               </Tooltip>
             </div>
@@ -5667,7 +5697,20 @@ export default function App() {
           <WindowControls />
         </header>
 
-        <div className="flex min-h-0 flex-1">
+        <div className="relative flex min-h-0 flex-1">
+          {/* Maestro em tela cheia, sem a barra de sessões. Fica por cima em
+              vez de desmontar a área: os terminais seguem vivos embaixo. */}
+          {maestroOpen && (
+            <div className="absolute inset-0 z-40 flex">
+              <ErrorBoundary region="maestro">
+                <MaestroScreen
+                  dirs={maestroDirs}
+                  activeDir={maestroActiveDir}
+                  branch={activeGitStatus?.branch ?? null}
+                />
+              </ErrorBoundary>
+            </div>
+          )}
           <>
             {sidebar !== "hidden" && (
                 <aside

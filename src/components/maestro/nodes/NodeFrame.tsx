@@ -1,0 +1,220 @@
+import { createContext, useContext, useEffect, type ReactNode } from "react";
+import { useTranslation } from "react-i18next";
+import { Trash } from "@phosphor-icons/react";
+import {
+  Handle,
+  NodeResizer,
+  Position,
+  useNodeConnections,
+  useReactFlow,
+  useUpdateNodeInternals,
+  type Node,
+} from "@xyflow/react";
+
+import {
+  NEW_IN_HANDLE,
+  accepts,
+  inHandle,
+  kindOfOutHandle,
+  outHandle,
+  produces,
+  type EdgeKind,
+  type FlowNodeData,
+  type Integration,
+  type MaestroNode,
+} from "@/lib/maestro";
+
+export type MaestroFlowNode = Node<FlowNodeData>;
+
+/** O que os nós precisam da tela: integrações salvas e como mudar o próprio nó. */
+export interface MaestroCtx {
+  integrations: ReadonlyMap<string, Integration>;
+  updateNode: (id: string, update: (node: MaestroNode) => MaestroNode) => void;
+}
+
+export const MaestroContext = createContext<MaestroCtx>({
+  integrations: new Map(),
+  updateNode: () => {},
+});
+
+export const useMaestro = () => useContext(MaestroContext);
+
+/** Cor de cada tipo de ligação (quadro MaestroHarness). */
+export const EDGE_COLOR: Record<EdgeKind, string> = {
+  context: "var(--tyba-violet)",
+  diff: "var(--tyba-green)",
+  file: "var(--tyba-text-muted)",
+  log: "var(--tyba-cyan)",
+  json: "var(--tyba-blue)",
+};
+
+const handleStyle = (color: string, filled: boolean) => ({
+  width: 11,
+  height: 11,
+  borderRadius: "50%",
+  border: `2px solid ${color}`,
+  background: filled ? color : "var(--tyba-bg)",
+});
+
+/**
+ * Moldura comum dos nós: cabeçalho (marca, nome, papel), portas tipadas e o
+ * corpo. Portas de saída: uma por tipo que o nó produz. Portas de entrada:
+ * uma linha por ligação que chega, mais a entrada livre onde nasce a próxima.
+ */
+export function NodeFrame({
+  id,
+  node,
+  selected,
+  mark,
+  markClass,
+  label,
+  children,
+}: {
+  id: string;
+  node: MaestroNode;
+  selected: boolean;
+  mark: ReactNode;
+  markClass: string;
+  label: string;
+  children: ReactNode;
+}) {
+  const { t } = useTranslation();
+  const { integrations, updateNode } = useMaestro();
+  const { deleteElements } = useReactFlow();
+  const updateInternals = useUpdateNodeInternals();
+
+  const outputs = produces(node.kind, integrations);
+  const takesInput = accepts(node.kind, integrations).length > 0;
+  const incoming = useNodeConnections({ handleType: "target" }).flatMap((c) => {
+    const kind = kindOfOutHandle(c.sourceHandle);
+    return kind && c.edgeId ? [{ edgeId: c.edgeId, kind }] : [];
+  });
+  const inputRows = incoming.length + (takesInput ? 1 : 0);
+  const rows = Math.max(outputs.length, inputRows);
+
+  // Porta nova (ligação criada, tipo de saída trocado) só existe para o
+  // xyflow depois de medida de novo.
+  const handleKey = `${incoming.map((i) => i.edgeId).join(",")}|${outputs.join(",")}|${takesInput}`;
+  useEffect(() => {
+    updateInternals(id);
+  }, [id, handleKey, updateInternals]);
+
+  return (
+    <div
+      className={`group flex h-full w-full flex-col rounded-[10px] border bg-tyba-surface font-mono text-tyba-text ${
+        selected
+          ? "border-tyba-violet shadow-[0_0_0_1px_var(--tyba-violet),0_0_0_5px_color-mix(in_srgb,var(--tyba-violet)_18%,transparent)]"
+          : "border-tyba-border-strong shadow-[var(--tyba-shadow-md)]"
+      }`}
+    >
+      <NodeResizer
+        isVisible={selected}
+        minWidth={260}
+        minHeight={150}
+        lineStyle={{ borderColor: "transparent" }}
+        handleStyle={{
+          width: 8,
+          height: 8,
+          borderRadius: 2,
+          border: "1px solid var(--tyba-violet)",
+          background: "var(--tyba-bg)",
+        }}
+      />
+      <div className="flex h-[46px] shrink-0 items-center gap-2.5 border-b border-tyba-border px-3.5">
+        <span
+          className={`flex size-6 shrink-0 items-center justify-center rounded-[6px] ${markClass}`}
+        >
+          {mark}
+        </span>
+        <input
+          aria-label={t("maestroNodeTitle")}
+          spellCheck={false}
+          autoCorrect="off"
+          autoCapitalize="off"
+          value={node.title}
+          onChange={(e) => {
+            const title = e.target.value;
+            updateNode(id, (n) => ({ ...n, title }));
+          }}
+          className="nodrag min-w-0 flex-1 bg-transparent text-[14.5px] font-medium text-tyba-text outline-none"
+        />
+        <span className="shrink-0 truncate text-[11.5px] text-tyba-text-faint">
+          {label}
+        </span>
+        <button
+          type="button"
+          aria-label={t("maestroDeleteNode")}
+          title={t("maestroDeleteNode")}
+          onClick={() => void deleteElements({ nodes: [{ id }] })}
+          className="nodrag shrink-0 rounded-[4px] p-1 text-tyba-text-faint opacity-0 transition-opacity hover:text-tyba-red focus-visible:opacity-100 group-hover:opacity-100"
+        >
+          <Trash size={13} />
+        </button>
+      </div>
+      {rows > 0 && (
+        <div className="shrink-0 border-b border-tyba-border py-1.5">
+          {Array.from({ length: rows }, (_, i) => {
+            const input = incoming[i];
+            const isNewInput = !input && takesInput && i === incoming.length;
+            const output = outputs[i];
+            return (
+              <div
+                key={i}
+                className="relative flex h-6 items-center justify-between gap-2 px-3.5 text-[11px] text-tyba-text-faint"
+              >
+                <span className="truncate">
+                  {input && (
+                    <>
+                      <Handle
+                        type="target"
+                        id={inHandle(input.edgeId)}
+                        position={Position.Left}
+                        isConnectable={false}
+                        style={handleStyle(EDGE_COLOR[input.kind], false)}
+                      />
+                      <b className="font-medium text-tyba-text-muted">{t("maestroInput")}:</b>{" "}
+                      {t(`maestroEdge_${input.kind}`)}
+                    </>
+                  )}
+                  {isNewInput && (
+                    <>
+                      <Handle
+                        type="target"
+                        id={NEW_IN_HANDLE}
+                        position={Position.Left}
+                        style={handleStyle("var(--tyba-border-strong)", false)}
+                      />
+                      <span className="text-tyba-text-ghost">{t("maestroInput")}</span>
+                    </>
+                  )}
+                </span>
+                {output && (
+                  <span className="truncate">
+                    <b className="font-medium text-tyba-text-muted">{t("maestroOutput")}:</b>{" "}
+                    {t(`maestroEdge_${output}`)}
+                    <Handle
+                      type="source"
+                      id={outHandle(output)}
+                      position={Position.Right}
+                      style={handleStyle(EDGE_COLOR[output], true)}
+                    />
+                  </span>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-b-[9px]">
+        {children}
+      </div>
+    </div>
+  );
+}
+
+/** Área de texto no estilo do terminal do nó (o terminal real chega no B7). */
+export const termClass =
+  "nodrag nowheel min-h-0 w-full flex-1 resize-none bg-tyba-sunken px-3.5 py-2.5 font-mono text-[11.5px] leading-[17px] text-tyba-text-muted outline-none placeholder:text-tyba-text-ghost";
+
+export const fieldClass =
+  "nodrag h-6 min-w-0 rounded-[4px] border border-tyba-border bg-tyba-text/[.02] px-1.5 font-mono text-[11px] text-tyba-text outline-none focus:border-tyba-border-strong";
