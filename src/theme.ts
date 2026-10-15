@@ -77,7 +77,14 @@ function effectiveBase(): "dark" | "light" {
     : "dark";
 }
 
+/**
+ * Tema em pré-visualização (o mouse em cima de um cartão nas Configurações):
+ * pinta o app inteiro sem gravar nada. `null` volta ao que está escolhido.
+ */
+let preview: Theme | null = null;
+
 function activeTheme(): Theme | null {
+  if (preview) return preview;
   if (!state) return null;
   return effectiveBase() === "light" ? state.light : state.dark;
 }
@@ -253,6 +260,18 @@ export function setThemeMode(next: ThemeMode) {
   apply();
   for (const cb of modeListeners) cb(next);
   void setThemeModeCmd(next).catch(() => {});
+}
+
+export function previewTheme(theme: Theme | null) {
+  if (preview?.id === theme?.id) return;
+  preview = theme;
+  apply();
+}
+
+/** Escolhe o tema de um dos lados (escuro ou claro) sem mexer no modo. */
+export async function setSlotTheme(theme: Theme): Promise<void> {
+  preview = null;
+  await setThemeSlot(theme.base, theme.id);
 }
 
 export async function applyTheme(theme: Theme): Promise<void> {
