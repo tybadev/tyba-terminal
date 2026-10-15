@@ -2478,6 +2478,12 @@ export interface ArgumentSuggestion {
   value: string;
   /** Só a base conhece; provedor e histórico vêm sem. */
   description: string | null;
+  /** Quantas vezes o histórico já rodou este passo; 0 = nunca. */
+  uses: number;
+  /** `subcommand` ou `option` quando vem da base. */
+  kind: string | null;
+  /** A forma longa da mesma flag (`--message` para `-m`). */
+  alias: string | null;
 }
 
 /** Um comando que existe na sessão — do `$PATH` ou contado pelo shell. */

@@ -8184,6 +8184,12 @@ fn provider_candidates(
 struct ArgumentSuggestion {
     value: String,
     description: Option<String>,
+    /// Quantas vezes o histórico já rodou este passo; 0 = nunca.
+    uses: u32,
+    /// `subcommand` ou `option` quando vem da base — separa os grupos na tela.
+    kind: Option<String>,
+    /// A forma longa da mesma flag (`--message` para `-m`).
+    alias: Option<String>,
 }
 
 /// O comando e o que já foi digitado depois dele.
@@ -8213,6 +8219,14 @@ fn argument_candidates(
         .history_with_prefix(prefix, 400)
         .map_err(|e| e.to_string())?;
     let from_history = completion::next_tokens(&used, prefix, token);
+    let uses = completion::argument::token_uses(
+        &state
+            .store
+            .history_counts_with_prefix(prefix, 400)
+            .unwrap_or_default(),
+        prefix,
+        token,
+    );
 
     let mut found = completion::argument::rank(
         provider_candidates(state, prefix, cwd, repo_root)
@@ -8237,29 +8251,46 @@ fn argument_candidates(
     // histórico, e é a base que sabe o que `commit` FAZ. Então ela enriquece o
     // que já está lá antes de acrescentar o que falta.
     let (comando, escopo) = command_and_scope(prefix);
+    // 150 e não 40: `git ` tem 95 subcomandos, e cortar em ordem alfabética
+    // deixava `push` e `status` de fora da lista que diz "digite para filtrar".
     let da_base = state
         .store
-        .spec_completions(&comando, &escopo, token, 40)
+        .spec_completions_with_kind(&comando, &escopo, token, 150)
         .unwrap_or_default();
     let mut descricoes: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
-    for (nome, descricao) in &da_base {
+    let mut tipos: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for (nome, descricao, tipo) in &da_base {
         if let Some(d) = descricao {
             descricoes.insert(nome.clone(), d.clone());
         }
+        tipos.insert(nome.clone(), tipo.clone());
     }
-    for (nome, _) in da_base {
+    for (nome, _, _) in da_base {
         if !found.contains(&nome) && nome != token {
             found.push(nome);
         }
     }
 
-    found.truncate(40);
-    Ok(found
+    found.truncate(150);
+    let candidates = found
         .into_iter()
-        .map(|value| ArgumentSuggestion {
+        .map(|value| completion::argument::Candidate {
             description: descricoes.remove(&value),
+            uses: uses.get(&value).copied().unwrap_or(0),
+            kind: tipos.remove(&value),
+            alias: None,
             value,
+        })
+        .collect();
+    Ok(completion::argument::pair_flags(candidates)
+        .into_iter()
+        .map(|c| ArgumentSuggestion {
+            value: c.value,
+            description: c.description,
+            uses: c.uses,
+            kind: c.kind,
+            alias: c.alias,
         })
         .collect())
 }

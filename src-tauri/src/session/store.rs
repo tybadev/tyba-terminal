@@ -2294,6 +2294,34 @@ impl Store {
 
     /// Comandos distintos que começam com o prefixo, mais recentes primeiro.
     /// Alimenta a completação de subcomando e flag.
+    /// Quantas vezes cada comando que começa com `prefix` rodou — é o "42×" da
+    /// lista. Mais recentes primeiro, como `history_with_prefix`.
+    pub fn history_counts_with_prefix(
+        &self,
+        prefix: &str,
+        limit: i64,
+    ) -> Result<Vec<(String, u32)>, StoreError> {
+        if prefix.trim().is_empty() {
+            return Ok(Vec::new());
+        }
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT command, COUNT(*) AS uses, MAX(started_at_ms) AS last_ms
+             FROM command_history
+             WHERE command LIKE ?1 ESCAPE '\\'
+               AND host_id IS NULL
+             GROUP BY command
+             ORDER BY last_ms DESC
+             LIMIT ?2",
+        )?;
+        let rows = stmt
+            .query_map(params![format!("{}%", escape_like(prefix)), limit], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, u32>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
     pub fn history_with_prefix(&self, prefix: &str, limit: i64) -> Result<Vec<String>, StoreError> {
         self.history_with_prefix_of_host(prefix, limit, None)
     }
@@ -2347,6 +2375,22 @@ impl Store {
         token: &str,
         limit: i64,
     ) -> Result<Vec<(String, Option<String>)>, StoreError> {
+        Ok(self
+            .spec_completions_with_kind(command, escopo, token, limit)?
+            .into_iter()
+            .map(|(nome, descricao, _)| (nome, descricao))
+            .collect())
+    }
+
+    /// O mesmo, com o tipo (`subcommand` ou `option`): é ele que separa a
+    /// lista em grupos na tela.
+    pub fn spec_completions_with_kind(
+        &self,
+        command: &str,
+        escopo: &str,
+        token: &str,
+        limit: i64,
+    ) -> Result<Vec<(String, Option<String>, String)>, StoreError> {
         if command.is_empty() {
             return Ok(Vec::new());
         }
@@ -2362,7 +2406,7 @@ impl Store {
         let padrao = format!("{}%", escape_like(&prefixo));
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
-            "SELECT path, description FROM command_spec
+            "SELECT path, description, kind FROM command_spec
              WHERE command = ?1 AND path LIKE ?2 ESCAPE '\\'
              ORDER BY kind DESC, path
              LIMIT ?3",
@@ -2374,12 +2418,16 @@ impl Store {
         };
         let linhas = stmt
             .query_map(params![command, padrao, limit * 4], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
             })?
             .collect::<Result<Vec<_>, _>>()?;
 
         let mut achados = Vec::new();
-        for (path, descricao) in linhas {
+        for (path, descricao, kind) in linhas {
             let Some(resto) = path.get(cortar..) else {
                 continue;
             };
@@ -2389,7 +2437,7 @@ impl Store {
             if resto.is_empty() || resto.contains(' ') {
                 continue;
             }
-            achados.push((resto.to_string(), descricao));
+            achados.push((resto.to_string(), descricao, kind));
             if achados.len() as i64 >= limit {
                 break;
             }
