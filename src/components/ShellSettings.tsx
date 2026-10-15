@@ -140,7 +140,7 @@ export function ShellSettings() {
   };
 
   return (
-    <section className="mx-auto w-full max-w-lg">
+    <section className="mx-auto w-full max-w-[860px]">
       <span className="tyba-label">{t("promptModeTitle")}</span>
       <p className="pt-1 text-[11px] leading-relaxed text-tyba-text-faint">
         {t("promptModeHint")}

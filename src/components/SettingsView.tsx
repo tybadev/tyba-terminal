@@ -566,7 +566,7 @@ function AboutSection({
   const commitDate = info ? shortCommitDate(info.commit_date, i18n.language) : "";
 
   return (
-    <section className="mx-auto w-full max-w-lg">
+    <section className="mx-auto w-full max-w-[860px]">
       <SectionHeader title={t("settingsAbout")} hint={t("aboutHint")} />
 
       <div className="mb-6 flex items-center gap-3">
@@ -1001,10 +1001,10 @@ export function SettingsView({
         </header>
         <div
           ref={contentRef}
-          className="min-h-0 flex-1 overflow-y-auto bg-tyba-sunken px-8 pt-4 pb-8"
+          className="tyba-settings min-h-0 flex-1 overflow-y-auto bg-tyba-sunken px-8 pt-4 pb-8"
         >
         {query.trim() && (
-          <section className="mx-auto w-full max-w-lg">
+          <section className="mx-auto w-full max-w-[860px]">
             <span className="tyba-label">
               {t("settingsSearchResults", { count: results.length })}
             </span>
@@ -1038,7 +1038,7 @@ export function SettingsView({
         )}
         {!query.trim() && (<>
         {section === "general" && (
-          <section className="mx-auto w-full max-w-lg">
+          <section className="mx-auto w-full max-w-[860px]">
             <SectionHeader title={t("settingsGeneral")} hint={t("generalHint")} />
                         <span className="tyba-label">{t("account")}</span>
             <div className="mt-2 mb-6 flex items-center gap-3 py-3">
@@ -1117,7 +1117,7 @@ export function SettingsView({
           </section>
         )}
         {section === "appearance" && (
-          <section className="mx-auto w-full max-w-lg">
+          <section className="mx-auto w-full max-w-[860px]">
             <SectionHeader title={t("settingsAppearance")} hint={t("appearanceHint")} />
             <span className="tyba-label">{t("colorMode")}</span>
             <div className="flex gap-2 pt-2 pb-6">
@@ -1277,7 +1277,7 @@ export function SettingsView({
           </section>
         )}
         {section === "terminal" && (
-          <section className="mx-auto w-full max-w-lg">
+          <section className="mx-auto w-full max-w-[860px]">
             <SectionHeader title={t("settingsTerminal")} hint={t("settingsTerminalHint")} />
             <div className="divide-y divide-tyba-border">
               {RICH_INPUT_TOGGLES.map(({ field, label, hint }) => (
@@ -1324,7 +1324,7 @@ export function SettingsView({
         )}
         {section === "terminal" && <ShellSettings />}
         {section === "agents" && (
-          <section className="mx-auto w-full max-w-lg">
+          <section className="mx-auto w-full max-w-[860px]">
             <SectionHeader title={t("settingsAgents")} hint={t("settingsAgentsHint")} />
             <span className="tyba-label mt-6 block">{t("reviewAgent")}</span>
             <p className="pt-1 text-[11px] leading-relaxed text-tyba-text-faint">
@@ -1455,7 +1455,7 @@ export function SettingsView({
           </section>
         )}
         {section === "integrations" && (
-          <section className="mx-auto w-full max-w-lg">
+          <section className="mx-auto w-full max-w-[860px]">
             <SectionHeader title={t("settingsIntegrations")} hint={t("settingsIntegrationsHint")} />
             <div className="mt-2 flex items-start gap-3 py-3">
               <span className="mt-0.5 shrink-0 text-tyba-text-muted">
@@ -1503,7 +1503,7 @@ export function SettingsView({
           </section>
         )}
         {section === "notifications" && (
-          <section className="mx-auto w-full max-w-lg">
+          <section className="mx-auto w-full max-w-[860px]">
             <SectionHeader title={t("settingsNotifications")} hint={t("settingsNotificationsHint")} />
             <div className="divide-y divide-tyba-border">
               <NotifyPrefs />
@@ -1512,7 +1512,7 @@ export function SettingsView({
           </section>
         )}
         {section === "shortcuts" && (
-          <section className="mx-auto w-full max-w-lg">
+          <section className="mx-auto w-full max-w-[860px]">
             <SectionHeader
               title={t("settingsShortcuts")}
               hint={t("shortcutsHint")}
