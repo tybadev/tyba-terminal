@@ -176,16 +176,17 @@ export function ContainerStrip({ containerId, current, host, onRestarted, inScre
   return (
     <div
       ref={rootRef}
-      className="flex h-9 shrink-0 items-center gap-2 tyba-divide-b bg-[var(--tyba-panel-bg)] px-[18px] text-[12px] text-tyba-text-muted"
+      className="flex min-h-9 shrink-0 items-center gap-2 tyba-divide-b bg-[var(--tyba-panel-bg)] px-[18px] py-1.5 text-[12px] text-tyba-text-muted"
     >
-      <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden whitespace-nowrap">
+      {/* Quebra linha em vez de cortar: imagem e portas são o que importa ver. */}
+      <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1">
         <span className="min-w-0 max-w-[40%] shrink-0 truncate text-tyba-text">
           {detail?.name ?? containerId.slice(0, 12)}
         </span>
         {detail && (
           <>
             {sep}
-            <span className="min-w-0 truncate" title={detail.image}>
+            <span className="min-w-0 break-all font-mono text-[11.5px]" title={detail.image}>
               {detail.image}
             </span>
             {sep}
@@ -195,9 +196,14 @@ export function ContainerStrip({ containerId, current, host, onRestarted, inScre
             {detail.ports.length > 0 && (
               <>
                 {sep}
-                <span className="min-w-0 truncate" title={detail.ports.join(", ")}>
-                  {detail.ports.join(", ")}
-                </span>
+                {detail.ports.map((port) => (
+                  <span
+                    key={port}
+                    className="shrink-0 rounded-[4px] px-1.5 font-mono text-[11.5px] text-tyba-text shadow-[inset_0_0_0_1px_var(--tyba-border-field)]"
+                  >
+                    {port}
+                  </span>
+                ))}
               </>
             )}
             {stats && (

@@ -943,7 +943,7 @@ pub struct ContainerDetail {
     pub started_at: Option<String>,
     pub workdir: Option<String>,
     pub mounts: Vec<logs::Mount>,
-    /// `3000 → localhost:3000`, já formatado.
+    /// `localhost:3000 → 3000` (fora → dentro), já formatado.
     pub ports: Vec<String>,
 }
 
@@ -966,11 +966,13 @@ fn format_ports(c: &serde_json::Value) -> Vec<String> {
             let Some(host_port) = bind.get("HostPort").and_then(|p| p.as_str()) else {
                 continue;
             };
+            // Lido como se usa: o endereço de fora primeiro, a porta do
+            // container depois ("localhost:15432 → 5432").
             let ip = match bind.get("HostIp").and_then(|i| i.as_str()).unwrap_or("") {
-                "" | "0.0.0.0" | "::" => "localhost",
+                "" | "0.0.0.0" | "::" | "127.0.0.1" | "::1" => "localhost",
                 other => other,
             };
-            ports.push(format!("{port} → {ip}:{host_port}"));
+            ports.push(format!("{ip}:{host_port} → {port}"));
         }
     }
     ports.sort();
@@ -2471,7 +2473,7 @@ not-json-line
             }],
             "volume nomeado não é caminho do projeto"
         );
-        assert_eq!(d.ports, vec!["3000 → localhost:3000".to_string()]);
+        assert_eq!(d.ports, vec!["localhost:3000 → 3000".to_string()]);
         let never = INSPECT.replace("2026-10-12T15:21:00.5Z", "0001-01-01T00:00:00Z");
         assert_eq!(parse_inspect(&never).unwrap().started_at, None);
         assert!(parse_inspect("lixo").is_none());
