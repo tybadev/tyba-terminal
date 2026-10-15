@@ -735,7 +735,7 @@ const STATUS_GLYPH: Record<
   progress: {
     icon: CircleHalf,
     weight: "fill",
-    className: "text-tyba-blue motion-safe:animate-pulse",
+    className: "text-tyba-blue tyba-half-flip",
   },
   done: { icon: CheckCircle, weight: "fill", className: "text-tyba-green" },
   waiting: {
@@ -5329,6 +5329,18 @@ export default function App() {
           }
           onGoToSession={goToSession}
           typedAgentSessions={typedAgentSessions}
+          sessionLabel={(id) => {
+            // O nome que a barra lateral mostra para a sessão, não o do
+            // shell ("zsh"): é por ele que o dono acha de onde veio o aviso.
+            const location = findSessionLocation(layout.workspaces, id);
+            const w = layout.workspaces.find(
+              (ws) => ws.id === location?.workspaceId,
+            );
+            if (!w) return null;
+            if (w.name_locked) return w.name;
+            const dir = workspaceCwd(w) ?? w.repo_root;
+            return dir ? basename(dir) : w.name;
+          }}
         />
       </ErrorBoundary>
       <CommandPalette
@@ -6517,6 +6529,7 @@ export default function App() {
                             }
                             exited={isFinishedStatus(s.status)}
                             rect={terminalBox}
+                            fullBleed={altScreens[s.id] ?? false}
                             // Só com a faixa ABERTA. `liveUsed` guarda a última
                             // medida e não se apaga quando o comando termina: sem
                             // esta guarda o recorte fica valendo para sempre, e o

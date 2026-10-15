@@ -93,6 +93,8 @@ interface Props {
   /** Sessões de shell com um claude/codex digitado rodando: o fim de turno
    * delas avisa igual ao do agente gerenciado. */
   typedAgentSessions: ReadonlySet<SessionId>;
+  /** Nome da sessão como a barra lateral mostra; `null` cai no título. */
+  sessionLabel: (sessionId: SessionId) => string | null;
 }
 
 export function NotificationToaster({
@@ -104,6 +106,7 @@ export function NotificationToaster({
   hiddenApprovalIds,
   viewportRightPx,
   typedAgentSessions,
+  sessionLabel,
 }: Props) {
   const { t } = useTranslation();
   const [toasts, setToasts] = useState<ApprovalToastItem[]>([]);
@@ -360,16 +363,10 @@ export function NotificationToaster({
 
   const visibleToasts = visibleApprovalToasts(toasts, hiddenApprovalIds);
 
-  // Sessão de shell se chama pelo shell ("zsh"), que não diz de onde veio o
-  // aviso: com repo, vale o nome do projeto.
-  const sessionTitle = (id: SessionId) => {
-    const session = sessions.find((s) => s.id === id);
-    if (!session) return id.slice(0, 8);
-    if (session.kind.type === "shell" && session.repo_root) {
-      return session.repo_root.split("/").filter(Boolean).pop() ?? session.title;
-    }
-    return session.title;
-  };
+  const sessionTitle = (id: SessionId) =>
+    sessionLabel(id) ??
+    sessions.find((s) => s.id === id)?.title ??
+    id.slice(0, 8);
 
   const decide = (
     request: ApprovalRequest,

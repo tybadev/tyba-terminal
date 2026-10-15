@@ -768,8 +768,9 @@ describe("paneLine", () => {
   });
 
   it("vim num painel não tira o teclado do vizinho", () => {
+    // Tela cheia: a faixa some e o painel é todo do editor.
     expect(shellAt({ altScreen: true })).toEqual({
-      visible: true,
+      visible: false,
       state: "app",
       owns: false,
     });

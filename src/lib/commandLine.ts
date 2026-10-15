@@ -255,7 +255,11 @@ export function paneLine(input: {
   // "está no controle" só tomava a altura de uma linha do claude. O prompt
   // longo vai pela caixa flutuante (⌘⇧G). Só enquanto o shell não é dono da
   // linha: um `claude &` em segundo plano não esconde o prompt.
-  const agentOwnsPane = (input.agentRunning ?? false) && state !== "own";
+  // Programa de tela cheia (nvim, hx, htop) também ganha o painel todo: a
+  // faixa custava uma linha do editor. Sem resize extra — entrar em
+  // alt-screen já redimensiona o painel no mesmo commit.
+  const agentOwnsPane =
+    state === "app" || ((input.agentRunning ?? false) && state !== "own");
   return {
     visible:
       !agentOwnsPane &&
