@@ -71,6 +71,24 @@ pub fn submit_strategy_for(kind: &SessionKind) -> SubmitStrategy {
     }
 }
 
+/// Os aliases de modelo do Claude Code que a launch config aceita.
+///
+/// Allowlist fechada, e não "qualquer string que pareça modelo": o valor vira
+/// argv do agente, e `--model` aceitando texto livre é a porta para um slot
+/// salvo (ou um SQLite editado à mão) injetar outra flag — um
+/// `--dangerously-skip-permissions` disfarçado de nome de modelo. Alias e não
+/// id completo porque o alias acompanha a versão nova sem ninguém regravar a
+/// configuração.
+pub const CLAUDE_MODEL_ALIASES: &[&str] = &["opus", "sonnet", "haiku"];
+
+/// `Some(alias)` só para um valor exatamente igual a um de
+/// [`CLAUDE_MODEL_ALIASES`] — sem trim, sem caixa: o que não bate fica de fora.
+/// Devolve o `&'static str` da lista, nunca o texto recebido, para que o que
+/// chega ao argv seja sempre uma constante do próprio código.
+pub fn claude_model_alias(value: &str) -> Option<&'static str> {
+    CLAUDE_MODEL_ALIASES.iter().copied().find(|a| *a == value)
+}
+
 pub trait AgentRunner: Send + Sync {
     fn kind(&self) -> AgentRunnerKind;
 
@@ -79,12 +97,17 @@ pub trait AgentRunner: Send + Sync {
     /// chama, porque a posição do resume é diferente em cada CLI: no Claude Code
     /// é a opção `--resume <id>`, no Codex é o subcomando `resume <id>`, que tem
     /// de vir antes de qualquer flag.
+    ///
+    /// `model` é o modelo escolhido no slot da launch config. Dado que veio do
+    /// webview e do SQLite: cada runner decide se o entende e revalida antes
+    /// de virar argv — ver [`claude_model_alias`].
     fn build_command(
         &self,
         worktree_path: &Path,
         env: &HashMap<String, String>,
         hooks: &HookSetup,
         resume: Option<&str>,
+        model: Option<&str>,
     ) -> CommandBuilder;
 
     /// Se a CLI deste runner sabe retomar uma conversa por id. `false` não é
@@ -504,6 +527,7 @@ impl AgentRunner for ClaudeCodeRunner {
         env: &HashMap<String, String>,
         hooks: &HookSetup,
         resume: Option<&str>,
+        model: Option<&str>,
     ) -> CommandBuilder {
         let mut cmd = CommandBuilder::new("claude");
         cmd.arg("--settings");
@@ -514,6 +538,14 @@ impl AgentRunner for ClaudeCodeRunner {
         if let Some(id) = resume {
             cmd.arg("--resume");
             cmd.arg(id);
+        }
+        // Revalida aqui mesmo com o `validate` do save já tendo recusado: o
+        // valor passou pelo SQLite no meio, e é esta a última porta antes do
+        // argv. Inválido some calado — o agente sobe no modelo padrão em vez de
+        // não subir.
+        if let Some(alias) = model.and_then(claude_model_alias) {
+            cmd.arg("--model");
+            cmd.arg(alias);
         }
         cmd.cwd(worktree_path);
         cmd.env_clear();
@@ -602,6 +634,9 @@ impl AgentRunner for CodexRunner {
         env: &HashMap<String, String>,
         hooks: &HookSetup,
         resume: Option<&str>,
+        // Os aliases da launch config são do Claude; o Codex sobe no modelo
+        // do config dele.
+        _model: Option<&str>,
     ) -> CommandBuilder {
         let mut cmd = CommandBuilder::new("codex");
         // `codex resume <SESSION_ID>` é SUBCOMANDO, não opção: precisa vir antes
@@ -763,7 +798,7 @@ mod tests {
     #[test]
     fn build_command_uses_settings_flag_with_hook_path() {
         let env = HashMap::new();
-        let cmd = ClaudeCodeRunner.build_command(Path::new("/wt"), &env, &hooks(), None);
+        let cmd = ClaudeCodeRunner.build_command(Path::new("/wt"), &env, &hooks(), None, None);
         let argv = argv_strings(&cmd);
         assert_eq!(argv, vec!["claude", "--settings", "/tmp/hooks.json"]);
     }
@@ -773,7 +808,8 @@ mod tests {
     #[test]
     fn claude_resume_passes_the_conversation_id_as_an_option() {
         let env = HashMap::new();
-        let cmd = ClaudeCodeRunner.build_command(Path::new("/wt"), &env, &hooks(), Some("abc-123"));
+        let cmd =
+            ClaudeCodeRunner.build_command(Path::new("/wt"), &env, &hooks(), Some("abc-123"), None);
         let argv = argv_strings(&cmd);
         assert_eq!(
             argv,
@@ -792,7 +828,8 @@ mod tests {
     #[test]
     fn codex_resume_is_the_first_argument_and_keeps_sandbox_and_approval() {
         let env = HashMap::new();
-        let cmd = CodexRunner.build_command(Path::new("/wt"), &env, &hooks(), Some("abc-123"));
+        let cmd =
+            CodexRunner.build_command(Path::new("/wt"), &env, &hooks(), Some("abc-123"), None);
         let argv = argv_strings(&cmd);
         assert_eq!(&argv[..3], ["codex", "resume", "abc-123"]);
         let sandbox = argv.iter().position(|a| a == "--sandbox").unwrap();
@@ -800,6 +837,49 @@ mod tests {
         let approval = argv.iter().position(|a| a == "--ask-for-approval").unwrap();
         assert_eq!(argv[approval + 1], "on-request");
         assert!(argv.iter().filter(|a| *a == "--config").count() == 13);
+    }
+
+    #[test]
+    fn claude_model_alias_becomes_the_model_flag() {
+        let env = HashMap::new();
+        let cmd =
+            ClaudeCodeRunner.build_command(Path::new("/wt"), &env, &hooks(), None, Some("opus"));
+        let argv = argv_strings(&cmd);
+        assert_eq!(
+            argv,
+            vec!["claude", "--settings", "/tmp/hooks.json", "--model", "opus"]
+        );
+    }
+
+    /// O valor veio do webview e passou pelo SQLite: fora da allowlist não
+    /// entra nada no argv — nem a flag, nem o texto.
+    #[test]
+    fn claude_model_outside_the_allowlist_adds_nothing() {
+        let env = HashMap::new();
+        for bad in [
+            "opus; rm -rf /",
+            "--dangerously-skip-permissions",
+            "Opus",
+            " opus",
+            "claude-opus-4",
+            "",
+        ] {
+            let cmd =
+                ClaudeCodeRunner.build_command(Path::new("/wt"), &env, &hooks(), None, Some(bad));
+            assert_eq!(
+                argv_strings(&cmd),
+                vec!["claude", "--settings", "/tmp/hooks.json"],
+                "{bad:?} não podia virar argv"
+            );
+        }
+    }
+
+    #[test]
+    fn codex_ignores_the_model() {
+        let env = HashMap::new();
+        let with = CodexRunner.build_command(Path::new("/wt"), &env, &hooks(), None, Some("opus"));
+        let without = CodexRunner.build_command(Path::new("/wt"), &env, &hooks(), None, None);
+        assert_eq!(argv_strings(&with), argv_strings(&without));
     }
 
     #[test]
@@ -811,7 +891,7 @@ mod tests {
     #[test]
     fn build_command_sets_cwd_to_worktree() {
         let env = HashMap::new();
-        let cmd = ClaudeCodeRunner.build_command(Path::new("/wt"), &env, &hooks(), None);
+        let cmd = ClaudeCodeRunner.build_command(Path::new("/wt"), &env, &hooks(), None, None);
         assert_eq!(cmd.get_cwd().map(OsStr::new), Some(OsStr::new("/wt")));
     }
 
@@ -819,7 +899,7 @@ mod tests {
     fn build_command_applies_env_allowlist() {
         let mut env = HashMap::new();
         env.insert("PATH".to_string(), "/usr/bin".to_string());
-        let cmd = ClaudeCodeRunner.build_command(Path::new("/wt"), &env, &hooks(), None);
+        let cmd = ClaudeCodeRunner.build_command(Path::new("/wt"), &env, &hooks(), None, None);
         assert_eq!(cmd.get_env("PATH"), Some(OsStr::new("/usr/bin")));
     }
 
@@ -827,7 +907,7 @@ mod tests {
     fn build_command_never_bypasses_permissions() {
         let mut env = HashMap::new();
         env.insert("PATH".to_string(), "/usr/bin".to_string());
-        let cmd = ClaudeCodeRunner.build_command(Path::new("/wt"), &env, &hooks(), None);
+        let cmd = ClaudeCodeRunner.build_command(Path::new("/wt"), &env, &hooks(), None, None);
         let argv = argv_strings(&cmd);
         for arg in &argv {
             assert_ne!(arg, "--dangerously-skip-permissions");
@@ -846,7 +926,7 @@ mod tests {
     #[test]
     fn codex_command_keeps_sandbox_on_and_tui_silent() {
         let env = HashMap::new();
-        let cmd = CodexRunner.build_command(Path::new("/wt"), &env, &hooks(), None);
+        let cmd = CodexRunner.build_command(Path::new("/wt"), &env, &hooks(), None, None);
         let argv = argv_strings(&cmd);
         assert_eq!(argv[0], "codex");
         let sandbox = argv.iter().position(|a| a == "--sandbox").unwrap();
@@ -859,7 +939,7 @@ mod tests {
     #[test]
     fn codex_command_injects_hooks_and_trust_via_config_overrides() {
         let env = HashMap::new();
-        let cmd = CodexRunner.build_command(Path::new("/wt"), &env, &hooks(), None);
+        let cmd = CodexRunner.build_command(Path::new("/wt"), &env, &hooks(), None, None);
         let argv = argv_strings(&cmd);
         let overrides: Vec<&String> = argv
             .iter()
@@ -1385,7 +1465,7 @@ mod tests {
     #[test]
     fn build_command_never_enables_attach_or_background_mode() {
         let env = HashMap::new();
-        let cmd = ClaudeCodeRunner.build_command(Path::new("/wt"), &env, &hooks(), None);
+        let cmd = ClaudeCodeRunner.build_command(Path::new("/wt"), &env, &hooks(), None, None);
         let argv = argv_strings(&cmd);
         for flag in ["--attach", "--background", "-a", "--daemon"] {
             assert!(
@@ -1430,7 +1510,7 @@ mod tests {
     #[test]
     fn codex_command_never_bypasses_sandbox_or_hook_trust() {
         let env = HashMap::new();
-        let cmd = CodexRunner.build_command(Path::new("/wt"), &env, &hooks(), None);
+        let cmd = CodexRunner.build_command(Path::new("/wt"), &env, &hooks(), None, None);
         for arg in argv_strings(&cmd) {
             assert_ne!(arg, "--dangerously-bypass-approvals-and-sandbox");
             assert_ne!(arg, "--dangerously-bypass-hook-trust");
