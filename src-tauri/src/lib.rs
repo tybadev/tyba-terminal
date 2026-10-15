@@ -8597,7 +8597,53 @@ fn maestro_run_start(
         .list_maestro_integrations()
         .map_err(|e| e.to_string())?;
     maestro::validate_graph(&graph, &integrations).map_err(|e| e.to_string())?;
-    Ok(runs.start(graph)?.id)
+    Ok(runs.start(graph, integrations)?.id)
+}
+
+/// O ▶ num nó de integração manual: ele roda assim que as entradas chegarem.
+#[tauri::command]
+fn maestro_run_node(
+    runs: State<'_, maestro::run::SharedRuns>,
+    run_id: String,
+    node_id: String,
+) -> Result<(), String> {
+    runs.run_node(&run_id, &node_id)
+}
+
+/// "Testar com a última entrada": roda só o script da integração com o `in/`
+/// da última execução daquele nó. Mesmas barreiras do ▶ Executar: grafo e
+/// integração consentidos e válidos.
+#[tauri::command]
+fn maestro_integration_test(
+    state: State<'_, AppState>,
+    runs: State<'_, maestro::run::SharedRuns>,
+    integration_id: String,
+    graph_id: String,
+    node_id: String,
+) -> Result<maestro::run::Run, String> {
+    let stored = state
+        .store
+        .get_maestro_graph(&graph_id)
+        .map_err(|e| e.to_string())?
+        .ok_or("grafo não encontrado")?;
+    let graph = maestro::run::startable(stored)?;
+    let integration = state
+        .store
+        .get_maestro_integration(&integration_id)
+        .map_err(|e| e.to_string())?
+        .ok_or("integração não encontrada")?;
+    if !integration.consented {
+        return Err(
+            "integração importada ainda não confirmada: revise e confirme antes de testar".into(),
+        );
+    }
+    let integrations = state
+        .store
+        .list_maestro_integrations()
+        .map_err(|e| e.to_string())?;
+    maestro::validate_graph(&graph, &integrations).map_err(|e| e.to_string())?;
+    maestro::validate_integration(&integration.value).map_err(|e| e.to_string())?;
+    runs.test_integration(graph, integration.value, &node_id)
 }
 
 #[tauri::command]
@@ -9598,6 +9644,8 @@ pub fn run() {
             maestro_save_integration,
             maestro_delete_integration,
             maestro_run_start,
+            maestro_run_node,
+            maestro_integration_test,
             maestro_run_stop,
             maestro_run_get,
             maestro_runs_list,

@@ -1,5 +1,4 @@
-//! Motor de execução do Maestro: processos, notas e agentes (integração
-//! chega no bloco seguinte).
+//! Motor de execução do Maestro: processos, notas, agentes e integrações.
 //!
 //! ▶ Executar cria um [`Run`] e uma pasta `~/.tyba/maestro/runs/<run>/<nó>/
 //! {in,out}` (0700). Um nó começa quando todas as ligações que chegam nele já
@@ -17,8 +16,8 @@ use std::sync::{Arc, Weak};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
-use super::agent::AgentTurn;
-use super::{EdgeKind, Graph, Node, NodeKind, OutputKind, Runner, Stored};
+use super::agent::{AgentTurn, Snapshot};
+use super::{EdgeKind, Graph, Integration, Node, NodeKind, OutputKind, Runner, Stored};
 use crate::session::store::Store;
 
 /// Execuções guardadas por grafo; a poda apaga a pasta das mais antigas.
@@ -120,6 +119,8 @@ pub struct Scheduler {
     order: Vec<String>,
     sources: HashMap<String, Vec<String>>,
     dependents: HashMap<String, Vec<String>>,
+    /// Integrações manuais: esperam o ▶ do dono mesmo com as entradas prontas.
+    held: HashSet<String>,
 }
 
 impl Scheduler {
@@ -157,7 +158,26 @@ impl Scheduler {
             order: graph.nodes.iter().map(|n| n.id.clone()).collect(),
             sources,
             dependents,
+            held: HashSet::new(),
         }
+    }
+
+    /// Segura o nó em `waiting` até [`Scheduler::release`].
+    pub fn hold(&mut self, id: &str) {
+        if self.run.nodes.contains_key(id) {
+            self.held.insert(id.to_string());
+        }
+    }
+
+    /// O ▶ do dono num nó manual: começa assim que as entradas chegarem.
+    pub fn release(&mut self, id: &str) -> Result<(), String> {
+        if self.status(id) != Some(NodeStatus::Waiting) {
+            return Err("o nó não está esperando".into());
+        }
+        if !self.held.remove(id) {
+            return Err("o nó não é de integração manual".into());
+        }
+        Ok(())
     }
 
     pub fn run(&self) -> &Run {
@@ -176,6 +196,7 @@ impl Scheduler {
         self.order
             .iter()
             .filter(|id| self.status(id) == Some(NodeStatus::Waiting))
+            .filter(|id| !self.held.contains(*id))
             .filter(|id| {
                 self.sources
                     .get(*id)
@@ -298,7 +319,7 @@ pub fn startable(stored: Stored<Graph>) -> Result<Graph, String> {
 }
 
 /// Id de nó vira nome de pasta: só o que não escapa de `runs/<run>/`.
-fn safe_component(id: &str) -> bool {
+pub(super) fn safe_component(id: &str) -> bool {
     !id.is_empty()
         && id != "."
         && id != ".."
@@ -436,20 +457,26 @@ fn read_exit(out_dir: &Path) -> Option<i32> {
         .ok()
 }
 
-/// Onde mora a saída declarada de um processo.
+/// Onde mora a saída declarada de um processo ou integração. `diff` vem do
+/// snapshot da largada; sem git não há snapshot e o destino recebe
+/// `diff.patch` vazio.
 fn process_outputs(
     output: OutputKind,
     file: Option<&str>,
     out_dir: &Path,
     graph_dir: &Path,
+    snapshot: Option<&Snapshot>,
 ) -> HashMap<EdgeKind, String> {
     let path = match output {
         OutputKind::Log => Some(out_dir.join("log.txt")),
         OutputKind::Json => Some(out_dir.join("out.json")),
         OutputKind::File => file.map(|f| graph_dir.join(f)),
-        // O snapshot de diff chega com o nó de agente (B4); até lá o destino
-        // recebe `diff.patch` vazio, como num diretório sem git.
-        OutputKind::Diff => None,
+        OutputKind::Diff => snapshot.and_then(|snap| {
+            let patch = out_dir.join("diff.patch");
+            std::fs::write(&patch, super::agent::diff_since(snap))
+                .ok()
+                .map(|()| patch)
+        }),
     };
     path.filter(|p| p.is_file())
         .map(|p| HashMap::from([(output.into(), p.to_string_lossy().into_owned())]))
@@ -516,6 +543,8 @@ pub trait RunHost: Send + Sync + 'static {
 
 struct Active {
     graph: Graph,
+    /// Integrações do grafo como estavam no ▶ Executar.
+    integrations: HashMap<String, Integration>,
     sched: Scheduler,
     dir: PathBuf,
 }
@@ -528,6 +557,8 @@ struct Start {
     inputs: Vec<Input>,
     variables: Vec<(String, String)>,
     graph_dir: PathBuf,
+    /// A integração do nó, quando é de integração e ela existe.
+    integration: Option<Integration>,
 }
 
 enum Launched {
@@ -563,7 +594,53 @@ impl<H: RunHost> Runs<H> {
     }
 
     /// Começa o run. O grafo já passou por consentimento e validação.
-    pub fn start(&self, graph: Graph) -> Result<Run, String> {
+    pub fn start(&self, graph: Graph, integrations: Vec<Integration>) -> Result<Run, String> {
+        self.begin(graph, integrations, None)
+    }
+
+    /// "Testar com a última entrada": roda só o script da integração no lugar
+    /// do nó, com uma cópia do `in/` da última execução em que ele começou.
+    pub fn test_integration(
+        &self,
+        graph: Graph,
+        integration: Integration,
+        node_id: &str,
+    ) -> Result<Run, String> {
+        let root = self
+            .root
+            .clone()
+            .ok_or("sem pasta home para guardar as execuções")?;
+        let previous = self
+            .store
+            .list_maestro_runs(&graph.id, KEEP_RUNS)
+            .map_err(|e| e.to_string())?;
+        let seed = super::integration::last_inputs(&previous, &root, node_id).ok_or(
+            "este nó ainda não rodou: execute o grafo uma vez antes de testar com a última entrada",
+        )?;
+        let single = super::integration::test_graph(&graph, node_id, &integration.id)?;
+        self.begin(single, vec![integration], Some(seed))
+    }
+
+    /// O ▶ num nó de integração manual de um run rodando.
+    pub fn run_node(&self, run_id: &str, node_id: &str) -> Result<(), String> {
+        self.active
+            .lock()
+            .get_mut(run_id)
+            .ok_or("execução não está rodando")?
+            .sched
+            .release(node_id)?;
+        self.advance(run_id);
+        Ok(())
+    }
+
+    /// `seed`: `in/` a copiar para o único nó (teste de integração). No teste
+    /// o nó manual não espera ▶ — o clique em Testar já é o ▶.
+    fn begin(
+        &self,
+        graph: Graph,
+        integrations: Vec<Integration>,
+        seed: Option<PathBuf>,
+    ) -> Result<Run, String> {
         if let Some(bad) = graph.nodes.iter().find(|n| !safe_component(&n.id)) {
             return Err(format!(
                 "id de nó inválido para execução: {:?} (use letras, números, - e _)",
@@ -583,14 +660,33 @@ impl<H: RunHost> Runs<H> {
             }
         }
         create_private_dir(&dir).map_err(|e| e.to_string())?;
+        if let (Some(seed), Some(node)) = (&seed, graph.nodes.first()) {
+            super::integration::copy_inputs(seed, &dir.join(&node.id).join("in"))
+                .map_err(|e| format!("copiar a última entrada: {e}"))?;
+        }
 
-        let sched = Scheduler::new(&graph, run_id.clone(), now());
+        let integrations: HashMap<String, Integration> = integrations
+            .into_iter()
+            .map(|i| (i.id.clone(), i))
+            .collect();
+        let mut sched = Scheduler::new(&graph, run_id.clone(), now());
+        if seed.is_none() {
+            for id in super::integration::manual_nodes(&graph, &integrations) {
+                sched.hold(&id);
+            }
+        }
         let graph_id = graph.id.clone();
         let snapshot = sched.run().clone();
         if snapshot.status == RunStatus::Running {
-            self.active
-                .lock()
-                .insert(run_id.clone(), Active { graph, sched, dir });
+            self.active.lock().insert(
+                run_id.clone(),
+                Active {
+                    graph,
+                    integrations,
+                    sched,
+                    dir,
+                },
+            );
         }
         self.publish(&snapshot);
         self.prune(&graph_id);
@@ -740,36 +836,52 @@ impl<H: RunHost> Runs<H> {
                     Err(e) => Launched::Finished(Outcome::failed(format!("gravar a nota: {e}"))),
                 }
             }
-            NodeKind::Integration { .. } => {
-                Launched::Finished(Outcome::failed("ainda não suportado"))
-            }
+            NodeKind::Integration { .. } => match &start.integration {
+                Some(i) => self.launch_script(run_id, &start, &i.script, i.output),
+                None => Launched::Finished(Outcome::failed("integração não encontrada")),
+            },
             NodeKind::Agent { runner, prompt, .. } => {
                 self.launch_agent(run_id, &start, *runner, prompt)
             }
-            NodeKind::Process { command, .. } => {
-                if let Err(e) = materialize(&start.in_dir, &start.inputs) {
-                    return Launched::Finished(Outcome::failed(format!("preparar entradas: {e}")));
-                }
-                let command = crate::snippet::render(command, &start.variables);
-                let (program, args) = process_argv(&command, &start.in_dir, &start.out_dir);
-                let me = self.me.clone();
-                let (run, node) = (run_id.to_string(), start.node.id.clone());
-                let on_exit = Box::new(move || {
-                    if let Some(runs) = me.upgrade() {
-                        runs.process_exited(&run, &node);
-                    }
-                });
-                let launch = ProcessLaunch {
-                    title: start.node.title.clone(),
-                    cwd: start.graph_dir.clone(),
-                    program,
-                    args,
-                };
-                match self.host.spawn_process(launch, on_exit) {
-                    Ok(session) => Launched::Session(session),
-                    Err(e) => Launched::Finished(Outcome::failed(format!("subir o processo: {e}"))),
-                }
+            NodeKind::Process {
+                command, output, ..
+            } => self.launch_script(run_id, &start, command, *output),
+        }
+    }
+
+    /// Processo e integração: o texto (com variáveis) no wrapper de rules,
+    /// num PTY, na pasta do workspace.
+    fn launch_script(
+        &self,
+        run_id: &str,
+        start: &Start,
+        command: &str,
+        output: OutputKind,
+    ) -> Launched {
+        if let Err(e) = materialize(&start.in_dir, &start.inputs) {
+            return Launched::Finished(Outcome::failed(format!("preparar entradas: {e}")));
+        }
+        let command = crate::snippet::render(command, &start.variables);
+        let (program, args) = process_argv(&command, &start.in_dir, &start.out_dir);
+        let snapshot = (output == OutputKind::Diff)
+            .then(|| super::agent::snapshot(&start.graph_dir))
+            .flatten();
+        let me = self.me.clone();
+        let (run, node) = (run_id.to_string(), start.node.id.clone());
+        let on_exit = Box::new(move || {
+            if let Some(runs) = me.upgrade() {
+                runs.process_exited(&run, &node, snapshot.as_ref());
             }
+        });
+        let launch = ProcessLaunch {
+            title: start.node.title.clone(),
+            cwd: start.graph_dir.clone(),
+            program,
+            args,
+        };
+        match self.host.spawn_process(launch, on_exit) {
+            Ok(session) => Launched::Session(session),
+            Err(e) => Launched::Finished(Outcome::failed(format!("subir o processo: {e}"))),
         }
     }
 
@@ -852,23 +964,42 @@ impl<H: RunHost> Runs<H> {
         self.advance(run_id);
     }
 
-    /// O PTY do processo fechou: lê o `.exit` e segue o grafo.
-    fn process_exited(&self, run_id: &str, node_id: &str) {
-        {
-            let mut active = self.active.lock();
-            let Some(a) = active.get_mut(run_id) else {
+    /// O PTY do processo fechou: lê o `.exit` e segue o grafo. O diff (git)
+    /// sai fora do lock.
+    fn process_exited(&self, run_id: &str, node_id: &str, snapshot: Option<&Snapshot>) {
+        let (out_dir, graph_dir, declared) = {
+            let active = self.active.lock();
+            let Some(a) = active.get(run_id) else {
                 return;
             };
             let Some(node) = a.graph.nodes.iter().find(|n| n.id == node_id) else {
                 return;
             };
-            let out_dir = a.dir.join(node_id).join("out");
-            let exit = read_exit(&out_dir);
-            let outputs = match &node.kind {
-                NodeKind::Process { output, file, .. } => {
-                    process_outputs(*output, file.as_deref(), &out_dir, Path::new(&a.graph.dir))
-                }
-                _ => HashMap::new(),
+            let declared = match &node.kind {
+                NodeKind::Process { output, file, .. } => Some((*output, file.clone())),
+                NodeKind::Integration { integration_id } => a
+                    .integrations
+                    .get(integration_id)
+                    .map(|i| (i.output, i.file.clone())),
+                _ => None,
+            };
+            (
+                a.dir.join(node_id).join("out"),
+                PathBuf::from(&a.graph.dir),
+                declared,
+            )
+        };
+        let exit = read_exit(&out_dir);
+        let outputs = match declared {
+            Some((output, file)) => {
+                process_outputs(output, file.as_deref(), &out_dir, &graph_dir, snapshot)
+            }
+            None => HashMap::new(),
+        };
+        {
+            let mut active = self.active.lock();
+            let Some(a) = active.get_mut(run_id) else {
+                return;
             };
             let outcome = Outcome {
                 ok: exit == Some(0),
@@ -930,6 +1061,10 @@ fn agent_outputs(
 /// Monta o que o nó precisa (entradas, pastas, variáveis) com o lock na mão.
 fn prepare_start(a: &Active, id: &str) -> Option<Start> {
     let node = a.graph.nodes.iter().find(|n| n.id == id)?.clone();
+    let integration = match &node.kind {
+        NodeKind::Integration { integration_id } => a.integrations.get(integration_id).cloned(),
+        _ => None,
+    };
     let inputs = a
         .graph
         .edges
@@ -959,6 +1094,7 @@ fn prepare_start(a: &Active, id: &str) -> Option<Start> {
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect(),
         graph_dir: PathBuf::from(&a.graph.dir),
+        integration,
     })
 }
 
@@ -1102,7 +1238,7 @@ impl RunHost for TauriHost {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::maestro::{Edge, Position, Runner, Size};
+    use crate::maestro::{Edge, Position, Runner, Size, Trigger};
     use std::collections::BTreeMap;
     use std::time::{Duration, Instant};
 
@@ -1435,7 +1571,7 @@ mod tests {
             vec![edge("e1", "p", "q", EdgeKind::Log)],
         );
         g.variables.insert("palavra".into(), "oi".into());
-        let run = runs.start(g).unwrap();
+        let run = runs.start(g, vec![]).unwrap();
         let run = wait_finished(&runs, &run.id);
         assert_eq!(run.status, RunStatus::Done, "{run:?}");
         let p = &run.nodes["p"];
@@ -1460,7 +1596,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn failing_process_skips_dependent_and_integration_is_unsupported() {
+    fn failing_process_skips_dependent_and_missing_integration_fails() {
         let dir = tempfile::tempdir().unwrap();
         let (runs, _host, _app) = pty_runs(dir.path().join("runs"));
         let integration = node(
@@ -1478,7 +1614,7 @@ mod tests {
             ],
             vec![edge("e1", "p", "q", EdgeKind::Log)],
         );
-        let run = runs.start(g).unwrap();
+        let run = runs.start(g, vec![]).unwrap();
         let run = wait_finished(&runs, &run.id);
         assert_eq!(run.status, RunStatus::Failed);
         assert_eq!(run.nodes["p"].exit_code, Some(3));
@@ -1488,7 +1624,7 @@ mod tests {
         assert_eq!(run.nodes["a"].status, NodeStatus::Failed);
         assert_eq!(
             run.nodes["a"].reason.as_deref(),
-            Some("ainda não suportado")
+            Some("integração não encontrada")
         );
     }
 
@@ -1498,7 +1634,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (runs, host, _app) = pty_runs(dir.path().join("runs"));
         let run = runs
-            .start(graph(vec![process("p", "sleep 30")], vec![]))
+            .start(graph(vec![process("p", "sleep 30")], vec![]), vec![])
             .unwrap();
         let session = run.nodes["p"].session_id.clone().unwrap();
         runs.stop(&run.id).unwrap();
@@ -1557,7 +1693,7 @@ mod tests {
         );
         g.dir = repo.to_string_lossy().into_owned();
         g.variables.insert("coisa".into(), "o plano".into());
-        let run = runs.start(g).unwrap();
+        let run = runs.start(g, vec![]).unwrap();
         let run = wait_finished(&runs, &run.id);
         assert_eq!(run.status, RunStatus::Done, "{run:?}");
 
@@ -1597,10 +1733,187 @@ mod tests {
         assert!(runs.stop(&run.id).is_err());
     }
 
+    fn integration(id: &str, script: &str, trigger: Trigger) -> Integration {
+        Integration {
+            id: id.into(),
+            name: id.into(),
+            script: script.into(),
+            trigger,
+            output: OutputKind::Log,
+            file: None,
+        }
+    }
+
+    fn integration_node(id: &str, integration_id: &str) -> Node {
+        node(
+            id,
+            NodeKind::Integration {
+                integration_id: integration_id.into(),
+            },
+        )
+    }
+
+    #[test]
+    fn held_node_waits_until_released() {
+        let g = graph(
+            vec![process("p", "x"), integration_node("m", "i")],
+            vec![edge("e1", "p", "m", EdgeKind::Log)],
+        );
+        let mut s = Scheduler::new(&g, "r".into(), 0);
+        s.hold("m");
+        assert!(s.release("p").is_err(), "p não é manual");
+        s.mark_running("p", 1);
+        s.finish("p", ok(), 2);
+        assert!(s.ready().is_empty(), "manual não roda sozinho");
+        assert_eq!(s.run().status, RunStatus::Running);
+        s.release("m").unwrap();
+        assert_eq!(s.ready(), vec!["m".to_string()]);
+        assert!(s.release("m").is_err(), "▶ duas vezes");
+    }
+
+    fn wait_status(runs: &Runs<Arc<PtyHost>>, run: &str, node: &str, want: NodeStatus) -> Run {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            let r = runs.get(run).unwrap();
+            if r.nodes[node].status == want || Instant::now() > deadline {
+                return r;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn manual_integration_runs_only_after_run_node() {
+        let dir = tempfile::tempdir().unwrap();
+        let (runs, _host, _app) = pty_runs(dir.path().join("runs"));
+        let mut g = graph(
+            vec![
+                process("p", "echo entrada"),
+                integration_node("m", "manual"),
+                integration_node("o", "auto"),
+            ],
+            vec![
+                edge("e1", "p", "m", EdgeKind::Log),
+                edge("e2", "p", "o", EdgeKind::Log),
+            ],
+        );
+        g.variables.insert("quem".into(), "dono".into());
+        let integrations = vec![
+            integration(
+                "manual",
+                "echo {{quem}}; cat \"$TYBA_IN/log.txt\"",
+                Trigger::Manual,
+            ),
+            integration(
+                "auto",
+                "echo automatico",
+                Trigger::OnInput {
+                    kind: EdgeKind::Log,
+                },
+            ),
+        ];
+        let run = runs.start(g, integrations).unwrap();
+
+        // on_input roda quando a entrada chega; o manual fica esperando.
+        let snapshot = wait_status(&runs, &run.id, "o", NodeStatus::Done);
+        assert_eq!(snapshot.nodes["o"].status, NodeStatus::Done, "{snapshot:?}");
+        std::thread::sleep(Duration::from_millis(200));
+        let snapshot = runs.get(&run.id).unwrap();
+        assert_eq!(snapshot.nodes["m"].status, NodeStatus::Waiting);
+        assert_eq!(snapshot.status, RunStatus::Running);
+
+        assert!(
+            runs.run_node(&run.id, "p").is_err(),
+            "processo não é manual"
+        );
+        runs.run_node(&run.id, "m").unwrap();
+        let run = wait_finished(&runs, &run.id);
+        assert_eq!(run.status, RunStatus::Done, "{run:?}");
+        let log = std::fs::read_to_string(&run.nodes["m"].outputs[&EdgeKind::Log]).unwrap();
+        assert!(log.contains("dono"), "variável: {log:?}");
+        assert!(log.contains("entrada"), "entrada: {log:?}");
+        assert!(runs.run_node(&run.id, "m").is_err(), "run já fechado");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn integration_test_reuses_last_inputs() {
+        let dir = tempfile::tempdir().unwrap();
+        let (runs, _host, _app) = pty_runs(dir.path().join("runs"));
+        let g = graph(
+            vec![process("p", "echo primeira"), integration_node("m", "i")],
+            vec![edge("e1", "p", "m", EdgeKind::Log)],
+        );
+        let first = integration(
+            "i",
+            "cat \"$TYBA_IN/log.txt\"",
+            Trigger::OnInput {
+                kind: EdgeKind::Log,
+            },
+        );
+
+        // Sem execução anterior do nó: erro claro.
+        let err = runs
+            .test_integration(g.clone(), first.clone(), "m")
+            .unwrap_err();
+        assert!(err.contains("ainda não rodou"), "{err}");
+
+        let run = runs.start(g.clone(), vec![first.clone()]).unwrap();
+        let run = wait_finished(&runs, &run.id);
+        assert_eq!(run.status, RunStatus::Done, "{run:?}");
+
+        // O script editado (manual, inclusive) roda na hora com o in/ de antes,
+        // sem o processo de origem rodar de novo.
+        let edited = Integration {
+            script: "echo testado; cat \"$TYBA_IN/log.txt\"".into(),
+            trigger: Trigger::Manual,
+            ..first
+        };
+        let test = runs.test_integration(g, edited, "m").unwrap();
+        assert_ne!(test.id, run.id);
+        assert_eq!(test.nodes.len(), 1);
+        let test = wait_finished(&runs, &test.id);
+        assert_eq!(test.status, RunStatus::Done, "{test:?}");
+        let log = std::fs::read_to_string(&test.nodes["m"].outputs[&EdgeKind::Log]).unwrap();
+        assert!(log.contains("testado"), "{log:?}");
+        assert!(log.contains("primeira"), "in/ anterior: {log:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn integration_diff_output_comes_from_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        git(&repo, &["init", "-q"]);
+        git(&repo, &["config", "user.email", "t@example.com"]);
+        git(&repo, &["config", "user.name", "t"]);
+        std::fs::write(repo.join("README.md"), "x\n").unwrap();
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-q", "-m", "init"]);
+
+        let (runs, _host, _app) = pty_runs(dir.path().join("runs"));
+        let mut g = graph(vec![integration_node("m", "i")], vec![]);
+        g.dir = repo.to_string_lossy().into_owned();
+        let i = Integration {
+            output: OutputKind::Diff,
+            ..integration("i", "echo novo > gerado.txt", Trigger::Manual)
+        };
+        let run = runs.start(g, vec![i]).unwrap();
+        runs.run_node(&run.id, "m").unwrap();
+        let run = wait_finished(&runs, &run.id);
+        assert_eq!(run.status, RunStatus::Done, "{run:?}");
+        let diff = std::fs::read_to_string(&run.nodes["m"].outputs[&EdgeKind::Diff]).unwrap();
+        assert!(diff.contains("gerado.txt"), "{diff}");
+    }
+
     #[test]
     fn unsafe_node_id_is_refused() {
         let dir = tempfile::tempdir().unwrap();
         let (runs, _host, _app) = pty_runs(dir.path().join("runs"));
-        assert!(runs.start(graph(vec![note("../fora")], vec![])).is_err());
+        assert!(runs
+            .start(graph(vec![note("../fora")], vec![]), vec![])
+            .is_err());
     }
 }

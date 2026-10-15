@@ -8,6 +8,7 @@
 //! mas quem decide é `validate_graph`, chamado antes de gravar.
 
 pub mod agent;
+pub mod integration;
 pub mod run;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
