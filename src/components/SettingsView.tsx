@@ -10,6 +10,8 @@ import {
   DownloadSimple,
   FolderOpen,
   Info,
+  Lock,
+  ShieldCheck,
   MagnifyingGlass,
   FileText,
   Bell,
@@ -74,6 +76,8 @@ import {
   type LaunchConfig,
   type LaunchConfigId,
   userConfigPath,
+  sandboxOverview,
+  type SandboxOverview,
 } from "../lib/ipc";
 import {
   formatDiagnostics,
@@ -122,6 +126,7 @@ type Section =
   | "appearance"
   | "terminal"
   | "agents"
+  | "security"
   | "integrations"
   | "notifications"
   | "shortcuts"
@@ -133,6 +138,7 @@ const SECTIONS: { id: Section; label: string; hint: string; icon: React.ReactNod
   { id: "appearance", label: "settingsAppearance", hint: "settingsAppearanceShort", icon: <Palette size={16} /> },
   { id: "terminal", label: "settingsTerminal", hint: "settingsTerminalShort", icon: <TerminalWindow size={16} /> },
   { id: "agents", label: "settingsAgents", hint: "settingsAgentsShort", icon: <Robot size={16} /> },
+  { id: "security", label: "settingsSecurity", hint: "settingsSecurityShort", icon: <ShieldCheck size={16} /> },
   { id: "integrations", label: "settingsIntegrations", hint: "settingsIntegrationsShort", icon: <PlugsConnected size={16} /> },
   { id: "notifications", label: "settingsNotifications", hint: "settingsNotificationsShort", icon: <Bell size={16} /> },
   { id: "shortcuts", label: "settingsShortcuts", hint: "settingsShortcutsShort", icon: <Keyboard size={16} /> },
@@ -140,6 +146,68 @@ const SECTIONS: { id: Section; label: string; hint: string; icon: React.ReactNod
 ];
 
 const RAIL_PREF_KEY = "pref.settings_rail";
+
+/** As regras que o core impõe e que nenhuma configuração desliga. */
+const SECURITY_RULES = [
+  "securityRuleRed",
+  "securityRuleMain",
+  "securityRuleEnv",
+  "securityRuleSecrets",
+  "securityRuleKill",
+];
+
+/**
+ * Segurança: o que é fixo aparece como leitura, para ninguém procurar um
+ * interruptor que não existe; a única folga da jaula (`read_allow`) se lê aqui
+ * e se edita no arquivo — afrouxar a jaula nunca é um clique.
+ */
+function SecuritySection({ onOpenConfig }: { onOpenConfig: () => void }) {
+  const { t } = useTranslation();
+  const [overview, setOverview] = useState<SandboxOverview | null>(null);
+  useEffect(() => {
+    void sandboxOverview()
+      .then(setOverview)
+      .catch(() => {});
+  }, []);
+  return (
+    <>
+      <span className="tyba-label">{t("securityFixed")}</span>
+      <div className="divide-y divide-tyba-border">
+        {SECURITY_RULES.map((key) => (
+          <SettingRow key={key} label={t(key)} hint={t(`${key}Hint`)}>
+            <span className="flex shrink-0 items-center gap-1.5 text-[11px] text-tyba-text-faint">
+              <Lock size={12} />
+              {t("securityAlwaysOn")}
+            </span>
+          </SettingRow>
+        ))}
+      </div>
+      <span className="tyba-label mt-6">{t("securityJail")}</span>
+      <div className="divide-y divide-tyba-border">
+        <SettingRow label={t("securityReadAllow")} hint={t("securityReadAllowHint")}>
+          <Button variant="ghost" size="sm" onClick={onOpenConfig}>
+            {t("settingsOpenInTyba")}
+          </Button>
+        </SettingRow>
+        {overview?.error && (
+          <p className="py-2.5 text-[11px] text-tyba-amber">{overview.error}</p>
+        )}
+        {overview && !overview.error && overview.read_allow.length === 0 && (
+          <p className="py-2.5 text-[12px] text-tyba-text-faint">{t("securityReadAllowNone")}</p>
+        )}
+        {overview?.read_allow.map((path) => (
+          <p key={path} className="py-2 font-mono text-[12px] text-tyba-text-muted">
+            {path}
+          </p>
+        ))}
+      </div>
+      <span className="tyba-label mt-6">{t("securityRepo")}</span>
+      <p className="pt-2 text-[12px] leading-relaxed text-tyba-text-faint">
+        {t("securityRepoHint")}
+      </p>
+    </>
+  );
+}
 
 /**
  * O que a busca conhece, por seção: chaves de i18n do nome. A descrição é a
@@ -170,6 +238,7 @@ const searchKeys = (): Record<Section, string[]> => ({
     ...RICH_INPUT_TOGGLES.map((r) => r.label),
   ],
   agents: ["reviewAgent", "worktreeDefaultPref", "richInputRegex", "settingsLaunchConfigs"],
+  security: [...SECURITY_RULES, "securityReadAllow", "securityRepo"],
   integrations: ["dockerIntegration", "claudePlugin", "defaultEditor"],
   notifications: NOTIFY_KINDS.map((k) => k.label),
   shortcuts: Object.values(ACTION_LABEL_KEYS),
@@ -1452,6 +1521,12 @@ export function SettingsView({
               </Button>
             </div>
 
+          </section>
+        )}
+        {section === "security" && (
+          <section className="mx-auto w-full max-w-[860px]">
+            <SectionHeader title={t("settingsSecurity")} hint={t("settingsSecurityHint")} />
+            <SecuritySection onOpenConfig={onOpenConfig} />
           </section>
         )}
         {section === "integrations" && (

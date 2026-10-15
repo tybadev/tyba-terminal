@@ -1029,6 +1029,13 @@ const encodeBase64 = (data: string): string => {
   return btoa(bin);
 };
 
+/** Pastas extras de leitura da jaula dos agentes (`[sandbox] read_allow`). */
+export interface SandboxOverview {
+  read_allow: string[];
+  error: string | null;
+}
+export const sandboxOverview = () => invoke<SandboxOverview>("sandbox_overview");
+
 /** Onde mora o `config.toml` do usuário; `null` se a pasta foi recusada. */
 export const userConfigPath = () => invoke<string | null>("user_config_path");
 
