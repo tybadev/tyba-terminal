@@ -538,6 +538,10 @@ pub enum StoreError {
 ///     agente rodava, em par com `agent_conversation_id`. É o que deixa o
 ///     shell restaurado retomar a conversa mesmo depois de um `cd`. Conferido
 ///     em 2026-10-14: nenhuma branch local nem remota usava 12.
+/// 13 — `command_spec` é resemeada mais uma vez: a base ganhou os comandos de
+///     sistema (`tar`, `rsync`, `chmod`, `kill`, `sed`…) e de linguagem (`node`,
+///     `python`, `go`, `uv`…). Mesmo motivo do 7. Conferido em 2026-10-14:
+///     nenhuma branch local nem remota usava 13.
 ///
 /// Degrau próprio para cada um, e nunca linha nova na [`BASELINE_COLUMNS`]: a
 /// base só roda em banco na versão 0, então quem já subiu de versão nunca mais
@@ -549,7 +553,7 @@ pub enum StoreError {
 /// `from >= SCHEMA_VERSION` antes de olhar degrau nenhum. O teste discriminante
 /// de cada um passa isolado, porque simula o banco na versão anterior, que é
 /// justamente o caso em que ambos rodam.
-const SCHEMA_VERSION: i64 = 12;
+const SCHEMA_VERSION: i64 = 13;
 
 /// Colunas da versão 1, na ordem em que nasceram. Guardadas por `table_info` em
 /// vez de tentadas às cegas porque os três estados possíveis convergem aqui: o
@@ -1059,6 +1063,20 @@ fn migrate(conn: &Connection) -> Result<Vec<String>, StoreError> {
         true
     };
 
+    // Degrau 13: a mesma semeadura do 11, de novo porque o artefato cresceu.
+    // Abaixo de 11 a semeadura do degrau 6 ou do 11 já usou o artefato de hoje.
+    let spec_reseed_13_applied = if (11..13).contains(&from) {
+        match seed_command_spec(conn) {
+            Ok(()) => true,
+            Err(e) => {
+                skipped.push(format!("command_spec (degrau 13): {e}"));
+                false
+            }
+        }
+    } else {
+        true
+    };
+
     let reached = match (
         baseline_applied,
         scrollback_applied,
@@ -1071,19 +1089,21 @@ fn migrate(conn: &Connection) -> Result<Vec<String>, StoreError> {
         approval_origin_applied,
         spec_reseed_applied,
         conversation_cwd_applied,
+        spec_reseed_13_applied,
     ) {
-        (true, true, true, true, true, true, true, true, true, true, true) => SCHEMA_VERSION,
-        (true, true, true, true, true, true, true, true, true, true, false) => 11,
-        (true, true, true, true, true, true, true, true, true, false, _) => 10,
-        (true, true, true, true, true, true, true, true, false, _, _) => 9,
-        (true, true, true, true, true, true, true, false, _, _, _) => 8,
-        (true, true, true, true, true, true, false, _, _, _, _) => 7,
-        (true, true, true, true, true, false, _, _, _, _, _) => 5,
-        (true, true, true, true, false, _, _, _, _, _, _) => 4,
-        (true, true, true, false, _, _, _, _, _, _, _) => 3,
-        (true, true, false, _, _, _, _, _, _, _, _) => 2,
-        (true, false, _, _, _, _, _, _, _, _, _) => 1,
-        (false, _, _, _, _, _, _, _, _, _, _) => from,
+        (true, true, true, true, true, true, true, true, true, true, true, true) => SCHEMA_VERSION,
+        (true, true, true, true, true, true, true, true, true, true, true, false) => 12,
+        (true, true, true, true, true, true, true, true, true, true, false, _) => 11,
+        (true, true, true, true, true, true, true, true, true, false, _, _) => 10,
+        (true, true, true, true, true, true, true, true, false, _, _, _) => 9,
+        (true, true, true, true, true, true, true, false, _, _, _, _) => 8,
+        (true, true, true, true, true, true, false, _, _, _, _, _) => 7,
+        (true, true, true, true, true, false, _, _, _, _, _, _) => 5,
+        (true, true, true, true, false, _, _, _, _, _, _, _) => 4,
+        (true, true, true, false, _, _, _, _, _, _, _, _) => 3,
+        (true, true, false, _, _, _, _, _, _, _, _, _) => 2,
+        (true, false, _, _, _, _, _, _, _, _, _, _) => 1,
+        (false, _, _, _, _, _, _, _, _, _, _, _) => from,
     };
     if reached > from {
         conn.pragma_update(None, "user_version", reached)?;
@@ -3957,7 +3977,11 @@ mod tests {
     /// já está carimbado. A guarda de colisão precisa conhecer o número dele do
     /// mesmo jeito — um degrau fora de todas as listas passa despercebido pela
     /// guarda e é exatamente assim que dois degraus acabam com o mesmo número.
-    const STEP_RESEEDS: &[(i64, &str)] = &[(7, "command_spec"), (11, "command_spec")];
+    const STEP_RESEEDS: &[(i64, &str)] = &[
+        (7, "command_spec"),
+        (11, "command_spec"),
+        (13, "command_spec"),
+    ];
 
     /// Dois degraus não podem dividir o mesmo número.
     ///
@@ -4274,6 +4298,37 @@ mod tests {
             antes,
             "a resemeadura duplicou o que já estava na base"
         );
+    }
+
+    /// Banco carimbado na 12 recebe os comandos de sistema do degrau 13.
+    #[test]
+    fn banco_na_12_ganha_comandos_de_sistema() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tyba.db");
+        let antes = {
+            let store = Store::open(&path).unwrap();
+            let total = conta_spec(&store);
+            let conn = store.conn.lock();
+            conn.execute(
+                "DELETE FROM command_spec WHERE command IN ('tar', 'rsync')",
+                [],
+            )
+            .unwrap();
+            conn.pragma_update(None, "user_version", 12).unwrap();
+            total
+        };
+
+        let store = Store::open(&path).unwrap();
+        assert_eq!(user_version(&store), SCHEMA_VERSION);
+        assert!(!store
+            .spec_completions("tar", "", "-x", 5)
+            .unwrap()
+            .is_empty());
+        assert!(!store
+            .spec_completions("rsync", "", "--del", 5)
+            .unwrap()
+            .is_empty());
+        assert_eq!(conta_spec(&store), antes, "a resemeadura duplicou a base");
     }
 
     /// Banco carimbado na 10 recebe o que a semente ganhou no degrau 11.
