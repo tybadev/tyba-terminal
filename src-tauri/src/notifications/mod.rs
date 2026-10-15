@@ -669,6 +669,7 @@ mod tests {
             observed: None,
             agent_model: None,
             status_note: None,
+            subagents_working: false,
             opened_by_gate: false,
             did_work: false,
             agent_usage: None,

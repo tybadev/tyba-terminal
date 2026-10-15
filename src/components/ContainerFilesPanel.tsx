@@ -22,7 +22,9 @@ import { containerName, rememberContainerName } from "@/lib/contentTabs";
 import { writeClipboardText } from "@/lib/clipboard";
 import { formatSize, pathCrumbs } from "@/lib/containerFs";
 import { pushToast, toastError } from "@/lib/toast";
+import { translateError } from "@/lib/errors";
 import { PANEL_HEADER } from "./SidePanelBar";
+import { LoadingState } from "./ui/loading";
 
 interface Props {
   containerId: string;
@@ -52,6 +54,8 @@ export function ContainerFilesPanel({ containerId, onClose }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [file, setFile] = useState<ContainerFsFile | null>(null);
+  const [fileAt, setFileAt] = useState(() => Date.now());
+  const [fileError, setFileError] = useState<string | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -103,9 +107,12 @@ export function ContainerFilesPanel({ containerId, onClose }: Props) {
   const select = (path: string) => {
     setSelected(path);
     setFile(null);
+    setFileError(null);
+    setFileAt(Date.now());
+    // A falha fica no lugar do arquivo, com "Tentar de novo" — sem toast repetindo.
     void dockerFsRead(containerId, path)
       .then(setFile)
-      .catch((e) => toastError(t("containerFileReadError"), e));
+      .catch((e) => setFileError(`${t("containerFileReadError")}: ${translateError(e, t)}`));
   };
 
   const copy = async () => {
@@ -269,14 +276,24 @@ export function ContainerFilesPanel({ containerId, onClose }: Props) {
               {t("logsCopy")}
             </button>
           </div>
-          <pre className="min-h-0 flex-1 overflow-auto px-2.5 py-2 font-mono text-[12px] leading-[19px] text-tyba-text-muted">
-            {!file
-              ? t("filesLoading")
-              : file.binary
-                ? t("containerFileBinary")
-                : file.text}
-            {file?.truncated && `\n… ${t("containerFileTruncated")}`}
-          </pre>
+          {!file ? (
+            <LoadingState
+              op="docker"
+              step={t("loadContainerFile", { path: selected ?? "" })}
+              em={[selected ?? ""]}
+              startedAt={fileAt}
+              slowCause={t("loadDockerSlowLocal")}
+              error={fileError}
+              onRetry={() => selected && select(selected)}
+              shape="lines"
+              className="min-h-0 flex-1"
+            />
+          ) : (
+            <pre className="min-h-0 flex-1 overflow-auto px-2.5 py-2 font-mono text-[12px] leading-[19px] text-tyba-text-muted">
+              {file.binary ? t("containerFileBinary") : file.text}
+              {file.truncated && `\n… ${t("containerFileTruncated")}`}
+            </pre>
+          )}
         </div>
       )}
       <p className="px-3 py-2.5 text-[11px] leading-[17px] text-tyba-text-faint">

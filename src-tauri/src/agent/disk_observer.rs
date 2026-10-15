@@ -10,9 +10,10 @@ use serde_json::Value;
 use tauri::{AppHandle, Runtime};
 
 use crate::agent::subagents::{
-    is_plausible_subagent_id, sidecar_dir, Coordination, SharedSubagents,
+    is_plausible_subagent_id, sidecar_dir, Coordination, RunEnd, SharedSubagents,
 };
 use crate::session::SessionId;
+use crate::status::subagent_completion::{CompletionOutcome, ParentCursor};
 
 use super::claude_project_dir_name;
 
@@ -774,17 +775,68 @@ fn spawn_sidecar_poll<R: Runtime>(
                 .into_iter()
                 .filter_map(|run| run.agent_id)
                 .collect();
+            let mut ends = ParentEnds::default();
             while !poll_stop.load(Ordering::SeqCst) {
                 for coordination in
                     poll_once(&app, &tracker, session, &sidecar, &parent, &mut known)
                 {
                     coordinate(session, coordination);
                 }
+                ends.poll(&app, &tracker, session, &parent, &known);
                 std::thread::sleep(SIDECAR_POLL_INTERVAL);
             }
         });
     if let Err(err) = spawned {
         eprintln!("[tyba] disk-observer: thread de sidecar não iniciou: {err}");
+    }
+}
+
+/// Teto de fins guardados para subagente que o observer ainda não registrou
+/// (sidecar sem `meta.json` ainda). Fim de id que nunca aparece não acumula.
+const MAX_UNMATCHED_ENDS: usize = 64;
+
+/// Fins de subagente lidos do transcript PAI ([`crate::status::subagent_completion`]): a
+/// `<task-notification>` da fila é o sinal de fim do modo background, que o
+/// sidecar sozinho nem sempre dá (quem entrega pelo `SubagentHandback` termina
+/// num `tool_result`). Fim de id ainda não registrado espera o registro — a
+/// ordem entre o meta.json e a notificação não é garantida.
+#[derive(Default)]
+struct ParentEnds {
+    cursor: ParentCursor,
+    unmatched: HashMap<String, CompletionOutcome>,
+}
+
+impl ParentEnds {
+    fn poll<R: Runtime>(
+        &mut self,
+        app: &AppHandle<R>,
+        tracker: &SharedSubagents,
+        session: SessionId,
+        parent: &Path,
+        known: &HashSet<String>,
+    ) {
+        for end in self.cursor.read_new(parent) {
+            if self.unmatched.len() < MAX_UNMATCHED_ENDS || known.contains(&end.agent_id) {
+                self.unmatched.insert(end.agent_id, end.outcome);
+            }
+        }
+        let ready: Vec<String> = self
+            .unmatched
+            .keys()
+            .filter(|id| known.contains(*id))
+            .cloned()
+            .collect();
+        for agent_id in ready {
+            let Some(outcome) = self.unmatched.remove(&agent_id) else {
+                continue;
+            };
+            let (summary, end) = match outcome {
+                CompletionOutcome::Completed { summary } => (summary, RunEnd::Completed),
+                CompletionOutcome::Interrupted => (None, RunEnd::Interrupted),
+                CompletionOutcome::Blocked { summary } => (summary, RunEnd::Blocked),
+            };
+            tracker.on_subagent_completed(app, session, &agent_id, summary, end);
+        }
     }
 }
 
@@ -818,6 +870,7 @@ mod tests {
     use super::*;
     use crate::agent::subagents::{SubagentStatus, SubagentTracker};
     use std::fs;
+    use std::io::Write;
     use tempfile::TempDir;
 
     fn candidate(path: &str, mtime_ms: u64, first_msg_ms: Option<u64>) -> TranscriptCandidate {
@@ -1842,6 +1895,171 @@ mod tests {
         assert!(tick.run_exact(CONV_B));
         assert_eq!(observer.bound_parent(session), Some(b));
         assert!(observer.is_settled(session));
+
+        observer.retain_live(&handle, &tracker, &HashSet::new());
+    }
+
+    /// Sidecar de subagente no formato 2.1.29x, à mão: prompt, uma ferramenta
+    /// e, conforme `end`, o fim por `SubagentHandback` ou nada (ainda no meio).
+    fn sidecar_lines(agent_id: &str, handback: Option<&str>) -> String {
+        let line = |v: serde_json::Value| format!("{v}\n");
+        let mut out = line(serde_json::json!({
+            "type": "user", "isSidechain": true, "agentId": agent_id,
+            "message": { "role": "user", "content": "rode o comando" },
+        }));
+        out += &line(serde_json::json!({
+            "type": "assistant", "isSidechain": true, "agentId": agent_id,
+            "message": { "role": "assistant", "stop_reason": "tool_use", "content": [
+                { "type": "tool_use", "id": "toolu_b1", "name": "Bash", "input": { "command": "sleep 1" } }
+            ] },
+        }));
+        out += &line(serde_json::json!({
+            "type": "user", "isSidechain": true, "agentId": agent_id,
+            "message": { "role": "user", "content": [
+                { "type": "tool_result", "tool_use_id": "toolu_b1", "content": "" }
+            ] },
+        }));
+        if let Some(message) = handback {
+            out += &line(serde_json::json!({
+                "type": "assistant", "isSidechain": true, "agentId": agent_id,
+                "message": { "role": "assistant", "stop_reason": "tool_use", "content": [
+                    { "type": "tool_use", "id": "toolu_h1", "name": "SubagentHandback", "input": { "message": message } }
+                ] },
+            }));
+            out += &line(serde_json::json!({
+                "type": "user", "isSidechain": true, "agentId": agent_id,
+                "message": { "role": "user", "content": [
+                    { "type": "tool_result", "tool_use_id": "toolu_h1", "content": "entregue" }
+                ] },
+            }));
+        }
+        out
+    }
+
+    fn background_meta(description: &str, tool_use_id: &str) -> String {
+        serde_json::json!({
+            "agentType": "general-purpose",
+            "launchedWithDefaults": true,
+            "description": description,
+            "toolUseId": tool_use_id,
+            "spawnDepth": 1,
+            "requestShape": "background",
+            "requestNonInteractive": true,
+        })
+        .to_string()
+    }
+
+    fn wait_until(mut done: impl FnMut() -> bool) -> bool {
+        for _ in 0..400 {
+            if done() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        false
+    }
+
+    /// Os sintomas 1 e 2 do bug `subagentes-background-async-quebram-captura`
+    /// pelo caminho real do disco: a rodada em background que o TUI interativo
+    /// produz, com o fim chegando pela fila do pai e um subagente que entrega
+    /// pelo `SubagentHandback` (última linha do sidecar é `user`, nunca a fala
+    /// final `assistant`).
+    #[test]
+    fn async_round_on_disk_completes_and_queue_items_never_become_subagents() {
+        use crate::status::subagent_completion::fixtures as pai;
+        const A: &str = "a1111111111111111";
+        const B: &str = "a2222222222222222";
+        const C: &str = "a4444444444444444";
+        const D: &str = "a5555555555555555";
+
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let tracker: SharedSubagents = Arc::new(SubagentTracker::new());
+        let observer = DiskObserver::new();
+        let session = SessionId::new_v4();
+        let dir = TempDir::new().unwrap();
+        let parent = dir
+            .path()
+            .join("00000000-0000-4000-8000-000000000001.jsonl");
+        let sidecar = parent.with_extension("").join("subagents");
+        fs::create_dir_all(&sidecar).unwrap();
+        for (id, tool_use, end) in [
+            (A, "toolu_a", Some("um")),
+            (B, "toolu_b", None),
+            (C, "toolu_c", None),
+            (D, "toolu_d", None),
+        ] {
+            write(
+                &sidecar.join(format!("agent-{id}.jsonl")),
+                &sidecar_lines(id, end),
+            );
+            write(
+                &sidecar.join(format!("agent-{id}.meta.json")),
+                &background_meta(&format!("tarefa {id}"), tool_use),
+            );
+        }
+        let lines = [
+            pai::human_prompt("lance três subagentes em background"),
+            pai::agent_tool_use("toolu_a", "general-purpose", "tarefa A"),
+            pai::agent_result("toolu_a", A, "async_launched"),
+            pai::agent_tool_use("toolu_b", "general-purpose", "tarefa B"),
+            pai::agent_result("toolu_b", B, "async_launched"),
+            pai::agent_tool_use("toolu_c", "general-purpose", "tarefa C"),
+            pai::agent_result("toolu_c", C, "async_launched"),
+            // O usuário digita enquanto os subagentes rodam: vira item de fila.
+            pai::enqueue("já terminaram?"),
+            pai::queue_op("dequeue"),
+            pai::human_prompt("já terminaram?"),
+            pai::enqueue(&format!("<agent-message from=\"{A}\">um</agent-message>")),
+            pai::enqueue(&pai::notification(A, "completed", "um")),
+            pai::enqueue(&pai::notification("bshell0001", "completed", "")),
+            pai::enqueue(&pai::notification("a5555555555555555", "completed", "")),
+            pai::delivered_notification(&pai::notification(B, "killed", "")),
+            // `blocked` é fim: "parado", nunca segura a sessão em "trabalhando".
+            pai::enqueue(&pai::notification(D, "blocked", "esperando aprovação")),
+        ];
+        write(&parent, &(lines.join("\n") + "\n"));
+
+        observer.begin(&handle, &tracker, session, parent.clone());
+        let status_of = |id: &str| {
+            tracker
+                .snapshot(session)
+                .subagents
+                .into_iter()
+                .find(|run| run.agent_id.as_deref() == Some(id))
+        };
+        assert!(wait_until(|| {
+            [A, B, D]
+                .iter()
+                .all(|id| status_of(id).is_some_and(|run| run.status == SubagentStatus::Done))
+        }));
+
+        let snapshot = tracker.snapshot(session);
+        assert_eq!(snapshot.subagents.len(), 4, "fila não vira subagente");
+        let a = status_of(A).unwrap();
+        assert_eq!(a.summary.as_deref(), Some("um"));
+        assert!(!a.interrupted);
+        assert!(status_of(B).unwrap().interrupted);
+        assert_eq!(status_of(C).unwrap().status, SubagentStatus::Running);
+        let d = status_of(D).unwrap();
+        assert!(d.blocked && !d.interrupted);
+        assert_eq!(d.summary.as_deref(), Some("esperando aprovação"));
+        assert!(!status_of(A).unwrap().blocked);
+        assert!(tracker.has_active(session));
+
+        // O fim de C chega depois, numa linha nova do pai.
+        let mut more = fs::OpenOptions::new().append(true).open(&parent).unwrap();
+        writeln!(
+            more,
+            "{}",
+            pai::enqueue(&pai::notification(C, "completed", "três"))
+        )
+        .unwrap();
+        assert!(wait_until(
+            || status_of(C).is_some_and(|run| run.status == SubagentStatus::Done)
+        ));
+        assert!(!tracker.has_active(session));
+        assert_eq!(tracker.snapshot(session).subagents.len(), 4);
 
         observer.retain_live(&handle, &tracker, &HashSet::new());
     }

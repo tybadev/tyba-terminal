@@ -7,6 +7,7 @@ import {
   formatElapsed,
   groupByRound,
   roundAge,
+  runLabelKey,
 } from "./agentTree";
 
 const SESSION = "s-1";
@@ -182,5 +183,45 @@ describe("groupByRound", () => {
     expect(roundAge(0, 30_000)).toEqual({ unit: "now", count: 0 });
     expect(roundAge(0, 3 * 60_000 + 5_000)).toEqual({ unit: "min", count: 3 });
     expect(roundAge(0, 2 * 3_600_000)).toEqual({ unit: "h", count: 2 });
+  });
+});
+
+describe("subagente parado (blocked)", () => {
+  test("acabou parado tem luz própria, distinta de concluído e interrompido", () => {
+    const tree = buildAgentTree(
+      SESSION,
+      [
+        run("a1", 1, "done", { blocked: true, summary: "esperando aprovação" }),
+        run("a2", 2, "done", { interrupted: true }),
+        run("a3", 3, "done"),
+      ],
+      [],
+      100_000,
+    );
+    const light = (id: string) => tree.rows.find((r) => r.run.agent_id === id)?.light;
+    expect(light("a1")).toBe("blocked");
+    expect(light("a2")).toBe("failed");
+    expect(light("a3")).toBe("done");
+    expect(tree.active).toBe(0);
+    const [round] = groupByRound(tree.rows);
+    expect(round.counts.blocked).toBe(1);
+    // Parado não segura a rodada recolhida: ninguém ali está vivo.
+    expect(collapsedRows(round)).toHaveLength(0);
+  });
+});
+
+describe("runLabelKey", () => {
+  test("concluído parado e interrompido não dizem \"concluído\"", () => {
+    expect(runLabelKey(run("a", 1, "done", { blocked: true }))).toBe(
+      "subagentsStatusBlocked",
+    );
+    expect(runLabelKey(run("a", 1, "done", { interrupted: true }))).toBe(
+      "agentsInterrupted",
+    );
+    expect(runLabelKey(run("a", 1, "done"))).toBe("subagentsStatusDone");
+    expect(runLabelKey(run("a", 1, "running"))).toBe("subagentsStatusRunning");
+    expect(runLabelKey(run(null, 1, "starting"))).toBe(
+      "subagentsStatusStarting",
+    );
   });
 });

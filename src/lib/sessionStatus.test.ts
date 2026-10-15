@@ -10,6 +10,7 @@ import {
   sameSessionStatus,
   statusVisual,
   tabAttention,
+  withSubagentsReason,
 } from "./sessionStatus";
 import type { AwaitingReason, Session, SessionStatus } from "./ipc";
 
@@ -342,5 +343,28 @@ describe("connectingHostIds", () => {
     for (const connection of ["live", "reconnecting", "dropped", "failed"] as const) {
       expect(connectingHostIds([session({ connection })]).size).toBe(0);
     }
+  });
+});
+
+describe("withSubagentsReason", () => {
+  test("rodando só por subagente vira 'subagentes trabalhando'", () => {
+    const running = statusVisual({ state: "running" }, false);
+    expect(withSubagentsReason(running, true)?.labelKey).toBe(
+      "sessionSubagentsWorking",
+    );
+    expect(withSubagentsReason(running, false)?.labelKey).toBe(
+      "sessionInProgress",
+    );
+  });
+
+  test("esperar alguém vence: prompt nativo segue com o próprio rótulo", () => {
+    const prompt = statusVisual(
+      { state: "awaiting_input", hint: null, reason: "native_prompt" },
+      false,
+    );
+    expect(withSubagentsReason(prompt, true)?.labelKey).toBe(
+      "sessionNeedsPermission",
+    );
+    expect(withSubagentsReason(null, true)).toBeNull();
   });
 });

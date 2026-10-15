@@ -14,6 +14,7 @@ import {
 
 import { useRelative } from "./GitHistoryView";
 import { MarkdownView } from "./MarkdownView";
+import { ForgeLoading } from "./ForgeLoading";
 import { getEffectiveBase } from "@/theme";
 import { openExternalUrl } from "../lib/clipboard";
 import { requestConfirm } from "../lib/confirm";
@@ -137,6 +138,7 @@ export function PrDetailView({
   const [section, setSection] = useState<Section>("conversation");
   const [forwarded, setForwarded] = useState<Set<string>>(() => new Set());
   const [now, setNow] = useState(() => Date.now());
+  const [loadAt, setLoadAt] = useState(() => Date.now());
   const [reviewBody, setReviewBody] = useState("");
   const [bodyOpen, setBodyOpen] = useState(false);
   const dark = getEffectiveBase() === "dark";
@@ -190,11 +192,26 @@ export function PrDetailView({
   const reviewers = useMemo(() => (pr ? reviewerStates(pr) : []), [pr]);
   const checks = useMemo(() => checksSummary(pr?.checks ?? []), [pr]);
 
+  if (pr === undefined) {
+    return (
+      <ForgeLoading
+        step={t("loadForgePr", { number })}
+        em={[`#${number}`]}
+        startedAt={loadAt}
+        error={error}
+        onRetry={() => {
+          setError(null);
+          setLoadAt(Date.now());
+          load(true);
+        }}
+        shape="lines"
+        rows={8}
+        className="absolute inset-0"
+      />
+    );
+  }
   if (error && !pr) {
     return <p className="absolute inset-0 p-6 text-[12px] text-tyba-red">{error}</p>;
-  }
-  if (pr === undefined) {
-    return <p className="absolute inset-0 p-6 text-[12px] text-tyba-text-faint">{t("diffLoading")}</p>;
   }
   if (pr === null) {
     return (

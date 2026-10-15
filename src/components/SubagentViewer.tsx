@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { CircleNotch, Gear, X } from "@phosphor-icons/react";
+import { Gear, X } from "@phosphor-icons/react";
 
 import { AgentIcon } from "./icons/AgentIcon";
+import { LoadingState } from "./ui/loading";
 
 import type {
   SessionId,
@@ -11,6 +12,8 @@ import type {
   TranscriptEntry,
 } from "@/lib/ipc";
 import { onSubagentTranscript, subagentTranscript } from "@/lib/ipc";
+import { runLabelKey } from "@/lib/agentTree";
+import { translateError } from "@/lib/errors";
 
 const MAX_ENTRIES = 1000;
 
@@ -121,6 +124,10 @@ export function SubagentTranscript({
 
   const [entries, setEntries] = useState<TranscriptEntry[]>([]);
   const [loading, setLoading] = useState(false);
+  const [loadAt, setLoadAt] = useState(() => Date.now());
+  const [error, setError] = useState<string | null>(null);
+  // Bumpado pelo "Tentar de novo": refaz a leitura inicial do transcript.
+  const [reload, setReload] = useState(0);
   const [trimmed, setTrimmed] = useState(false);
   const cursorRef = useRef(0);
   const receivedRef = useRef(0);
@@ -135,6 +142,8 @@ export function SubagentTranscript({
     }
     let cancelled = false;
     setLoading(true);
+    setError(null);
+    setLoadAt(Date.now());
     setEntries([]);
     setTrimmed(false);
     cursorRef.current = 0;
@@ -153,14 +162,16 @@ export function SubagentTranscript({
             : res.entries,
         );
       })
-      .catch(() => {})
+      .catch((e) => {
+        if (!cancelled) setError(translateError(e, t));
+      })
       .finally(() => {
         if (!cancelled) setLoading(false);
       });
     return () => {
       cancelled = true;
     };
-  }, [sessionId, agentId]);
+  }, [sessionId, agentId, reload]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!agentId) return;
@@ -217,13 +228,19 @@ export function SubagentTranscript({
               </p>
             </div>
           )}
-          {loading && entries.length === 0 && (
-            <div className="flex items-center gap-1.5 px-1 py-3 text-[12px] text-tyba-text-faint">
-              <CircleNotch size={13} className="animate-spin" />
-              {t("subagentsViewerLoading")}
-            </div>
+          {(loading || error) && entries.length === 0 && (
+            <LoadingState
+              op="subagent"
+              step={t("loadSubagent")}
+              startedAt={loadAt}
+              slowCause={t("loadSubagentSlow")}
+              error={error}
+              onRetry={() => setReload((n) => n + 1)}
+              shape="lines"
+              rows={6}
+            />
           )}
-          {!loading && entries.length === 0 && (
+          {!loading && !error && entries.length === 0 && (
             <p className="px-1 py-3 text-[12px] text-tyba-text-faint">
               {t("subagentsViewerNoTranscript")}
             </p>
@@ -268,13 +285,7 @@ export function SubagentViewer({
   const statusLabel = focused
     ? sessionEnded && focused.status !== "done"
       ? t("subagentsViewerEnded")
-      : t(
-          focused.status === "running"
-            ? "subagentsStatusRunning"
-            : focused.status === "starting"
-              ? "subagentsStatusStarting"
-              : "subagentsStatusDone",
-        )
+      : t(runLabelKey(focused))
     : "";
 
   return (

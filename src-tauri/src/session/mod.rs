@@ -208,6 +208,13 @@ pub struct Session {
     /// tratamento in-memory de `agent_model`.
     #[serde(default, skip_deserializing)]
     pub status_note: Option<String>,
+    /// A sessão está `Running` só porque há subagente trabalhando: o turno do
+    /// orquestrador acabou (decisão 4 revista da captura de subagentes). A UI
+    /// mostra "subagentes trabalhando" no lugar de "em andamento". Vale com
+    /// `status` em `Running` (com hook) ou com `observed` em `Running` (shell,
+    /// palpite segurado pelo `ObservedHold`). Só memória.
+    #[serde(default, skip_deserializing)]
+    pub subagents_working: bool,
     /// A sessão nasceu do gate (`reopenShellAgentManaged`) em vez de review,
     /// resolução de conflito ou clique manual do usuário. Puramente do core —
     /// nunca vai para o front. **In-memory, como `attention`**: não é coluna do
@@ -501,6 +508,7 @@ impl SessionManager {
         // chega jamais, e quem precisa saber disso é a interface — senão ela
         // mostra para sempre uma linha dizendo que o shell está carregando.
         let mut hook_expected = bash_rc.is_some();
+        let mut zdotdir_for_rc: Option<String> = None;
 
         if cfg!(unix) {
             if let Some(rc) = bash_rc {
@@ -527,7 +535,8 @@ impl SessionManager {
                     .or_else(|| std::env::var("HOME").ok())
                     .unwrap_or_default();
                 cmd.env("ZDOTDIR", dir);
-                cmd.env("TYBA_USER_ZDOTDIR", user_zdotdir);
+                cmd.env("TYBA_USER_ZDOTDIR", &user_zdotdir);
+                zdotdir_for_rc = Some(user_zdotdir);
             }
         }
 
@@ -561,6 +570,23 @@ impl SessionManager {
         );
         if result.is_ok() {
             pty_pool.set_hook_expected(id, hook_expected);
+            let rc = if hook_expected {
+                crate::pty::ShellBoot::rc_label(
+                    &label,
+                    zdotdir_for_rc.as_deref(),
+                    std::env::var("HOME").ok().as_deref(),
+                )
+            } else {
+                None
+            };
+            pty_pool.set_shell_boot(
+                id,
+                crate::pty::ShellBoot {
+                    shell: label.clone(),
+                    rc,
+                    started_at_ms: crate::approvals::now_ms(),
+                },
+            );
         }
         if result.is_err() {
             if let Some(wt) = &worktree {
@@ -932,6 +958,7 @@ impl SessionManager {
             observed: None,
             agent_model: None,
             status_note: None,
+            subagents_working: false,
             opened_by_gate,
             did_work,
             agent_usage: None,
@@ -1043,6 +1070,10 @@ impl SessionManager {
             return None;
         }
         s.attention = attention;
+        // Saiu de `Running`: o motivo "subagentes trabalhando" não vale mais.
+        if !matches!(status, SessionStatus::Running) {
+            s.subagents_working = false;
+        }
         let prev = std::mem::replace(&mut s.status, status);
         let _ = self.store.upsert_session(s);
         Some((prev, s.clone()))
@@ -1180,6 +1211,24 @@ impl SessionManager {
             return None;
         }
         s.agent_model = Some(model.to_string());
+        Some(s.clone())
+    }
+
+    /// Marca (ou desmarca) que a sessão roda só por subagente. Não vai ao
+    /// SQLite.
+    pub fn set_subagents_working(&self, app: &AppHandle, id: SessionId, working: bool) {
+        if let Some(session) = self.apply_subagents_working(id, working) {
+            emit_status(app, &session);
+        }
+    }
+
+    fn apply_subagents_working(&self, id: SessionId, working: bool) -> Option<Session> {
+        let mut sessions = self.sessions.write();
+        let s = sessions.get_mut(&id)?;
+        if s.subagents_working == working {
+            return None;
+        }
+        s.subagents_working = working;
         Some(s.clone())
     }
 
@@ -2198,6 +2247,7 @@ mod tests {
             observed: None,
             agent_model: None,
             status_note: None,
+            subagents_working: false,
             opened_by_gate: false,
             did_work: false,
             agent_usage: None,
@@ -3381,6 +3431,30 @@ echo beta
             assert!(manager.apply_agent_model(id, junk).is_none(), "{junk:?}");
         }
         assert_eq!(manager.get(id).unwrap().agent_model, None);
+    }
+
+    #[test]
+    fn subagentes_trabalhando_so_vale_enquanto_running() {
+        let (_store, manager, id) = restored_agent();
+        manager.apply_status(id, SessionStatus::Running);
+        assert!(manager.apply_subagents_working(id, true).is_some());
+        assert!(manager.apply_subagents_working(id, true).is_none());
+        // Running de novo (subagente chamando ferramenta) não apaga o motivo.
+        manager.apply_status(id, SessionStatus::Running);
+        assert!(manager.get(id).unwrap().subagents_working);
+        // Sair de Running apaga: Idle no fim do último subagente, ou um prompt.
+        manager.apply_status(id, SessionStatus::Idle { summary: None });
+        assert!(!manager.get(id).unwrap().subagents_working);
+        manager.apply_status(id, SessionStatus::Running);
+        manager.apply_subagents_working(id, true);
+        manager.apply_status(
+            id,
+            SessionStatus::AwaitingInput {
+                hint: None,
+                reason: AwaitingReason::NativePrompt,
+            },
+        );
+        assert!(!manager.get(id).unwrap().subagents_working);
     }
 
     #[test]
