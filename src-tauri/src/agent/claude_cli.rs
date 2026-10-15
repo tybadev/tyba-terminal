@@ -43,27 +43,24 @@ const PASSTHROUGH_FLAGS: &[&str] = &["-v", "--version", "-h", "--help"];
 const BACKGROUND_SUBCOMMANDS: &[&str] = &["agents", "attach", "respawn"];
 const BACKGROUND_FLAGS: &[&str] = &["--bg", "--background"];
 
-/// Flags que desligam ou contornam o gate do TYBA: pular hooks, trocar as
-/// settings que carregam os hooks, pular a checagem de permissão. Dentro do
-/// TYBA não rodam — nem hospedadas, nem cruas.
-const FORBIDDEN_FLAGS: &[&str] = &[
-    "--bare",
-    "--safe-mode",
-    "--settings",
-    "--setting-sources",
-    "--dangerously-skip-permissions",
-    "--allow-dangerously-skip-permissions",
-];
+/// Flags que tiram os hooks do TYBA da sessão: pular hooks, trocar as
+/// settings que carregam os hooks. Sem eles some o monitor e o guarda-corpo,
+/// então dentro do TYBA não rodam — nem hospedadas, nem cruas. Pular a
+/// permissão do próprio Claude (`--dangerously-skip-permissions`,
+/// `--permission-mode bypassPermissions`) é escolha de quem digita (agente
+/// livre): o `PreToolUse` do guarda-corpo roda mesmo assim.
+const FORBIDDEN_FLAGS: &[&str] = &["--bare", "--safe-mode", "--settings", "--setting-sources"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClaudeRoute {
-    /// Sessão de agente: o core hospeda com gate e jaula, args repassados.
+    /// Sessão de agente: o core hospeda (sem jaula, com os hooks que só
+    /// observam e o guarda-corpo), args repassados.
     Host,
     /// Não abre sessão (versão, ajuda, `mcp`, `doctor`...): roda cru.
     Passthrough,
     /// Abre sessão fora do pane (segundo plano): roda cru, marcado sem gate.
     Ungated,
-    /// Desligaria o gate: recusado, com o motivo para o usuário.
+    /// Tiraria os hooks do TYBA: recusado, com o motivo para o usuário.
     Forbidden(String),
 }
 
@@ -95,16 +92,7 @@ fn forbidden(args: &[String]) -> Option<String> {
     for (i, arg) in args.iter().enumerate() {
         let name = flag_name(arg);
         if FORBIDDEN_FLAGS.contains(&name) {
-            return Some(format!("`{name}` desliga o gate do TYBA"));
-        }
-        if name == "--permission-mode" {
-            let mode = match arg.split_once('=') {
-                Some((_, v)) => Some(v),
-                None => args.get(i + 1).map(String::as_str),
-            };
-            if mode == Some("bypassPermissions") {
-                return Some("`--permission-mode bypassPermissions` desliga o gate do TYBA".into());
-            }
+            return Some(format!("`{name}` desliga os hooks do TYBA"));
         }
         if name == "-r" || name == "--resume" {
             let value = match arg.split_once('=') {
@@ -219,17 +207,27 @@ mod tests {
             &["--settings", "/tmp/x.json"],
             &["--settings={\"disableAllHooks\":true}"],
             &["--setting-sources", "user"],
-            &["--dangerously-skip-permissions"],
-            &["-p", "oi", "--allow-dangerously-skip-permissions"],
-            &["--permission-mode", "bypassPermissions"],
-            &["--permission-mode=bypassPermissions"],
             // Forbidden vence passthrough: `--help` não serve de escotilha.
-            &["--dangerously-skip-permissions", "--help"],
+            &["--settings", "/tmp/x.json", "--help"],
         ] {
             assert!(
                 matches!(route(&args(form)), ClaudeRoute::Forbidden(_)),
                 "{form:?}"
             );
+        }
+    }
+
+    /// Agente livre: pular a permissão do próprio Claude é de quem digita.
+    #[test]
+    fn skipping_claudes_own_permissions_is_hosted() {
+        for form in [
+            &["--dangerously-skip-permissions"][..],
+            &["-p", "oi", "--allow-dangerously-skip-permissions"],
+            &["--permission-mode", "bypassPermissions"],
+            &["--permission-mode=bypassPermissions"],
+            &["-c", "--dangerously-skip-permissions"],
+        ] {
+            assert_eq!(route(&args(form)), ClaudeRoute::Host, "{form:?}");
         }
     }
 

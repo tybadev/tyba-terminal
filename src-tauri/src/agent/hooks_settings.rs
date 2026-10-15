@@ -184,6 +184,38 @@ pub fn claude_session_settings(hook_cmd: &str, status_line: Value) -> Value {
     compose_session_settings(hook_cmd, blocks, status_line)
 }
 
+/// Teto do `PreToolUse` no claude digitado (agente livre): o hook só aplica o
+/// guarda-corpo e avisa o core, nunca espera alguém decidir.
+pub const OBSERVER_PRE_TOOL_USE_TIMEOUT: u64 = 30;
+
+/// O comando do hook do claude digitado: `tyba _hook --observe`. O modo
+/// observador nunca devolve a decisão do core; só o guarda-corpo fixo decide.
+pub fn observer_hook_command(exe: &Path) -> String {
+    format!("{} {}", hook_command(exe), crate::hook_ipc::OBSERVE_FLAG)
+}
+
+/// O `--settings` do claude digitado num pane (agente livre): os MESMOS
+/// eventos da sessão gerenciada — monitor, conversa, subagentes, status —,
+/// mas o `PreToolUse` com teto curto e sem `onFailure: "block"`. TYBA fechado
+/// ou hook quebrado nunca trava o Claude.
+pub fn observer_session_settings(hook_cmd: &str, status_line: Value) -> Value {
+    let mut settings = hooks_settings_json(hook_cmd);
+    if let Some(entries) = settings
+        .pointer_mut("/hooks/PreToolUse")
+        .and_then(Value::as_array_mut)
+    {
+        for entry in entries {
+            if let Some(hooks) = entry.get_mut("hooks").and_then(Value::as_array_mut) {
+                for hook in hooks {
+                    hook["timeout"] = json!(OBSERVER_PRE_TOOL_USE_TIMEOUT);
+                }
+            }
+        }
+    }
+    settings["statusLine"] = status_line;
+    settings
+}
+
 /// A montagem, sem a pergunta de versão — testável.
 pub fn compose_session_settings(hook_cmd: &str, blocks: bool, status_line: Value) -> Value {
     let mut settings = hooks_settings_json(hook_cmd);
@@ -224,6 +256,43 @@ mod tests {
                 "{event} não pode travar por falha"
             );
         }
+    }
+
+    #[test]
+    fn observer_settings_never_block_and_keep_every_event() {
+        let v = observer_session_settings("x _hook --observe", json!({"type": "command"}));
+        let full = hooks_settings_json("x _hook --observe");
+        let events = |s: &Value| {
+            s["hooks"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(events(&v), events(&full), "o monitor precisa de todos");
+        for (event, entries) in v["hooks"].as_object().unwrap() {
+            for entry in entries.as_array().unwrap() {
+                for hook in entry["hooks"].as_array().unwrap() {
+                    assert!(hook.get("onFailure").is_none(), "{event} bloqueia");
+                    assert!(hook["timeout"].as_u64().unwrap() <= 60, "{event}");
+                    assert_eq!(hook["command"], "x _hook --observe");
+                }
+            }
+        }
+        assert_eq!(
+            v["hooks"]["PreToolUse"][0]["hooks"][0]["timeout"],
+            OBSERVER_PRE_TOOL_USE_TIMEOUT
+        );
+        assert_eq!(v["statusLine"]["type"], "command");
+    }
+
+    #[test]
+    fn observer_hook_command_carries_the_flag() {
+        assert_eq!(
+            observer_hook_command(Path::new("/usr/bin/tyba")),
+            "'/usr/bin/tyba' _hook --observe"
+        );
     }
 
     #[test]

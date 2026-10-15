@@ -142,6 +142,56 @@ pub fn run_client_inner<R: Read, W: Write>(
     0
 }
 
+/// Retentativa curta do modo observador: o hook roda inline em toda
+/// ferramenta, e um core ausente não pode custar segundos por chamada.
+const OBSERVER_RETRY: RetryPlan = RetryPlan {
+    attempts: 2,
+    base: Duration::from_millis(20),
+};
+
+/// `tyba _hook --observe`, o hook do claude digitado num pane (agente livre).
+/// Só observa: todo evento vai ao core, e a resposta do core é ignorada — o
+/// TYBA nunca decide por ele. A única decisão é o guarda-corpo fixo
+/// (`guard`, que devolve o JSON de `deny` ou `None`), tomada aqui, sem o
+/// core. Core ausente, socket sumido ou resposta estranha: stdout vazio, que
+/// para o Claude é "sem decisão". Nunca `allow`, nunca `deny` por falha.
+pub fn run_observer_client<R: Read, W: Write>(
+    stdin: R,
+    stdout: W,
+    socket_path: Option<&Path>,
+    guard: &dyn Fn(&serde_json::Value) -> Option<String>,
+) -> i32 {
+    run_observer_client_inner(stdin, stdout, socket_path, guard, OBSERVER_RETRY)
+}
+
+pub(crate) fn run_observer_client_inner<R: Read, W: Write>(
+    mut stdin: R,
+    mut stdout: W,
+    socket_path: Option<&Path>,
+    guard: &dyn Fn(&serde_json::Value) -> Option<String>,
+    retry: RetryPlan,
+) -> i32 {
+    let mut buf = Vec::new();
+    if stdin.read_to_end(&mut buf).is_err() {
+        return 0;
+    }
+    let event = match serde_json::from_slice::<serde_json::Value>(&buf) {
+        Ok(value) if value.is_object() => value,
+        _ => return 0,
+    };
+    if event.get("hook_event_name").and_then(|v| v.as_str()) == Some(PRE_TOOL_USE) {
+        if let Some(out) = guard(&event) {
+            let _ = stdout.write_all(out.as_bytes());
+            let _ = stdout.write_all(b"\n");
+            let _ = stdout.flush();
+        }
+    }
+    if let Some(socket_path) = socket_path {
+        let _ = connect_and_exchange(socket_path, &event, retry);
+    }
+    0
+}
+
 fn emit_transport_failure<W: Write>(stdout: &mut W, kind: EventKind) {
     if kind == EventKind::PreToolUse {
         emit_pre_tool_use(stdout, "deny", FAIL_CLOSED_REASON);

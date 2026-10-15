@@ -2,6 +2,7 @@ pub mod bwrap;
 #[cfg(all(test, target_os = "linux"))]
 mod bwrap_exec_tests;
 pub mod git;
+pub mod passthrough;
 pub mod policy;
 #[cfg(target_os = "macos")]
 pub mod seatbelt;

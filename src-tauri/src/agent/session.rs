@@ -9,6 +9,8 @@ use crate::agent::notify;
 
 use crate::agent::claude_settings::claude_settings_are_broad;
 use crate::agent::hooks_settings::{claude_session_settings, hook_command};
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use crate::agent::hooks_settings::{observer_hook_command, observer_session_settings};
 use crate::agent::subagents::SharedSubagents;
 use crate::agent::usage::{AgentAlert, AgentUsage, EVENT_AGENT_ALERT, STATUSLINE_HOOK_EVENT};
 use crate::agent::{AgentRunner, ClaudeCodeRunner, CodexRunner, HookSetup};
@@ -144,6 +146,10 @@ struct HandlerCtx {
     /// handler não reabrir o arquivo a cada `PreToolUse`: o id mora no cabeçalho
     /// e não muda enquanto o transcript for o mesmo.
     seen_transcript: Arc<Mutex<Option<String>>>,
+    /// Agente livre (claude digitado num pane): o hook só observa. O
+    /// `PreToolUse` nunca vira card nem espera ninguém — ver
+    /// [`session_route`].
+    observe_only: bool,
 }
 
 fn main_window_focused(app: &AppHandle) -> bool {
@@ -587,6 +593,8 @@ fn status_on_held_stop(current: &SessionStatus) -> Option<SessionStatus> {
 enum HookRoute {
     /// `on_pre_tool_use`: classificação, decisão híbrida e gate.
     ToolUse,
+    /// Agente livre: `on_observed_tool_use` — só o monitor, sem decisão.
+    Observe,
     /// O prompt nativo do Claude abriu: marca a sessão, avisa, `ack`.
     NativePrompt,
     OpenUrl,
@@ -610,6 +618,47 @@ fn hook_route(runner: &AgentRunnerKind, hook_event_name: &str) -> HookRoute {
         ("PermissionRequest", _) => HookRoute::ToolUse,
         _ => HookRoute::Ack,
     }
+}
+
+/// A rota de um evento numa sessão. No agente livre (`observe_only`), o que
+/// iria ao gate vai ao observador: nenhum card, nenhuma espera, nenhuma
+/// decisão. O `PermissionRequest` do Claude já é só aviso (`NativePrompt`).
+fn session_route(runner: &AgentRunnerKind, hook_event_name: &str, observe_only: bool) -> HookRoute {
+    match hook_route(runner, hook_event_name) {
+        HookRoute::ToolUse if observe_only => HookRoute::Observe,
+        route => route,
+    }
+}
+
+/// `PreToolUse` do agente livre: alimenta o painel de subagentes (o pedido
+/// de subagente e o que cada um está fazendo) e sai sem decisão. O
+/// guarda-corpo já foi aplicado no próprio hook (`tyba _hook --observe`), e o
+/// cliente ignora esta resposta de qualquer forma.
+fn on_observed_tool_use(ctx: &HandlerCtx, event: &HookEvent) -> HookAction {
+    let tool = event.tool_name.as_deref().unwrap_or("");
+    let input = event.tool_input.as_ref();
+    let normalized = normalize_tool_use(&ctx.runner_kind, tool, input);
+    if let ToolAction::Subagent {
+        agent_type,
+        description,
+    } = &normalized.action
+    {
+        ctx.subagents.on_spawn_requested(
+            &ctx.app,
+            ctx.session_id,
+            agent_type.clone(),
+            description.clone(),
+        );
+    }
+    if let Some(agent_id) = event.agent_id.as_deref() {
+        ctx.subagents.on_tool_use(
+            &ctx.app,
+            ctx.session_id,
+            agent_id,
+            crate::agent::subagents::tool_activity(tool, input, &normalized.description),
+        );
+    }
+    HookAction::Pass
 }
 
 /// O prompt nativo do Claude está aberto no terminal da sessão.
@@ -1058,10 +1107,11 @@ fn handle_event(ctx: &HandlerCtx, event: HookEvent) -> HookAction {
         None => {}
     }
 
-    match hook_route(&ctx.runner_kind, &event.hook_event_name) {
+    match session_route(&ctx.runner_kind, &event.hook_event_name, ctx.observe_only) {
         HookRoute::OpenUrl => handle_open_url(ctx, &event),
         HookRoute::Usage => on_statusline(ctx, &event),
         HookRoute::ToolUse => on_pre_tool_use(ctx, &event),
+        HookRoute::Observe => on_observed_tool_use(ctx, &event),
         HookRoute::NativePrompt => on_native_prompt(ctx, &event),
         HookRoute::Ack => HookAction::Ack,
     }
@@ -1315,133 +1365,87 @@ fn attach_resume(
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 const LAUNCH_PLAN_FILE: &str = "launch.json";
 
+/// O que o TYBA tira do env do shell do pane antes de subir o claude
+/// digitado — só o que desligaria os hooks dele (`CLAUDE_CODE_SIMPLE` é o
+/// modo `--bare`, que pula hooks, e por isso a flag já é recusada) ou
+/// mentiria sobre a rota (`TYBA_SHIM` marca claude cru, "sem gate").
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+const HOSTED_ENV_REMOVE: &[&str] = &["CLAUDE_CODE_SIMPLE", crate::hook_ipc::channel::SHIM_ENV];
+
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 struct HostedCommand {
     cmd: portable_pty::CommandBuilder,
-    jailed: bool,
-    /// Raiz usada para classificar risco (`HandlerCtx.worktree_root`) e para
-    /// consultar consentimento de `.tyba/config.toml` — o toplevel jaulado
-    /// quando há um, a cwd crua quando não há (§5).
+    /// Raiz que o histórico deduzido do prompt nativo usa para rotular a
+    /// chamada (`HandlerCtx.worktree_root`): o toplevel git da cwd, ou a
+    /// própria cwd fora de repositório.
     worktree_root: PathBuf,
 }
 
-/// Tenta montar o `cmd` jaulado — `sandbox_spec` + `sandbox.wrap` de verdade,
-/// nunca uma versão fake. Devolve `Err` em QUALQUER falha (sandbox
-/// indisponível, spec inválida, wrap recusado); quem chama decide a
-/// degradação — nunca `?` sozinho daqui pra cima, que é exatamente o achado
-/// MAJOR do review round 2 (§4.7: "degradar para gate-sem-jaula, nunca para
-/// nada"). `platform_sandbox()` refaz o probe do bwrap a cada chamada (não é
-/// memoizado como `userns_usable()`), então pode falhar mesmo com
-/// `decide_jail` já tendo dito Some — pressão de recurso, binário sumido
-/// entre o probe e agora.
+/// A spec que acompanha o `wrap` do passthrough. Ele não a lê — o agente
+/// livre não tem jaula —, mas o spawn continua passando pela trait
+/// `Sandbox` (princípio 2), e a trait pede uma.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-#[allow(clippy::too_many_arguments)]
-fn try_jail(
-    cmd: portable_pty::CommandBuilder,
-    runner: &dyn AgentRunner,
-    env: &HashMap<String, String>,
-    target: &Path,
-    runtime: &Path,
-    socket_path: &Path,
-    exe: &Path,
-) -> Result<portable_pty::CommandBuilder, String> {
-    let sandbox = crate::sandbox::platform_sandbox()?;
-    let spec = sandbox_spec(runner, env, target, target, runtime, socket_path, exe, None)?;
-    sandbox.wrap(cmd, &spec)
-}
-
-/// O ponto de decisão do achado MAJOR, extraído para ficar testável sem
-/// precisar derrubar o bwrap de verdade: dado o `cmd` BARE (o mesmo que o
-/// ramo gate-sem-jaula usaria) e o resultado JÁ CALCULADO da tentativa de
-/// jaula, devolve o `cmd` final e se saiu jaulado. Sucesso mantém a jaula;
-/// QUALQUER erro degrada para o `cmd` bare com `jailed = false` — nunca
-/// propaga o erro (isso viraria `Refused` no canal e `claude` cru, sem
-/// jaula E sem gate, no cliente fail-open). `bare` precisa ter sido
-/// CLONADO antes da tentativa: `Sandbox::wrap` consome o `CommandBuilder`
-/// por valor e não devolve nada utilizável em caso de erro.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-fn degrade_to_gate_only_on_sandbox_failure(
-    bare: portable_pty::CommandBuilder,
-    jailed_attempt: Result<portable_pty::CommandBuilder, String>,
-) -> (portable_pty::CommandBuilder, bool) {
-    match jailed_attempt {
-        Ok(wrapped) => (wrapped, true),
-        Err(_) => (bare, false),
+fn passthrough_spec(cwd: &Path, runtime: &Path, socket_path: &Path, exe: &Path) -> SandboxSpec {
+    SandboxSpec {
+        writable_root: cwd.to_path_buf(),
+        readable_root: cwd.to_path_buf(),
+        allow_network: true,
+        repo_git_dir: PathBuf::new(),
+        worktree_git_dir: PathBuf::new(),
+        runtime_dir: runtime.to_path_buf(),
+        hook_socket: socket_path.to_path_buf(),
+        tyba_exe: exe.to_path_buf(),
+        tyba_data_dir: PathBuf::new(),
+        home: PathBuf::new(),
+        tmpdir: None,
+        exec_path_dirs: Vec::new(),
+        agent: Default::default(),
+        read_allow_extra: Vec::new(),
+        data_dir_reads: Vec::new(),
     }
 }
 
 /// A parte de [`prepare_hosted_agent`] que NÃO precisa de `AgentSessionCtx`
-/// (logo, nem de `AppHandle`): monta env filtrado + `argv`, jaulando quando
-/// `jail_target` é `Some` e a jaula de fato monta. Separado para ficar
-/// testável sem um app Tauri de verdade — só `Store` (que já tem
-/// `open_in_memory` para teste) entra por referência, não o `ctx` inteiro.
-/// `runner` chega já resolvido (o chamador já pagou o
-/// `build_runner`/`binary_available`, que shella pra fora via
-/// `shell_path::agent_path` — memoizado por processo, e por isso não dá pra
-/// simular com um binário fake dentro de um teste isolado). `user_env`
-/// também chega por parâmetro (não `std::env::vars()` direto) para que um
-/// teste consiga forçar uma falha REAL de `sandbox_spec` (ex.: sem `HOME`)
-/// sem precisar mutar o env global do processo de teste.
+/// (logo, nem de `AppHandle`): monta o `argv` e o env que o TYBA acrescenta.
+/// Agente livre: sem jaula (o `Sandbox` é o passthrough) e sem env próprio —
+/// o claude herda o env do shell do pane no próprio shim
+/// ([`crate::hook_ipc::channel::hosted_child_env`]); o plano só carrega o
+/// socket de hooks e os marcadores.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-#[allow(clippy::too_many_arguments)]
 fn build_hosted_command(
-    store: &Store,
     runner: &dyn AgentRunner,
     cwd: &Path,
-    jail_target: Option<PathBuf>,
     hook_setup: &HookSetup,
     socket_path: &Path,
     runtime: &Path,
     exe: &Path,
-    user_env: &HashMap<String, String>,
     args: &[String],
 ) -> Result<HostedCommand, String> {
-    // Repo faltando (gate-sem-jaula por não ser git, ou por estar fora da
-    // allowlist) usa a cwd crua como raiz de config: `repo_config::load`
-    // simplesmente não acha `.tyba/config.toml` ali e devolve `None` — sem
-    // isto o consentimento do repo real nunca seria consultado no caso
-    // jaulado.
-    let worktree_root = jail_target.clone().unwrap_or_else(|| cwd.to_path_buf());
-    let config = consented_config(store, &worktree_root);
-    let mut env = crate::repo_config::agent_env(config.as_ref(), user_env);
-    apply_git_overrides(&mut env);
+    use crate::sandbox::Sandbox;
 
+    let worktree_root = crate::repo::toplevel(cwd)
+        .map(|top| crate::repo::canonicalize_or(&top))
+        .unwrap_or_else(|| cwd.to_path_buf());
     // Agente digitado no shell: o modelo é o que o usuário passou nos args, não
-    // o de uma launch config.
-    let mut cmd = runner.build_command(cwd, &env, hook_setup, None, None);
+    // o de uma launch config. Env vazio aqui: o resto vem do pane.
+    let mut cmd = runner.build_command(cwd, &HashMap::new(), hook_setup, None, None);
     // M6-A: os args que o usuário digitou (`-c`, `--resume <id>`, `-p ...`),
     // já reclassificados pelo `channel_host`, entram como argv depois do
-    // `--settings` dos hooks e ANTES do wrap da jaula — nunca por shell.
+    // `--settings` dos hooks — nunca por shell.
     cmd.args(args);
     cmd.env("TYBA_HOOK_SOCKET", socket_path);
-    // Track C consome estes dois via `/proc/<agente>/environ` — NUNCA via
-    // cmdline, que o `exec` da cadeia bwrap apaga (§7 do tech-spec).
+    // Track C consome estes via `/proc/<agente>/environ`.
     cmd.env("TYBA_HOSTED", "1");
-
-    let (mut cmd, jailed) = match &jail_target {
-        Some(target) => {
-            let bare = cmd.clone();
-            let attempt = try_jail(cmd, runner, &env, target, runtime, socket_path, exe);
-            degrade_to_gate_only_on_sandbox_failure(bare, attempt)
-        }
-        None => (cmd, false),
-    };
-    // Setado DEPOIS da decisão de degradação — reflete o `jailed` FINAL
-    // (pode ter caído de `true` para `false` se a jaula falhou), nunca o
-    // que `decide_jail` tinha pedido.
-    cmd.env("TYBA_JAILED", if jailed { "1" } else { "0" });
-
-    Ok(HostedCommand {
-        cmd,
-        jailed,
-        worktree_root,
-    })
+    cmd.env("TYBA_JAILED", "0");
+    let spec = passthrough_spec(cwd, runtime, socket_path, exe);
+    let cmd = crate::sandbox::passthrough::PassthroughSandbox.wrap(cmd, &spec)?;
+    Ok(HostedCommand { cmd, worktree_root })
 }
 
 /// `argv`/`env`/`cwd` já resolvidos, na forma que `HostedPlan` serializa —
 /// só o mapeamento, sem decisão nenhuma: `get_argv()` inclui o programa em
-/// `[0]`, `iter_extra_env_as_str()` devolve só o que foi setado depois do
-/// `env_clear()` do `build_command` (o env FILTRADO, nunca o herdado).
+/// `[0]`, `iter_extra_env_as_str()` devolve só o que o TYBA setou (nunca o
+/// env do processo core).
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn hosted_plan_from(
     cmd: &portable_pty::CommandBuilder,
@@ -1457,40 +1461,32 @@ fn hosted_plan_from(
             .iter_extra_env_as_str()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect(),
+        env_remove: HOSTED_ENV_REMOVE.iter().map(|k| k.to_string()).collect(),
         cwd: cwd.to_string_lossy().into_owned(),
     }
 }
 
-/// A metade "prepare" de [`spawn_prepared`] para o canal shim↔core (tech-spec
-/// §5): a MESMA fiação — hooks.json, env filtrado, sandbox quando cabe — até
-/// o ponto em que `spawn_prepared` subiria um PTY; aqui não sobe nada. Quem
-/// executa é o PRÓPRIO processo do shim, do lado de fora, lendo o
-/// `launch.json` que esta função escreve e depois apaga.
+/// O `claude` digitado num pane (canal shim↔core, tech-spec §5), no modelo
+/// do agente livre: sobe SEM jaula, com o env do shell do pane, e com os
+/// hooks da sessão por `--settings` — que só observam (monitor, conversa,
+/// subagentes, status) e aplicam o guarda-corpo fixo no `PreToolUse`
+/// (`tyba _hook --observe`). Nenhum card de aprovação: quem pede permissão é
+/// o prompt do próprio Claude. Aqui não sobe nada; quem executa é o PRÓPRIO
+/// processo do shim, lendo o `launch.json` que esta função escreve e ele
+/// apaga.
 ///
 /// `id` é o `SessionId` da sessão de SHELL dona da conexão — nunca um id
-/// novo — porque é o que faz `approval_history` (e todo o resto do hook)
-/// ficar atribuído à sessão que o usuário já está olhando: o critério de
-/// sucesso da v2 (ver tech-spec §5, "HookServer bound keyed pela sessão
-/// SHELL").
+/// novo — porque é o que faz o monitor (e todo o resto do hook) ficar
+/// atribuído à sessão que o usuário já está olhando.
 ///
-/// `jail_target: Some(T)` monta a MESMA [`SandboxSpec`] de hoje sobre `T` —
-/// `readable_root` E `writable_root` os dois, porque não há worktree
-/// separado (decisão 2 da spec: sobe na pasta onde o usuário digitou, sem
-/// mover nada). `None` é gate-sem-jaula: `argv` sai cru, sem `sandbox.wrap`.
-/// `SandboxSpec` em si fica INTOCADO — a allowlist (§1) eliminou o refactor
-/// `git: Option<_>` que a primeira versão do design cogitou.
-///
-/// Devolve o caminho do plano escrito (0600 via [`crate::session::write_private_bytes`])
-/// e se a sessão saiu jaulada.
+/// Devolve o caminho do plano escrito (0600 via [`crate::session::write_private_bytes`]).
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub fn prepare_hosted_agent(
     ctx: &AgentSessionCtx,
     id: SessionId,
     cwd: PathBuf,
-    jail_target: Option<PathBuf>,
-    no_jail: Option<crate::agent::channel_host::NoJailReason>,
     args: &[String],
-) -> Result<(PathBuf, bool), String> {
+) -> Result<PathBuf, String> {
     let runtime = runtime_dir(id)?;
     let socket_path = runtime.join(HOOK_SOCKET_FILE);
     if socket_path.as_os_str().len() > MAX_SOCKET_PATH {
@@ -1499,9 +1495,9 @@ pub fn prepare_hosted_agent(
 
     let runner = build_runner(&AgentRunnerKind::ClaudeCode)?;
     let exe = std::env::current_exe().map_err(|e| format!("exe do Tyba: {e}"))?;
-    let hook_cmd = hook_command(&exe);
+    let hook_cmd = observer_hook_command(&exe);
     let user_env: HashMap<String, String> = std::env::vars().collect();
-    let settings = claude_session_settings(
+    let settings = observer_session_settings(
         &hook_cmd,
         session_statusline(&exe, &user_env, &[&cwd, &main_repo_root(&cwd)]),
     );
@@ -1514,29 +1510,15 @@ pub fn prepare_hosted_agent(
         hook_command: hook_cmd,
     };
 
-    let HostedCommand {
-        mut cmd,
-        jailed,
-        worktree_root,
-    } = build_hosted_command(
-        &ctx.store,
+    let HostedCommand { cmd, worktree_root } = build_hosted_command(
         runner.as_ref(),
         &cwd,
-        jail_target,
         &hook_setup,
         &socket_path,
         &runtime,
         &exe,
-        &std::env::vars().collect(),
         args,
     )?;
-    // M7: sem jaula, o motivo vai junto no env do agente — o pane lê de lá
-    // (`process_probe::no_jail_marker`) e explica em linguagem simples. A
-    // jaula pedida que falhou ao montar conta como "sandbox".
-    if !jailed {
-        let reason = no_jail.unwrap_or(crate::agent::channel_host::NoJailReason::Sandbox);
-        cmd.env("TYBA_NOJAIL", reason.as_env());
-    }
 
     ctx.subagents.register_session(id);
     let handler_ctx = HandlerCtx {
@@ -1548,10 +1530,11 @@ pub fn prepare_hosted_agent(
         session_id: id,
         runner_kind: AgentRunnerKind::ClaudeCode,
         repo_root: main_repo_root(&worktree_root),
-        agent_home: agent_home(&std::env::vars().collect()),
+        agent_home: agent_home(&user_env),
         worktree_root,
         turn_settle: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         seen_transcript: Arc::new(Mutex::new(None)),
+        observe_only: true,
     };
     // Review round 1, achado BLOQUEANTE: derruba o HookServer ANTIGO desta
     // sessão ANTES de religar em `socket_path` — nunca depois. `runtime_dir(id)`
@@ -1580,7 +1563,7 @@ pub fn prepare_hosted_agent(
         ctx.servers.shutdown(id);
         return Err(format!("escrita do plano de execução: {e}"));
     }
-    Ok((runtime.join(LAUNCH_PLAN_FILE), jailed))
+    Ok(runtime.join(LAUNCH_PLAN_FILE))
 }
 
 /// Sobe o agente de novo na conversa nativa que a sessão morta deixou no disco.
@@ -1977,6 +1960,7 @@ fn spawn_prepared(
         agent_home: agent_home(&env),
         turn_settle: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         seen_transcript: Arc::new(Mutex::new(None)),
+        observe_only: false,
     };
     let server = HookServer::bind(
         &socket_path,
@@ -2121,31 +2105,23 @@ mod hook_server_registry_tests {
     }
 }
 
-// Exercita `build_hosted_command`/`hosted_plan_from`/
-// `degrade_to_gate_only_on_sandbox_failure` — a cadeia exclusiva do canal
-// shim↔core, no Linux e no macOS (mesmo gate acima).
+// Exercita `build_hosted_command`/`hosted_plan_from` — a cadeia exclusiva do
+// canal shim↔core, no Linux e no macOS (mesmo gate acima).
 #[cfg(test)]
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod build_hosted_command_tests {
     use super::*;
 
     /// `prepare_hosted_agent` inteiro precisa de `AgentSessionCtx` — e
-    /// `AgentSessionCtx.app: AppHandle` não é genérico em `R` (ao contrário de
-    /// `spawn_preflight`/`PtyPool::spawn`), então `tauri::test::mock_app()`
-    /// (que devolve `AppHandle<MockRuntime>`) não serve aqui. Por isso a
-    /// decisão de env/argv/jaula foi extraída para `build_hosted_command`,
-    /// que só precisa de `Store` — testável sem app nenhum, e é onde mora
-    /// TODA a lógica de negócio; o resto de `prepare_hosted_agent` é fiação
-    /// (`HookServer::bind`, `ctx.servers.insert`), do mesmo jeito que
-    /// `spawn_prepared` já fica sem teste unitário nesta base de código.
-    fn store() -> Store {
-        Store::open_in_memory().unwrap()
-    }
-
+    /// `AgentSessionCtx.app: AppHandle` não é genérico em `R`, então
+    /// `tauri::test::mock_app()` não serve aqui. Por isso a decisão de
+    /// env/argv foi extraída para `build_hosted_command`, testável sem app
+    /// nenhum; o resto de `prepare_hosted_agent` é fiação (`HookServer::bind`,
+    /// `ctx.servers.insert`).
     fn hook_setup(runtime: &Path) -> HookSetup {
         HookSetup {
             settings_path: runtime.join(HOOK_SETTINGS_FILE),
-            hook_command: "tyba _hook".into(),
+            hook_command: "tyba _hook --observe".into(),
         }
     }
 
@@ -2166,32 +2142,17 @@ mod build_hosted_command_tests {
         run(&["commit", "-q", "-m", "init"]);
     }
 
-    // --- Review round 2, achado MAJOR: falha de sandbox degrada, nunca propaga ---
-
-    #[test]
-    fn degrade_keeps_the_wrapped_cmd_and_jailed_true_on_success() {
-        let bare = portable_pty::CommandBuilder::new("claude");
-        let mut wrapped = portable_pty::CommandBuilder::new("bwrap");
-        wrapped.arg("--marker-do-wrap");
-        let (cmd, jailed) = degrade_to_gate_only_on_sandbox_failure(bare, Ok(wrapped));
-        assert!(jailed);
-        assert_eq!(cmd.get_argv().first().unwrap(), "bwrap");
-    }
-
-    #[test]
-    fn degrade_falls_back_to_the_bare_cmd_and_jailed_false_on_any_sandbox_error() {
-        let bare = portable_pty::CommandBuilder::new("claude");
-        let (cmd, jailed) =
-            degrade_to_gate_only_on_sandbox_failure(bare, Err("bwrap sumiu".into()));
-        assert!(
-            !jailed,
-            "qualquer erro na tentativa de jaula tem que virar jailed=false, nunca propagar"
-        );
-        assert_eq!(
-            cmd.get_argv().first().unwrap(),
-            "claude",
-            "o cmd degradado é o BARE original, não um resto do wrap que falhou"
-        );
+    fn build(cwd: &Path, runtime: &Path, args: &[String]) -> HostedCommand {
+        build_hosted_command(
+            &ClaudeCodeRunner,
+            cwd,
+            &hook_setup(runtime),
+            &runtime.join(HOOK_SOCKET_FILE),
+            runtime,
+            &std::env::current_exe().unwrap(),
+            args,
+        )
+        .expect("o claude digitado sempre monta")
     }
 
     #[test]
@@ -2217,394 +2178,129 @@ mod build_hosted_command_tests {
         assert!(spec.read_allow_extra.is_empty());
     }
 
-    /// A prova de ponta a ponta que o achado pediu: `decide_jail` manda
-    /// jaular (repo visível na home), mas `sandbox_spec` falha de VERDADE
-    /// (sem `HOME` no env — não precisa derrubar bwrap nem mockar
-    /// `platform_sandbox()` para reproduzir uma falha real do caminho de
-    /// jaula). O plano resultante tem que ser gate-sem-jaula — hook socket
-    /// presente, `TYBA_JAILED=0`, argv SEM bwrap — nunca um `Err`
-    /// (que viraria `Refused` no canal e `claude` cru, sem jaula E sem
-    /// gate, no `tyba _jail` fail-open).
+    /// Agente livre: o claude digitado passa pelo `Sandbox` passthrough —
+    /// argv cru, sem `sandbox-exec`/`bwrap`, com os hooks e os marcadores.
     #[test]
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    fn a_real_sandbox_spec_failure_degrades_the_whole_plan_to_gate_only_never_to_an_error() {
-        let store = store();
+    fn the_typed_claude_runs_through_the_passthrough_sandbox() {
         let repo = tempfile::tempdir().unwrap();
         init_git_repo(repo.path());
-        let target = crate::repo::canonicalize_or(repo.path());
+        let cwd = crate::repo::canonicalize_or(repo.path());
         let runtime = tempfile::tempdir().unwrap();
         let socket_path = runtime.path().join(HOOK_SOCKET_FILE);
-        let setup = hook_setup(runtime.path());
-        let exe = std::env::current_exe().unwrap();
 
-        let mut user_env: HashMap<String, String> = std::env::vars().collect();
-        user_env.remove("HOME");
-
-        let hosted = build_hosted_command(
-            &store,
-            &ClaudeCodeRunner,
-            &target,
-            Some(target.clone()),
-            &setup,
-            &socket_path,
-            runtime.path(),
-            &exe,
-            &user_env,
-            &[],
-        )
-        .expect(
-            "uma falha de sandbox_spec tem que degradar pro plano gate-sem-jaula, \
-             NUNCA propagar como Err — achado MAJOR do review round 2",
-        );
-
+        let hosted = build(&cwd, runtime.path(), &[]);
+        let plan = hosted_plan_from(&hosted.cmd, &cwd);
+        assert_eq!(plan.argv.first().map(String::as_str), Some("claude"));
         assert!(
-            !hosted.jailed,
-            "sandbox_spec falhou (sem HOME) — o plano tem que sair gate-sem-jaula, não jaulado"
-        );
-        let plan = hosted_plan_from(&hosted.cmd, &target);
-        assert_eq!(
-            plan.argv.first().map(String::as_str),
-            Some("claude"),
-            "gate-sem-jaula é o binário cru, sem prefixo de bwrap: {:?}",
-            plan.argv
-        );
-        assert!(
-            !plan.argv.iter().any(|a| a.contains("bwrap")),
-            "não pode ter sobrado nada do wrap que falhou: {:?}",
-            plan.argv
-        );
-        assert!(
-            plan.env.contains(&(
-                "TYBA_HOOK_SOCKET".to_string(),
-                socket_path.to_string_lossy().into_owned()
-            )),
-            "o hook socket continua presente — é gate-sem-jaula, não claude cru sem gate: {:?}",
-            plan.env
-        );
-        assert!(
-            plan.env
-                .contains(&("TYBA_JAILED".to_string(), "0".to_string())),
-            "TYBA_JAILED precisa refletir a degradação, não o jail_target original pedido: {:?}",
-            plan.env
-        );
-    }
-
-    #[test]
-    fn gate_without_jail_produces_a_bare_argv_with_hosted_markers() {
-        let store = store();
-        let cwd = tempfile::tempdir().unwrap();
-        let runtime = tempfile::tempdir().unwrap();
-        let socket_path = runtime.path().join(HOOK_SOCKET_FILE);
-        let setup = hook_setup(runtime.path());
-        let exe = std::env::current_exe().unwrap();
-
-        let hosted = build_hosted_command(
-            &store,
-            &ClaudeCodeRunner,
-            cwd.path(),
-            None,
-            &setup,
-            &socket_path,
-            runtime.path(),
-            &exe,
-            &std::env::vars().collect(),
-            &[],
-        )
-        .expect("gate-sem-jaula não deveria falhar");
-
-        assert!(!hosted.jailed, "sem jail_target, a sessão não sai jaulada");
-        assert_eq!(hosted.worktree_root, cwd.path());
-        let plan = hosted_plan_from(&hosted.cmd, cwd.path());
-        assert_eq!(
-            plan.argv.first().map(String::as_str),
-            Some("claude"),
-            "gate-sem-jaula roda o binário cru — argv[0] é literalmente `claude`, sem wrapper: {:?}",
+            !plan.argv.iter().any(|a| a.contains("sandbox-exec")
+                || a.contains("bwrap")
+                || a.contains("(version 1)")),
+            "nada de jaula no argv: {:?}",
             plan.argv
         );
         assert!(
             plan.argv.iter().any(|a| a == "--settings"),
-            "settings de hooks continuam presentes mesmo sem jaula: {:?}",
+            "{:?}",
             plan.argv
         );
-        assert!(plan
-            .env
-            .contains(&("TYBA_HOSTED".to_string(), "1".to_string())));
-        assert!(plan
-            .env
-            .contains(&("TYBA_JAILED".to_string(), "0".to_string())));
-        assert_eq!(plan.cwd, cwd.path().to_string_lossy());
+        for (k, v) in [
+            ("TYBA_HOSTED", "1".to_string()),
+            ("TYBA_JAILED", "0".to_string()),
+            (
+                "TYBA_HOOK_SOCKET",
+                socket_path.to_string_lossy().into_owned(),
+            ),
+        ] {
+            assert!(
+                plan.env.contains(&(k.to_string(), v)),
+                "{k}: {:?}",
+                plan.env
+            );
+        }
+        assert!(
+            !plan.env.iter().any(|(k, _)| k == "TYBA_SANDBOX"),
+            "o passthrough não marca sandbox: {:?}",
+            plan.env
+        );
+        assert_eq!(plan.cwd, cwd.to_string_lossy());
     }
 
-    /// Bug do retest da shim v2: o `claude` hospedado saía sem cor porque
-    /// `TERM`/`COLORTERM` não atravessavam `agent_env` → `build_command` →
-    /// `hosted_plan_from`. Prova a cadeia inteira, não só `agent_env`
-    /// isolado — é o plano que de fato vira `launch.json` e chega ao `exec`
-    /// do `tyba _jail`.
+    /// Agente livre: o plano carrega SÓ o que o TYBA acrescenta — nada do
+    /// env do processo core —, e o env do shell do pane chega ao claude
+    /// pelo próprio shim, menos o que desligaria os hooks.
     #[test]
-    fn hosted_plan_carries_term_and_colorterm_from_the_user_shell() {
-        let store = store();
+    fn the_pane_env_reaches_the_child_and_tyba_only_adds_its_own_vars() {
         let cwd = tempfile::tempdir().unwrap();
         let runtime = tempfile::tempdir().unwrap();
-        let socket_path = runtime.path().join(HOOK_SOCKET_FILE);
-        let setup = hook_setup(runtime.path());
-        let exe = std::env::current_exe().unwrap();
-
-        let mut user_env: HashMap<String, String> = std::env::vars().collect();
-        user_env.insert("TERM".into(), "xterm-kitty".into());
-        user_env.insert("COLORTERM".into(), "truecolor".into());
-
-        let hosted = build_hosted_command(
-            &store,
-            &ClaudeCodeRunner,
-            cwd.path(),
-            None,
-            &setup,
-            &socket_path,
-            runtime.path(),
-            &exe,
-            &user_env,
-            &[],
-        )
-        .expect("gate-sem-jaula não deveria falhar");
-
+        let hosted = build(cwd.path(), runtime.path(), &[]);
         let plan = hosted_plan_from(&hosted.cmd, cwd.path());
-        assert!(
-            plan.env
-                .contains(&("TERM".to_string(), "xterm-kitty".to_string())),
-            "TERM do shell do dono precisa chegar ao plano: {:?}",
-            plan.env
-        );
-        assert!(
-            plan.env
-                .contains(&("COLORTERM".to_string(), "truecolor".to_string())),
-            "COLORTERM do shell do dono precisa chegar ao plano: {:?}",
-            plan.env
-        );
-    }
 
-    #[test]
-    #[cfg(target_os = "linux")]
-    fn the_jailed_branch_wraps_argv_through_the_real_sandbox() {
-        let store = store();
-        let repo = tempfile::tempdir().unwrap();
-        init_git_repo(repo.path());
-        let target = crate::repo::canonicalize_or(repo.path());
-        let runtime = tempfile::tempdir().unwrap();
-        let socket_path = runtime.path().join(HOOK_SOCKET_FILE);
-        let setup = hook_setup(runtime.path());
-        let exe = std::env::current_exe().unwrap();
+        let mut keys: Vec<&str> = plan.env.iter().map(|(k, _)| k.as_str()).collect();
+        keys.sort_unstable();
+        assert_eq!(keys, ["TYBA_HOOK_SOCKET", "TYBA_HOSTED", "TYBA_JAILED"]);
 
-        let hosted = build_hosted_command(
-            &store,
-            &ClaudeCodeRunner,
-            &target,
-            Some(target.clone()),
-            &setup,
-            &socket_path,
-            runtime.path(),
-            &exe,
-            &std::env::vars().collect(),
-            &[],
-        )
-        .expect("branch jaulado deveria montar com bwrap real");
-
-        assert!(hosted.jailed);
-        assert_eq!(hosted.worktree_root, target);
-        let plan = hosted_plan_from(&hosted.cmd, &target);
-        assert!(
-            plan.argv.iter().any(|a| a.contains("bwrap")),
-            "o argv jaulado precisa passar pelo bwrap: {:?}",
-            plan.argv
-        );
-        assert!(
-            plan.argv.iter().any(|a| a == "claude"),
-            "o comando original continua no argv, depois do prefixo de jaula: {:?}",
-            plan.argv
-        );
-        assert!(plan
-            .env
-            .contains(&("TYBA_JAILED".to_string(), "1".to_string())));
-        assert!(
-            plan.env
-                .contains(&("TYBA_SANDBOX".to_string(), "bwrap".to_string())),
-            "wrap_command marca TYBA_SANDBOX — prova de que passou pelo sandbox de verdade: {:?}",
-            plan.env
-        );
-    }
-
-    /// M7: jaula sem git. Uma pasta sem repositório, e uma pasta dentro de
-    /// um repo MAIOR que ela (o `~/.git` vazio da máquina do dono), sobem
-    /// jauladas na própria pasta — e a política nunca concede o `.git` de
-    /// fora da jaula.
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn a_jail_without_its_own_git_repo_still_mounts_and_never_grants_an_outer_git() {
-        let store = store();
-        let outer = tempfile::tempdir().unwrap();
-        init_git_repo(outer.path());
-        let inner = outer.path().join("projeto");
-        std::fs::create_dir(&inner).unwrap();
-        let plain = tempfile::tempdir().unwrap();
-
-        for target in [
-            crate::repo::canonicalize_or(&inner),
-            crate::repo::canonicalize_or(plain.path()),
+        let pane: Vec<(std::ffi::OsString, std::ffi::OsString)> = [
+            ("TYBA_TEST_PANE_VAR", "1"),
+            ("TERM", "xterm-kitty"),
+            ("CLAUDE_CODE_SIMPLE", "1"),
+            ("TYBA_SHIM", "fallback"),
+        ]
+        .iter()
+        .map(|(k, v)| (k.into(), v.into()))
+        .collect();
+        let child = crate::hook_ipc::channel::hosted_child_env(pane, &plan.env_remove, &plan.env);
+        let has = |k: &str| child.iter().any(|(key, _)| key == k);
+        for k in [
+            "TYBA_TEST_PANE_VAR",
+            "TERM",
+            "TYBA_HOOK_SOCKET",
+            "TYBA_HOSTED",
         ] {
-            let runtime = tempfile::tempdir().unwrap();
-            let socket_path = runtime.path().join(HOOK_SOCKET_FILE);
-            let setup = hook_setup(runtime.path());
-            let exe = std::env::current_exe().unwrap();
-            let hosted = build_hosted_command(
-                &store,
-                &ClaudeCodeRunner,
-                &target,
-                Some(target.clone()),
-                &setup,
-                &socket_path,
-                runtime.path(),
-                &exe,
-                &std::env::vars().collect(),
-                &[],
-            )
-            .expect("monta");
-            assert!(hosted.jailed, "{target:?} deveria subir jaulado");
-            let plan = hosted_plan_from(&hosted.cmd, &target);
-            let policy = plan
-                .argv
-                .iter()
-                .find(|a| a.contains("(version 1)"))
-                .expect("política do Seatbelt no argv");
-            let outer_git = crate::repo::canonicalize_or(outer.path())
-                .join(".git")
-                .to_string_lossy()
-                .into_owned();
+            assert!(has(k), "{k} faltou: {child:?}");
+        }
+        for k in ["CLAUDE_CODE_SIMPLE", "TYBA_SHIM"] {
             assert!(
-                !policy.contains(&format!("(subpath \"{outer_git}/objects\")")),
-                "o .git de fora da jaula não pode ficar gravável"
+                !has(k),
+                "{k} desligaria os hooks ou mentiria a rota: {child:?}"
             );
         }
     }
 
-    /// M3: no macOS a jaula do `claude` hospedado é o Seatbelt — o mesmo
-    /// `Sandbox::wrap` da sessão gerenciada, nunca um `Command` cru.
     #[test]
-    #[cfg(target_os = "macos")]
-    fn the_jailed_branch_wraps_argv_through_seatbelt_on_macos() {
-        let store = store();
+    fn worktree_root_is_the_repo_toplevel_or_the_cwd() {
         let repo = tempfile::tempdir().unwrap();
         init_git_repo(repo.path());
-        let target = crate::repo::canonicalize_or(repo.path());
+        let sub = repo.path().join("src");
+        std::fs::create_dir(&sub).unwrap();
         let runtime = tempfile::tempdir().unwrap();
-        let socket_path = runtime.path().join(HOOK_SOCKET_FILE);
-        let setup = hook_setup(runtime.path());
-        let exe = std::env::current_exe().unwrap();
-
-        let hosted = build_hosted_command(
-            &store,
-            &ClaudeCodeRunner,
-            &target,
-            Some(target.clone()),
-            &setup,
-            &socket_path,
-            runtime.path(),
-            &exe,
-            &std::env::vars().collect(),
-            &[],
-        )
-        .expect("branch jaulado deveria montar com o Seatbelt real");
-
-        assert!(hosted.jailed);
-        let plan = hosted_plan_from(&hosted.cmd, &target);
         assert_eq!(
-            plan.argv.first().map(String::as_str),
-            Some(crate::sandbox::seatbelt::SANDBOX_EXEC),
-            "o argv jaulado começa no sandbox-exec: {:?}",
-            plan.argv
+            build(&sub, runtime.path(), &[]).worktree_root,
+            crate::repo::canonicalize_or(repo.path())
         );
-        assert!(plan.argv.iter().any(|a| a == "claude"));
-        for marker in [
-            ("TYBA_HOSTED", "1"),
-            ("TYBA_JAILED", "1"),
-            ("TYBA_SANDBOX", "seatbelt"),
-        ] {
-            assert!(
-                plan.env
-                    .contains(&(marker.0.to_string(), marker.1.to_string())),
-                "{marker:?} faltou no plano: {:?}",
-                plan.env
-            );
-        }
+        let plain = tempfile::tempdir().unwrap();
+        assert_eq!(
+            build(plain.path(), runtime.path(), &[]).worktree_root,
+            plain.path()
+        );
     }
 
     /// M6-A: os args do usuário entram no argv do plano um a um, depois dos
     /// hooks — nada vira string de shell.
     #[test]
     fn user_args_land_in_the_plan_argv_verbatim_after_the_hooks() {
-        let store = store();
         let cwd = tempfile::tempdir().unwrap();
         let runtime = tempfile::tempdir().unwrap();
-        let socket_path = runtime.path().join(HOOK_SOCKET_FILE);
-        let setup = hook_setup(runtime.path());
-        let exe = std::env::current_exe().unwrap();
-        let args: Vec<String> = vec!["-c".into(), "-p".into(), "a; rm -rf ~ $(x)".into()];
-
-        let hosted = build_hosted_command(
-            &store,
-            &ClaudeCodeRunner,
-            cwd.path(),
-            None,
-            &setup,
-            &socket_path,
-            runtime.path(),
-            &exe,
-            &std::env::vars().collect(),
-            &args,
-        )
-        .unwrap();
+        let args: Vec<String> = vec![
+            "-c".into(),
+            "--dangerously-skip-permissions".into(),
+            "-p".into(),
+            "a; rm -rf ~ $(x)".into(),
+        ];
+        let hosted = build(cwd.path(), runtime.path(), &args);
         let plan = hosted_plan_from(&hosted.cmd, cwd.path());
         let settings = plan.argv.iter().position(|a| a == "--settings").unwrap();
-        assert_eq!(&plan.argv[plan.argv.len() - 3..], &args[..]);
-        assert!(settings < plan.argv.len() - 3);
-    }
-
-    #[test]
-    fn hosted_plan_from_carries_only_the_env_set_after_env_clear() {
-        // `iter_extra_env_as_str` nunca deveria vazar o env HERDADO do
-        // processo core — só o que `build_command`/`build_hosted_command`
-        // setaram explicitamente. Prova direta, sem precisar de sandbox.
-        let store = store();
-        let cwd = tempfile::tempdir().unwrap();
-        let runtime = tempfile::tempdir().unwrap();
-        let socket_path = runtime.path().join(HOOK_SOCKET_FILE);
-        let setup = hook_setup(runtime.path());
-        let exe = std::env::current_exe().unwrap();
-
-        // Um valor que certamente NÃO está na allowlist de env do agente.
-        std::env::set_var("TYBA_TEST_SHOULD_NEVER_LEAK", "segredo");
-        let hosted = build_hosted_command(
-            &store,
-            &ClaudeCodeRunner,
-            cwd.path(),
-            None,
-            &setup,
-            &socket_path,
-            runtime.path(),
-            &exe,
-            &std::env::vars().collect(),
-            &[],
-        )
-        .unwrap();
-        std::env::remove_var("TYBA_TEST_SHOULD_NEVER_LEAK");
-
-        let plan = hosted_plan_from(&hosted.cmd, cwd.path());
-        assert!(
-            !plan
-                .env
-                .iter()
-                .any(|(k, _)| k == "TYBA_TEST_SHOULD_NEVER_LEAK"),
-            "o env hospedado vazou algo fora da allowlist: {:?}",
-            plan.env
-        );
+        assert_eq!(&plan.argv[plan.argv.len() - 4..], &args[..]);
+        assert!(settings < plan.argv.len() - 4);
     }
 }
 
@@ -2753,6 +2449,32 @@ mod hook_route_tests {
     fn pre_tool_use_vai_ao_gate_em_qualquer_runner() {
         assert_eq!(hook_route(&CLAUDE, "PreToolUse"), HookRoute::ToolUse);
         assert_eq!(hook_route(&CODEX, "PreToolUse"), HookRoute::ToolUse);
+    }
+
+    /// Agente livre (claude digitado): o `PreToolUse` nunca chega ao gate —
+    /// sem card, sem espera —, o `PermissionRequest` só avisa, e o resto do
+    /// monitor segue igual. Sessão gerenciada continua no gate.
+    #[test]
+    fn observe_only_never_routes_to_the_gate() {
+        assert_eq!(
+            session_route(&CLAUDE, "PreToolUse", true),
+            HookRoute::Observe
+        );
+        assert_eq!(
+            session_route(&CLAUDE, "PermissionRequest", true),
+            HookRoute::NativePrompt
+        );
+        for name in ["PostToolUse", "Stop", "SubagentStart", "SessionEnd"] {
+            assert_eq!(session_route(&CLAUDE, name, true), HookRoute::Ack, "{name}");
+        }
+        assert_eq!(
+            session_route(&CLAUDE, "TybaStatusline", true),
+            HookRoute::Usage
+        );
+        assert_eq!(
+            session_route(&CLAUDE, "PreToolUse", false),
+            HookRoute::ToolUse
+        );
     }
 
     #[test]

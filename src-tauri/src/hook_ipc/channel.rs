@@ -341,11 +341,36 @@ fn serve_connection(stream: std::os::unix::net::UnixStream, handler: &ChannelHan
 /// o shim roda como FILHO do shell (nunca inspeciona o que o core decidiu por
 /// fora deste arquivo). O mesmo tipo é usado pelos dois lados: quem escreve
 /// (`agent::channel_host`, Track B) e quem lê (aqui).
+///
+/// Env (agente livre): o claude sobe com o env do PRÓPRIO shim — o do shell
+/// do pane —, menos `env_remove`, com `env` (só o que o TYBA acrescenta:
+/// socket de hooks, marcadores) por cima. Ver [`hosted_child_env`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HostedPlan {
     pub argv: Vec<String>,
     pub env: Vec<(String, String)>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub env_remove: Vec<String>,
     pub cwd: String,
+}
+
+/// O env final do claude hospedado: o herdado do shell do pane, sem as
+/// chaves de `remove`, com `set` por cima. Pura sobre `OsString`, para que
+/// valor não-UTF-8 do shell atravesse intacto.
+pub fn hosted_child_env(
+    inherited: impl IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+    remove: &[String],
+    set: &[(String, String)],
+) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+    let overridden = |k: &std::ffi::OsString| {
+        remove.iter().any(|r| k.as_os_str() == r.as_str())
+            || set.iter().any(|(s, _)| k.as_os_str() == s.as_str())
+    };
+    inherited
+        .into_iter()
+        .filter(|(k, _)| !overridden(k))
+        .chain(set.iter().map(|(k, v)| (k.into(), v.into())))
+        .collect()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -357,6 +382,7 @@ pub enum JailOutcome {
     Exec {
         argv: Vec<String>,
         env: Vec<(String, String)>,
+        env_remove: Vec<String>,
         cwd: String,
     },
     /// O core recusou os args porque desligariam o gate (M6-A): nada roda,
@@ -463,6 +489,7 @@ pub fn resolve_jail_outcome(socket_path: Option<&Path>, args: &[String]) -> Jail
             Some(plan) => JailOutcome::Exec {
                 argv: plan.argv,
                 env: plan.env,
+                env_remove: plan.env_remove,
                 cwd: plan.cwd,
             },
             None => JailOutcome::RunReal,
@@ -619,7 +646,7 @@ fn run_jail_client(socket_path: Option<&Path>, args: &[String]) -> i32 {
     }
     match route(args) {
         ClaudeRoute::Forbidden(reason) => {
-            eprintln!("tyba: {reason}. Dentro do TYBA o claude roda sempre com gate.");
+            eprintln!("tyba: {reason}. Dentro do TYBA o claude roda sempre com os hooks do TYBA.");
             return 2;
         }
         ClaudeRoute::Passthrough => return exec_real(args, Some("passthrough")),
@@ -631,19 +658,24 @@ fn run_jail_client(socket_path: Option<&Path>, args: &[String]) -> i32 {
     }
 
     match resolve_jail_outcome(socket_path, args) {
-        JailOutcome::Exec { argv, env, cwd } => {
+        JailOutcome::Exec {
+            argv,
+            env,
+            env_remove,
+            cwd,
+        } => {
             if let Some((program, rest)) = argv.split_first() {
                 let mut cmd = std::process::Command::new(program);
                 cmd.args(rest);
                 cmd.current_dir(&cwd);
                 cmd.env_clear();
-                cmd.envs(env);
+                cmd.envs(hosted_child_env(std::env::vars_os(), &env_remove, &env));
                 let err = cmd.exec();
                 eprintln!("tyba: exec do agente hospedado falhou: {err}");
             }
         }
         JailOutcome::Forbidden => {
-            eprintln!("tyba: o TYBA recusou estes argumentos — eles desligariam o gate.");
+            eprintln!("tyba: o TYBA recusou estes argumentos — eles desligariam os hooks do TYBA.");
             return 2;
         }
         JailOutcome::RunReal => {}
@@ -813,11 +845,12 @@ mod client_tests {
         let plan_dir = tempfile::tempdir().unwrap();
         let plan_path = plan_dir.path().join("launch.json");
         let plan = HostedPlan {
-            argv: vec!["/usr/bin/tyba".into(), "_seccomp-exec".into()],
+            argv: vec!["claude".into(), "--settings".into(), "/r/s.json".into()],
             env: vec![
                 ("TYBA_HOSTED".into(), "1".into()),
-                ("TYBA_JAILED".into(), "1".into()),
+                ("TYBA_JAILED".into(), "0".into()),
             ],
+            env_remove: vec!["CLAUDE_CODE_SIMPLE".into()],
             cwd: "/work".into(),
         };
         std::fs::write(&plan_path, serde_json::to_vec(&plan).unwrap()).unwrap();
@@ -826,7 +859,7 @@ mod client_tests {
         let (_dir, path, server) = bound_server(std::sync::Arc::new(move |_pid, _req| {
             ChannelResponse::Host {
                 plan_path: plan_path_str.clone(),
-                jailed: true,
+                jailed: false,
             }
         }));
 
@@ -836,6 +869,7 @@ mod client_tests {
             JailOutcome::Exec {
                 argv: plan.argv.clone(),
                 env: plan.env.clone(),
+                env_remove: plan.env_remove.clone(),
                 cwd: plan.cwd.clone(),
             }
         );
@@ -844,6 +878,46 @@ mod client_tests {
             "o plano tem que ser removido assim que lido — /proc/cmdline é 0444 world, ninguém mais pode reler"
         );
         server.shutdown();
+    }
+}
+
+#[cfg(test)]
+mod hosted_env_tests {
+    use super::*;
+    use std::ffi::OsString;
+
+    fn pairs(list: &[(&str, &str)]) -> Vec<(OsString, OsString)> {
+        list.iter().map(|(k, v)| (k.into(), v.into())).collect()
+    }
+
+    /// Agente livre: o env do shell do pane chega ao claude; o TYBA só tira
+    /// o que quebraria os hooks dele e acrescenta o socket e os marcadores.
+    #[test]
+    fn the_pane_env_reaches_the_child_with_tyba_vars_on_top() {
+        let pane = pairs(&[
+            ("TYBA_TEST_PANE_VAR", "1"),
+            ("PATH", "/pane/bin:/usr/bin"),
+            ("CLAUDE_CODE_SIMPLE", "1"),
+            ("TYBA_SHIM", "fallback"),
+            ("TYBA_HOOK_SOCKET", "/velho.sock"),
+        ]);
+        let set = vec![
+            ("TYBA_HOOK_SOCKET".to_string(), "/r/hook.sock".to_string()),
+            ("TYBA_HOSTED".to_string(), "1".to_string()),
+        ];
+        let remove = vec!["CLAUDE_CODE_SIMPLE".to_string(), "TYBA_SHIM".to_string()];
+        let env = hosted_child_env(pane, &remove, &set);
+        let get = |k: &str| {
+            let hits: Vec<_> = env.iter().filter(|(key, _)| key == k).collect();
+            assert!(hits.len() <= 1, "{k} duplicada: {env:?}");
+            hits.first().map(|(_, v)| v.to_string_lossy().into_owned())
+        };
+        assert_eq!(get("TYBA_TEST_PANE_VAR").as_deref(), Some("1"));
+        assert_eq!(get("PATH").as_deref(), Some("/pane/bin:/usr/bin"));
+        assert_eq!(get("TYBA_HOOK_SOCKET").as_deref(), Some("/r/hook.sock"));
+        assert_eq!(get("TYBA_HOSTED").as_deref(), Some("1"));
+        assert_eq!(get("CLAUDE_CODE_SIMPLE"), None);
+        assert_eq!(get("TYBA_SHIM"), None);
     }
 }
 

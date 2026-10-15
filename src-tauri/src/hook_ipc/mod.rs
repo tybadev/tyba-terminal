@@ -13,7 +13,7 @@ mod server;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-pub use client::{request, run_client};
+pub use client::{request, run_client, run_observer_client};
 #[cfg(test)]
 pub(crate) use protocol::hook_event_from_value;
 pub use protocol::ResponseEnvelope;
@@ -50,14 +50,29 @@ pub enum HookAction {
     },
 }
 
+/// `tyba _hook --observe`: o hook do claude digitado num pane (agente livre).
+/// Ver [`client::run_observer_client`].
+pub const OBSERVE_FLAG: &str = "--observe";
+
 pub fn maybe_run_hook_mode() -> Option<i32> {
-    if std::env::args().nth(1).as_deref() != Some("_hook") {
+    let mut args = std::env::args().skip(1);
+    if args.next().as_deref() != Some("_hook") {
         return None;
     }
+    let observe = args.next().as_deref() == Some(OBSERVE_FLAG);
     let socket = std::env::var_os("TYBA_HOOK_SOCKET").map(PathBuf::from);
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
-    let code = run_client(stdin.lock(), stdout.lock(), socket.as_deref());
+    let code = if observe {
+        run_observer_client(
+            stdin.lock(),
+            stdout.lock(),
+            socket.as_deref(),
+            &crate::agent::claude_plugin::guard_rail_output,
+        )
+    } else {
+        run_client(stdin.lock(), stdout.lock(), socket.as_deref())
+    };
     Some(code)
 }
 

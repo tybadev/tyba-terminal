@@ -691,6 +691,13 @@ pub fn hook_output(
     )
 }
 
+/// [`hook_output`] com a branch lida do git de verdade: o guarda-corpo que o
+/// hook do claude digitado (`tyba _hook --observe`) aplica — a mesma decisão
+/// e as mesmas mensagens do plugin.
+pub fn guard_rail_output(payload: &Value) -> Option<String> {
+    hook_output(payload, &current_branch)
+}
+
 /// A branch atual de `dir` (`git symbolic-ref --short HEAD`, que também
 /// responde numa branch ainda sem commit), pelo git read-only do TYBA. Só
 /// roda para `git push` sem refspec.
