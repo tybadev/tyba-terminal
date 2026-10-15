@@ -130,6 +130,7 @@ export const SessionBlocks = memo(function SessionBlocks({
           startedAtMs={commandStartedAtMs}
           rect={liveBox}
           liftPx={lift}
+          paneTop={pane.top}
           onHeight={reportHeaderPx}
         />
       )}
