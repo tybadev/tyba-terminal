@@ -389,6 +389,12 @@ impl ConfigManager {
         self.state.lock().values.get(key).cloned()
     }
 
+    /// Onde o arquivo mora, para a tela de Configurações mostrar e abrir.
+    /// `None` quando a raiz foi recusada: aí nada se lê nem se grava nela.
+    pub fn file_path(&self) -> Option<&Path> {
+        self.root_error.is_none().then_some(self.path.as_path())
+    }
+
     /// As `pref.*` do arquivo, no formato que o front já lê do `boot_snapshot`.
     pub fn prefs(&self) -> HashMap<String, String> {
         self.state

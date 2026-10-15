@@ -6673,6 +6673,16 @@ async fn lsp_symbol_path(
     blocking_or_default(move || lsp.symbol_path(id, &path, line, character)).await
 }
 
+/// O `config.toml` do usuário: o caminho, para a tela de Configurações dizer
+/// onde tudo fica e abrir o arquivo no editor do TYBA.
+#[tauri::command]
+fn user_config_path(state: State<'_, AppState>) -> Option<String> {
+    state
+        .config
+        .file_path()
+        .map(|p| p.to_string_lossy().into_owned())
+}
+
 #[tauri::command]
 fn open_view_tab(app: AppHandle, state: State<'_, AppState>, view: String) -> Result<(), String> {
     if view != layout::VIEW_SETTINGS
@@ -9412,6 +9422,7 @@ pub fn run() {
             docker_open_project,
             docker_open_compose_file,
             open_view_tab,
+            user_config_path,
             splash::splash_done,
         ])
         .build(tauri::generate_context!())
