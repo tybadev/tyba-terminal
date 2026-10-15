@@ -51,15 +51,39 @@ const OBSERVED_EVENTS: &[&str] = &[
 pub const PUSH_MAIN_MESSAGE: &str = "TYBA: push para main/master por agente é recusado (guarda-corpo fixo do TYBA). Faça o push numa branch própria e abra um PR; o merge na main fica com o humano.";
 pub const PR_MERGE_MESSAGE: &str = "TYBA: merge de PR/MR por agente é recusado (guarda-corpo fixo do TYBA). Deixe o PR aberto; quem revisa e faz o merge é o humano.";
 
-/// Quantos `sh -c '...'`/`eval` aninhados o guarda-corpo abre.
+/// Quantos níveis aninhados (`sh -c '...'`, `eval`, `$(...)`/crase entre
+/// aspas ou em heredoc) o guarda-corpo abre.
 const MAX_NESTING: usize = 4;
 
 /// O guarda-corpo do `PreToolUse` do `Bash`: o motivo da recusa, ou `None`
 /// (sem decisão). `cwd` é o da sessão; `current_branch` só é chamado para
-/// `git push` sem refspec (ou `HEAD`), que empurra a branch atual.
+/// `git push` que empurra a branch atual (sem refspec, `HEAD` ou `@`).
 ///
-/// Texto entre aspas é argumento, não comando: `echo "git push origin main"`
-/// passa. `sh -c '...'`, `eval` e `$(...)` são abertos.
+/// O que ele entende do script:
+/// - separadores `&&`, `||`, `;`, `|`, `&`, quebra de linha, parênteses e
+///   crase; comentário `#`;
+/// - aspas: texto entre aspas é argumento, não comando
+///   (`echo "git push origin main"` passa). Entre aspas simples nada roda;
+///   entre aspas duplas, `$(...)` e crase rodam e são abertos como script;
+/// - redirecionamentos (`>`, `>>`, `<`, `<<<`, `&>`, `&>>`, `>&`, `<&`, `>|`,
+///   `<>`, com fd na frente, colado ou não) saem do argv junto com o alvo;
+/// - heredoc (`<<FIM`, `<<-FIM`, `<<'FIM'`, `<<"FIM"`, `<<\FIM`): o corpo não
+///   é comando. Com delimitador sem aspas, `$(...)` e crase do corpo rodam e
+///   são abertos;
+/// - antes do programa: atribuições (`FOO=1`), palavras reservadas e
+///   agrupamento (`if`, `then`, `do`, `{`, `!`...) e os prefixos `env`,
+///   `command`, `exec`, `nohup`, `time`, `timeout`, `nice`, `sudo`,
+///   `stdbuf` com as opções deles;
+/// - `sh -c '...'`, `eval` e `$(...)` são abertos, até [`MAX_NESTING`]
+///   níveis — além disso, sem decisão;
+/// - `cd DIR` muda a pasta em que os comandos seguintes do mesmo script leem
+///   a branch. `cd` sem pasta, `cd -`, `cd ~...` e `cd $X` voltam para a pasta
+///   de partida (a da sessão): o guarda-corpo não sabe aonde eles vão.
+///
+/// Limites conhecidos (engano pega; agente determinado contorna): alias,
+/// função, script em arquivo, `xargs`, mais de [`MAX_NESTING`] níveis, `cd`
+/// dentro de subshell vazando para fora dele, `case` dentro de `$(...)`
+/// entre aspas, e `<<` em aritmética lido como heredoc.
 pub fn guard_rail(
     command: &str,
     cwd: &Path,
@@ -77,24 +101,31 @@ fn guard_rail_at(
     if depth > MAX_NESTING {
         return None;
     }
-    for words in simple_commands(command) {
-        let words = canonical_words(&words);
-        let Some((program, args)) = words.split_first() else {
-            continue;
-        };
-        let name = Path::new(program)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("");
-        let verdict = match name {
-            "sh" | "bash" | "zsh" | "dash" | "ksh" => {
-                shell_script(args).and_then(|s| guard_rail_at(s, cwd, current_branch, depth + 1))
+    let src: Vec<char> = command.chars().collect();
+    let pieces = scan(&src, &mut 0, depth, false);
+    check(&pieces, cwd, &mut cwd.to_path_buf(), current_branch, depth)
+}
+
+/// Avalia os pedaços em ordem. `dir` é a pasta corrente do script (muda com
+/// `cd`); `start` é para onde um `cd` desconhecido volta.
+fn check(
+    pieces: &[Piece],
+    start: &Path,
+    dir: &mut PathBuf,
+    current_branch: &dyn Fn(&Path) -> Option<String>,
+    depth: usize,
+) -> Option<&'static str> {
+    if depth > MAX_NESTING {
+        return None;
+    }
+    for piece in pieces {
+        let verdict = match piece {
+            // Substituição roda num subshell: `cd` lá dentro não vaza.
+            Piece::Nested(inner) => {
+                let here = dir.clone();
+                check(inner, &here, &mut here.clone(), current_branch, depth + 1)
             }
-            "eval" => guard_rail_at(&args.join(" "), cwd, current_branch, depth + 1),
-            "git" => git_push_hits_main(args, cwd, current_branch).then_some(PUSH_MAIN_MESSAGE),
-            "gh" if args.starts_with(&["pr".into(), "merge".into()]) => Some(PR_MERGE_MESSAGE),
-            "glab" if args.starts_with(&["mr".into(), "merge".into()]) => Some(PR_MERGE_MESSAGE),
-            _ => None,
+            Piece::Command(words) => command_verdict(words, start, dir, current_branch, depth),
         };
         if verdict.is_some() {
             return verdict;
@@ -103,66 +134,340 @@ fn guard_rail_at(
     None
 }
 
-/// Quebra o script em comandos simples, já sem aspas: `&&`, `||`, `;`, `|`,
-/// `&`, quebra de linha, parênteses e crase separam. Não é um parser de
-/// shell — é o bastante para achar o começo de cada comando.
-fn simple_commands(script: &str) -> Vec<Vec<String>> {
-    let mut commands = Vec::new();
-    let mut words: Vec<String> = Vec::new();
-    let mut word = String::new();
-    let mut in_word = false;
-    let mut chars = script.chars();
-    let end_word = |words: &mut Vec<String>, word: &mut String, in_word: &mut bool| {
-        if *in_word {
-            words.push(std::mem::take(word));
-            *in_word = false;
+fn command_verdict(
+    words: &[String],
+    start: &Path,
+    dir: &mut PathBuf,
+    current_branch: &dyn Fn(&Path) -> Option<String>,
+    depth: usize,
+) -> Option<&'static str> {
+    let words = canonical_words(words);
+    let (program, args) = words.split_first()?;
+    match basename(program) {
+        "cd" => {
+            let target = args.iter().find(|a| !a.starts_with('-') || *a == "-");
+            *dir = match target.map(String::as_str) {
+                Some(t) if t != "-" && !t.starts_with(['~', '$']) => dir.join(t),
+                _ => start.to_path_buf(),
+            };
+            None
         }
+        "sh" | "bash" | "zsh" | "dash" | "ksh" => {
+            shell_script(args).and_then(|s| guard_rail_at(s, dir, current_branch, depth + 1))
+        }
+        "eval" => guard_rail_at(&args.join(" "), dir, current_branch, depth + 1),
+        "git" => git_push_hits_main(args, dir, current_branch).then_some(PUSH_MAIN_MESSAGE),
+        "gh" if gh_subcommand(args).starts_with(&["pr".into(), "merge".into()]) => {
+            Some(PR_MERGE_MESSAGE)
+        }
+        "glab" if gh_subcommand(args).starts_with(&["mr".into(), "merge".into()]) => {
+            Some(PR_MERGE_MESSAGE)
+        }
+        _ => None,
+    }
+}
+
+fn basename(program: &str) -> &str {
+    Path::new(program)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("")
+}
+
+/// Um pedaço do script, na ordem em que roda: um comando simples (já sem
+/// aspas e sem redirecionamentos), ou o script de um `$(...)`/crase que
+/// estava entre aspas duplas ou no corpo de um heredoc.
+enum Piece {
+    Command(Vec<String>),
+    Nested(Vec<Piece>),
+}
+
+/// O que a próxima palavra é.
+enum Next {
+    Arg,
+    /// Alvo de redirecionamento: sai do argv.
+    Target,
+    /// Delimitador de heredoc (`<<-` tira os tabs do começo das linhas).
+    Delim {
+        strip_tabs: bool,
+    },
+}
+
+/// Um heredoc esperando o corpo, que começa na próxima quebra de linha.
+struct Heredoc {
+    delim: String,
+    strip_tabs: bool,
+    /// Delimitador sem aspas: `$(...)` e crase do corpo rodam.
+    expands: bool,
+}
+
+/// O comando simples sendo montado.
+struct Builder {
+    words: Vec<String>,
+    word: String,
+    in_word: bool,
+    /// A palavra atual teve aspas ou `\` (heredoc com delimitador assim não
+    /// expande o corpo).
+    quoted: bool,
+    next: Next,
+    heredocs: Vec<Heredoc>,
+}
+
+impl Builder {
+    fn end_word(&mut self) {
+        if !self.in_word {
+            return;
+        }
+        let word = std::mem::take(&mut self.word);
+        match std::mem::replace(&mut self.next, Next::Arg) {
+            Next::Arg => self.words.push(word),
+            Next::Target => {}
+            Next::Delim { strip_tabs } => self.heredocs.push(Heredoc {
+                delim: word,
+                strip_tabs,
+                expands: !self.quoted,
+            }),
+        }
+        self.in_word = false;
+        self.quoted = false;
+    }
+
+    fn end_command(&mut self, pieces: &mut Vec<Piece>) {
+        self.end_word();
+        self.next = Next::Arg;
+        if !self.words.is_empty() {
+            pieces.push(Piece::Command(std::mem::take(&mut self.words)));
+        }
+    }
+}
+
+/// Quebra o script em pedaços (ver [`guard_rail`]). Não é um parser de
+/// shell — é o bastante para achar o começo de cada comando. Uma passada só
+/// por `src`; a recursão (um `$(...)` entre aspas) é limitada por
+/// [`MAX_NESTING`]. Com `until_paren`, para no `)` que fecha o `$(` (e o
+/// consome).
+fn scan(src: &[char], i: &mut usize, depth: usize, until_paren: bool) -> Vec<Piece> {
+    let mut pieces = Vec::new();
+    let mut b = Builder {
+        words: Vec::new(),
+        word: String::new(),
+        in_word: false,
+        quoted: false,
+        next: Next::Arg,
+        heredocs: Vec::new(),
     };
-    while let Some(c) = chars.next() {
+    let mut parens = 0usize;
+    while let Some(&c) = src.get(*i) {
+        *i += 1;
+        let peek = src.get(*i).copied();
         match c {
             '\'' => {
-                in_word = true;
-                word.extend(chars.by_ref().take_while(|&q| q != '\''));
+                b.in_word = true;
+                b.quoted = true;
+                while let Some(&q) = src.get(*i) {
+                    *i += 1;
+                    if q == '\'' {
+                        break;
+                    }
+                    b.word.push(q);
+                }
             }
             '"' => {
-                in_word = true;
-                while let Some(q) = chars.next() {
-                    match q {
-                        '"' => break,
-                        '\\' => word.extend(chars.next()),
-                        _ => word.push(q),
+                b.in_word = true;
+                b.quoted = true;
+                double_quoted(src, i, depth, &mut b.word, &mut pieces);
+            }
+            '\\' => {
+                // `\` + quebra de linha só continua a linha.
+                if let Some(n) = peek {
+                    *i += 1;
+                    if n != '\n' {
+                        b.in_word = true;
+                        b.quoted = true;
+                        b.word.push(n);
                     }
                 }
             }
-            '\\' => {
-                in_word = true;
-                word.extend(chars.next().filter(|&n| n != '\n'));
+            '#' if !b.in_word => {
+                while src.get(*i).is_some_and(|&n| n != '\n') {
+                    *i += 1;
+                }
             }
-            '#' if !in_word => {
-                chars.by_ref().find(|&n| n == '\n');
-                end_word(&mut words, &mut word, &mut in_word);
-                commands.push(std::mem::take(&mut words));
+            ' ' | '\t' => b.end_word(),
+            '\n' => {
+                b.end_command(&mut pieces);
+                for doc in std::mem::take(&mut b.heredocs) {
+                    let body = heredoc_body(src, i, &doc);
+                    if doc.expands && depth < MAX_NESTING {
+                        pieces.extend(substitutions(&body, depth + 1));
+                    }
+                }
             }
-            ' ' | '\t' => end_word(&mut words, &mut word, &mut in_word),
-            '\n' | ';' | '&' | '|' | '(' | ')' | '`' => {
-                end_word(&mut words, &mut word, &mut in_word);
-                commands.push(std::mem::take(&mut words));
+            '&' if peek == Some('>') => {
+                // `&>` e `&>>`.
+                b.end_word();
+                *i += 1;
+                if src.get(*i) == Some(&'>') {
+                    *i += 1;
+                }
+                b.next = Next::Target;
             }
+            '<' | '>' => {
+                // `2>`, `10<`: o número colado é o fd, não argumento.
+                if b.in_word && !b.quoted && b.word.chars().all(|d| d.is_ascii_digit()) {
+                    b.word.clear();
+                    b.in_word = false;
+                } else {
+                    b.end_word();
+                }
+                b.next = Next::Target;
+                if c == '<' && peek == Some('<') {
+                    *i += 1;
+                    match src.get(*i) {
+                        Some('<') => *i += 1,
+                        next => {
+                            let strip_tabs = next == Some(&'-');
+                            if strip_tabs {
+                                *i += 1;
+                            }
+                            b.next = Next::Delim { strip_tabs };
+                        }
+                    }
+                } else if matches!(
+                    (c, peek),
+                    ('>', Some('>' | '|' | '&')) | ('<', Some('&' | '>'))
+                ) {
+                    *i += 1;
+                }
+            }
+            ')' if until_paren && parens == 0 => break,
+            '(' => {
+                parens += 1;
+                b.end_command(&mut pieces);
+            }
+            ')' => {
+                parens = parens.saturating_sub(1);
+                b.end_command(&mut pieces);
+            }
+            ';' | '&' | '|' | '`' => b.end_command(&mut pieces),
             _ => {
-                in_word = true;
-                word.push(c);
+                b.in_word = true;
+                b.word.push(c);
             }
         }
     }
-    end_word(&mut words, &mut word, &mut in_word);
-    commands.push(words);
-    commands.retain(|w| !w.is_empty());
-    commands
+    b.end_command(&mut pieces);
+    pieces
+}
+
+/// O texto de `"..."` vai para a palavra; `$(...)` e crase lá dentro rodam,
+/// e viram [`Piece::Nested`]. Para depois da aspa que fecha.
+fn double_quoted(
+    src: &[char],
+    i: &mut usize,
+    depth: usize,
+    word: &mut String,
+    pieces: &mut Vec<Piece>,
+) {
+    while let Some(&c) = src.get(*i) {
+        *i += 1;
+        match c {
+            '"' => return,
+            '\\' => {
+                word.extend(src.get(*i));
+                *i += 1;
+            }
+            '$' if src.get(*i) == Some(&'(') && depth < MAX_NESTING => {
+                *i += 1;
+                pieces.push(Piece::Nested(scan(src, i, depth + 1, true)));
+            }
+            '`' if depth < MAX_NESTING => {
+                let inner = backtick_body(src, i);
+                pieces.push(Piece::Nested(scan(&inner, &mut 0, depth + 1, false)));
+            }
+            _ => word.push(c),
+        }
+    }
+}
+
+/// O conteúdo de uma crase até a que fecha (`` \` `` não fecha).
+fn backtick_body(src: &[char], i: &mut usize) -> Vec<char> {
+    let mut inner = Vec::new();
+    while let Some(&c) = src.get(*i) {
+        *i += 1;
+        match c {
+            '`' => break,
+            '\\' => {
+                if let Some(&n) = src.get(*i) {
+                    *i += 1;
+                    if !matches!(n, '`' | '$' | '\\') {
+                        inner.push('\\');
+                    }
+                    inner.push(n);
+                }
+            }
+            _ => inner.push(c),
+        }
+    }
+    inner
+}
+
+/// Consome as linhas do corpo até a linha igual ao delimitador (inclusive).
+/// Devolve o corpo só se ele expande — senão nada nele importa.
+fn heredoc_body(src: &[char], i: &mut usize, doc: &Heredoc) -> Vec<char> {
+    let mut body = Vec::new();
+    while *i < src.len() {
+        let start = *i;
+        while src.get(*i).is_some_and(|&c| c != '\n') {
+            *i += 1;
+        }
+        let line = &src[start..*i];
+        *i = (*i + 1).min(src.len());
+        let line = if doc.strip_tabs {
+            let tabs = line.iter().take_while(|&&c| c == '\t').count();
+            &line[tabs..]
+        } else {
+            line
+        };
+        if line.iter().copied().eq(doc.delim.chars()) {
+            break;
+        }
+        if doc.expands {
+            body.extend_from_slice(line);
+            body.push('\n');
+        }
+    }
+    body
+}
+
+/// Os `$(...)` e crases de um corpo de heredoc sem aspas: aspas ali são
+/// texto, só a substituição roda.
+fn substitutions(text: &[char], depth: usize) -> Vec<Piece> {
+    let mut pieces = Vec::new();
+    let mut i = 0;
+    while let Some(&c) = text.get(i) {
+        i += 1;
+        match c {
+            '\\' => i += 1,
+            '$' if text.get(i) == Some(&'(') => {
+                i += 1;
+                pieces.push(Piece::Nested(scan(text, &mut i, depth, true)));
+            }
+            '`' => {
+                let inner = backtick_body(text, &mut i);
+                pieces.push(Piece::Nested(scan(&inner, &mut 0, depth, false)));
+            }
+            _ => {}
+        }
+    }
+    pieces
 }
 
 /// Tira o que vem antes do programa de verdade: atribuições de env
-/// (`FOO=1 git push`, cf. CVE-2026-48721 do Warp) e os prefixos `env`,
-/// `command`, `exec`, `nohup`, `time` com as opções deles.
+/// (`FOO=1 git push`, cf. CVE-2026-48721 do Warp), palavras reservadas e
+/// agrupamento (`if`, `then`, `do`, `{`, `!`...) e os prefixos `env`,
+/// `command`, `exec`, `nohup`, `time`, `timeout`, `nice`, `sudo`, `stdbuf`
+/// com as opções deles.
 fn canonical_words(words: &[String]) -> &[String] {
     let is_assignment = |w: &str| {
         w.split_once('=').is_some_and(|(name, _)| {
@@ -172,25 +477,111 @@ fn canonical_words(words: &[String]) -> &[String] {
                 && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
         })
     };
+    let is_keyword = |w: &str| {
+        matches!(
+            w,
+            "if" | "then"
+                | "elif"
+                | "else"
+                | "fi"
+                | "do"
+                | "done"
+                | "while"
+                | "until"
+                | "for"
+                | "case"
+                | "esac"
+                | "{"
+                | "}"
+                | "!"
+        )
+    };
     let mut rest = words;
     loop {
         let before = rest.len();
-        while rest.first().is_some_and(|w| is_assignment(w)) {
-            rest = &rest[1..];
-        }
-        if rest
+        while rest
             .first()
-            .is_some_and(|w| matches!(w.as_str(), "env" | "command" | "exec" | "nohup" | "time"))
+            .is_some_and(|w| is_assignment(w) || is_keyword(w))
         {
             rest = &rest[1..];
-            while rest.first().is_some_and(|w| w.starts_with('-')) {
-                rest = &rest[1..];
+        }
+        // As opções que levam valor de cada prefixo: letras curtas e longas.
+        let options: Option<(&str, &[&str])> = match rest.first().map(|w| basename(w)) {
+            Some("command" | "nohup" | "time") => Some(("", &[])),
+            Some("env") => Some(("uCS", &["--unset", "--chdir", "--split-string"])),
+            Some("exec") => Some(("a", &[])),
+            Some("timeout") => Some(("sk", &["--signal", "--kill-after"])),
+            Some("nice") => Some(("n", &["--adjustment"])),
+            Some("stdbuf") => Some(("ioe", &["--input", "--output", "--error"])),
+            Some("sudo") => Some((
+                "ughpCDRTUrt",
+                &[
+                    "--user",
+                    "--group",
+                    "--host",
+                    "--prompt",
+                    "--close-from",
+                    "--chdir",
+                    "--chroot",
+                    "--command-timeout",
+                    "--other-user",
+                    "--role",
+                    "--type",
+                ],
+            )),
+            _ => None,
+        };
+        if let Some((short, long)) = options {
+            let wrapper = basename(&rest[0]);
+            rest = skip_options(&rest[1..], short, long);
+            // `timeout DURAÇÃO comando`.
+            if wrapper == "timeout" {
+                rest = rest.get(1..).unwrap_or(&[]);
             }
         }
         if rest.len() == before {
             return rest;
         }
     }
+}
+
+/// Pula as opções do começo (até `--` ou a primeira palavra sem `-`). Uma
+/// opção leva valor na palavra seguinte se é longa e está em `long` (sem
+/// `=`), ou se é curta e a primeira letra com valor do grupo é a última
+/// (`-u root`, `-Eu root`; em `-uroot` o valor vem colado).
+fn skip_options<'a>(mut rest: &'a [String], short: &str, long: &[&str]) -> &'a [String] {
+    while let Some(w) = rest.first() {
+        if w == "--" {
+            return &rest[1..];
+        }
+        if !w.starts_with('-') {
+            break;
+        }
+        let takes_value = if w.starts_with("--") {
+            long.contains(&w.as_str())
+        } else {
+            let flags: Vec<char> = w.chars().skip(1).collect();
+            flags
+                .iter()
+                .position(|&f| short.contains(f))
+                .is_some_and(|p| p + 1 == flags.len())
+        };
+        rest = rest.get(if takes_value { 2 } else { 1 }..).unwrap_or(&[]);
+    }
+    rest
+}
+
+/// Os argumentos de `gh`/`glab` depois da opção global de repositório
+/// (`-R dono/repo`, `--repo dono/repo`, `--repo=dono/repo`).
+fn gh_subcommand(mut args: &[String]) -> &[String] {
+    while let Some(a) = args.first() {
+        args = match a.as_str() {
+            "-R" | "--repo" => args.get(2..).unwrap_or(&[]),
+            _ if a.starts_with("--repo=") || (a.starts_with("-R") && a.len() > 2) => &args[1..],
+            _ => break,
+        };
+    }
+    args
 }
 
 /// O script de `sh -c '...'` (também `-lc`, `-ec`...).
@@ -210,7 +601,8 @@ fn is_main_ref(name: &str) -> bool {
 
 /// `git [opções globais] push ...` cujo destino é main/master: refspec
 /// explícita (`main`, `+main`, `HEAD:main`, `x:refs/heads/main`), `--all`/
-/// `--mirror`, ou sem refspec (ou `HEAD`) com a branch atual sendo main.
+/// `--mirror`, ou sem refspec (ou `HEAD`/`@`) com a branch atual sendo main.
+/// Não empurram branch nenhuma: `--dry-run`/`-n`, e `--tags` sem refspec.
 fn git_push_hits_main(
     args: &[String],
     cwd: &Path,
@@ -235,10 +627,13 @@ fn git_push_hits_main(
         return false;
     }
     let mut positional = Vec::new();
+    let (mut all, mut tags, mut dry_run) = (false, false, false);
     let mut rest = args[i + 1..].iter();
     while let Some(a) = rest.next() {
         match a.as_str() {
-            "--all" | "--mirror" | "--branches" => return true,
+            "--all" | "--mirror" | "--branches" => all = true,
+            "--tags" => tags = true,
+            "--dry-run" | "-n" => dry_run = true,
             "--repo" | "-o" | "--push-option" | "--receive-pack" | "--exec" => {
                 rest.next();
             }
@@ -247,15 +642,21 @@ fn git_push_hits_main(
             _ => positional.push(a),
         }
     }
+    if dry_run {
+        return false;
+    }
+    if all {
+        return true;
+    }
     let on_main = || current_branch(&dir).is_some_and(|b| is_main_ref(&b));
     let refspecs = positional.get(1..).unwrap_or(&[]);
     if refspecs.is_empty() {
-        return on_main();
+        return !tags && on_main();
     }
     refspecs.iter().any(|spec| {
         let spec = spec.trim_start_matches('+');
         let dst = spec.rsplit_once(':').map_or(spec, |(_, d)| d);
-        if dst == "HEAD" {
+        if dst == "HEAD" || dst == "@" {
             on_main()
         } else {
             is_main_ref(dst)
@@ -619,10 +1020,19 @@ mod tests {
     use super::*;
     use crate::session::SessionId;
 
-    /// Branch atual falsa: `main` em qualquer pasta com "main" no nome,
-    /// `feat/x` no resto.
+    /// Branch atual falsa: `main` em qualquer pasta com "main" no nome (com
+    /// `..` resolvido), `feat/x` no resto.
     fn fake_branch(dir: &Path) -> Option<String> {
-        Some(if dir.to_string_lossy().contains("main") {
+        let mut resolved = PathBuf::new();
+        for part in dir.components() {
+            match part {
+                std::path::Component::ParentDir => {
+                    resolved.pop();
+                }
+                other => resolved.push(other),
+            }
+        }
+        Some(if resolved.to_string_lossy().contains("main") {
             "main".into()
         } else {
             "feat/x".into()
@@ -740,6 +1150,279 @@ mod tests {
         ] {
             assert_eq!(guard(cmd), None, "{cmd}");
         }
+    }
+
+    /// Sessão parada na main: push sem refspec bate.
+    fn on_main(command: &str) -> Option<&'static str> {
+        guard_rail(command, Path::new("/repo/main"), &fake_branch)
+    }
+
+    #[test]
+    fn guard_rail_drops_redirections_and_their_targets() {
+        for cmd in [
+            "git push origin 2>&1",
+            "git push origin 2>&1 | tail -5",
+            "git push origin 2>/dev/null",
+            "git push origin 2> /dev/null",
+            "git push origin > /tmp/log",
+            "git push origin >/tmp/log",
+            "git push origin >> /tmp/log 2>&1",
+            "git push origin &> /tmp/log",
+            "git push origin &>>/tmp/log",
+            "git push origin >| /tmp/log",
+            "git push origin 1>&2",
+            "git push origin < /dev/null",
+            "git push origin <<< x",
+            "git push origin <&0",
+            "git push origin 2>&-",
+        ] {
+            assert_eq!(on_main(cmd), Some(PUSH_MAIN_MESSAGE), "{cmd}");
+        }
+        for cmd in [
+            "git push origin feat/x 2>&1",
+            "git push origin feat/x > /tmp/main",
+            "git push origin feat/x 2>main",
+            "git push origin feat/x &>main",
+            "git push origin feat/x <<< main",
+        ] {
+            assert_eq!(on_main(cmd), None, "{cmd}");
+        }
+        // Número que não está colado no operador é argumento.
+        assert_eq!(
+            guard("git push origin main 2 >/dev/null"),
+            Some(PUSH_MAIN_MESSAGE)
+        );
+    }
+
+    #[test]
+    fn guard_rail_skips_keywords_grouping_and_wrapper_prefixes() {
+        for cmd in [
+            "if true; then git push origin main; fi",
+            "if git push origin main; then echo ok; fi",
+            "if false; then :; elif true; then git push origin main; fi",
+            "if false; then :; else git push origin main; fi",
+            "while true; do git push origin main; break; done",
+            "until false; do git push origin main; done",
+            "for r in a; do git push origin main; done",
+            "{ git push origin main; }",
+            "! git push origin main",
+            "time git push origin main",
+            "time -p git push origin main",
+            "timeout 60 git push origin main",
+            "timeout -s KILL 60 git push origin main",
+            "timeout --signal TERM -k 5 60 git push origin main",
+            "nice git push origin main",
+            "nice -n 5 git push origin main",
+            "nice -5 git push origin main",
+            "nohup git push origin main",
+            "sudo git push origin main",
+            "sudo -u root git push origin main",
+            "sudo -Eu root git push origin main",
+            "sudo -uroot -E git push origin main",
+            "sudo --user root git push origin main",
+            "sudo -- git push origin main",
+            "env -u FOO git push origin main",
+            "env --unset=FOO BAR=1 git push origin main",
+            "env -i PATH=/bin /usr/bin/git push origin main",
+            "command -p git push origin main",
+            "exec -a foo git push origin main",
+            "exec -cl git push origin main",
+            "stdbuf -o L git push origin main",
+            "stdbuf -oL git push origin main",
+            "sudo timeout 9 nice -n 1 env FOO=1 git push origin main",
+        ] {
+            assert_eq!(guard(cmd), Some(PUSH_MAIN_MESSAGE), "{cmd}");
+        }
+        assert_eq!(guard("then gh pr merge 3"), Some(PR_MERGE_MESSAGE));
+        for cmd in [
+            "if true; then git push origin feat/x; fi",
+            "echo fi then git push origin main",
+            "timeout 60 git push origin feat/x",
+            "sudo -u main git push origin feat/x",
+            "env -u main git status",
+            "time cargo test",
+        ] {
+            assert_eq!(guard(cmd), None, "{cmd}");
+        }
+    }
+
+    #[test]
+    fn guard_rail_opens_substitutions_inside_double_quotes() {
+        for cmd in [
+            "OUT=\"$(git push origin main 2>&1)\"; echo $OUT",
+            "echo \"`git push origin main`\"",
+            "echo \"saida: $(echo \"$(git push origin main)\")\"",
+            "echo \"$( (cd x && git push origin main) )\"",
+            "echo \"$(echo ')' && git push origin main)\"",
+            "echo \"x $(gh pr merge 1) y\"",
+        ] {
+            assert!(guard(cmd).is_some(), "{cmd}");
+        }
+        for cmd in [
+            "git commit -m \"fix: git push origin main docs\"",
+            "echo \"$(git log main)\"",
+            "echo \"$(git rev-parse HEAD) main\"",
+            "echo '$(git push origin main)'",
+            "echo '`gh pr merge 1`'",
+            "echo \"\\$(git push origin main)\"",
+            "echo \"\\`git push origin main\\`\"",
+        ] {
+            assert_eq!(guard(cmd), None, "{cmd}");
+        }
+        // Além de MAX_NESTING níveis, sem decisão (e sem estourar a pilha).
+        let deep = format!(
+            "{}git push origin main{}",
+            "echo \"$(".repeat(MAX_NESTING + 1),
+            ")\"".repeat(MAX_NESTING + 1)
+        );
+        assert_eq!(guard(&deep), None);
+        let shallow = format!(
+            "{}git push origin main{}",
+            "echo \"$(".repeat(MAX_NESTING),
+            ")\"".repeat(MAX_NESTING)
+        );
+        assert_eq!(guard(&shallow), Some(PUSH_MAIN_MESSAGE));
+        let huge = "\"$(".repeat(100_000);
+        assert_eq!(guard(&huge), None);
+    }
+
+    #[test]
+    fn guard_rail_skips_heredoc_bodies() {
+        for cmd in [
+            "git commit -F - <<'EOF'\nfix(plugin): recusa `gh pr merge` no hook\nEOF",
+            "gh pr create --body-file - <<'EOF'\nResumo.\n\ngit push origin main fica com o humano\nEOF",
+            "cat > CONTRIBUTING.md <<'EOF'\nDepois:\ngit push origin main\nEOF",
+            "cat <<\"EOF\"\n$(git push origin main)\nEOF",
+            "cat <<\\EOF\n`gh pr merge 1`\nEOF",
+            "cat <<EOF\ngit push origin main\nEOF",
+            "cat <<-EOF\n\tgit push origin main\n\tEOF\necho ok",
+            "cat <<A <<B\ngit push origin main\nA\ngh pr merge 1\nB",
+            "cat <<EOF | grep x\ngit push origin main\nEOF",
+            "git commit -m \"$(cat <<'EOF'\ndon't push to main\ngit push origin main\nEOF\n)\"",
+            "git commit -m \"$(cat <<'EOF'\nfix(x): a) b (c\n\nCo-Authored-By: X <x@example.com>\nEOF\n)\" && git push origin feat/x",
+        ] {
+            assert_eq!(on_main(cmd), None, "{cmd:?}");
+        }
+        for cmd in [
+            "git commit -F - <<'EOF'\nfix: it's ok\nEOF\ngit push origin main",
+            "git commit -m \"$(cat <<'EOF'\ndon't\nEOF\n)\" && git push origin main",
+            "git commit -m \"$(cat <<'EOF'\nuse 5\" screen\nEOF\n)\" && git push origin main",
+            "cat <<-EOF\n\tx\n\tEOF\ngit push origin main",
+            "cat <<A <<B\nx\nA\ny\nB\ngit push origin main",
+            "cat <<EOF\n$(git push origin main)\nEOF",
+            "cat <<EOF\n`git push origin main`\nEOF",
+            "cat <<EOF\nlinha \"$(git push origin main)\" aspas\nEOF",
+        ] {
+            assert_eq!(on_main(cmd), Some(PUSH_MAIN_MESSAGE), "{cmd:?}");
+        }
+        assert_eq!(
+            on_main("cat > notes.md <<'EOF'\nwe don't push\nEOF\ngh pr merge 3"),
+            Some(PR_MERGE_MESSAGE)
+        );
+        // `<<-` só tira tab: o delimitador com espaço na frente não fecha.
+        assert_eq!(
+            on_main("cat <<-EOF\n  EOF\ngit push origin main"),
+            None,
+            "o corpo segue até o fim"
+        );
+    }
+
+    #[test]
+    fn guard_rail_lets_pushes_that_do_not_push_the_branch_through() {
+        for cmd in [
+            "git push --tags",
+            "git push origin --tags",
+            "git push --dry-run",
+            "git push -n origin",
+            "git push --dry-run origin main",
+            "git push origin v1.2.0",
+        ] {
+            assert_eq!(on_main(cmd), None, "{cmd}");
+        }
+        for cmd in [
+            "git push --follow-tags",
+            "git push origin --follow-tags",
+            "git push --tags origin main",
+            "git push origin --delete main",
+            "git push -d origin master",
+        ] {
+            assert_eq!(on_main(cmd), Some(PUSH_MAIN_MESSAGE), "{cmd}");
+        }
+        assert_eq!(
+            guard("git push origin --delete main"),
+            Some(PUSH_MAIN_MESSAGE)
+        );
+    }
+
+    #[test]
+    fn guard_rail_follows_cd_within_the_command() {
+        assert_eq!(guard("cd /repo/main && git push"), Some(PUSH_MAIN_MESSAGE));
+        assert_eq!(guard("cd ../main && git push"), Some(PUSH_MAIN_MESSAGE));
+        assert_eq!(guard("cd ../main; git -C . push"), Some(PUSH_MAIN_MESSAGE));
+        assert_eq!(
+            guard("cd /repo && git -C main push"),
+            Some(PUSH_MAIN_MESSAGE)
+        );
+        assert_eq!(
+            guard("cd -P /repo/main\ngit push origin"),
+            Some(PUSH_MAIN_MESSAGE)
+        );
+        assert_eq!(on_main("cd /repo/feat && git push"), None);
+        assert_eq!(on_main("cd ../feat && git push -u origin"), None);
+        // Pasta desconhecida volta para a da sessão.
+        assert_eq!(guard("cd /repo/main && cd - && git push"), None);
+        assert_eq!(guard("cd /repo/main && cd && git push"), None);
+        assert_eq!(on_main("cd ~/x && git push"), Some(PUSH_MAIN_MESSAGE));
+        assert_eq!(on_main("cd $REPO && git push"), Some(PUSH_MAIN_MESSAGE));
+        // `cd` dentro de `$(...)` não vaza para fora.
+        assert_eq!(guard("X=\"$(cd /repo/main)\"; git push"), None);
+        assert_eq!(
+            guard("X=\"$(cd /repo/main && git push)\""),
+            Some(PUSH_MAIN_MESSAGE)
+        );
+        // `sh -c` começa na pasta corrente.
+        assert_eq!(
+            guard("cd /repo/main && sh -c 'git push'"),
+            Some(PUSH_MAIN_MESSAGE)
+        );
+    }
+
+    #[test]
+    fn guard_rail_skips_the_gh_repo_flag() {
+        for cmd in [
+            "gh -R o/r pr merge 1",
+            "gh --repo o/r pr merge 1",
+            "gh --repo=o/r pr merge 1",
+            "gh -Ro/r pr merge 1",
+            "glab -R o/r mr merge 1",
+        ] {
+            assert_eq!(guard(cmd), Some(PR_MERGE_MESSAGE), "{cmd}");
+        }
+        for cmd in [
+            "gh -R o/r pr view 1",
+            "gh --repo=o/r pr list",
+            "glab -R o/r mr view 1",
+        ] {
+            assert_eq!(guard(cmd), None, "{cmd}");
+        }
+    }
+
+    #[test]
+    fn guard_rail_reads_at_as_head() {
+        assert_eq!(on_main("git push origin @"), Some(PUSH_MAIN_MESSAGE));
+        assert_eq!(on_main("git push origin @:main"), Some(PUSH_MAIN_MESSAGE));
+        assert_eq!(guard("git push origin @:main"), Some(PUSH_MAIN_MESSAGE));
+        assert_eq!(guard("git push origin @"), None);
+        assert_eq!(on_main("git push origin @:feat/x"), None);
+    }
+
+    #[test]
+    fn guard_rail_line_continuation_does_not_add_a_word() {
+        assert_eq!(on_main("git push \\\n  --tags"), None);
+        assert_eq!(
+            guard("git push \\\n  origin \\\n  main"),
+            Some(PUSH_MAIN_MESSAGE)
+        );
     }
 
     #[test]

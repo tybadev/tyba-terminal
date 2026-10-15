@@ -2760,7 +2760,7 @@ const resources = {
         "No gate: this {{binary}} didn't go through TYBA (absolute path or npx). Writes, Bash and network are blocked — exit and run `claude` straight in the pane.",
       claudePlugin: "Claude Code integration",
       claudePluginHint:
-        "Installs a TYBA plugin in your Claude Code. If a claude runs in a pane without going through TYBA (absolute path, npx), the pane shows \"no gate\" and the plugin blocks writes, Bash and network in it. Outside TYBA the plugin does nothing. It changes Claude Code's global configuration, so it only installs when you ask.",
+        "Installs a TYBA plugin in your Claude Code. In a TYBA pane, claude tells the app when it starts, stops and asks for permission, and pushes to main/master and PR merges are refused. Every other permission stays in Claude's own prompt. Outside TYBA the plugin does nothing. It changes Claude Code's global configuration, so it only installs when you ask.",
       claudePluginInstall: "Install Claude Code integration",
       claudePluginUninstall: "Uninstall",
       claudePluginInstalled: "Installed",
