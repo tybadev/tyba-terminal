@@ -158,6 +158,19 @@ fn main_window_focused(app: &AppHandle) -> bool {
         .unwrap_or(false)
 }
 
+/// A sessão que o dono está olhando agora: o painel em foco do workspace ativo.
+fn viewed_session(app: &AppHandle) -> Option<SessionId> {
+    app.try_state::<crate::AppState>()
+        .and_then(|state| state.layout.active_session())
+}
+
+/// O aviso só se cala quando o dono já está vendo a sessão. Com o TYBA em
+/// foco noutra sessão (o claude roda em muriki-api, ele olha outro shell), o
+/// "terminou" e o "precisa de você" saem igual — é o caso que mais importa.
+fn notify_suppressed(window_focused: bool, viewed: Option<SessionId>, id: SessionId) -> bool {
+    window_focused && viewed == Some(id)
+}
+
 /// O aviso do sistema, com a política já resolvida.
 ///
 /// `pub(crate)` porque o palpite de tela também sai por aqui: são fontes
@@ -172,7 +185,7 @@ pub(crate) fn notify_native(
     id: SessionId,
     body: &str,
 ) {
-    if main_window_focused(app) {
+    if notify_suppressed(main_window_focused(app), viewed_session(app), id) {
         return;
     }
     // Preferência ilegível não silencia o aviso: `ok().flatten()` cai em `None`,
@@ -2461,6 +2474,16 @@ mod hook_route_tests {
     /// Agente livre (claude digitado): o `PreToolUse` nunca chega ao gate —
     /// sem card, sem espera —, o `PermissionRequest` só avisa, e o resto do
     /// monitor segue igual. Sessão gerenciada continua no gate.
+    #[test]
+    fn notify_is_silent_only_when_the_session_is_on_screen() {
+        let here = SessionId::new_v4();
+        let other = SessionId::new_v4();
+        assert!(notify_suppressed(true, Some(here), here));
+        assert!(!notify_suppressed(true, Some(other), here));
+        assert!(!notify_suppressed(true, None, here));
+        assert!(!notify_suppressed(false, Some(here), here));
+    }
+
     #[test]
     fn observe_only_never_routes_to_the_gate() {
         assert_eq!(
