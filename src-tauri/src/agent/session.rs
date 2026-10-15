@@ -185,7 +185,10 @@ pub(crate) fn notify_native(
     id: SessionId,
     body: &str,
 ) {
-    if notify_suppressed(main_window_focused(app), viewed_session(app), id) {
+    let focused = main_window_focused(app);
+    let viewed = viewed_session(app);
+    if notify_suppressed(focused, viewed, id) {
+        eprintln!("[tyba] aviso {kind:?} de {id} calado: a sessão está na tela");
         return;
     }
     // Preferência ilegível não silencia o aviso: `ok().flatten()` cai em `None`,
@@ -195,6 +198,7 @@ pub(crate) fn notify_native(
     let sound_raw = store.get_setting(kind.sound_key()).ok().flatten();
     let policy = notify::resolve(kind, enabled_raw.as_deref(), sound_raw.as_deref());
     if !policy.enabled {
+        eprintln!("[tyba] aviso {kind:?} de {id} desligado nas preferências");
         return;
     }
     let title = sessions
@@ -210,7 +214,12 @@ pub(crate) fn notify_native(
     if let Some(sound) = policy.sound {
         builder = builder.sound(sound);
     }
-    let _ = builder.show();
+    match builder.show() {
+        Ok(()) => eprintln!(
+            "[tyba] aviso {kind:?} de {id} enviado (janela em foco: {focused}, na tela: {viewed:?})"
+        ),
+        Err(e) => eprintln!("[tyba] aviso {kind:?} de {id} falhou: {e}"),
+    }
 }
 
 fn notify_awaiting_input(ctx: &HandlerCtx, body: &str) {
@@ -278,12 +287,17 @@ fn notify_turn_ended(ctx: &HandlerCtx, transcript_path: Option<String>, needs_se
     std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_millis(TURN_END_SETTLE_MS));
         if turn_settle.load(Ordering::SeqCst) != generation {
+            eprintln!("[tyba] fim de turno de {id} sem aviso: turno novo começou");
             return;
         }
         let Some(session) = sessions.get(id) else {
             return;
         };
         let SessionStatus::Idle { summary } = &session.status else {
+            eprintln!(
+                "[tyba] fim de turno de {id} sem aviso: status {:?}",
+                session.status
+            );
             return;
         };
         let settled = transcript_path.as_deref().and_then(|path| {
