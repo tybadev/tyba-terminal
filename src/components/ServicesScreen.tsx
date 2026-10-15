@@ -217,10 +217,16 @@ export function ServicesScreen({
     () => (localPorts ? filterPorts(localPorts, state.only_mine) : []),
     [localPorts, state.only_mine],
   );
-  const selected = visible.find((p) => p.port === state.selected) ?? null;
+  const isSelected = (p: PortEntry) =>
+    state.selected !== null && p.port === state.selected.port && p.pid === state.selected.pid;
+  const selected = visible.find(isSelected) ?? null;
 
   // Detalhe da escolhida: árvore e grupo, frescos a cada volta da lista.
   const selectedKey = selected ? keyOf(selected.pid, selected.start_ms) : null;
+  // Trocou de linha: o detalhe da anterior não vale para esta.
+  useEffect(() => {
+    setDetail(null);
+  }, [selectedKey]);
   useEffect(() => {
     if (!selected) {
       setDetail(null);
@@ -239,8 +245,11 @@ export function ServicesScreen({
 
   const go = (section: ServicesSection) =>
     void servicesScreenSection(workspaceId, section).catch(() => {});
-  const pick = (port: number) =>
-    void servicesScreenSelect(workspaceId, state.selected === port ? null : port).catch(() => {});
+  const pick = (p: PortEntry) =>
+    void servicesScreenSelect(
+      workspaceId,
+      isSelected(p) ? null : { port: p.port, pid: p.pid },
+    ).catch(() => {});
 
   const describeOutcome = (label: string, outcome: KillOutcome, pid: number, startMs: number) => {
     const k = keyOf(pid, startMs);
@@ -254,43 +263,67 @@ export function ServicesScreen({
       setForce((cur) => ({ ...cur, [k]: { sentAt: Date.now(), forceAfterMs: outcome.force_after_ms } }));
       setNotice(t("servicesStillRunning", { what: label }));
     } else {
+      // Depois do SIGKILL não há outra oferta: o core já esqueceu o TERM.
+      setForce((cur) => {
+        const { [k]: _gone, ...rest } = cur;
+        return rest;
+      });
       setNotice(t("servicesStillRunning", { what: label }));
     }
+  };
+
+  /**
+   * Confirmação do encerrar (TERM ou KILL): porta, PID, comando e quem vai
+   * junto, conferidos agora no core. Sem conseguir conferir o grupo, não
+   * confirma nada. Devolve o grupo confirmado (`null` = só o processo), que
+   * vai junto no comando; `undefined` = cancelado.
+   */
+  const confirmTarget = async (
+    target: { pid: number; comm: string; command: string },
+    label: string,
+    force: boolean,
+  ): Promise<number | null | undefined> => {
+    let fresh: ServiceDetail | null = null;
+    try {
+      fresh = await servicesDetail(target.pid);
+    } catch {
+      fresh = null;
+    }
+    if (!fresh?.target) {
+      setError(t("servicesKillUnverified"));
+      return undefined;
+    }
+    const group = fresh.target.kind === "group" ? fresh.target.pgid : null;
+    const groupLine =
+      fresh.target.kind === "group"
+        ? t("servicesKillGroup", {
+            pgid: fresh.target.pgid,
+            members: fresh.group.map((m) => `${m.comm} ${m.pid}`).join(", "),
+          })
+        : t("servicesKillOnlyProcess");
+    const ok = await requestConfirm({
+      title: t(force ? "servicesForceTitle" : "servicesKillTitle", { what: label }),
+      detail: [
+        t("servicesKillWho", { pid: target.pid, command: target.command || target.comm }),
+        groupLine,
+        t(force ? "servicesForceDetail" : "servicesKillHow"),
+      ].join("\n"),
+      confirmLabel: t(force ? "servicesForce" : "servicesKill"),
+      destructive: true,
+    });
+    return ok ? group : undefined;
   };
 
   /** Encerrar: confirma mostrando porta, PID, comando e quem vai junto. */
   const kill = async (target: { pid: number; start_ms: number; comm: string; command: string; port?: number }) => {
     if (busy) return;
     setError(null);
-    let group: ServiceDetail | null = null;
-    try {
-      group = await servicesDetail(target.pid);
-    } catch {
-      group = null;
-    }
-    const members = group?.group ?? [];
-    const groupLine =
-      group?.target?.kind === "group"
-        ? t("servicesKillGroup", {
-            pgid: group.target.pgid,
-            members: members.map((m) => `${m.comm} ${m.pid}`).join(", "),
-          })
-        : t("servicesKillOnlyProcess");
     const label = target.port ? `:${target.port}` : `${target.comm} ${target.pid}`;
-    const ok = await requestConfirm({
-      title: t("servicesKillTitle", { what: label }),
-      detail: [
-        t("servicesKillWho", { pid: target.pid, command: target.command || target.comm }),
-        groupLine,
-        t("servicesKillHow"),
-      ].join("\n"),
-      confirmLabel: t("servicesKill"),
-      destructive: true,
-    });
-    if (!ok) return;
+    const group = await confirmTarget(target, label, false);
+    if (group === undefined) return;
     setBusy(true);
     try {
-      const outcome = await servicesKill(target.pid, target.start_ms);
+      const outcome = await servicesKill(target.pid, target.start_ms, group);
       describeOutcome(label, outcome, target.pid, target.start_ms);
       await refresh();
     } catch (e) {
@@ -300,19 +333,16 @@ export function ServicesScreen({
     }
   };
 
-  const forceKill = async (target: { pid: number; start_ms: number; comm: string; port?: number }) => {
+  /** SIGKILL: nova confirmação, com o mesmo retrato de quem vai junto. */
+  const forceKill = async (target: { pid: number; start_ms: number; comm: string; command: string; port?: number }) => {
     if (busy) return;
+    setError(null);
     const label = target.port ? `:${target.port}` : `${target.comm} ${target.pid}`;
-    const ok = await requestConfirm({
-      title: t("servicesForceTitle", { what: label }),
-      detail: t("servicesForceDetail", { pid: target.pid }),
-      confirmLabel: t("servicesForce"),
-      destructive: true,
-    });
-    if (!ok) return;
+    const group = await confirmTarget(target, label, true);
+    if (group === undefined) return;
     setBusy(true);
     try {
-      const outcome = await servicesForceKill(target.pid, target.start_ms);
+      const outcome = await servicesForceKill(target.pid, target.start_ms, group);
       describeOutcome(label, outcome, target.pid, target.start_ms);
       await refresh();
     } catch (e) {
@@ -357,7 +387,7 @@ export function ServicesScreen({
   };
 
   const row = (p: PortEntry) => {
-    const on = p.port === state.selected;
+    const on = isSelected(p);
     const since = p.start_ms > 0 ? compactSpan(Date.now() - p.start_ms) : null;
     return (
       <div
@@ -365,11 +395,11 @@ export function ServicesScreen({
         role="row"
         aria-selected={on}
         tabIndex={0}
-        onClick={() => pick(p.port)}
+        onClick={() => pick(p)}
         onKeyDown={(e) => {
           if (e.key === "Enter" || e.key === " ") {
             e.preventDefault();
-            pick(p.port);
+            pick(p);
           }
         }}
         title={p.addresses.join(", ")}
@@ -448,15 +478,18 @@ export function ServicesScreen({
                 ))}
               </span>
             ))}
-            {!detail && <span className="text-tyba-text-faint">…</span>}
+            {!detail && <span className="text-tyba-text-faint">{t("servicesChecking")}</span>}
           </div>
           <div className="flex flex-col gap-2 px-4 py-3 text-[12px] text-tyba-text-muted">
             <span className="text-[11px] uppercase text-tyba-text-faint">{t("servicesKill")}</span>
             {p.refusal ? (
               <span>{t(refusalKey(p.refusal))}</span>
+            ) : !detail?.target ? (
+              // Sem o grupo conferido, o card não afirma quem vai junto.
+              <span className="text-tyba-text-faint">{t("servicesChecking")}</span>
             ) : (
               <span>
-                {detail?.target?.kind === "group"
+                {detail.target.kind === "group"
                   ? t("servicesKillExplainGroup", {
                       members: detail.group.map((m) => m.comm).join(", "),
                     })
@@ -464,7 +497,7 @@ export function ServicesScreen({
               </span>
             )}
             <span className="flex gap-2">
-              {!p.refusal && killControls(p, p.port)}
+              {!p.refusal && detail?.target && killControls(p, p.port)}
               {sessionId && (
                 <button type="button" className={CHIP} onClick={() => goToTerminal(sessionId)}>
                   {t("servicesGoToTerminal")}

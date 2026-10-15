@@ -111,6 +111,22 @@ pub trait RemoteFs: Send + Sync {
     fn rmdir(&self, path: &str) -> RemoteResult<()>;
     fn mkdir(&self, path: &str, mode: u32) -> RemoteResult<()>;
     fn exec(&self, argv: &[&str]) -> RemoteResult<ExecOutput>;
+
+    /// `exec` com teto do lado de cá: stdout lido até `max_bytes`, stderr
+    /// descartado e o processo morto depois de `timeout`. Para saída que vem
+    /// de um servidor que não se controla (portas da tela de Serviços). O
+    /// padrão (mocks) só corta o que `exec` devolveu.
+    fn exec_bounded(
+        &self,
+        argv: &[&str],
+        max_bytes: usize,
+        _timeout: std::time::Duration,
+    ) -> RemoteResult<ExecOutput> {
+        let mut out = self.exec(argv)?;
+        out.stdout.truncate(max_bytes);
+        out.stderr.clear();
+        Ok(out)
+    }
 }
 
 pub fn mode_dir() -> u32 {

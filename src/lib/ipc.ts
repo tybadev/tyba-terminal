@@ -1620,8 +1620,8 @@ export interface ServicesScreenState {
   section: ServicesSection;
   /** "Só das minhas sessões" (ligado por padrão). */
   only_mine: boolean;
-  /** Porta escolhida (o detalhe). */
-  selected: number | null;
+  /** Linha escolhida (o detalhe): porta e pid. */
+  selected: { port: number; pid: number } | null;
 }
 
 export interface Screens {
@@ -3587,11 +3587,13 @@ export const servicesDetail = (pid: number) => invoke<ServiceDetail>("services_d
 
 export const servicesProcesses = () => invoke<SessionProcs[]>("services_processes");
 
-export const servicesKill = (pid: number, startMs: number) =>
-  invoke<KillOutcome>("services_kill", { pid, startMs });
+/** `group` = o pgid que a confirmação mostrou (`null` = só o processo); o
+ *  core recusa se o alvo mudou. */
+export const servicesKill = (pid: number, startMs: number, group: number | null) =>
+  invoke<KillOutcome>("services_kill", { pid, startMs, group });
 
-export const servicesForceKill = (pid: number, startMs: number) =>
-  invoke<KillOutcome>("services_force_kill", { pid, startMs });
+export const servicesForceKill = (pid: number, startMs: number, group: number | null) =>
+  invoke<KillOutcome>("services_force_kill", { pid, startMs, group });
 
 export const servicesBringHere = (sessionId: SessionId, port: number) =>
   invoke<SessionTunnel>("services_bring_here", { sessionId, port });
@@ -3610,5 +3612,12 @@ export const servicesScreenSection = (workspace: WorkspaceId, section: ServicesS
 export const servicesScreenOnlyMine = (workspace: WorkspaceId, onlyMine: boolean) =>
   invoke<void>("services_screen_only_mine", { workspace, onlyMine });
 
-export const servicesScreenSelect = (workspace: WorkspaceId, port: number | null) =>
-  invoke<void>("services_screen_select", { workspace, port });
+export const servicesScreenSelect = (
+  workspace: WorkspaceId,
+  row: { port: number; pid: number } | null,
+) =>
+  invoke<void>("services_screen_select", {
+    workspace,
+    port: row?.port ?? null,
+    pid: row?.pid ?? null,
+  });

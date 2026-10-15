@@ -288,7 +288,11 @@ impl HostQuery {
         script: &str,
     ) -> Result<crate::files::remote::fs::ExecOutput, AppError> {
         self.fs()?
-            .exec(&["sh", "-c", script])
+            .exec_bounded(
+                &["sh", "-c", script],
+                crate::services::remote::MAX_BYTES + 4096,
+                std::time::Duration::from_secs(10),
+            )
             .map_err(|e| AppError::new("ssh.query_failed").with("detail", e.message()))
     }
 

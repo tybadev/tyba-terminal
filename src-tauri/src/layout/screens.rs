@@ -241,14 +241,22 @@ pub enum ServicesSection {
     Tunnels,
 }
 
+/// A linha escolhida: porta e pid (servidor com pré-fork tem vários pids na
+/// mesma porta).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct SelectedPort {
+    pub port: u16,
+    pub pid: u32,
+}
+
 /// Tela de Serviços e portas. Memória de uso, não persiste.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ServicesScreen {
     pub section: ServicesSection,
     /// "Só das minhas sessões": ligado por padrão.
     pub only_mine: bool,
-    /// Porta escolhida (o detalhe embaixo da tabela).
-    pub selected: Option<u16>,
+    /// Linha escolhida (o detalhe embaixo da tabela).
+    pub selected: Option<SelectedPort>,
 }
 
 impl Default for ServicesScreen {

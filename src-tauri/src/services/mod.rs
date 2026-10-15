@@ -506,8 +506,16 @@ impl ServicesState {
     }
 
     /// SIGTERM, com a conferência de identidade e as recusas na hora.
-    pub fn terminate(&self, ctx: &Ctx, pid: u32, start_ms: u64) -> Result<KillOutcome, AppError> {
-        let Some(target) = verify(ctx, pid, start_ms)? else {
+    /// `confirmed` é o grupo que o usuário viu na confirmação (`None` = só o
+    /// processo): alvo diferente na hora do sinal é recusado.
+    pub fn terminate(
+        &self,
+        ctx: &Ctx,
+        pid: u32,
+        start_ms: u64,
+        confirmed: Option<u32>,
+    ) -> Result<KillOutcome, AppError> {
+        let Some(target) = verify(ctx, pid, start_ms, confirmed)? else {
             return Ok(KillOutcome {
                 exited: true,
                 target: None,
@@ -533,7 +541,13 @@ impl ServicesState {
     }
 
     /// SIGKILL: só depois de um TERM a este mesmo processo há ≥ 5 s.
-    pub fn force(&self, ctx: &Ctx, pid: u32, start_ms: u64) -> Result<KillOutcome, AppError> {
+    pub fn force(
+        &self,
+        ctx: &Ctx,
+        pid: u32,
+        start_ms: u64,
+        confirmed: Option<u32>,
+    ) -> Result<KillOutcome, AppError> {
         if let Err(wait_ms) = self
             .term_log
             .lock()
@@ -546,7 +560,7 @@ impl ServicesState {
                     .with("seconds", wait_ms.div_ceil(1000).to_string())
             });
         }
-        let Some(target) = verify(ctx, pid, start_ms)? else {
+        let Some(target) = verify(ctx, pid, start_ms, confirmed)? else {
             self.term_log.lock().forget((pid, start_ms));
             return Ok(KillOutcome {
                 exited: true,
@@ -565,8 +579,27 @@ impl ServicesState {
     }
 }
 
+/// O alvo de agora é o que o usuário confirmou? Puro.
+pub fn check_confirmed(target: SignalTarget, confirmed: Option<u32>) -> Result<(), AppError> {
+    let same = match (target, confirmed) {
+        (SignalTarget::Group { pgid }, Some(seen)) => pgid == seen,
+        (SignalTarget::Process { .. }, None) => true,
+        _ => false,
+    };
+    if same {
+        Ok(())
+    } else {
+        Err(AppError::new("services.target_changed"))
+    }
+}
+
 /// O mesmo processo de quando a lista foi feita? `Ok(None)` = já saiu.
-fn verify(ctx: &Ctx, pid: u32, start_ms: u64) -> Result<Option<SignalTarget>, AppError> {
+fn verify(
+    ctx: &Ctx,
+    pid: u32,
+    start_ms: u64,
+    confirmed: Option<u32>,
+) -> Result<Option<SignalTarget>, AppError> {
     let rows = crate::agent::process_probe::snapshot();
     let Some(row) = rows.iter().find(|r| r.pid == pid) else {
         return Ok(None);
@@ -582,7 +615,20 @@ fn verify(ctx: &Ctx, pid: u32, start_ms: u64) -> Result<Option<SignalTarget>, Ap
     if !scan.ps.iter().any(|p| p.pid == pid) {
         return Ok(None);
     }
-    decide(&scan, ctx, pid).map(Some)
+    let target = decide(&scan, ctx, pid)?;
+    check_confirmed(target, confirmed)?;
+    // O `ps` pode levar segundos: a identidade é conferida de novo logo antes
+    // do sinal, não só no começo.
+    match crate::agent::process_probe::snapshot()
+        .into_iter()
+        .find(|r| r.pid == pid)
+    {
+        None => Ok(None),
+        Some(r) if r.start_ms != start_ms => {
+            Err(AppError::new("services.process_changed").with("pid", pid.to_string()))
+        }
+        Some(_) => Ok(Some(target)),
+    }
 }
 
 /// Recusa ou alvo do sinal, sobre um retrato. Puro.
@@ -631,10 +677,31 @@ fn send(_target: SignalTarget, _sig: Signal) -> Result<(), AppError> {
     Err(AppError::new("services.unsupported"))
 }
 
+/// O estado de `/proc/<pid>/stat` é `Z` (zumbi: morreu, falta o pai colher)?
+/// O campo vem logo depois do último `)` do comm.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn stat_is_zombie(stat: &str) -> bool {
+    stat.rsplit_once(')')
+        .and_then(|(_, rest)| rest.split_whitespace().next())
+        == Some("Z")
+}
+
+#[cfg(target_os = "linux")]
+fn is_zombie(pid: u32) -> bool {
+    std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|s| stat_is_zombie(&s))
+}
+
+/// No macOS o retrato já não traz zumbi.
+#[cfg(not(target_os = "linux"))]
+fn is_zombie(_pid: u32) -> bool {
+    false
+}
+
 fn alive(pid: u32, start_ms: u64) -> bool {
     crate::agent::process_probe::snapshot()
         .iter()
         .any(|r| r.pid == pid && r.start_ms == start_ms)
+        && !is_zombie(pid)
 }
 
 fn wait_exit(pid: u32, start_ms: u64, wait: Duration) -> bool {
@@ -847,6 +914,25 @@ mod tests {
     }
 
     #[test]
+    fn the_confirmed_target_must_match() {
+        let group = SignalTarget::Group { pgid: 10 };
+        let only = SignalTarget::Process { pid: 11 };
+        assert!(check_confirmed(group, Some(10)).is_ok());
+        assert!(check_confirmed(only, None).is_ok());
+        let changed = |t, c| check_confirmed(t, c).unwrap_err().code;
+        assert_eq!(changed(group, None), "services.target_changed");
+        assert_eq!(changed(group, Some(12)), "services.target_changed");
+        assert_eq!(changed(only, Some(11)), "services.target_changed");
+    }
+
+    #[test]
+    fn zombie_state_is_read_after_the_comm() {
+        assert!(stat_is_zombie("42 (a) b) Z 1 42 42"));
+        assert!(!stat_is_zombie("42 (Z) S 1 42 42"));
+        assert!(!stat_is_zombie(""));
+    }
+
+    #[test]
     fn chip_reports_only_changes() {
         let state = ServicesState::default();
         let a = HashMap::from([(sid(1), vec![3000])]);
@@ -902,15 +988,19 @@ mod tests {
             ..Ctx::current(Vec::new())
         };
         // Start errado: o core recusa, nada morre.
-        let err = state.terminate(&ctx, pid, start + 1).unwrap_err();
+        let err = state
+            .terminate(&ctx, pid, start + 1, Some(pid))
+            .unwrap_err();
         assert_eq!(err.code, "services.process_changed");
         assert!(matches!(child.try_wait(), Ok(None)));
         // SIGKILL sem TERM antes: recusado.
         assert_eq!(
-            state.force(&ctx, pid, start).unwrap_err().code,
+            state.force(&ctx, pid, start, Some(pid)).unwrap_err().code,
             "services.force_without_term"
         );
-        let outcome = state.terminate(&ctx, pid, start).expect("terminate");
+        let outcome = state
+            .terminate(&ctx, pid, start, Some(pid))
+            .expect("terminate");
         let _ = child.wait();
         assert_eq!(outcome.target, Some(SignalTarget::Group { pgid: pid }));
     }

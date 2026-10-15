@@ -184,7 +184,16 @@ export function TunnelsView({ session, hostAlias }: Props) {
         </ul>
 
         {pendingRisky && (
-          <div className="mt-2">
+          <div
+            className="mt-2"
+            // Esc aqui cancela a confirmação, não fecha a tela.
+            onKeyDown={(e) => {
+              if (e.key === "Escape") {
+                e.preventDefault();
+                setPendingRisky(null);
+              }
+            }}
+          >
             <RiskyTunnelConfirm
               tunnels={[pendingRisky]}
               host={hostAlias}
@@ -202,6 +211,14 @@ export function TunnelsView({ session, hostAlias }: Props) {
             onSubmit={(e) => {
               e.preventDefault();
               void submit(draft, false);
+            }}
+            // Esc dentro do formulário cancela o rascunho, não fecha a tela.
+            onKeyDown={(e) => {
+              if (e.key === "Escape") {
+                e.preventDefault();
+                setAdding(false);
+                setError(null);
+              }
             }}
           >
             <div className="text-[12px] text-tyba-text">{t("tunnelsNew")}</div>

@@ -5847,6 +5847,9 @@ async fn services_list(app: AppHandle, id: SessionId) -> Result<ServicesList, Ap
             if out.code == 127 {
                 return Err(AppError::new("services.remote_no_ss"));
             }
+            if out.code == 3 {
+                return Err(AppError::new("services.remote_ss_failed"));
+            }
             return Ok(ServicesList::Remote {
                 alias,
                 ports: services::remote::parse_ss(&out.stdout),
@@ -5888,16 +5891,18 @@ async fn services_processes(app: AppHandle) -> Result<Vec<services::SessionProcs
 }
 
 /// SIGTERM no grupo do processo. `start_ms` é a identidade vista na lista: o
-/// core confere de novo antes do sinal. A UI sempre confirmou antes.
+/// core confere de novo antes do sinal. A UI sempre confirmou antes; `group`
+/// é o grupo que a confirmação mostrou (`None` = só o processo).
 #[tauri::command]
 async fn services_kill(
     app: AppHandle,
     pid: u32,
     start_ms: u64,
+    group: Option<u32>,
 ) -> Result<services::KillOutcome, AppError> {
     off_main(app, move |_app, state| {
         let ctx = services_ctx(&state);
-        state.services.terminate(&ctx, pid, start_ms)
+        state.services.terminate(&ctx, pid, start_ms, group)
     })
     .await
     .map_err(|e| AppError::new("services.kill_failed").with("detail", e))?
@@ -5909,10 +5914,11 @@ async fn services_force_kill(
     app: AppHandle,
     pid: u32,
     start_ms: u64,
+    group: Option<u32>,
 ) -> Result<services::KillOutcome, AppError> {
     off_main(app, move |_app, state| {
         let ctx = services_ctx(&state);
-        state.services.force(&ctx, pid, start_ms)
+        state.services.force(&ctx, pid, start_ms, group)
     })
     .await
     .map_err(|e| AppError::new("services.kill_failed").with("detail", e))?
@@ -5945,8 +5951,17 @@ async fn services_bring_here(
             target_host: Some("localhost".into()),
             target_port: Some(port),
         };
+        // O bind de teste não basta: com SO_REUSEADDR, 127.0.0.1:P liga por
+        // cima de quem escuta em *:P. Porta que o lsof vê é ocupada.
+        let busy: std::collections::HashSet<u16> = services::listen::listeners()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|l| l.port)
+            .collect();
         let local = services::remote::pick_local_port(port, |p| {
-            crate::ssh::tunnel::local_port_free(&probe(p))
+            services::remote::free_locally(p, &busy, |p| {
+                crate::ssh::tunnel::local_port_free(&probe(p))
+            })
         })
         .ok_or_else(|| {
             AppError::new("ssh.tunnel_open_failed")
@@ -5998,10 +6013,16 @@ fn services_screen_select(
     state: State<'_, AppState>,
     workspace: layout::WorkspaceId,
     port: Option<u16>,
+    pid: Option<u32>,
 ) -> Result<(), String> {
+    let selected = match (port, pid) {
+        (Some(port), Some(pid)) => Some(layout::screens::SelectedPort { port, pid }),
+        (None, None) => None,
+        _ => return Err("porta e pid vêm juntos".into()),
+    };
     state
         .layout
-        .with_screens(workspace, |s| s.services.selected = port)
+        .with_screens(workspace, |s| s.services.selected = selected)
         .map_err(|e| e.to_string())?;
     emit_layout(&app, &state);
     Ok(())
