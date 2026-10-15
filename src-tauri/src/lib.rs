@@ -9122,6 +9122,7 @@ pub fn run() {
             {
                 let state = app.state::<AppState>();
                 let coord_sessions = Arc::clone(&state.sessions);
+                let coord_store = Arc::clone(&state.store);
                 let coord_app = app.handle().clone();
                 state
                     .subagents
@@ -9130,10 +9131,25 @@ pub fn run() {
                             .get(session)
                             .is_some_and(|s| matches!(s.status, SessionStatus::Running))
                         {
+                            // É aqui que o turno de quem soltou subagentes em
+                            // segundo plano fecha de verdade: o `Stop` do
+                            // orquestrador veio antes, segurado. Sem o aviso
+                            // aqui, "6 subagentes terminaram" passava calado.
+                            let body = summary
+                                .clone()
+                                .unwrap_or_else(|| "Terminou o que tinha pra rodar".into());
                             coord_sessions.set_status(
                                 &coord_app,
                                 session,
                                 SessionStatus::Idle { summary },
+                            );
+                            agent::session::notify_native(
+                                &coord_app,
+                                &coord_sessions,
+                                &coord_store,
+                                agent::notify::NotifyKind::Done,
+                                session,
+                                &body,
                             );
                         }
                     }));
