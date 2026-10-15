@@ -126,11 +126,9 @@ pub enum ChannelResponse {
     Refused {
         reason: RefusedReason,
     },
-    /// M6-B: a decisão do core para um evento do plugin. `deny` com o motivo
-    /// nega a ferramenta; `None` deixa seguir.
-    Plugin {
-        deny: Option<String>,
-    },
+    /// M6-B: o core recebeu o evento do plugin. Não há decisão: o plugin só
+    /// observa.
+    Plugin,
 }
 
 /// O que a entrega B (`agent::channel_host`) fornece: dado o pid do peer já
@@ -460,7 +458,7 @@ pub fn resolve_jail_outcome(socket_path: Option<&Path>, args: &[String]) -> Jail
         ChannelResponse::Refused {
             reason: RefusedReason::ForbiddenArgs,
         } => JailOutcome::Forbidden,
-        ChannelResponse::Refused { .. } | ChannelResponse::Plugin { .. } => JailOutcome::RunReal,
+        ChannelResponse::Refused { .. } | ChannelResponse::Plugin => JailOutcome::RunReal,
         ChannelResponse::Host { plan_path, .. } => match read_and_unlink_plan(&plan_path) {
             Some(plan) => JailOutcome::Exec {
                 argv: plan.argv,
@@ -495,8 +493,8 @@ fn exchange(
 }
 
 /// M6-B: manda um evento do plugin do Claude Code ao core e devolve a
-/// resposta, ou `None` se o core não respondeu (o cliente então decide com a
-/// regra local). Mesmas checagens do `_jail`: dir do socket do usuário e
+/// resposta, ou `None` se o core não respondeu (o evento se perde e o Claude
+/// segue). Mesmas checagens do `_jail`: dir do socket do usuário e
 /// servidor do mesmo uid.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub fn send_plugin_event(
@@ -929,7 +927,7 @@ mod server_tests {
     }
 
     /// M6-B: o evento do plugin chega ao handler com o token e o resumo, e a
-    /// resposta `plugin` volta ao cliente.
+    /// resposta `plugin` (sem decisão) volta ao cliente.
     #[test]
     fn a_plugin_event_reaches_the_handler_with_its_token() {
         let dir = tempfile::tempdir().unwrap();
@@ -940,9 +938,7 @@ mod server_tests {
             &path,
             Arc::new(move |_pid, req| {
                 *sink.lock().unwrap() = Some((req.op.clone(), req.token.clone(), req.tool.clone()));
-                ChannelResponse::Plugin {
-                    deny: Some("não".into()),
-                }
+                ChannelResponse::Plugin
             }),
         )
         .unwrap();
@@ -954,17 +950,12 @@ mod server_tests {
                 agent: "claude".into(),
                 args: Vec::new(),
                 token: Some("tok".into()),
-                event: Some("PreToolUse".into()),
+                event: Some("PermissionRequest".into()),
                 tool: Some("Bash".into()),
                 summary: Some("Bash: ls".into()),
             },
         );
-        assert_eq!(
-            response,
-            Some(ChannelResponse::Plugin {
-                deny: Some("não".into())
-            })
-        );
+        assert_eq!(response, Some(ChannelResponse::Plugin));
         assert_eq!(
             *seen.lock().unwrap(),
             Some((

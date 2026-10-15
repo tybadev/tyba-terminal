@@ -665,7 +665,7 @@ const resources = {
         "Sem gate: este {{binary}} não passou pelo TYBA (caminho absoluto ou npx). Escrita, Bash e rede estão bloqueados — saia e rode `claude` direto no pane.",
       claudePlugin: "Integração com Claude Code",
       claudePluginHint:
-        "Instala um plugin do TYBA no seu Claude Code. Se um claude rodar num pane sem passar pelo TYBA (caminho absoluto, npx), o pane mostra \"sem gate\" e o plugin bloqueia escrita, Bash e rede nele. Fora do TYBA o plugin não faz nada. Mexe na configuração global do Claude Code, por isso só instala quando você pedir.",
+        "Instala um plugin do TYBA no seu Claude Code. Num pane do TYBA, o claude avisa o app quando começa, para e pede permissão, e push para main/master e merge de PR são recusados. As outras permissões continuam no prompt do próprio Claude. Fora do TYBA o plugin não faz nada. Mexe na configuração global do Claude Code, por isso só instala quando você pedir.",
       claudePluginInstall: "Instalar integração com Claude Code",
       claudePluginUninstall: "Desinstalar",
       claudePluginInstalled: "Instalada",
@@ -2760,7 +2760,7 @@ const resources = {
         "No gate: this {{binary}} didn't go through TYBA (absolute path or npx). Writes, Bash and network are blocked — exit and run `claude` straight in the pane.",
       claudePlugin: "Claude Code integration",
       claudePluginHint:
-        "Installs a TYBA plugin in your Claude Code. If a claude runs in a pane without going through TYBA (absolute path, npx), the pane shows \"no gate\" and the plugin blocks writes, Bash and network in it. Outside TYBA the plugin does nothing. It changes Claude Code's global configuration, so it only installs when you ask.",
+        "Installs a TYBA plugin in your Claude Code. In a TYBA pane, claude tells the app when it starts, stops and asks for permission, and pushes to main/master and PR merges are refused. Every other permission stays in Claude's own prompt. Outside TYBA the plugin does nothing. It changes Claude Code's global configuration, so it only installs when you ask.",
       claudePluginInstall: "Install Claude Code integration",
       claudePluginUninstall: "Uninstall",
       claudePluginInstalled: "Installed",
