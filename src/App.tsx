@@ -212,6 +212,9 @@ import {
   ackDriftWarning,
   bootGate,
   bootSnapshot,
+  configWarnings,
+  onConfigPrefs,
+  onConfigWarnings,
   onAgentOpenUrl,
   onAgentSandboxWarning,
   onAgentAuthAlert,
@@ -483,6 +486,7 @@ import {
   KEY_ACTIONS,
   formatCombo,
   parseBindings,
+  bindingOverrides,
   BINDINGS_PREF_KEY,
   isTerminalAction,
   isPaneResizeChord,
@@ -1349,6 +1353,31 @@ export default function App() {
       void unlisten.then((off) => off());
     };
   }, [reportBootFailure]);
+
+  // `~/.tyba/config.toml`: o core valida, aplica e manda. Aqui só se pinta.
+  // Os avisos do arranque saem antes de o listener existir, então o mount
+  // pede a lista vigente; os seguintes chegam pelo evento.
+  useEffect(() => {
+    const warn = (warnings: string[]) => {
+      if (warnings.length === 0) return;
+      pushToast({
+        tone: "warning",
+        title: t("configWarningTitle"),
+        detail: warnings.join("\n"),
+      });
+    };
+    void configWarnings().then(warn).catch(() => {});
+    const offWarnings = onConfigWarnings(warn);
+    const offPrefs = onConfigPrefs((prefs) => {
+      setBindings(parseBindings(prefs[BINDINGS_PREF_KEY] ?? null));
+      const size = Number(prefs[FONT_SIZE_KEY] ?? 13);
+      if (size >= 10 && size <= 20) setDefaultFontSize(size);
+    });
+    return () => {
+      void offWarnings.then((off) => off());
+      void offPrefs.then((off) => off());
+    };
+  }, [t]);
 
   // Entrega B (§5.3): o toast é a superfície PRIMÁRIA do 1-clique — com
   // $BROWSER setado, o fallback na tela do próprio Claude só aparece depois
@@ -3720,7 +3749,9 @@ export default function App() {
 
   const changeBindings = useCallback((value: Bindings) => {
     setBindings(value);
-    void setPref(BINDINGS_PREF_KEY, JSON.stringify(value)).catch(() => {});
+    void setPref(BINDINGS_PREF_KEY, JSON.stringify(bindingOverrides(value))).catch(
+      () => {},
+    );
   }, []);
 
   const changeShowContainers = useCallback((value: boolean) => {

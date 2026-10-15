@@ -3,6 +3,9 @@
 // só hex validado. Arquivo próprio no <head> porque a CSP não aceita script
 // inline. Sem dado, vale o `splash.css` puro (aparência do sistema).
 (function () {
+  if (window.__TYBA_DEV__ === true) {
+    document.documentElement.setAttribute("data-dev", "");
+  }
   var boot = window.__TYBA_SPLASH__;
   if (!boot || typeof boot !== "object") return;
   var light =

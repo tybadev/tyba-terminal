@@ -1185,7 +1185,8 @@ fn remove_cache(id: SessionId, server_id: &str) {
 pub fn data_dir(home: &Path) -> PathBuf {
     #[cfg(target_os = "macos")]
     {
-        home.join("Library/Application Support/dev.tyba.app")
+        home.join("Library/Application Support")
+            .join(crate::profile::IDENTIFIER)
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -1193,7 +1194,7 @@ pub fn data_dir(home: &Path) -> PathBuf {
             .map(PathBuf::from)
             .filter(|p| p.is_absolute())
             .unwrap_or_else(|| home.join(".local/share"))
-            .join("dev.tyba.app")
+            .join(crate::profile::IDENTIFIER)
     }
 }
 

@@ -1714,7 +1714,8 @@ fn default_data_dir(env: &HashMap<String, String>, home: &Path) -> PathBuf {
     #[cfg(target_os = "macos")]
     {
         let _ = env;
-        home.join("Library/Application Support/dev.tyba.app")
+        home.join("Library/Application Support")
+            .join(crate::profile::IDENTIFIER)
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -1722,7 +1723,7 @@ fn default_data_dir(env: &HashMap<String, String>, home: &Path) -> PathBuf {
             .map(PathBuf::from)
             .filter(|p| p.is_absolute())
             .unwrap_or_else(|| home.join(".local/share"))
-            .join("dev.tyba.app")
+            .join(crate::profile::IDENTIFIER)
     }
 }
 
@@ -1807,7 +1808,16 @@ pub(crate) fn sandbox_spec(
         agent.read.extend(own.read);
         agent.write.extend(own.write);
     }
-    let read_allow_extra = crate::user_config::load(&home)?.sandbox_read_allow;
+    // Config quebrado ou recusado não impede a sessão: sem o `read_allow` a
+    // jaula só fica mais fechada. O toast do mesmo arquivo já sai pelo
+    // ConfigManager; aqui basta o log.
+    let read_allow_extra = match crate::user_config::load(&home) {
+        Ok(c) => c.sandbox_read_allow,
+        Err(e) => {
+            eprintln!("[tyba] sandbox: sessão sem o read_allow do usuário ({e})");
+            Vec::new()
+        }
+    };
     let tyba_data_dir = std::env::var_os("TYBA_DATA_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| default_data_dir(env, &home));
@@ -2173,6 +2183,29 @@ mod build_hosted_command_tests {
             "claude",
             "o cmd degradado é o BARE original, não um resto do wrap que falhou"
         );
+    }
+
+    #[test]
+    fn broken_user_config_does_not_block_the_sandbox_spec() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join(".tyba")).unwrap();
+        std::fs::write(home.path().join(".tyba/config.toml"), "[sandbox\n").unwrap();
+        let work = tempfile::tempdir().unwrap();
+        let runtime = tempfile::tempdir().unwrap();
+        let mut env = HashMap::new();
+        env.insert("HOME".to_string(), home.path().display().to_string());
+        let spec = sandbox_spec(
+            &ClaudeCodeRunner,
+            &env,
+            work.path(),
+            work.path(),
+            runtime.path(),
+            &runtime.path().join(HOOK_SOCKET_FILE),
+            &std::env::current_exe().unwrap(),
+            None,
+        )
+        .expect("config.toml quebrado não pode impedir a sessão");
+        assert!(spec.read_allow_extra.is_empty());
     }
 
     /// A prova de ponta a ponta que o achado pediu: `decide_jail` manda

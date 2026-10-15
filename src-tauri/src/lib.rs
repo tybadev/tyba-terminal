@@ -3,6 +3,7 @@ pub mod approvals;
 pub mod blocks;
 pub mod boot;
 pub mod completion;
+pub mod config;
 pub mod docker;
 pub mod editor;
 pub mod error;
@@ -15,6 +16,7 @@ pub mod layout;
 pub mod lsp;
 pub mod menu;
 pub mod notifications;
+pub mod profile;
 pub mod pty;
 pub mod repo;
 pub mod repo_config;
@@ -53,6 +55,8 @@ struct AppState {
     sessions: SharedSessionManager,
     approvals: SharedApprovals,
     themes: theme::SharedThemes,
+    /// `~/.tyba/config.toml`: tema, fonte e atalhos. Ver [`config`].
+    config: config::SharedConfig,
     layout: layout::SharedLayout,
     docker: docker::SharedDocker,
     docker_logs: Arc<docker::logs::LogsManager>,
@@ -4428,7 +4432,14 @@ async fn boot_snapshot(state: State<'_, AppState>) -> Result<BootSnapshot, Strin
         // depois de a mensagem estar gravada (ver `BootGate::mark_failed`), então
         // ler o `ready` primeiro nunca devolve `true` com falha em branco.
         boot_failure: state.boot.failure(),
-        prefs: state.store.prefs().map_err(|e| e.to_string())?,
+        prefs: {
+            // As chaves do arquivo vêm do arquivo; o SQLite ainda pode ter a
+            // cópia de antes da migração, e ela não vale mais.
+            let mut prefs = state.store.prefs().map_err(|e| e.to_string())?;
+            prefs.retain(|k, _| !config::is_file_key(k));
+            prefs.extend(state.config.prefs());
+            prefs
+        },
         sessions: state.sessions.list(),
         layout: state.layout.state(),
     })
@@ -5138,7 +5149,7 @@ fn set_workspace_group(
 fn new_window(app: AppHandle) -> Result<(), String> {
     let label = format!("tyba-{}", uuid::Uuid::new_v4().simple());
     let builder = tauri::WebviewWindowBuilder::new(&app, label, tauri::WebviewUrl::default())
-        .title("Tyba")
+        .title(profile::product_name(app.config()))
         .inner_size(1100.0, 720.0);
     #[cfg(target_os = "macos")]
     let builder = builder
@@ -5168,18 +5179,100 @@ async fn get_pref(state: State<'_, AppState>, key: String) -> Result<Option<Stri
     if !key.starts_with("pref.") {
         return Err("chave de preferência inválida".into());
     }
+    if config::is_file_key(&key) {
+        return Ok(state.config.get(&key));
+    }
     state.store.get_setting(&key).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-async fn set_pref(state: State<'_, AppState>, key: String, value: String) -> Result<(), String> {
+async fn set_pref(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    key: String,
+    value: String,
+) -> Result<(), String> {
     if !key.starts_with("pref.") {
         return Err("chave de preferência inválida".into());
+    }
+    if config::is_file_key(&key) {
+        return match state.config.set(&key, &value) {
+            Ok(changes) => {
+                emit_config_changes(&app, &state.config, &state.themes, changes);
+                Ok(())
+            }
+            Err(e) => {
+                // O front engole o erro do `set_pref` (`.catch(() => {})`):
+                // sem o aviso, a mudança sumiria em silêncio.
+                let _ = app.emit(config::EVENT_WARNINGS, vec![e.clone()]);
+                Err(e)
+            }
+        };
     }
     state
         .store
         .set_setting(&key, &value)
         .map_err(|e| e.to_string())
+}
+
+/// Avisos do `~/.tyba/config.toml` vigentes agora. Segunda via do
+/// `config://warnings`, que no arranque sai antes de o front ouvir.
+#[tauri::command]
+fn config_warnings(state: State<'_, AppState>) -> Vec<String> {
+    let mut warnings = state.config.warnings();
+    warnings.extend(state.themes.slot_warnings());
+    warnings.extend(state.themes.rename_warnings());
+    warnings
+}
+
+/// Publica o que um reload ou uma gravação do `config.toml` mudou: o tema pelo
+/// evento de sempre, as prefs e os avisos pelos do [`config`].
+fn emit_config_changes(
+    app: &AppHandle,
+    config: &config::SharedConfig,
+    themes: &theme::SharedThemes,
+    changes: config::Changes,
+) {
+    if changes.theme {
+        themes.emit(app);
+    }
+    if changes.prefs {
+        let _ = app.emit(config::EVENT_PREFS, config.prefs());
+    }
+    if changes.app_icon {
+        let _ = app.emit(config::EVENT_APP_ICON, config.app_icon());
+    }
+    if let Some(warnings) = changes.warnings {
+        let _ = app.emit(config::EVENT_WARNINGS, warnings);
+    }
+    if changes.theme {
+        let slots = themes.slot_warnings();
+        if !slots.is_empty() {
+            let _ = app.emit(config::EVENT_WARNINGS, slots);
+        }
+    }
+}
+
+/// Fim de `set_theme_mode`/`set_theme_slot`: o tema já foi emitido pelo
+/// [`theme::ThemeManager`]; aqui sai o resto do que a gravação mudou, e a falha
+/// vira aviso — o front engole o erro do comando.
+fn finish_theme_set(
+    app: &AppHandle,
+    state: &AppState,
+    result: Result<config::Changes, theme::ThemeError>,
+) -> Result<(), String> {
+    match result {
+        Ok(mut changes) => {
+            changes.theme = false;
+            emit_config_changes(app, &state.config, &state.themes, changes);
+            Ok(())
+        }
+        Err(e) => {
+            let e = e.to_string();
+            let _ = app.emit(config::EVENT_WARNINGS, vec![e.clone()]);
+            Err(e)
+        }
+    }
 }
 
 /// Review r1 (v0.6.2), MAJOR: o front chama isto quando o toast de
@@ -8296,8 +8389,17 @@ fn render_snippet(
 }
 
 #[tauri::command]
-async fn list_themes(state: State<'_, AppState>) -> Result<Vec<theme::Theme>, String> {
-    Ok(state.themes.list())
+async fn list_themes(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Vec<theme::Theme>, String> {
+    let themes = state.themes.list();
+    // Arquivo posto à mão que a leitura acabou de renomear para o id: avisa.
+    let renamed = state.themes.take_unannounced_renames();
+    if !renamed.is_empty() {
+        let _ = app.emit(config::EVENT_WARNINGS, renamed);
+    }
+    Ok(themes)
 }
 
 #[tauri::command]
@@ -8311,7 +8413,8 @@ fn set_theme_mode(
     state: State<'_, AppState>,
     mode: theme::ThemeMode,
 ) -> Result<(), String> {
-    state.themes.set_mode(&app, mode).map_err(|e| e.to_string())
+    let result = state.themes.set_mode(&app, mode);
+    finish_theme_set(&app, &state, result)
 }
 
 #[tauri::command]
@@ -8321,10 +8424,8 @@ fn set_theme_slot(
     base: theme::ThemeBase,
     id: String,
 ) -> Result<(), String> {
-    state
-        .themes
-        .set_slot(&app, base, &id)
-        .map_err(|e| e.to_string())
+    let result = state.themes.set_slot(&app, base, &id);
+    finish_theme_set(&app, &state, result)
 }
 
 #[tauri::command]
@@ -8668,6 +8769,14 @@ pub fn run() {
         })
         .setup(|app| {
             let setup_span = boot::Span::start("setup.total");
+            // Antes de abrir qualquer banco: build de dev com o identificador
+            // de release abriria os dados do app instalado.
+            profile::check_identifier(&app.config().identifier)?;
+            // O título da `main` no tauri.conf.json é o de release; o nome
+            // vem do `productName` da config com que o app subiu.
+            if let Some(main) = app.get_webview_window("main") {
+                let _ = main.set_title(&profile::product_name(app.config()));
+            }
             app.manage(splash::SplashLatch::default());
             // `docker logs -f` órfãos de uma execução que não saiu direito
             // (crash, kill, reinício do dev): sem isto se acumulavam.
@@ -8709,13 +8818,34 @@ pub fn run() {
                 .path()
                 .app_config_dir()
                 .unwrap_or_else(|_| std::env::temp_dir().join("tyba"));
+            // `~/.tyba/` antes do splash: o tema que ele pinta vem do arquivo.
+            // A primeira abertura gera o arquivo a partir do SQLite e traz os
+            // temas importados da pasta antiga.
+            let user_config: config::SharedConfig = Arc::new(config::ConfigManager::open(
+                config::root_dir(ssh::home_dir().as_deref())
+                    .unwrap_or_else(|| config_dir.join("user")),
+                &store,
+            ));
+            // Raiz recusada: nada se grava nela, e não há o que vigiar.
+            if user_config.usable() {
+                config::migrate_themes(&config_dir.join("themes"), &user_config.themes_dir());
+            }
             let themes: theme::SharedThemes = Arc::new(theme::ThemeManager::new(
-                Arc::clone(&store),
-                config_dir.join("themes"),
+                Arc::clone(&user_config),
+                user_config.themes_dir(),
             ));
             // O splash nasce aqui, e não no `tauri.conf.json`: precisa do tema
             // salvo, que só existe depois de o banco abrir.
             splash::open(app.handle(), &theme::splash_boot_json(&themes.state()));
+            if user_config.usable() {
+                let app = app.handle().clone();
+                let cfg = Arc::clone(&user_config);
+                let themes = Arc::clone(&themes);
+                config::watch::spawn(user_config.watch_files(), move || {
+                    let changes = cfg.load();
+                    emit_config_changes(&app, &cfg, &themes, changes);
+                });
+            }
 
             let agent_prober: agent::process_probe::SharedAgentProber =
                 Arc::new(agent::process_probe::AgentProber::default());
@@ -8742,7 +8872,7 @@ pub fn run() {
             lsp::spawn_reaper(Arc::clone(&lsp));
 
             let managed_data_dir = lsp::resolve_data_dir()
-                .unwrap_or_else(|| std::env::temp_dir().join("dev.tyba.app"));
+                .unwrap_or_else(|| std::env::temp_dir().join(profile::IDENTIFIER));
             let managed_lsp: lsp::managed::SharedManaged = Arc::new(
                 lsp::managed::ManagedManager::new(Arc::clone(&store), managed_data_dir),
             );
@@ -8754,6 +8884,7 @@ pub fn run() {
                 sessions: Arc::clone(&sessions),
                 approvals: Arc::new(approvals::ApprovalsManager::new()),
                 themes,
+                config: user_config,
                 layout: Arc::clone(&layout),
                 docker: Arc::new(docker::DockerManager::new()),
                 docker_logs: Arc::new(docker::logs::LogsManager::new()),
@@ -8935,6 +9066,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             boot_snapshot,
+            config_warnings,
             boot_gate,
             agent_binary_available,
             detected_agent,

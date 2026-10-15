@@ -1,12 +1,13 @@
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 
-use crate::session::store::Store;
+use crate::config::schema::{KEY_THEME_DARK, KEY_THEME_LIGHT, KEY_THEME_MODE};
+use crate::config::SharedConfig;
 
 mod schemes;
 
@@ -14,9 +15,6 @@ pub const EVENT_CHANGED: &str = "theme://changed";
 pub const BUILTIN_DARK: &str = "tyba-dark";
 pub const BUILTIN_LIGHT: &str = "tyba-light";
 
-const KEY_MODE: &str = "theme.mode";
-const KEY_SLOT_DARK: &str = "theme.slot.dark";
-const KEY_SLOT_LIGHT: &str = "theme.slot.light";
 const MAX_THEME_FILE_BYTES: u64 = 256 * 1024;
 const MAX_NAME_LEN: usize = 64;
 
@@ -52,8 +50,6 @@ pub enum ThemeError {
     Io(#[from] std::io::Error),
     #[error("nome de tema inválido (1 a {MAX_NAME_LEN} caracteres)")]
     InvalidName,
-    #[error("nome reservado: {0}")]
-    ReservedName(String),
     #[error("cor inválida em '{0}': {1}")]
     InvalidColor(String, String),
     #[error("chave de UI desconhecida: {0}")]
@@ -72,8 +68,10 @@ pub enum ThemeError {
     TooLarge,
     #[error("origem de importação inválida (não é um arquivo regular): {0}")]
     InvalidSource(String),
-    #[error("store: {0}")]
-    Store(#[from] crate::session::store::StoreError),
+    #[error("config.toml: {0}")]
+    Config(String),
+    #[error("{0}")]
+    Write(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -268,6 +266,25 @@ fn validate(t: &ThemeFile) -> Result<(), ThemeError> {
     Ok(())
 }
 
+/// Id livre a partir de `base`: ele mesmo, ou `base-2`, `base-3`… O id cabe
+/// no formato do config.toml (`[a-z0-9-]{1,64}`) mesmo com o sufixo — a base
+/// só é encurtada quando o sufixo é preciso.
+pub fn free_id(base: &str, taken: impl Fn(&str) -> bool) -> String {
+    let cut = |len: usize| -> String {
+        let s: String = base.chars().take(len).collect();
+        s.trim_end_matches('-').to_string()
+    };
+    let whole = cut(MAX_NAME_LEN);
+    if !taken(&whole) {
+        return whole;
+    }
+    let base = cut(MAX_NAME_LEN - 4);
+    (2..)
+        .map(|n| format!("{base}-{n}"))
+        .find(|id| !taken(id))
+        .expect("sempre há um sufixo livre")
+}
+
 pub fn slugify(name: &str) -> String {
     let mut slug = String::new();
     let mut last_dash = true;
@@ -368,17 +385,106 @@ fn resolve(id: String, file: ThemeFile) -> Theme {
     }
 }
 
+/// Modo e slots moram no `~/.tyba/config.toml` (ver [`crate::config`]); os
+/// temas importados, em `~/.tyba/themes/`.
+/// Id de cada arquivo da pasta de temas. Nome de arquivo que já é um id
+/// válido e livre fica como está; o resto (`Meu Tema.json`, um `dracula.json`
+/// que colide com o embutido) é normalizado e ganha sufixo se preciso. A ordem
+/// é a do nome do arquivo, para o mesmo arquivo ter sempre o mesmo id.
+fn assign_ids(mut paths: Vec<PathBuf>) -> Vec<(String, PathBuf)> {
+    paths.sort();
+    let stem = |p: &PathBuf| p.file_stem().and_then(|s| s.to_str()).map(str::to_owned);
+    let mut taken: Vec<String> = Vec::new();
+    let mut out = Vec::new();
+    let mut pending = Vec::new();
+    for path in paths {
+        match stem(&path) {
+            Some(s) if crate::config::schema::is_theme_id(&s) && !is_reserved(&s) => {
+                taken.push(s.clone());
+                out.push((s, path));
+            }
+            Some(_) => pending.push(path),
+            None => {}
+        }
+    }
+    for path in pending {
+        let base = slugify(&stem(&path).unwrap_or_default());
+        if base.is_empty() {
+            continue;
+        }
+        let id = free_id(&base, |id| is_reserved(id) || taken.iter().any(|t| t == id));
+        taken.push(id.clone());
+        out.push((id, path));
+    }
+    out
+}
+
 pub struct ThemeManager {
-    store: Arc<Store>,
+    config: SharedConfig,
     themes_dir: PathBuf,
+    /// Avisos de arquivo renomeado nesta execução, e quantos já foram
+    /// publicados ao vivo (ver [`ThemeManager::take_unannounced_renames`]).
+    renames: parking_lot::Mutex<(Vec<String>, usize)>,
+}
+
+/// Renomeia `from` para `to` sem nunca sobrescrever: o `hard_link` falha se o
+/// destino existe (atômico, inclusive contra corrida), e só então a origem
+/// sai. Os dois moram na pasta de temas.
+fn rename_no_replace(from: &Path, to: &Path) -> std::io::Result<()> {
+    // Disco que não diferencia caixa (APFS, NTFS): `Solar.json` e `solar.json`
+    // são a mesma entrada, o link falharia sempre, e o rename só troca a caixa
+    // — não há outro arquivo para sobrescrever.
+    if same_entry(from, to) {
+        return fs::rename(from, to);
+    }
+    fs::hard_link(from, to)?;
+    if let Err(e) = fs::remove_file(from) {
+        let _ = fs::remove_file(to);
+        return Err(e);
+    }
+    Ok(())
 }
 
 pub type SharedThemes = Arc<ThemeManager>;
 
+#[cfg(unix)]
+fn same_entry(from: &Path, to: &Path) -> bool {
+    use crate::config::fsguard::entry_id;
+    matches!((entry_id(from), entry_id(to)), (Some(a), Some(b)) if a == b)
+}
+
+#[cfg(not(unix))]
+fn same_entry(from: &Path, to: &Path) -> bool {
+    let name = |p: &Path| p.file_name().map(|n| n.to_string_lossy().to_lowercase());
+    from.parent() == to.parent() && to.exists() && name(from) == name(to)
+}
+
 impl ThemeManager {
-    pub fn new(store: Arc<Store>, themes_dir: PathBuf) -> Self {
-        let _ = fs::create_dir_all(&themes_dir);
-        Self { store, themes_dir }
+    pub fn new(config: SharedConfig, themes_dir: PathBuf) -> Self {
+        if config.usable() {
+            let _ = crate::config::fsguard::create_dir_private(&themes_dir);
+        }
+        Self {
+            config,
+            themes_dir,
+            renames: parking_lot::Mutex::new((Vec::new(), 0)),
+        }
+    }
+
+    /// Todos os avisos de renomeação desta execução (segunda via do arranque:
+    /// o `config_warnings` do front). Marca todos como publicados.
+    pub fn rename_warnings(&self) -> Vec<String> {
+        let mut r = self.renames.lock();
+        r.1 = r.0.len();
+        r.0.clone()
+    }
+
+    /// Só os avisos ainda não publicados — para emitir ao vivo.
+    pub fn take_unannounced_renames(&self) -> Vec<String> {
+        let mut r = self.renames.lock();
+        let new = r.0[r.1..].to_vec();
+        r.1 = r.0.len();
+        new
     }
 
     pub fn themes_dir(&self) -> &PathBuf {
@@ -393,32 +499,88 @@ impl ThemeManager {
     }
 
     fn scan(&self) -> Vec<Theme> {
+        // Raiz ~/.tyba recusada (de outro dono, gravável por outros): a pasta
+        // de temas mora nela e vale o mesmo veto do config.toml.
+        if !self.config.usable() {
+            return Vec::new();
+        }
         let Ok(entries) = fs::read_dir(&self.themes_dir) else {
             return Vec::new();
         };
-        let mut themes: Vec<Theme> = entries
-            .flatten()
-            .filter_map(|entry| {
-                let path = entry.path();
-                if path.extension().and_then(|e| e.to_str()) != Some("json") {
+        let mut themes: Vec<Theme> = assign_ids(
+            entries
+                .flatten()
+                .map(|entry| entry.path())
+                .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("json"))
+                .collect(),
+        )
+        .into_iter()
+        .filter_map(|(id, path)| {
+            // Pasta editável à mão: mesma leitura guardada do config.toml
+            // (teto de tamanho, sem symlink para fora, dono).
+            let (json, read_id) = match crate::config::fsguard::read_capped_with_id(
+                &self.themes_dir,
+                &path,
+                MAX_THEME_FILE_BYTES,
+            ) {
+                Ok(Some(read)) => read,
+                Ok(None) => return None,
+                Err(err) => {
+                    eprintln!("tyba: tema ignorado: {err}");
                     return None;
                 }
-                let id = path.file_stem()?.to_str()?.to_string();
-                if is_reserved(&id) {
-                    return None;
+            };
+            match parse_theme(&json) {
+                Ok(file) => {
+                    self.settle_file_name(&id, &path, read_id);
+                    Some(resolve(id, file))
                 }
-                let json = fs::read_to_string(&path).ok()?;
-                match parse_theme(&json) {
-                    Ok(file) => Some(resolve(id, file)),
-                    Err(err) => {
-                        eprintln!("tyba: tema ignorado ({}): {err}", path.display());
-                        None
-                    }
+                Err(err) => {
+                    eprintln!("tyba: tema ignorado ({}): {err}", path.display());
+                    None
                 }
-            })
-            .collect();
+            }
+        })
+        .collect();
         themes.sort_by(|a, b| a.name.cmp(&b.name));
         themes
+    }
+
+    /// Arquivo posto à mão com nome que não é id (`Meu Tema.json`) passa a se
+    /// chamar `<id>.json` no disco: o id fica estável mesmo que outro arquivo
+    /// apareça depois. Só tema válido, lido pela leitura guardada, e nunca por
+    /// cima de arquivo existente.
+    fn settle_file_name(&self, id: &str, path: &Path, read_id: crate::config::fsguard::FileId) {
+        let current = path.file_stem().and_then(|s| s.to_str());
+        if current == Some(id) {
+            return;
+        }
+        // Renomeia só o arquivo que foi lido e validado: trocado nesse meio
+        // tempo (ou symlink), fica para a próxima leitura.
+        #[cfg(unix)]
+        if crate::config::fsguard::entry_id(path) != Some(read_id) {
+            return;
+        }
+        #[cfg(not(unix))]
+        let _ = read_id;
+        let target = self.themes_dir.join(format!("{id}.json"));
+        let old = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        match rename_no_replace(path, &target) {
+            Ok(()) => {
+                let msg = format!(
+                    "themes/{old}: renomeado para {id}.json — o id do tema é o nome do \
+                     arquivo, e assim ele não muda."
+                );
+                self.renames
+                    .lock()
+                    .0
+                    .push(crate::session::redact::redact(&msg).into_owned());
+            }
+            Err(e) => eprintln!("tyba: tema {old} não foi renomeado para {id}.json: {e}"),
+        }
     }
 
     fn find(&self, id: &str) -> Option<Theme> {
@@ -426,10 +588,8 @@ impl ThemeManager {
     }
 
     fn slot(&self, key: &str, base: ThemeBase) -> Theme {
-        self.store
-            .get_setting(key)
-            .ok()
-            .flatten()
+        self.config
+            .get(key)
             .and_then(|id| self.find(&id))
             .filter(|t| t.base == base)
             .unwrap_or_else(|| builtin(base))
@@ -437,26 +597,64 @@ impl ThemeManager {
 
     pub fn state(&self) -> ThemeState {
         let mode = self
-            .store
-            .get_setting(KEY_MODE)
-            .ok()
-            .flatten()
+            .config
+            .get(KEY_THEME_MODE)
             .and_then(|s| ThemeMode::parse(&s))
             .unwrap_or(ThemeMode::Dark);
         ThemeState {
             mode,
-            dark: self.slot(KEY_SLOT_DARK, ThemeBase::Dark),
-            light: self.slot(KEY_SLOT_LIGHT, ThemeBase::Light),
+            dark: self.slot(KEY_THEME_DARK, ThemeBase::Dark),
+            light: self.slot(KEY_THEME_LIGHT, ThemeBase::Light),
         }
     }
 
-    pub fn set_mode(&self, app: &AppHandle, mode: ThemeMode) -> Result<(), ThemeError> {
-        self.store.set_setting(KEY_MODE, mode.as_str())?;
-        self.emit(app);
-        Ok(())
+    /// Slot apontando para tema que não existe (ou de outra base): o `state`
+    /// cai no embutido em silêncio; isto diz por quê. O id já passou pelo
+    /// formato `[a-z0-9-]` do schema, então repeti-lo não vaza nada.
+    pub fn slot_warnings(&self) -> Vec<String> {
+        [
+            (KEY_THEME_DARK, ThemeBase::Dark, "theme.dark", "escuro"),
+            (KEY_THEME_LIGHT, ThemeBase::Light, "theme.light", "claro"),
+        ]
+        .into_iter()
+        .filter_map(|(key, base, path, label)| {
+            let id = self.config.get(key)?;
+            if self.find(&id).is_some_and(|t| t.base == base) {
+                return None;
+            }
+            let id = if crate::config::schema::is_theme_id(&id) {
+                format!(" \"{id}\"")
+            } else {
+                String::new()
+            };
+            Some(format!(
+                "{path}: tema{id} não encontrado (ou não é {label}); usando o padrão."
+            ))
+        })
+        .collect()
     }
 
-    pub fn set_slot(&self, app: &AppHandle, base: ThemeBase, id: &str) -> Result<(), ThemeError> {
+    /// Grava e emite `theme://changed`. As `Changes` voltam para quem chama
+    /// publicar o resto (avisos do arquivo, prefs).
+    pub fn set_mode(
+        &self,
+        app: &AppHandle,
+        mode: ThemeMode,
+    ) -> Result<crate::config::Changes, ThemeError> {
+        let changes = self
+            .config
+            .set(KEY_THEME_MODE, mode.as_str())
+            .map_err(ThemeError::Config)?;
+        self.emit(app);
+        Ok(changes)
+    }
+
+    pub fn set_slot(
+        &self,
+        app: &AppHandle,
+        base: ThemeBase,
+        id: &str,
+    ) -> Result<crate::config::Changes, ThemeError> {
         let theme = self
             .find(id)
             .ok_or_else(|| ThemeError::NotFound(id.to_string()))?;
@@ -468,12 +666,12 @@ impl ThemeManager {
             });
         }
         let key = match base {
-            ThemeBase::Dark => KEY_SLOT_DARK,
-            ThemeBase::Light => KEY_SLOT_LIGHT,
+            ThemeBase::Dark => KEY_THEME_DARK,
+            ThemeBase::Light => KEY_THEME_LIGHT,
         };
-        self.store.set_setting(key, id)?;
+        let changes = self.config.set(key, id).map_err(ThemeError::Config)?;
         self.emit(app);
-        Ok(())
+        Ok(changes)
     }
 
     fn import_validated(&self, src: &str) -> Result<(String, ThemeFile), ThemeError> {
@@ -486,16 +684,28 @@ impl ThemeManager {
         }
         let json = fs::read_to_string(src)?;
         let file = parse_theme(&json)?;
-        let id = slugify(&file.name);
-        if id.is_empty() {
+        let base = slugify(&file.name);
+        if base.is_empty() {
             return Err(ThemeError::InvalidName);
         }
-        if is_reserved(&id) {
-            return Err(ThemeError::ReservedName(id));
-        }
+        // Id que já existe ganha `-2`, `-3`… sempre — inclusive o mesmo tema
+        // reimportado: importar nunca sobrescreve um arquivo.
+        let existing = self.scan();
+        let id = free_id(&base, |id| {
+            is_reserved(id)
+                || existing.iter().any(|t| t.id == id)
+                || self.themes_dir.join(format!("{id}.json")).exists()
+        });
         let canonical = serde_json::to_string_pretty(&file)?;
-        fs::create_dir_all(&self.themes_dir)?;
-        fs::write(self.themes_dir.join(format!("{id}.json")), canonical)?;
+        crate::config::fsguard::create_dir_private(&self.themes_dir)?;
+        // `0600` e sem seguir symlink para fora da pasta: o mesmo arquivo passa
+        // depois pela leitura guardada do `scan`.
+        crate::config::fsguard::write_atomic(
+            &self.themes_dir,
+            &self.themes_dir.join(format!("{id}.json")),
+            &canonical,
+        )
+        .map_err(ThemeError::Write)?;
         Ok((id, file))
     }
 
@@ -505,7 +715,7 @@ impl ThemeManager {
         Ok(resolve(id, file))
     }
 
-    fn emit(&self, app: &AppHandle) {
+    pub fn emit(&self, app: &AppHandle) {
         let _ = app.emit(EVENT_CHANGED, self.state());
     }
 }
@@ -673,8 +883,9 @@ mod tests {
 
     fn manager() -> (ThemeManager, PathBuf) {
         let dir = std::env::temp_dir().join(format!("tyba-theme-test-{}", uuid::Uuid::new_v4()));
-        let store = Arc::new(Store::open_in_memory().unwrap());
-        (ThemeManager::new(store, dir.clone()), dir)
+        let store = crate::session::store::Store::open_in_memory().unwrap();
+        let config = Arc::new(crate::config::ConfigManager::open(dir.join("cfg"), &store));
+        (ThemeManager::new(config, dir.clone()), dir)
     }
 
     #[test]
@@ -723,7 +934,7 @@ mod tests {
     }
 
     #[test]
-    fn scan_skips_files_shadowing_scheme_ids() {
+    fn file_shadowing_a_scheme_id_gets_a_suffix() {
         let (mgr, dir) = manager();
         fs::write(dir.join("dracula.json"), VALID).unwrap();
 
@@ -731,17 +942,176 @@ mod tests {
         let draculas: Vec<_> = themes.iter().filter(|t| t.id == "dracula").collect();
         assert_eq!(draculas.len(), 1);
         assert!(draculas[0].builtin);
+        let mine = themes.iter().find(|t| t.id == "dracula-2").unwrap();
+        assert!(!mine.builtin);
         let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
-    fn import_rejects_classic_scheme_slug() {
+    fn hand_placed_file_with_invalid_id_is_normalized() {
+        let (mgr, dir) = manager();
+        fs::write(
+            dir.join("Meu Tema.json"),
+            r#"{ "name": "Meu Tema", "base": "dark" }"#,
+        )
+        .unwrap();
+        fs::write(
+            dir.join("meu-tema.json"),
+            r#"{ "name": "Outro", "base": "dark" }"#,
+        )
+        .unwrap();
+
+        let ids: Vec<_> = mgr.scan().into_iter().map(|t| (t.id, t.name)).collect();
+        assert!(
+            ids.contains(&("meu-tema".into(), "Outro".into())),
+            "{ids:?}"
+        );
+        assert!(
+            ids.contains(&("meu-tema-2".into(), "Meu Tema".into())),
+            "{ids:?}"
+        );
+        // o id normalizado é o que o config.toml aceita e o slot encontra
+        mgr.config.set(KEY_THEME_DARK, "meu-tema-2").unwrap();
+        assert_eq!(mgr.state().dark.name, "Meu Tema");
+        // e o arquivo passou a se chamar pelo id, sem tocar no outro
+        assert!(!dir.join("Meu Tema.json").exists());
+        assert!(fs::read_to_string(dir.join("meu-tema-2.json"))
+            .unwrap()
+            .contains("Meu Tema"));
+        assert!(fs::read_to_string(dir.join("meu-tema.json"))
+            .unwrap()
+            .contains("Outro"));
+        let warnings = mgr.rename_warnings();
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("Meu Tema.json") && warnings[0].contains("meu-tema-2.json"));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn renamed_hand_placed_theme_keeps_its_id_when_another_file_arrives() {
+        let (mgr, dir) = manager();
+        fs::write(
+            dir.join("Meu Tema.json"),
+            r#"{ "name": "Meu Tema", "base": "dark" }"#,
+        )
+        .unwrap();
+        mgr.config.set(KEY_THEME_DARK, "meu-tema").unwrap();
+        assert_eq!(mgr.state().dark.name, "Meu Tema");
+        assert!(dir.join("meu-tema.json").is_file());
+
+        // chega, à mão, outro arquivo com o mesmo nome de antes
+        fs::write(
+            dir.join("Meu Tema.json"),
+            r#"{ "name": "Outro", "base": "dark" }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            mgr.state().dark.name,
+            "Meu Tema",
+            "o slot não troca de tema"
+        );
+        assert!(dir.join("meu-tema-2.json").is_file());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn invalid_hand_placed_file_is_not_renamed() {
+        let (mgr, dir) = manager();
+        fs::write(dir.join("Quebrado.json"), "{ nope").unwrap();
+        mgr.scan();
+        assert!(dir.join("Quebrado.json").is_file());
+        assert!(mgr.rename_warnings().is_empty());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn rename_never_replaces_an_existing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a.json");
+        let b = dir.path().join("b.json");
+        fs::write(&a, "a").unwrap();
+        fs::write(&b, "b").unwrap();
+        assert!(rename_no_replace(&a, &b).is_err());
+        assert_eq!(fs::read_to_string(&a).unwrap(), "a");
+        assert_eq!(fs::read_to_string(&b).unwrap(), "b");
+        let c = dir.path().join("c.json");
+        rename_no_replace(&a, &c).unwrap();
+        assert!(!a.exists() && fs::read_to_string(&c).unwrap() == "a");
+    }
+
+    #[test]
+    fn case_only_difference_is_renamed_too() {
+        let (mgr, dir) = manager();
+        fs::write(
+            dir.join("Solar.json"),
+            r#"{ "name": "Solar", "base": "dark" }"#,
+        )
+        .unwrap();
+        let ids: Vec<_> = mgr.scan().into_iter().map(|t| t.id).collect();
+        assert_eq!(ids, vec!["solar".to_string()]);
+        let names: Vec<String> = fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.ends_with(".json"))
+            .collect();
+        assert_eq!(names, vec!["solar.json".to_string()]);
+        assert_eq!(mgr.rename_warnings().len(), 1);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn unannounced_renames_are_handed_out_once() {
+        let (mgr, dir) = manager();
+        fs::write(dir.join("X Y.json"), r#"{ "name": "X Y", "base": "dark" }"#).unwrap();
+        mgr.scan();
+        assert_eq!(mgr.take_unannounced_renames().len(), 1);
+        assert!(mgr.take_unannounced_renames().is_empty());
+        assert_eq!(mgr.rename_warnings().len(), 1);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn free_id_appends_the_first_free_suffix() {
+        let taken = ["nord", "nord-2"];
+        assert_eq!(free_id("nord", |id| taken.contains(&id)), "nord-3");
+        assert_eq!(free_id("dracula", |_| false), "dracula");
+        // livre, a base de até 64 volta inteira
+        let long = "a".repeat(64);
+        assert_eq!(free_id(&long, |_| false), long);
+        // ocupada, encurta para caber o sufixo
+        let id = free_id(&long, |id| id == long);
+        assert_eq!(id, format!("{}-2", "a".repeat(60)));
+        assert!(crate::config::schema::is_theme_id(&id));
+    }
+
+    #[test]
+    fn import_of_a_different_theme_with_the_same_slug_gets_a_suffix() {
+        let (mgr, dir) = manager();
+        fs::write(
+            dir.join("nord.json"),
+            r#"{ "name": "Nord", "base": "dark" }"#,
+        )
+        .unwrap();
+        let src = temp_source("nord-other");
+        fs::write(&src, r#"{ "name": "NORD!", "base": "dark" }"#).unwrap();
+
+        let (id, _) = mgr.import_validated(src.to_str().unwrap()).unwrap();
+        assert_eq!(id, "nord-2");
+        assert!(dir.join("nord.json").is_file() && dir.join("nord-2.json").is_file());
+
+        let _ = fs::remove_file(&src);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn import_colliding_with_a_classic_scheme_gets_a_suffix() {
         let (mgr, dir) = manager();
         let src = temp_source("scheme-slug");
         fs::write(&src, r#"{ "name": "Dracula", "base": "dark" }"#).unwrap();
 
-        let err = mgr.import_validated(src.to_str().unwrap()).unwrap_err();
-        assert!(matches!(err, ThemeError::ReservedName(id) if id == "dracula"));
+        let (id, _) = mgr.import_validated(src.to_str().unwrap()).unwrap();
+        assert_eq!(id, "dracula-2");
 
         let _ = fs::remove_file(&src);
         let _ = fs::remove_dir_all(dir);
@@ -750,9 +1120,7 @@ mod tests {
     #[test]
     fn state_falls_back_to_builtins_when_slot_is_stale() {
         let (mgr, dir) = manager();
-        mgr.store
-            .set_setting("theme.slot.dark", "deleted-theme")
-            .unwrap();
+        mgr.config.set(KEY_THEME_DARK, "deleted-theme").unwrap();
         let state = mgr.state();
         assert_eq!(state.mode, ThemeMode::Dark);
         assert_eq!(state.dark.id, BUILTIN_DARK);
@@ -764,11 +1132,28 @@ mod tests {
     fn slot_ignores_theme_with_wrong_base() {
         let (mgr, dir) = manager();
         fs::write(dir.join("dracula.json"), VALID).unwrap();
-        mgr.store
-            .set_setting("theme.slot.light", "dracula")
-            .unwrap();
+        mgr.config.set(KEY_THEME_LIGHT, "dracula").unwrap();
         let state = mgr.state();
         assert_eq!(state.light.id, BUILTIN_LIGHT);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn slot_warnings_name_missing_or_wrong_base_themes() {
+        let (mgr, dir) = manager();
+        assert!(mgr.slot_warnings().is_empty(), "{:?}", mgr.slot_warnings());
+        mgr.config.set(KEY_THEME_DARK, "deleted-theme").unwrap();
+        mgr.config.set(KEY_THEME_LIGHT, "dracula").unwrap();
+        assert_eq!(
+            mgr.slot_warnings(),
+            vec![
+                "theme.dark: tema \"deleted-theme\" não encontrado (ou não é escuro); usando o padrão.".to_string(),
+                "theme.light: tema \"dracula\" não encontrado (ou não é claro); usando o padrão.".to_string(),
+            ]
+        );
+        mgr.config.set(KEY_THEME_DARK, "dracula").unwrap();
+        mgr.config.set(KEY_THEME_LIGHT, "solarized-light").unwrap();
+        assert!(mgr.slot_warnings().is_empty(), "{:?}", mgr.slot_warnings());
         let _ = fs::remove_dir_all(dir);
     }
 
@@ -781,13 +1166,13 @@ mod tests {
     }
 
     #[test]
-    fn import_rejects_reserved_name() {
+    fn import_colliding_with_a_builtin_gets_a_suffix() {
         let (mgr, dir) = manager();
         let src = temp_source("reserved");
         fs::write(&src, r#"{ "name": "TYBA Dark", "base": "dark" }"#).unwrap();
 
-        let err = mgr.import_validated(src.to_str().unwrap()).unwrap_err();
-        assert!(matches!(err, ThemeError::ReservedName(id) if id == BUILTIN_DARK));
+        let (id, _) = mgr.import_validated(src.to_str().unwrap()).unwrap();
+        assert_eq!(id, format!("{BUILTIN_DARK}-2"));
 
         let _ = fs::remove_file(&src);
         let _ = fs::remove_dir_all(dir);
@@ -859,6 +1244,15 @@ mod tests {
         assert_eq!(id, "nord");
         assert_eq!(file.name, "Nord");
         assert!(dir.join("nord.json").is_file());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(dir.join("nord.json"))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
 
         let ids: Vec<_> = mgr.list().into_iter().map(|t| t.id).collect();
         assert!(ids.contains(&"nord".to_string()));
@@ -868,21 +1262,25 @@ mod tests {
     }
 
     #[test]
-    fn import_overwrites_existing_file_with_same_slug() {
+    fn reimport_of_the_same_theme_gets_a_suffix_and_keeps_the_first() {
         let (mgr, dir) = manager();
         let src = temp_source("nord-variant");
+        fs::write(&src, r#"{ "name": "Nord", "base": "dark" }"#).unwrap();
+        let (id, _) = mgr.import_validated(src.to_str().unwrap()).unwrap();
+        assert_eq!(id, "nord");
+        let first = fs::read_to_string(dir.join("nord.json")).unwrap();
+
         fs::write(
             &src,
             r##"{ "name": "Nord", "base": "dark", "ui": { "bg": "#000000" } }"##,
         )
         .unwrap();
-
-        mgr.import_validated(src.to_str().unwrap()).unwrap();
-        let on_disk = fs::read_to_string(dir.join("nord.json")).unwrap();
-        assert!(on_disk.contains("#000000"));
-
-        let ids: Vec<_> = mgr.list().into_iter().map(|t| t.id).collect();
-        assert_eq!(ids.iter().filter(|id| id.as_str() == "nord").count(), 1);
+        let (id, _) = mgr.import_validated(src.to_str().unwrap()).unwrap();
+        assert_eq!(id, "nord-2");
+        assert_eq!(fs::read_to_string(dir.join("nord.json")).unwrap(), first);
+        assert!(fs::read_to_string(dir.join("nord-2.json"))
+            .unwrap()
+            .contains("#000000"));
 
         let _ = fs::remove_file(&src);
         let _ = fs::remove_dir_all(dir);

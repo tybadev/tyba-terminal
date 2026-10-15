@@ -1,0 +1,218 @@
+//! Edição na mão do `config.toml`, aplicada ao vivo.
+//!
+//! Editor salva de muitos jeitos — escrita direta, temp + rename, várias
+//! escritas seguidas —, e cada um vira uma rajada de eventos. O [`Coalescer`]
+//! junta a rajada e só dispara depois de um silêncio: um reload por salvamento,
+//! nunca um por evento. É lógica pura, com o relógio injetado, para ser testada
+//! sem disco.
+
+use std::path::{Path, PathBuf};
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
+
+use notify::{RecursiveMode, Watcher};
+
+pub const QUIET: Duration = Duration::from_millis(250);
+
+#[derive(Debug)]
+pub struct Coalescer {
+    quiet: Duration,
+    deadline: Option<Instant>,
+}
+
+impl Coalescer {
+    pub fn new(quiet: Duration) -> Self {
+        Self {
+            quiet,
+            deadline: None,
+        }
+    }
+
+    /// Chegou evento: o disparo vai para `quiet` depois deste instante.
+    pub fn touch(&mut self, now: Instant) {
+        self.deadline = Some(now + self.quiet);
+    }
+
+    /// Quanto esperar até o próximo disparo; `None` quando não há nada pendente.
+    pub fn wait(&self, now: Instant) -> Option<Duration> {
+        self.deadline.map(|d| d.saturating_duration_since(now))
+    }
+
+    /// Dispara (uma vez) se o silêncio já durou o bastante.
+    pub fn fire(&mut self, now: Instant) -> bool {
+        match self.deadline {
+            Some(d) if d <= now => {
+                self.deadline = None;
+                true
+            }
+            _ => false,
+        }
+    }
+}
+
+/// O evento mexeu no arquivo vigiado? A pasta tem outros arquivos (temas, o
+/// temp da própria gravação), e eles não pedem reload.
+pub fn touches(paths: &[PathBuf], names: &[String]) -> bool {
+    paths.iter().any(|p| {
+        p.file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| names.iter().any(|want| want == n))
+    })
+}
+
+/// Vigia `root` e chama `on_change` uma vez por rajada que tocou `file_name`.
+/// A thread é dona do watcher; ela e ele vivem enquanto o app vive.
+pub fn spawn(files: Vec<PathBuf>, on_change: impl Fn() + Send + 'static) {
+    let names: Vec<String> = files
+        .iter()
+        .filter_map(|f| f.file_name()?.to_str().map(str::to_owned))
+        .collect();
+    let (tx, rx) = mpsc::channel::<()>();
+    let watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+        if let Ok(event) = res {
+            if touches(&event.paths, &names) {
+                let _ = tx.send(());
+            }
+        }
+    });
+    let mut watcher = match watcher {
+        Ok(w) => w,
+        Err(e) => {
+            eprintln!("[tyba] config: watcher indisponível: {e}");
+            return;
+        }
+    };
+    // Vigia a pasta, não o arquivo: salvar por rename troca o inode, e um
+    // watch no arquivo morreria no primeiro salvamento. Com `config.toml`
+    // ligado a um repositório de dotfiles, a pasta do alvo entra também — é
+    // lá que o editor salva.
+    let mut dirs: Vec<&Path> = files.iter().filter_map(|f| f.parent()).collect();
+    dirs.dedup();
+    for dir in dirs {
+        if let Err(e) = watcher.watch(dir, RecursiveMode::NonRecursive) {
+            eprintln!("[tyba] config: não deu para vigiar {}: {e}", dir.display());
+        }
+    }
+    let _ = std::thread::Builder::new()
+        .name("config-watch".into())
+        .spawn(move || {
+            let _watcher = watcher;
+            let mut c = Coalescer::new(QUIET);
+            loop {
+                let got = match c.wait(Instant::now()) {
+                    None => rx.recv().map_err(|_| mpsc::RecvTimeoutError::Disconnected),
+                    Some(d) => rx.recv_timeout(d),
+                };
+                match got {
+                    Ok(()) => c.touch(Instant::now()),
+                    Err(mpsc::RecvTimeoutError::Timeout) => {}
+                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                }
+                if c.fire(Instant::now()) {
+                    on_change();
+                }
+            }
+        });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const Q: Duration = Duration::from_millis(100);
+
+    #[test]
+    fn idle_coalescer_waits_forever_and_never_fires() {
+        let mut c = Coalescer::new(Q);
+        let t0 = Instant::now();
+        assert_eq!(c.wait(t0), None);
+        assert!(!c.fire(t0 + Duration::from_secs(10)));
+    }
+
+    #[test]
+    fn a_burst_fires_once_after_the_last_event() {
+        let mut c = Coalescer::new(Q);
+        let t0 = Instant::now();
+        let ms = Duration::from_millis;
+        c.touch(t0);
+        c.touch(t0 + ms(30));
+        c.touch(t0 + ms(60));
+        assert!(
+            !c.fire(t0 + ms(100)),
+            "conta do último evento, não do primeiro"
+        );
+        assert_eq!(c.wait(t0 + ms(100)), Some(ms(60)));
+        assert!(c.fire(t0 + ms(160)));
+        assert!(!c.fire(t0 + ms(500)), "um disparo por rajada");
+        assert_eq!(c.wait(t0 + ms(500)), None);
+    }
+
+    #[test]
+    fn overdue_wait_is_zero() {
+        let mut c = Coalescer::new(Q);
+        let t0 = Instant::now();
+        c.touch(t0);
+        assert_eq!(c.wait(t0 + Duration::from_secs(1)), Some(Duration::ZERO));
+    }
+
+    #[test]
+    fn two_separate_saves_fire_twice() {
+        let mut c = Coalescer::new(Q);
+        let t0 = Instant::now();
+        c.touch(t0);
+        assert!(c.fire(t0 + Q));
+        c.touch(t0 + Duration::from_secs(1));
+        assert!(c.fire(t0 + Duration::from_secs(1) + Q));
+    }
+
+    /// O watcher de verdade, em pasta temporária: uma rajada de escritas e um
+    /// salvamento por rename viram um disparo cada; arquivo vizinho, nenhum.
+    #[test]
+    fn real_watcher_fires_once_per_save() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let hits = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&hits);
+        spawn(vec![root.join("config.toml")], move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+        });
+        std::thread::sleep(Duration::from_millis(300));
+        let wait_for = |n: usize| {
+            let t0 = Instant::now();
+            while hits.load(Ordering::SeqCst) < n && t0.elapsed() < Duration::from_secs(5) {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            std::thread::sleep(QUIET * 3);
+            hits.load(Ordering::SeqCst)
+        };
+        for i in 0..5 {
+            std::fs::write(root.join("config.toml"), format!("a = {i}\n")).unwrap();
+        }
+        assert_eq!(wait_for(1), 1);
+        std::fs::write(root.join("tmp"), "a = 9\n").unwrap();
+        std::fs::rename(root.join("tmp"), root.join("config.toml")).unwrap();
+        assert_eq!(wait_for(2), 2);
+        std::fs::write(root.join("outro.json"), "{}").unwrap();
+        std::thread::sleep(Duration::from_secs(1));
+        assert_eq!(hits.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn only_the_watched_files_count() {
+        let root = PathBuf::from("/h/.tyba");
+        let names = vec!["config.toml".to_string()];
+        assert!(touches(&[root.join("config.toml")], &names));
+        assert!(touches(
+            &[root.join(".tyba-x.tmp"), root.join("config.toml")],
+            &names
+        ));
+        assert!(!touches(&[root.join(".tyba-x.tmp")], &names));
+        assert!(!touches(&[root.join("themes/nord.json")], &names));
+        assert!(!touches(&[], &names));
+        // dotfiles: o alvo do link tem outro nome, e conta também
+        let both = vec!["config.toml".to_string(), "tyba.toml".to_string()];
+        assert!(touches(&[PathBuf::from("/h/dotfiles/tyba.toml")], &both));
+    }
+}

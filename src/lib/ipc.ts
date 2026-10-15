@@ -2398,6 +2398,21 @@ export const setThemeSlot = (base: ThemeBase, id: string) =>
 export const importThemeCmd = (path: string) =>
   invoke<Theme>("import_theme", { path });
 
+/** Avisos vigentes do `~/.tyba/config.toml` (segunda via do evento). */
+export const configWarnings = () => invoke<string[]>("config_warnings");
+
+/** O core aplicou o `config.toml` e as prefs que moram nele mudaram. */
+export const onConfigPrefs = (
+  handler: (prefs: Record<string, string>) => void,
+): Promise<UnlistenFn> =>
+  listen<Record<string, string>>("config://prefs", (e) => handler(e.payload));
+
+/** Avisos do `config.toml`, em pt-BR, prontos para o toast. */
+export const onConfigWarnings = (
+  handler: (warnings: string[]) => void,
+): Promise<UnlistenFn> =>
+  listen<string[]>("config://warnings", (e) => handler(e.payload));
+
 export const onThemeChanged = (
   handler: (state: ThemeState) => void,
 ): Promise<UnlistenFn> =>

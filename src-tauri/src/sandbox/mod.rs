@@ -28,6 +28,24 @@ pub(crate) const TOOLCHAIN_HOME_DIRS: [&str; 4] = [".cargo", ".npm", ".bun", ".r
 /// área gravável.
 pub(crate) const PROTECTED_BRANCHES: [&str; 2] = ["main", "master"];
 
+/// Alvo real do `config.toml` de cada perfil quando ele é symlink de dotfiles
+/// (`~/.tyba/config.toml -> ~/dotfiles/tyba.toml`). O arquivo carrega o
+/// `[sandbox] read_allow`, então nenhum agente escreve nele — e a jaula casa o
+/// caminho resolvido, não o link: o alvo entra na regra também.
+pub(crate) fn config_link_targets(home: &std::path::Path) -> Vec<std::path::PathBuf> {
+    [
+        crate::profile::RELEASE_HOME_DIR,
+        crate::profile::DEV_HOME_DIR,
+    ]
+    .iter()
+    .filter_map(|dir| {
+        let link = home.join(dir).join("config.toml");
+        let target = std::fs::canonicalize(&link).ok()?;
+        (target != link).then_some(target)
+    })
+    .collect()
+}
+
 #[derive(Clone)]
 pub struct SandboxSpec {
     pub writable_root: PathBuf,
