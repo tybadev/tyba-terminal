@@ -1514,6 +1514,10 @@ const resources = {
       searchPlaceholder: "Buscar",
       searchNoResults: "Sem resultados",
       copyThemeExample: "Copiar exemplo",
+      appIconSection: "Ícone do app",
+      appIconHintMac:
+        "Muda o ícone do Dock enquanto o Tyba está aberto. Com o app fechado, no Finder e em Aplicações, continua o original, por enquanto.",
+      appIconHint: "Muda o ícone das janelas do Tyba.",
       themeImportHint:
         "Arquivo .json com name, base (dark|light), ui e terminal (16 cores ansi). Copie o exemplo, edite as cores e importe.",
       sessionEnded: "[sessão encerrada]",
@@ -3480,6 +3484,10 @@ const resources = {
       searchPlaceholder: "Search",
       searchNoResults: "No results",
       copyThemeExample: "Copy example",
+      appIconSection: "App icon",
+      appIconHintMac:
+        "Changes the Dock icon while Tyba is open. When the app is closed, and in Finder and Applications, the original stays, for now.",
+      appIconHint: "Changes the icon of Tyba's windows.",
       themeImportHint:
         "A .json file with name, base (dark|light), ui and terminal (16 ansi colors). Copy the example, tweak the colors and import.",
       sessionEnded: "[session ended]",

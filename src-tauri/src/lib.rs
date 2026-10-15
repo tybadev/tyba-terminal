@@ -1,4 +1,5 @@
 pub mod agent;
+pub mod app_icon;
 pub mod approvals;
 pub mod blocks;
 pub mod boot;
@@ -5157,8 +5158,40 @@ fn new_window(app: AppHandle) -> Result<(), String> {
         .hidden_title(true);
     #[cfg(not(target_os = "macos"))]
     let builder = builder.decorations(false);
+    #[cfg(target_os = "macos")]
     builder.build().map_err(|e| e.to_string())?;
+    // Fora do macOS o ícone mora em cada janela: a nova nasce com o do bundle.
+    #[cfg(not(target_os = "macos"))]
+    {
+        let window = builder.build().map_err(|e| e.to_string())?;
+        let icon = app_icon::current(&app.state::<AppState>().config);
+        app_icon::apply_to_window(&window, icon);
+    }
     Ok(())
+}
+
+/// O id do ícone do app em vigor (Configurações → Aparência).
+#[tauri::command]
+fn get_app_icon(state: State<'_, AppState>) -> &'static str {
+    state.config.app_icon()
+}
+
+/// Troca o ícone do app: só um id da lista embutida, nunca um caminho. Grava
+/// no `config.toml`; quem aplica é o ouvinte do `config::EVENT_APP_ICON`
+/// ([`app_icon::follow_config`]), o mesmo da edição na mão.
+#[tauri::command]
+fn set_app_icon(app: AppHandle, state: State<'_, AppState>, id: String) -> Result<(), String> {
+    let icon = app_icon::AppIcon::from_id(&id).ok_or("ícone desconhecido")?;
+    match state.config.set_app_icon(icon.id()) {
+        Ok(changes) => {
+            emit_config_changes(&app, &state.config, &state.themes, changes);
+            Ok(())
+        }
+        Err(e) => {
+            let _ = app.emit(config::EVENT_WARNINGS, vec![e.clone()]);
+            Err(e)
+        }
+    }
 }
 
 #[tauri::command]
@@ -9045,6 +9078,10 @@ pub fn run() {
                 });
             }
 
+            // O ícone do Dock trocado em tempo de execução morre com o processo:
+            // a escolha salva volta a cada abertura (no `RunEvent::Ready`).
+            app_icon::follow_config(app.handle(), Arc::clone(&app.state::<AppState>().config));
+
             // Único passo caro que fica: montar o NSMenu é operação de main
             // thread, não há para onde mover.
             let span = boot::Span::start("menu.install");
@@ -9066,6 +9103,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             boot_snapshot,
+            get_app_icon,
+            set_app_icon,
             config_warnings,
             boot_gate,
             agent_binary_available,
@@ -9352,6 +9391,11 @@ pub fn run() {
                 if let Some(window) = app_handle.get_webview_window("main") {
                     let _ = window.show();
                     let _ = window.set_focus();
+                }
+            }
+            if matches!(event, tauri::RunEvent::Ready) {
+                if let Some(state) = app_handle.try_state::<AppState>() {
+                    app_icon::apply_at_startup(app_handle, &state.config);
                 }
             }
             if matches!(event, tauri::RunEvent::Exit) {

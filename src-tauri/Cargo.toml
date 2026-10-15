@@ -10,7 +10,7 @@ edition = "2021"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["image-png"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-window-state = "2"
 tauri-plugin-clipboard-manager = "2"
@@ -44,6 +44,14 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 rustix = { version = "1", features = ["fs"] }
+
+# Ícone do Dock em tempo de execução (`app_icon`). Já vêm do tao; aqui só as
+# features que o `NSApplication.applicationIconImage` e o selo do `NSDockTile`
+# pedem.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSData", "NSString"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSResponder", "NSImage", "NSDockTile"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 seccompiler = "0.5"

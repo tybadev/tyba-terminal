@@ -2422,6 +2422,14 @@ export const onThemeChanged = (
 ): Promise<UnlistenFn> =>
   listen<ThemeState>("theme://changed", (e) => handler(e.payload));
 
+/** Id do ícone do app em vigor; a lista mora em `./appIcon`. */
+export const getAppIcon = () => invoke<string>("get_app_icon");
+export const setAppIcon = (id: string) => invoke<void>("set_app_icon", { id });
+export const onAppIconChanged = (
+  handler: (id: string) => void,
+): Promise<UnlistenFn> =>
+  listen<string>("config://app-icon", (e) => handler(e.payload));
+
 export const setAppMenu = (spec: MenuSpec) =>
   invoke<void>("set_app_menu", { spec });
 
