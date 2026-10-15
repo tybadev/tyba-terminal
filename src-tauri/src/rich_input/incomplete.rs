@@ -530,6 +530,13 @@ mod tests {
     }
 
     #[test]
+    fn barra_antes_da_quebra_cola_a_palavra() {
+        // `do\` + quebra vira `doecho`: o `for` fica sem `do` e o zsh espera.
+        incomplete("for i in 1 2; do\\\necho \"$i\"\\\ndone");
+        complete("for i in 1 2; do\necho \"$i\"\ndone");
+    }
+
+    #[test]
     fn barra_no_fim() {
         incomplete("ls \\");
         incomplete("ls \\\n");

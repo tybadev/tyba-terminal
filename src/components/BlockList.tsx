@@ -219,6 +219,7 @@ const BlockHeader = memo(function BlockHeader({
 }) {
   const { t, i18n } = useTranslation();
   const broke = failed(block.exitCode);
+  const multiline = !pinned && block.command.includes("\n");
   const took = formatDuration(
     block.finishedAtMs - block.startedAtMs,
     i18n.language,
@@ -230,9 +231,11 @@ const BlockHeader = memo(function BlockHeader({
       // rola. Só as ações reativam — senão as do bloco do topo, que é o header
       // que ele cobre, ficariam inalcançáveis.
       // Mockup Proposta: `padding: 10px 18px`, comando em 13px.
-      className={`group flex h-9 items-start gap-2 px-[18px] pt-2.5 ${
-        pinned ? "pointer-events-none" : ""
-      }`}
+      // Comando multilinha cresce o cabeçalho (a saída vem depois dele, não
+      // por cima); o preso no topo segue numa linha só.
+      className={`group flex items-start gap-2 px-[18px] pt-2.5 ${
+        multiline ? "min-h-9 pb-1.5" : "h-9"
+      } ${pinned ? "pointer-events-none" : ""}`}
     >
       <span
         className={`shrink-0 font-mono text-[13px] leading-5 ${
@@ -241,7 +244,13 @@ const BlockHeader = memo(function BlockHeader({
       >
         ❯
       </span>
-      <span className="min-w-0 flex-1 truncate font-mono text-[13px] leading-5 text-tyba-text">
+      {/* Comando multilinha mostra as linhas como foram digitadas (`for…do`,
+          `\`); uma linha só continua cortando com reticências. */}
+      <span
+        className={`min-w-0 flex-1 font-mono text-[13px] leading-5 text-tyba-text ${
+          multiline ? "whitespace-pre-wrap break-words" : "truncate"
+        }`}
+      >
         {block.command}
       </span>
       <BlockActions block={block} onInject={onInject} visible={marked} />
@@ -317,7 +326,9 @@ const BODY_INSET_X_PX = 36;
  * terminal, e sem ela a marcação sumiria. A divisa (`--tyba-divider-b`) entra
  * na lista porque o `style` substitui a sombra que a classe dava.
  */
-const MARKED_SHADOW = "var(--tyba-edge), inset 0 -1px 0 0 var(--tyba-border-soft)";
+// Divisória entre blocos: a linha de campo (0,12), mais marcada que a
+// suave — com a suave os blocos pareciam um texto só (dono, 2026-10-14).
+const MARKED_SHADOW = "var(--tyba-edge), inset 0 -1px 0 0 var(--tyba-border-field)";
 
 
 const BlockCard = memo(function BlockCard({
@@ -389,7 +400,7 @@ const BlockCard = memo(function BlockCard({
       className={`group pb-2.5 focus-within:bg-tyba-violet/[.07] dark:focus-within:bg-tyba-surface ${
         marked
           ? "bg-tyba-violet/[.07] dark:bg-tyba-surface"
-          : "shadow-[inset_0_-1px_0_0_var(--tyba-border-soft)]"
+          : "shadow-[inset_0_-1px_0_0_var(--tyba-border-field)]"
       }`}
     >
       <BlockHeader block={block} onInject={onInject} marked={marked} />
