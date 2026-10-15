@@ -8353,6 +8353,9 @@ pub fn run() {
         .setup(|app| {
             let setup_span = boot::Span::start("setup.total");
             app.manage(splash::SplashLatch::default());
+            // `docker logs -f` órfãos de uma execução que não saiu direito
+            // (crash, kill, reinício do dev): sem isto se acumulavam.
+            std::thread::spawn(docker::logs::reap_orphan_followers);
             splash::arm_ceiling(app.handle().clone());
             let (opened_store, store_degraded) = open_store(app.handle());
             let store = Arc::new(opened_store);
