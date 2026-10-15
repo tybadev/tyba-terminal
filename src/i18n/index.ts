@@ -707,14 +707,14 @@ const resources = {
       sshRemoteAgentNotice:
         "{{binary}} está rodando no servidor — sem jaula e sem inbox de aprovações.",
       shimV2IntroToast:
-        "Agora o TYBA dá jaula + gate quando você roda claude. Para rodar sem, use command claude.",
+        "Agora o TYBA acompanha o claude que você roda aqui — monitor, histórico e notificação —, sem jaula e sem perguntar nada. O guarda-corpo recusa push na main e merge de PR.",
       agentResumeNotice:
         "A conversa deste agente continua no disco. Retomar sobe o {{binary}} com o histórico dela.",
       agentResume: "Retomar conversa",
       agentResumeIgnore: "Agora não",
       agentResumeFailed: "Não deu pra retomar a conversa",
       shellResumeNotice:
-        "A conversa do Claude que rodava aqui continua no disco. Retomar roda claude --resume neste terminal, com gate.",
+        "A conversa do Claude que rodava aqui continua no disco. Retomar roda claude --resume neste terminal, e o TYBA segue acompanhando.",
       "error.agent.reopen_not_detected":
         "Nenhum agente detectado nesta sessão.",
       "error.agent.reopen_no_cwd":
@@ -2802,14 +2802,14 @@ const resources = {
       sshRemoteAgentNotice:
         "{{binary}} is running on the server — no jail, no approval inbox.",
       shimV2IntroToast:
-        "TYBA now jails + gates when you run claude. To run without it, use command claude.",
+        "TYBA now follows the claude you run here — monitor, history and notifications — with no jail and no prompts. The guard rail refuses pushes to main and PR merges.",
       agentResumeNotice:
         "This agent's conversation is still on disk. Resuming starts {{binary}} with its history.",
       agentResume: "Resume conversation",
       agentResumeIgnore: "Not now",
       agentResumeFailed: "Could not resume the conversation",
       shellResumeNotice:
-        "The Claude conversation that ran here is still on disk. Resuming runs claude --resume in this terminal, gated.",
+        "The Claude conversation that ran here is still on disk. Resuming runs claude --resume in this terminal, and TYBA keeps following it.",
       "error.agent.reopen_not_detected": "No agent detected in this session.",
       "error.agent.reopen_no_cwd": "Could not resolve the agent's folder.",
       "error.agent.reopen_not_git":

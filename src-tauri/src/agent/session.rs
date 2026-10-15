@@ -1367,10 +1367,16 @@ const LAUNCH_PLAN_FILE: &str = "launch.json";
 
 /// O que o TYBA tira do env do shell do pane antes de subir o claude
 /// digitado — só o que desligaria os hooks dele (`CLAUDE_CODE_SIMPLE` é o
-/// modo `--bare`, que pula hooks, e por isso a flag já é recusada) ou
-/// mentiria sobre a rota (`TYBA_SHIM` marca claude cru, "sem gate").
+/// modo `--bare` e `CLAUDE_CODE_SAFE_MODE` é o `--safe-mode`: os dois pulam
+/// os hooks do `--settings`, e com eles o guarda-corpo; por isso as flags já
+/// são recusadas) ou mentiria sobre a rota (`TYBA_SHIM` marca claude cru,
+/// "sem gate").
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-const HOSTED_ENV_REMOVE: &[&str] = &["CLAUDE_CODE_SIMPLE", crate::hook_ipc::channel::SHIM_ENV];
+const HOSTED_ENV_REMOVE: &[&str] = &[
+    "CLAUDE_CODE_SIMPLE",
+    "CLAUDE_CODE_SAFE_MODE",
+    crate::hook_ipc::channel::SHIM_ENV,
+];
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 struct HostedCommand {
@@ -2243,6 +2249,7 @@ mod build_hosted_command_tests {
             ("TYBA_TEST_PANE_VAR", "1"),
             ("TERM", "xterm-kitty"),
             ("CLAUDE_CODE_SIMPLE", "1"),
+            ("CLAUDE_CODE_SAFE_MODE", "1"),
             ("TYBA_SHIM", "fallback"),
         ]
         .iter()
@@ -2258,7 +2265,7 @@ mod build_hosted_command_tests {
         ] {
             assert!(has(k), "{k} faltou: {child:?}");
         }
-        for k in ["CLAUDE_CODE_SIMPLE", "TYBA_SHIM"] {
+        for k in ["CLAUDE_CODE_SIMPLE", "CLAUDE_CODE_SAFE_MODE", "TYBA_SHIM"] {
             assert!(
                 !has(k),
                 "{k} desligaria os hooks ou mentiria a rota: {child:?}"

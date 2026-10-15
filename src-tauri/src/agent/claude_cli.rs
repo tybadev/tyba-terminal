@@ -84,6 +84,23 @@ pub fn route(args: &[String]) -> ClaudeRoute {
     ClaudeRoute::Host
 }
 
+/// Os args de um `claude` aberto de DENTRO do claude hospedado (o Bash dele,
+/// um script, `claude -p`): sessão de agente ganha o `--settings` só com o
+/// guarda-corpo (`settings`, ver `hooks_settings::guard_only_settings`). O
+/// resto segue intacto, como antes: `Passthrough` não abre sessão;
+/// `Ungated` roda fora do processo; e `Forbidden` (`--bare`, `--safe-mode`,
+/// `--settings`, `--setting-sources`) desligaria ou trocaria esses hooks de
+/// qualquer jeito — limite conhecido: o aninhado com essas flags roda sem
+/// guarda-corpo.
+pub fn nested_args(args: &[String], settings: &str) -> Vec<String> {
+    if route(args) != ClaudeRoute::Host {
+        return args.to_vec();
+    }
+    let mut out = vec!["--settings".to_string(), settings.to_string()];
+    out.extend_from_slice(args);
+    out
+}
+
 fn flag_name(arg: &str) -> &str {
     arg.split_once('=').map_or(arg, |(name, _)| name)
 }
@@ -190,6 +207,30 @@ mod tests {
         // Só o PRIMEIRO argumento é subcomando; "mcp" no meio do prompt não.
         assert_eq!(route(&args(&["-p", "mcp"])), ClaudeRoute::Host);
         assert_eq!(route(&args(&["explica o --help"])), ClaudeRoute::Host);
+    }
+
+    #[test]
+    fn nested_sessions_get_the_guard_only_settings_and_the_rest_stays_intact() {
+        for form in [&[][..], &["-p", "explica"], &["--continue"]] {
+            let out = nested_args(&args(form), "{\"hooks\":{}}");
+            assert_eq!(
+                out[..2],
+                args(&["--settings", "{\"hooks\":{}}"])[..],
+                "{form:?}"
+            );
+            assert_eq!(out[2..], args(form)[..], "{form:?}");
+        }
+        for form in [
+            &["--version"][..],
+            &["mcp", "list"],
+            &["--bg", "tarefa"],
+            &["--bare", "-p", "x"],
+            &["--settings", "{}"],
+            &["--setting-sources=user"],
+            &["--safe-mode"],
+        ] {
+            assert_eq!(nested_args(&args(form), "{}"), args(form), "{form:?}");
+        }
     }
 
     #[test]

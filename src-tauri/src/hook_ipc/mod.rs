@@ -13,7 +13,7 @@ mod server;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-pub use client::{request, run_client, run_observer_client};
+pub use client::{request, run_client, run_guard_only_client, run_observer_client};
 #[cfg(test)]
 pub(crate) use protocol::hook_event_from_value;
 pub use protocol::ResponseEnvelope;
@@ -54,24 +54,27 @@ pub enum HookAction {
 /// Ver [`client::run_observer_client`].
 pub const OBSERVE_FLAG: &str = "--observe";
 
+/// `tyba _hook --guard-only`: o hook do claude aberto de dentro do claude
+/// hospedado. Só o guarda-corpo, nunca o socket. Ver
+/// [`client::run_guard_only_client`].
+pub const GUARD_ONLY_FLAG: &str = "--guard-only";
+
 pub fn maybe_run_hook_mode() -> Option<i32> {
     let mut args = std::env::args().skip(1);
     if args.next().as_deref() != Some("_hook") {
         return None;
     }
-    let observe = args.next().as_deref() == Some(OBSERVE_FLAG);
-    let socket = std::env::var_os("TYBA_HOOK_SOCKET").map(PathBuf::from);
+    let mode = args.next();
+    let socket = || std::env::var_os("TYBA_HOOK_SOCKET").map(PathBuf::from);
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
-    let code = if observe {
-        run_observer_client(
-            stdin.lock(),
-            stdout.lock(),
-            socket.as_deref(),
-            &crate::agent::claude_plugin::guard_rail_output,
-        )
-    } else {
-        run_client(stdin.lock(), stdout.lock(), socket.as_deref())
+    let guard = &crate::agent::claude_plugin::guard_rail_output;
+    let code = match mode.as_deref() {
+        Some(GUARD_ONLY_FLAG) => run_guard_only_client(stdin.lock(), stdout.lock(), guard),
+        Some(OBSERVE_FLAG) => {
+            run_observer_client(stdin.lock(), stdout.lock(), socket().as_deref(), guard)
+        }
+        _ => run_client(stdin.lock(), stdout.lock(), socket().as_deref()),
     };
     Some(code)
 }

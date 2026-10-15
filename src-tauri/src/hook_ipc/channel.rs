@@ -638,11 +638,23 @@ fn run_jail_client(socket_path: Option<&Path>, args: &[String]) -> i32 {
     use crate::agent::claude_cli::{route, ClaudeRoute};
     use std::os::unix::process::CommandExt;
 
-    // Já dentro de um claude hospedado (o Bash dele chamou `claude`): roda o
-    // binário de verdade direto, herdando a jaula — nunca pede outro hosting,
-    // e nunca entra em loop se o wrapper estiver no PATH do agente.
+    // Já dentro de um claude hospedado (o Bash dele, um script, `claude -p`):
+    // roda o binário de verdade direto — nunca pede outro hosting, e nunca
+    // entra em loop se o wrapper estiver no PATH do agente. Sem jaula para
+    // herdar, a sessão aninhada leva o guarda-corpo num `--settings` próprio
+    // (`_hook --guard-only`, que não fala com o core: o aninhado não mexe no
+    // monitor nem na conversa do pane). Ver `claude_cli::nested_args` para o
+    // que fica de fora.
     if std::env::var("TYBA_HOSTED").as_deref() == Ok("1") {
-        return exec_real(args, None);
+        let args = match std::env::current_exe() {
+            Ok(exe) => {
+                use crate::agent::hooks_settings::{guard_only_hook_command, guard_only_settings};
+                let settings = guard_only_settings(&guard_only_hook_command(&exe));
+                crate::agent::claude_cli::nested_args(args, &settings.to_string())
+            }
+            Err(_) => args.to_vec(),
+        };
+        return exec_real(&args, None);
     }
     match route(args) {
         ClaudeRoute::Forbidden(reason) => {

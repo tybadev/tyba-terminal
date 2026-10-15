@@ -72,13 +72,18 @@ export const ungatedMessageKey = (reason: "ungated" | "fallback" | "raw"): strin
  * `hosting` em polaridades opostas — e nunca sem `hosting`, porque "sem
  * jaula" pressupõe que o gate já está de pé; sem ele o sinal certo é o "sem
  * gate" de sempre.
+ *
+ * Agente livre (fatia 3): o claude digitado roda sem jaula por desenho, então
+ * "sem sandbox" virou o estado normal e o sinal não aparece mais. Desligado
+ * aqui; a fatia de limpeza tira o sinal, `noJailMessageKey` e as chaves
+ * `shellUnjailed*`.
  */
 export const showUnjailedNotice = (
-  kind: SessionKind,
-  detected: DetectedAgent | null | undefined,
-  hosting: boolean,
-  jailed: boolean,
-): boolean => kind.type === "shell" && detected != null && hosting && !jailed;
+  _kind: SessionKind,
+  _detected: DetectedAgent | null | undefined,
+  _hosting: boolean,
+  _jailed: boolean,
+): boolean => false;
 
 /**
  * M7: a frase que explica por que o claude está sem jaula, uma por motivo.

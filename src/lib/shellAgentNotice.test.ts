@@ -112,8 +112,8 @@ describe("showUnjailedNotice", () => {
     expect(showUnjailedNotice(shell, detected(), true, true)).toBe(false);
   });
 
-  test("hospedado SEM jaula mostra o sinal", () => {
-    expect(showUnjailedNotice(shell, detected(), true, false)).toBe(true);
+  test("hospedado SEM jaula não mostra mais: é o claude digitado (agente livre)", () => {
+    expect(showUnjailedNotice(shell, detected(), true, false)).toBe(false);
   });
 
   test("não hospedado não mostra o sinal de jaula (é o caso do v1)", () => {

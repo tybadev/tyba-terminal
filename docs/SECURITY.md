@@ -22,6 +22,7 @@ O que o TYBA faz:
 - **Avisa**: pedido de permissão do agente vira notificação (SO + badge) que leva ao pane; a resposta é no prompt do agente.
 - **Guarda-corpo fixo** (hard-coded, não configurável, sem perguntar): `git push` para `main`/`master` e merge de PR (`gh pr merge`, `glab mr merge`) por agente são recusados, com o motivo em texto para o agente.
 - **Redação de secrets** antes de gravar histórico ou notificação no SQLite (sem mudança).
+- **O que ainda se recusa ou se tira no claude digitado**: as flags `--bare`, `--safe-mode`, `--settings` e `--setting-sources`, e as variáveis `CLAUDE_CODE_SIMPLE` e `CLAUDE_CODE_SAFE_MODE` (removidas do env do pane). Todas desligam ou trocam os hooks da sessão, e com eles o guarda-corpo. Um `claude` aberto de dentro do claude digitado ganha um `--settings` só com o guarda-corpo do Bash, que não fala com o core; com uma dessas flags, ou numa sessão em segundo plano, ele roda sem guarda-corpo (limite conhecido).
 
 **Riscos aceitos**: o agente tem o mesmo poder de qualquer comando que o usuário roda no shell; prompt injection que leva a um comando aprovado sem ler é o mesmo risco do Claude Code puro e do Warp. O guarda-corpo é por texto de comando — contornável por um agente determinado (script, alias); é proteção contra o erro, não fronteira.
 
@@ -112,4 +113,4 @@ Quando existir "agente, resolve a issue #42": o corpo da issue entra no prompt c
 
 - `SECURITY.md` na raiz com canal de disclosure responsável desde o commit 1.
 - Releases assinados/notarizados quando houver distribuição de binário (macOS: codesign + notarização obrigatórios).
-- Audit log local: os eventos de hook (`PreToolUse`, decisões de aprovação, `Stop`/`Notification`) persistidos no SQLite já servem como trilha de auditoria das ações do agente.
+- Audit log local: nas sessões gerenciadas (modelo anterior), os eventos de hook (`PreToolUse`, decisões de aprovação, `Stop`/`Notification`) persistidos no SQLite servem como trilha de auditoria das ações do agente. O claude digitado (agente livre) guarda só o histórico deduzido (os pedidos de permissão); auditoria de toda ação dele é follow-up registrado.

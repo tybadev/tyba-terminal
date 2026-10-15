@@ -1,12 +1,13 @@
 use std::io::{BufReader, Read, Write};
 use std::path::Path;
+use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
 use serde::Serialize;
 
 use super::framing;
-use super::protocol::ResponseEnvelope;
+use super::protocol::{RequestEnvelope, ResponseEnvelope, PROTOCOL_VERSION};
 
 #[cfg(unix)]
 type Stream = std::os::unix::net::UnixStream;
@@ -155,6 +156,8 @@ const OBSERVER_RETRY: RetryPlan = RetryPlan {
 /// (`guard`, que devolve o JSON de `deny` ou `None`), tomada aqui, sem o
 /// core. Core ausente, socket sumido ou resposta estranha: stdout vazio, que
 /// para o Claude é "sem decisão". Nunca `allow`, nunca `deny` por falha.
+/// O stdout sai primeiro; o envio ao core vem depois, sem ler resposta e com
+/// teto (`send_and_forget`) — o hook nunca espera o core.
 pub fn run_observer_client<R: Read, W: Write>(
     stdin: R,
     stdout: W,
@@ -162,6 +165,17 @@ pub fn run_observer_client<R: Read, W: Write>(
     guard: &dyn Fn(&serde_json::Value) -> Option<String>,
 ) -> i32 {
     run_observer_client_inner(stdin, stdout, socket_path, guard, OBSERVER_RETRY)
+}
+
+/// `tyba _hook --guard-only`, o hook do claude aberto de dentro do claude
+/// hospedado: o guarda-corpo e nada mais. Não recebe socket — nunca fala com
+/// o core, para o aninhado não sequestrar o monitor e a conversa do pane.
+pub fn run_guard_only_client<R: Read, W: Write>(
+    stdin: R,
+    stdout: W,
+    guard: &dyn Fn(&serde_json::Value) -> Option<String>,
+) -> i32 {
+    run_observer_client_inner(stdin, stdout, None, guard, OBSERVER_RETRY)
 }
 
 pub(crate) fn run_observer_client_inner<R: Read, W: Write>(
@@ -187,9 +201,45 @@ pub(crate) fn run_observer_client_inner<R: Read, W: Write>(
         }
     }
     if let Some(socket_path) = socket_path {
-        let _ = connect_and_exchange(socket_path, &event, retry);
+        send_and_forget(socket_path, &event, retry);
     }
     0
+}
+
+/// Teto do envio ao core no modo observador (connect + escrita). Ninguém
+/// espera a resposta, então um core travado (breakpoint, SIGSTOP, handler
+/// preso no lock do Store) não pode segurar o hook: passado o teto, o hook
+/// sai e o evento se perde — melhor que segurar a ferramenta do Claude.
+pub(crate) const OBSERVER_SEND_BUDGET: Duration = Duration::from_millis(250);
+#[cfg(unix)]
+const OBSERVER_WRITE_TIMEOUT: Duration = Duration::from_millis(200);
+
+/// Manda o evento ao core sem ler a resposta: conecta, escreve o frame e
+/// fecha. O connect não tem timeout no std (um backlog cheio pode bloquear no
+/// Linux), então tudo roda numa thread com teto; se ela não volta a tempo, o
+/// processo do hook sai e a leva junto.
+fn send_and_forget(socket_path: &Path, event: &serde_json::Value, retry: RetryPlan) {
+    let Ok(mut payload) = serde_json::to_vec(&RequestEnvelope {
+        v: PROTOCOL_VERSION,
+        event: event.clone(),
+    }) else {
+        return;
+    };
+    payload.push(b'\n');
+    let socket_path = socket_path.to_path_buf();
+    let (done_tx, done_rx) = mpsc::channel();
+    thread::spawn(move || {
+        if let Some(mut stream) = connect_with_retry(&socket_path, retry) {
+            #[cfg(unix)]
+            let _ = stream.set_write_timeout(Some(OBSERVER_WRITE_TIMEOUT));
+            let _ = stream.write_all(&payload);
+            let _ = stream.flush();
+            #[cfg(unix)]
+            let _ = stream.shutdown(std::net::Shutdown::Both);
+        }
+        let _ = done_tx.send(());
+    });
+    let _ = done_rx.recv_timeout(OBSERVER_SEND_BUDGET);
 }
 
 fn emit_transport_failure<W: Write>(stdout: &mut W, kind: EventKind) {
@@ -213,8 +263,10 @@ fn connect_with_retry(socket_path: &Path, retry: RetryPlan) -> Option<Stream> {
         if let Some(stream) = connect_once(socket_path) {
             return Some(stream);
         }
-        let backoff = retry.base * 2u32.pow(attempt);
-        thread::sleep(backoff);
+        // Depois da última tentativa não há mais o que esperar.
+        if attempt + 1 < retry.attempts {
+            thread::sleep(retry.base * 2u32.pow(attempt));
+        }
     }
     None
 }

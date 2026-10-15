@@ -184,9 +184,10 @@ pub fn claude_session_settings(hook_cmd: &str, status_line: Value) -> Value {
     compose_session_settings(hook_cmd, blocks, status_line)
 }
 
-/// Teto do `PreToolUse` no claude digitado (agente livre): o hook só aplica o
-/// guarda-corpo e avisa o core, nunca espera alguém decidir.
-pub const OBSERVER_PRE_TOOL_USE_TIMEOUT: u64 = 30;
+/// Teto de todo hook do claude digitado (agente livre): o hook só aplica o
+/// guarda-corpo e manda o evento ao core sem esperar resposta
+/// (`hook_ipc::client::send_and_forget`), então nada ali leva segundos.
+pub const OBSERVER_HOOK_TIMEOUT: u64 = 5;
 
 /// O comando do hook do claude digitado: `tyba _hook --observe`. O modo
 /// observador nunca devolve a decisão do core; só o guarda-corpo fixo decide.
@@ -196,24 +197,54 @@ pub fn observer_hook_command(exe: &Path) -> String {
 
 /// O `--settings` do claude digitado num pane (agente livre): os MESMOS
 /// eventos da sessão gerenciada — monitor, conversa, subagentes, status —,
-/// mas o `PreToolUse` com teto curto e sem `onFailure: "block"`. TYBA fechado
-/// ou hook quebrado nunca trava o Claude.
+/// mas todo hook com teto curto e sem `onFailure: "block"`. TYBA fechado ou
+/// hook quebrado nunca trava o Claude. Sem `statusMessage`: "Conferindo no
+/// TYBA…" mentiria, ninguém confere nada.
 pub fn observer_session_settings(hook_cmd: &str, status_line: Value) -> Value {
     let mut settings = hooks_settings_json(hook_cmd);
-    if let Some(entries) = settings
-        .pointer_mut("/hooks/PreToolUse")
-        .and_then(Value::as_array_mut)
+    if let Some(events) = settings
+        .pointer_mut("/hooks")
+        .and_then(Value::as_object_mut)
     {
-        for entry in entries {
-            if let Some(hooks) = entry.get_mut("hooks").and_then(Value::as_array_mut) {
-                for hook in hooks {
-                    hook["timeout"] = json!(OBSERVER_PRE_TOOL_USE_TIMEOUT);
+        for entries in events.values_mut().filter_map(Value::as_array_mut) {
+            for entry in entries {
+                if let Some(hooks) = entry.get_mut("hooks").and_then(Value::as_array_mut) {
+                    for hook in hooks.iter_mut().filter_map(Value::as_object_mut) {
+                        hook.insert("timeout".into(), json!(OBSERVER_HOOK_TIMEOUT));
+                        hook.remove("statusMessage");
+                    }
                 }
             }
         }
     }
     settings["statusLine"] = status_line;
     settings
+}
+
+/// O comando do guarda-corpo do claude aninhado: `tyba _hook --guard-only`.
+/// Só o guarda-corpo, sem socket — ver [`guard_only_settings`].
+pub fn guard_only_hook_command(exe: &Path) -> String {
+    format!("{} {}", hook_command(exe), crate::hook_ipc::GUARD_ONLY_FLAG)
+}
+
+/// O `--settings` de um claude aberto DE DENTRO do claude hospedado (o Bash
+/// dele, um script, `claude -p`): só o `PreToolUse` do Bash com o
+/// guarda-corpo. Nada vai ao core — o aninhado não pode sequestrar o
+/// monitor nem a conversa do pane do pai. Sem `onFailure` (falha = sem
+/// decisão) e sem `statusMessage`.
+pub fn guard_only_settings(hook_cmd: &str) -> Value {
+    json!({
+        "hooks": {
+            "PreToolUse": [{
+                "matcher": "Bash",
+                "hooks": [{
+                    "type": "command",
+                    "command": hook_cmd,
+                    "timeout": OBSERVER_HOOK_TIMEOUT
+                }]
+            }]
+        }
+    })
 }
 
 /// A montagem, sem a pergunta de versão — testável.
@@ -275,16 +306,32 @@ mod tests {
             for entry in entries.as_array().unwrap() {
                 for hook in entry["hooks"].as_array().unwrap() {
                     assert!(hook.get("onFailure").is_none(), "{event} bloqueia");
-                    assert!(hook["timeout"].as_u64().unwrap() <= 60, "{event}");
+                    assert_eq!(hook["timeout"], OBSERVER_HOOK_TIMEOUT, "{event}");
+                    assert!(
+                        hook.get("statusMessage").is_none(),
+                        "{event}: ninguém confere nada no TYBA"
+                    );
                     assert_eq!(hook["command"], "x _hook --observe");
                 }
             }
         }
-        assert_eq!(
-            v["hooks"]["PreToolUse"][0]["hooks"][0]["timeout"],
-            OBSERVER_PRE_TOOL_USE_TIMEOUT
-        );
         assert_eq!(v["statusLine"]["type"], "command");
+    }
+
+    #[test]
+    fn guard_only_settings_carry_just_the_bash_guard_rail() {
+        let cmd = guard_only_hook_command(Path::new("/usr/bin/tyba"));
+        assert_eq!(cmd, "'/usr/bin/tyba' _hook --guard-only");
+        let v = guard_only_settings(&cmd);
+        let events: Vec<_> = v["hooks"].as_object().unwrap().keys().collect();
+        assert_eq!(events, ["PreToolUse"]);
+        assert_eq!(v["hooks"]["PreToolUse"][0]["matcher"], "Bash");
+        let hook = &v["hooks"]["PreToolUse"][0]["hooks"][0];
+        assert_eq!(hook["command"], cmd);
+        assert_eq!(hook["timeout"], OBSERVER_HOOK_TIMEOUT);
+        assert!(hook.get("onFailure").is_none());
+        assert!(hook.get("statusMessage").is_none());
+        assert!(v.get("statusLine").is_none());
     }
 
     #[test]
