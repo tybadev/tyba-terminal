@@ -90,7 +90,11 @@ import {
 } from "../lib/keys";
 import { Shortcut } from "@/components/ui/kbd";
 import { toastError } from "../lib/toast";
-import { setDefaultFontSize } from "./TerminalView";
+import {
+  FONT_SIZE_EVENT,
+  getDefaultFontSize,
+  setDefaultFontSize,
+} from "./TerminalView";
 import { ShellSettings } from "./ShellSettings";
 import { ToolbarChipsEditor } from "./ToolbarChipsEditor";
 import type { RichInputPref } from "../lib/richInput";
@@ -696,6 +700,12 @@ export function SettingsView({
   const [effBase, setEffBase] = useState(getEffectiveBase);
 
   useEffect(() => onUiFontChange(setUiFontState), []);
+  // O tamanho pode mudar por fora (edição do ~/.tyba/config.toml).
+  useEffect(() => {
+    const sync = () => setFontSize(getDefaultFontSize());
+    window.addEventListener(FONT_SIZE_EVENT, sync);
+    return () => window.removeEventListener(FONT_SIZE_EVENT, sync);
+  }, []);
   useEffect(
     () => onEffectiveBaseChange(() => setEffBase(getEffectiveBase())),
     [],

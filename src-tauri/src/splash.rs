@@ -45,14 +45,20 @@ impl SplashLatch {
 /// `boot_json` vem de [`crate::theme::splash_boot_json`] (só hex validado), e
 /// vai como literal JSON, que já é JavaScript válido e não fecha nada.
 pub fn boot_script(boot_json: &str) -> String {
-    format!("window.__TYBA_SPLASH__ = {boot_json};")
+    // Build de dev: o splash mostra o selo "dev" (ver `crate::profile`).
+    let dev = if crate::profile::IS_DEV {
+        "window.__TYBA_DEV__ = true;"
+    } else {
+        ""
+    };
+    format!("window.__TYBA_SPLASH__ = {boot_json};{dev}")
 }
 
 /// Abre o splash com o tema salvo. Falha aqui não derruba o boot: sem splash,
 /// a `main` aparece pelo [`CEILING`] ou pelo aviso do front.
 pub fn open<R: Runtime>(app: &AppHandle<R>, boot_json: &str) {
     let built = WebviewWindowBuilder::new(app, SPLASH_LABEL, WebviewUrl::App("splash.html".into()))
-        .title("Tyba")
+        .title(crate::profile::product_name(app.config()))
         .inner_size(360.0, 240.0)
         .center()
         .resizable(false)

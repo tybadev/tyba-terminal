@@ -40,7 +40,7 @@ use std::path::{Path, PathBuf};
 
 /// Itens da home que nenhuma regra de PATH libera, mesmo que o usuário ponha
 /// um deles (ou um dir que os contenha) no PATH.
-pub(crate) const HOME_DENY: [&str; 29] = [
+pub(crate) const HOME_DENY: [&str; 30] = [
     ".ssh",
     ".gnupg",
     ".aws",
@@ -57,6 +57,7 @@ pub(crate) const HOME_DENY: [&str; 29] = [
     ".claude.json",
     ".codex",
     ".tyba",
+    ".tyba-dev",
     ".password-store",
     ".local/share/keyrings",
     ".mozilla",

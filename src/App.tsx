@@ -135,10 +135,10 @@ import { WorktreeCreateDialog } from "./components/WorktreeCreateDialog";
 import { WorktreesView } from "./components/WorktreesView";
 import { StatsView } from "./components/StatsView";
 import { DiffView } from "./components/DiffView";
-import { TunnelsView } from "./components/TunnelsView";
 import { FilesScreen, closeScreenFile } from "./components/FilesScreen";
 import { GitHistoryView } from "./components/GitHistoryView";
 import { DockerScreen } from "./components/DockerScreen";
+import { ServicesScreen } from "./components/ServicesScreen";
 import { HistoryPanel } from "./components/HistoryPanel";
 import { SidePanelBar, type PanelTab } from "./components/SidePanelBar";
 import {
@@ -212,6 +212,9 @@ import {
   ackDriftWarning,
   bootGate,
   bootSnapshot,
+  configWarnings,
+  onConfigPrefs,
+  onConfigWarnings,
   onAgentOpenUrl,
   onAgentSandboxWarning,
   onAgentAuthAlert,
@@ -252,7 +255,7 @@ import {
   type FileSearchResult,
   backTab,
   openFilesPanel,
-  openTunnelsPanel,
+  openServicesPanel,
   openAgentsPanel,
   openGitPanel,
   openDockerPanel,
@@ -393,6 +396,8 @@ import {
   workspaceMatchDir,
 } from "./lib/workspaceCwd";
 import { findSessionLocation } from "./lib/sessionLocation";
+import { chipText, workspacePorts } from "./lib/services";
+import { useSessionPorts } from "./lib/useSessionPorts";
 import {
   agentQueueVisibleApprovalIds,
   boardOrder,
@@ -481,6 +486,7 @@ import {
   KEY_ACTIONS,
   formatCombo,
   parseBindings,
+  bindingOverrides,
   BINDINGS_PREF_KEY,
   isTerminalAction,
   isPaneResizeChord,
@@ -1000,6 +1006,7 @@ export default function App() {
   const [dockerRunning, setDockerRunning] = useState(0);
   const [theme, setTheme] = useState<ThemeMode>(getThemeMode);
   const [approvals, setApprovals] = useState<ApprovalRequest[]>([]);
+  const sessionPorts = useSessionPorts();
   const [inboxOpen, setInboxOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [version, setVersion] = useState("");
@@ -1347,6 +1354,31 @@ export default function App() {
     };
   }, [reportBootFailure]);
 
+  // `~/.tyba/config.toml`: o core valida, aplica e manda. Aqui só se pinta.
+  // Os avisos do arranque saem antes de o listener existir, então o mount
+  // pede a lista vigente; os seguintes chegam pelo evento.
+  useEffect(() => {
+    const warn = (warnings: string[]) => {
+      if (warnings.length === 0) return;
+      pushToast({
+        tone: "warning",
+        title: t("configWarningTitle"),
+        detail: warnings.join("\n"),
+      });
+    };
+    void configWarnings().then(warn).catch(() => {});
+    const offWarnings = onConfigWarnings(warn);
+    const offPrefs = onConfigPrefs((prefs) => {
+      setBindings(parseBindings(prefs[BINDINGS_PREF_KEY] ?? null));
+      const size = Number(prefs[FONT_SIZE_KEY] ?? 13);
+      if (size >= 10 && size <= 20) setDefaultFontSize(size);
+    });
+    return () => {
+      void offWarnings.then((off) => off());
+      void offPrefs.then((off) => off());
+    };
+  }, [t]);
+
   // Entrega B (§5.3): o toast é a superfície PRIMÁRIA do 1-clique — com
   // $BROWSER setado, o fallback na tela do próprio Claude só aparece depois
   // de 3s (M8). O clique é a única coisa que abre o navegador (item 26 do
@@ -1596,13 +1628,10 @@ export default function App() {
         : null,
     [sideView, sessionById],
   );
-  const tunnelsTarget = useMemo(
-    () =>
-      sideView?.startsWith("tunnels:")
-        ? (sessionById.get(sideView.slice(8)) ?? null)
-        : null,
-    [sideView, sessionById],
-  );
+  const servicesTarget = useMemo(() => {
+    const view = parseSideView(sideView);
+    return view?.kind === "services" ? (sessionById.get(view.session) ?? null) : null;
+  }, [sideView, sessionById]);
   const filesTarget = useMemo(
     () =>
       sideView?.startsWith("files:")
@@ -1634,11 +1663,12 @@ export default function App() {
     if (kind?.type !== "ssh") return null;
     return sshHosts.find((h) => h.id === kind.host_id)?.alias ?? null;
   }, [dockerPanelTarget, sshHosts]);
-  const tunnelsHostAlias = useMemo(() => {
-    const kind = tunnelsTarget?.kind;
-    if (kind?.type !== "ssh") return "";
-    return sshHosts.find((h) => h.id === kind.host_id)?.alias ?? "";
-  }, [tunnelsTarget, sshHosts]);
+  // Serviços numa sessão SSH listam as portas do servidor dela.
+  const servicesHostAlias = useMemo(() => {
+    const kind = servicesTarget?.kind;
+    if (kind?.type !== "ssh") return null;
+    return sshHosts.find((h) => h.id === kind.host_id)?.alias ?? null;
+  }, [servicesTarget, sshHosts]);
   const sideExpanded = Boolean(sideView && activeWorkspace?.side_expanded);
   const sideRatio = activeWorkspace?.side_ratio ?? 0.5;
 
@@ -1663,6 +1693,11 @@ export default function App() {
   if (dockerPanelTarget) lastDockerSessionRef.current = dockerPanelTarget;
   const dockerScreenSession =
     dockerPanelTarget ?? (dockerMotion.mounted ? lastDockerSessionRef.current : null);
+  const servicesMotion = usePresence(servicesTarget !== null, reducedMotion ? 0 : 260);
+  const lastServicesSessionRef = useRef<Session | null>(null);
+  if (servicesTarget) lastServicesSessionRef.current = servicesTarget;
+  const servicesScreenSession =
+    servicesTarget ?? (servicesMotion.mounted ? lastServicesSessionRef.current : null);
   const agentsSideActive = Boolean(sideView?.startsWith("agents:"));
   const agentsMotion = usePresence(agentsSideActive, reducedMotion ? 0 : 150);
   const lastAgentsSessionRef = useRef<SessionId | null>(null);
@@ -2697,7 +2732,7 @@ export default function App() {
     const open = {
       history: openHistoryPanel,
       docker: openDockerPanel,
-      tunnels: openTunnelsPanel,
+      services: openServicesPanel,
       files: openFilesPanel,
       git: openGitPanel,
       // O Diff abre a tela de Git na seção Revisar, não um painel lateral.
@@ -3714,7 +3749,9 @@ export default function App() {
 
   const changeBindings = useCallback((value: Bindings) => {
     setBindings(value);
-    void setPref(BINDINGS_PREF_KEY, JSON.stringify(value)).catch(() => {});
+    void setPref(BINDINGS_PREF_KEY, JSON.stringify(bindingOverrides(value))).catch(
+      () => {},
+    );
   }, []);
 
   const changeShowContainers = useCallback((value: boolean) => {
@@ -4127,7 +4164,10 @@ export default function App() {
   // foco de volta por baixo. Quando ela desmonta, o effect roda de novo e o
   // foco volta ao terminal.
   const gitScreenOpen =
-    gitScreenSession !== null || filesScreenSession !== null || dockerScreenSession !== null;
+    gitScreenSession !== null ||
+    filesScreenSession !== null ||
+    dockerScreenSession !== null ||
+    servicesScreenSession !== null;
   useEffect(() => {
     if (!activeId || gitScreenOpen) return;
     if (ownsCommandLine) {
@@ -4509,9 +4549,11 @@ export default function App() {
         void openExternalUrl(changelogUrl(i18n.language)).catch(() => {});
       } else if (id === "menu:issues") {
         void openExternalUrl(`${REPO_URL}/issues/new`).catch(() => {});
+      } else if (id === "menu:services") {
+        if (fileSessionId) void openServicesPanel(fileSessionId).catch(() => {});
       }
     },
-    [i18n.language, openViewTab],
+    [i18n.language, openViewTab, fileSessionId],
   );
 
   // O menu nativo espelha os atalhos e o idioma correntes: rebind e troca de
@@ -4867,6 +4909,8 @@ export default function App() {
     const workspaceSessions = new Set(
       w.tabs.flatMap((tab) => (tab.root ? leafSessions(tab.root) : [])),
     );
+    const ports = workspacePorts(sessionPorts, workspaceSessions);
+    const portsChip = chipText(ports);
     const dot = sessionDot({
       approvals: approvals.filter((a) => workspaceSessions.has(a.session_id))
         .length,
@@ -5032,6 +5076,17 @@ export default function App() {
                       )}
                     </span>
                   )}
+                  {/* As portas que os processos desta sessão abriram
+                      (Serviços e portas), discretas no fim da linha. */}
+                  {portsChip && (
+                    <span
+                      title={t("servicesChip", { ports: ports.map((p) => `:${p}`).join(" ") })}
+                      className="ml-auto flex shrink-0 items-center gap-1 font-mono text-[10.5px] leading-none text-tyba-text-faint"
+                    >
+                      <span aria-hidden className="size-1 shrink-0 rounded-full bg-tyba-green-fill" />
+                      {portsChip}
+                    </span>
+                  )}
                 </span>
               )}
             </span>
@@ -5192,6 +5247,9 @@ export default function App() {
         onTogglePanel={toggleSidebar}
         onOpenFiles={() => {
           if (fileSessionId) void openFilesPanel(fileSessionId).catch(() => {});
+        }}
+        onOpenServices={() => {
+          if (fileSessionId) void openServicesPanel(fileSessionId).catch(() => {});
         }}
         onOpenGitHistory={
           activeId && activeGitStatus
@@ -5823,6 +5881,23 @@ export default function App() {
                       return s ? isFinishedStatus(s.status) : false;
                     }}
                     onSessionsChanged={() => void refreshSessions()}
+                    onClose={() => void closeSideView(activeWorkspace.id).catch(() => {})}
+                  />
+                )}
+                {servicesScreenSession && activeWorkspace && (
+                  <ServicesScreen
+                    key={servicesScreenSession.id}
+                    session={servicesScreenSession}
+                    workspaceId={activeWorkspace.id}
+                    state={activeWorkspace.screens.services}
+                    hostAlias={servicesHostAlias}
+                    exiting={servicesMotion.exiting}
+                    labelOf={(id) => {
+                      const loc = findSessionLocation(layout.workspaces, id);
+                      const ws = loc && layout.workspaces.find((w) => w.id === loc.workspaceId);
+                      return ws?.name ?? sessionById.get(id)?.title ?? null;
+                    }}
+                    onFocusSession={goToSession}
                     onClose={() => void closeSideView(activeWorkspace.id).catch(() => {})}
                   />
                 )}
@@ -6833,30 +6908,6 @@ export default function App() {
                         ) : (
                           <div className="flex flex-1 items-center justify-center text-[12px] text-tyba-text-faint">
                             {t("agentsSessionGone")}
-                          </div>
-                        )
-                      ) : renderSideView?.startsWith("tunnels:") ? (
-                        tunnelsTarget ? (
-                          <TunnelsView
-                            key={tunnelsTarget.id}
-                            session={tunnelsTarget}
-                            hostAlias={tunnelsHostAlias}
-                            expanded={sideExpanded}
-                            onToggleExpand={() =>
-                              void setSideViewExpanded(
-                                activeWorkspace.id,
-                                !sideExpanded,
-                              ).catch(() => {})
-                            }
-                            onClose={() =>
-                              void closeSideView(activeWorkspace.id).catch(
-                                () => {},
-                              )
-                            }
-                          />
-                        ) : (
-                          <div className="flex flex-1 items-center justify-center text-[12px] text-tyba-text-faint">
-                            {t("tunnelsSessionGone")}
                           </div>
                         )
                       ) : containerFilesTarget(renderSideView) ? (

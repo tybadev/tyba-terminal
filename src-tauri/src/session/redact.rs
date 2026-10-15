@@ -22,6 +22,11 @@ pub fn redact(input: &str) -> Cow<'_, str> {
     SECRETS.replace_all(input, NoExpand(REDACTION_MARK))
 }
 
+/// Mesmos padrões do [`redact`], como pergunta: o texto carrega um segredo?
+pub fn contains_secret(input: &str) -> bool {
+    SECRETS.is_match(input)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -81,6 +81,21 @@ body {
   padding-left: 0.18em;
 }
 
+/* Build de desenvolvimento (`bun run tauri dev`): o splash diz que não é o app
+   instalado. O core liga o atributo, ver public/splash-boot.js. */
+:root[data-dev] .wordmark::after {
+  content: "dev";
+  display: inline-block;
+  margin-left: 10px;
+  padding: 2px 6px;
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  font: 600 10px/1 "JetBrains Mono", ui-monospace, monospace;
+  letter-spacing: 0.08em;
+  vertical-align: middle;
+  color: var(--violet);
+}
+
 .filament {
   position: relative;
   width: 132px;

@@ -15,6 +15,7 @@ import {
   MagnifyingGlass,
   Moon,
   Palette,
+  Plug,
   Plus,
   SidebarSimple,
   Stack,
@@ -139,6 +140,8 @@ interface Props {
   onOpenStats: () => void;
   onTogglePanel: () => void;
   onOpenFiles: () => void;
+  /** Tela de Serviços e portas da sessão em foco. */
+  onOpenServices: () => void;
   /** Só com a sessão ativa num repo git. */
   onOpenGitHistory?: () => void;
   onGoToWorkspace: (id: WorkspaceId) => void;
@@ -272,6 +275,7 @@ export function CommandPalette({
   onOpenStats,
   onTogglePanel,
   onOpenFiles,
+  onOpenServices,
   onOpenGitHistory,
   onGoToWorkspace,
   launchConfigs,
@@ -587,6 +591,12 @@ export function CommandPalette({
               <FolderOpen size={15} />
               {t("filesPanel")}
               <Shortcut combo={bindings.files} className="ml-auto" />
+            </CommandItem>
+          )}
+          {activeWorkspace && (
+            <CommandItem onSelect={run(onOpenServices)}>
+              <Plug size={15} />
+              {t("servicesTitle")}
             </CommandItem>
           )}
           {onOpenGitHistory && (

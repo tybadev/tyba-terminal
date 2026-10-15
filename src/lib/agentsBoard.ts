@@ -15,6 +15,7 @@ import type {
 import {
   awaitsDecision,
   statusVisual,
+  withSubagentsReason,
   type StatusVisual,
 } from "./sessionStatus";
 
@@ -302,7 +303,10 @@ export const buildRows = (
       managed.push({
         session,
         place,
-        visual: statusVisual(session.status, session.attention) ?? RESTING,
+        visual: withSubagentsReason(
+          statusVisual(session.status, session.attention) ?? RESTING,
+          session.subagents_working === true,
+        ),
         urgency: urgencyOf(session),
         observed: null,
         hosting: false,
@@ -317,7 +321,10 @@ export const buildRows = (
       // Do palpite de tela, nunca do `session.status`: aquele é o estado do
       // shell — que está sempre "rodando" — e pintaria de azul um agente que
       // pode estar parado esperando resposta.
-      visual: observedVisual(seen),
+      visual: withSubagentsReason(
+        observedVisual(seen),
+        session.subagents_working === true,
+      ),
       hosting: hostingBySession.get(session.id) ?? false,
       urgency: observedUrgency(seen),
       observed: seen,
@@ -384,7 +391,7 @@ export const agentForWorkspace = (
           // precedência, por mais urgente que o palpite pareça.
           candidate = {
             session,
-            visual,
+            visual: withSubagentsReason(visual, session.subagents_working === true),
             observed: null,
             urgency: urgencyOf(session) + 100,
           };
@@ -392,7 +399,10 @@ export const agentForWorkspace = (
       } else if (session.observed) {
         candidate = {
           session,
-          visual: observedVisual(session.observed),
+          visual: withSubagentsReason(
+            observedVisual(session.observed),
+            session.subagents_working === true,
+          ),
           observed: session.observed,
           urgency: observedUrgency(session.observed),
         };
