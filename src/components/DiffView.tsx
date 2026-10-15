@@ -70,6 +70,8 @@ import { openEditorTab } from "../lib/contentTabs";
 import { translateError } from "../lib/errors";
 import { highlightBlock, type TokenSpan } from "../lib/highlight";
 import { BranchPicker } from "./BranchPicker";
+import { GitLoading, useDiffStep } from "./GitLoading";
+import { LoadingSkeleton } from "./ui/loading";
 import { DeliverySection } from "./DeliverySection";
 
 const STATUS_LETTER: Record<FileDiff["status"], string> = {
@@ -214,6 +216,7 @@ export function DiffView({
     () => diffCache.get(session.id) ?? null,
   );
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [diffAt, setDiffAt] = useState(() => Date.now());
   const [hunksByKey, setHunksByKey] = useState<
     Record<string, FileHunks | undefined>
   >({});
@@ -237,6 +240,7 @@ export function DiffView({
   const [pushedInfo, setPushedInfo] = useState<string | null>(null);
   const [discardArm, setDiscardArm] = useState<string | null>(null);
   const [browseBranch, setBrowseBranch] = useState<string | null>(null);
+  const diffStep = useDiffStep(session, browseBranch);
   const [conflicts, setConflicts] = useState<ConflictState | null>(null);
   const [resolvingConflicts, setResolvingConflicts] = useState(false);
   const [conflictBusy, setConflictBusy] = useState<string | null>(null);
@@ -347,6 +351,7 @@ export function DiffView({
       lastSnapRef.current = null;
       setDiff(branch === null ? (diffCache.get(session.id) ?? null) : null);
       setLoadError(null);
+      setDiffAt(Date.now());
     },
     [clearCaches, session.id],
   );
@@ -1200,13 +1205,18 @@ export function DiffView({
             </div>
           );
         }
+        // Hunks deste arquivo a caminho: as linhas do diff em esqueleto, sem
+        // texto — a etapa do diff inteiro já está no topo.
+        if (row.label === "loading") {
+          return (
+            <div aria-hidden className="flex flex-col gap-1 px-16 py-2">
+              <LoadingSkeleton shape="lines" rows={3} />
+            </div>
+          );
+        }
         return (
           <div className="px-16 py-2 font-mono text-[11px] text-tyba-text-faint">
-            {row.label === "binary"
-              ? t("diffBinary")
-              : row.label === "loading"
-                ? t("diffLoading")
-                : t("diffNoChanges")}
+            {row.label === "binary" ? t("diffBinary") : t("diffNoChanges")}
           </div>
         );
       }
@@ -1508,13 +1518,22 @@ export function DiffView({
             </button>
           )}
           <div ref={scrollRef} className="h-full overflow-y-auto">
-            {loadError && (
+            {loadError && diff && (
               <div className="p-6 text-[12px] text-tyba-red">{loadError}</div>
             )}
-            {!diff && !loadError && (
-              <div className="p-6 font-mono text-[12px] text-tyba-text-faint">
-                {t("diffLoading")}
-              </div>
+            {!diff && (
+              <GitLoading
+                {...diffStep}
+                startedAt={diffAt}
+                error={loadError}
+                onRetry={() => {
+                  setLoadError(null);
+                  setDiffAt(Date.now());
+                  refresh();
+                }}
+                shape="diff"
+                rows={4}
+              />
             )}
             {diff &&
               diff.files.length === 0 &&

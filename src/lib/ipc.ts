@@ -3,6 +3,7 @@
 // só serialização de intenções e subscrição de eventos.
 
 import { invoke } from "@tauri-apps/api/core";
+import type { ShellBoot } from "./loading";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 import type { MenuSpec } from "./appMenu";
@@ -2525,6 +2526,15 @@ export const sessionPromptMode = (id: SessionId) =>
  */
 export function sessionHookExpected(id: SessionId): Promise<boolean> {
   return invoke<boolean>("session_hook_expected", { id });
+}
+
+/**
+ * O shell que está subindo (qual, e o rc que ele lê), para a linha dizer a
+ * etapa real até o primeiro prompt. `null` em sessão remota, de agente ou
+ * morta.
+ */
+export function sessionShellBoot(id: SessionId): Promise<ShellBoot | null> {
+  return invoke<ShellBoot | null>("session_shell_boot", { id });
 }
 
 /**

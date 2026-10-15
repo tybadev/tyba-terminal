@@ -508,6 +508,7 @@ impl SessionManager {
         // chega jamais, e quem precisa saber disso é a interface — senão ela
         // mostra para sempre uma linha dizendo que o shell está carregando.
         let mut hook_expected = bash_rc.is_some();
+        let mut zdotdir_for_rc: Option<String> = None;
 
         if cfg!(unix) {
             if let Some(rc) = bash_rc {
@@ -534,7 +535,8 @@ impl SessionManager {
                     .or_else(|| std::env::var("HOME").ok())
                     .unwrap_or_default();
                 cmd.env("ZDOTDIR", dir);
-                cmd.env("TYBA_USER_ZDOTDIR", user_zdotdir);
+                cmd.env("TYBA_USER_ZDOTDIR", &user_zdotdir);
+                zdotdir_for_rc = Some(user_zdotdir);
             }
         }
 
@@ -568,6 +570,23 @@ impl SessionManager {
         );
         if result.is_ok() {
             pty_pool.set_hook_expected(id, hook_expected);
+            let rc = if hook_expected {
+                crate::pty::ShellBoot::rc_label(
+                    &label,
+                    zdotdir_for_rc.as_deref(),
+                    std::env::var("HOME").ok().as_deref(),
+                )
+            } else {
+                None
+            };
+            pty_pool.set_shell_boot(
+                id,
+                crate::pty::ShellBoot {
+                    shell: label.clone(),
+                    rc,
+                    started_at_ms: crate::approvals::now_ms(),
+                },
+            );
         }
         if result.is_err() {
             if let Some(wt) = &worktree {

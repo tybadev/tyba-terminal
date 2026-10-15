@@ -327,6 +327,7 @@ import {
   sessionBlocks,
   sessionLineEcho,
   sessionHookExpected,
+  sessionShellBoot,
   sessionPromptMode,
   togglePromptMode,
   renderSnippet,
@@ -528,6 +529,7 @@ import {
 } from "./lib/termRegistry";
 import { HoverCard, HoverCardTrigger } from "@/components/ui/hover-card";
 import { Shortcut } from "@/components/ui/kbd";
+import type { ShellBoot } from "./lib/loading";
 
 const EMPTY_LAYOUT: LayoutState = { workspaces: [], active_workspace: null };
 type MenuParts = {
@@ -638,6 +640,15 @@ const SIDEBAR_WIDTH: Record<SidebarMode, number> = {
   rail: 44,
   hidden: 0,
 };
+
+/** Listras do header só no build de dev (ver o `<header>` do App). */
+const DEV_HEADER_STYLE: React.CSSProperties | undefined = import.meta.env.DEV
+  ? {
+      backgroundImage:
+        // Borda em degradê (desfocada), não corte seco: presente sem pesar.
+        "repeating-linear-gradient(-45deg, transparent 0, color-mix(in srgb, var(--tyba-text) 5%, transparent) 7px, transparent 14px, transparent 26px)",
+    }
+  : undefined;
 
 function IconAction({
   label,
@@ -940,6 +951,8 @@ export default function App() {
    * linha do TYBA na tela dizendo "Carregando o shell…".
    */
   const [hookExpected, setHookExpected] = useState<Record<string, boolean>>({});
+  /** O shell e o rc de cada sessão local subindo: a etapa da linha em espera. */
+  const [shellBoots, setShellBoots] = useState<Record<string, ShellBoot | null>>({});
   const [blocks, setBlocks] = useState<Record<string, Block[]>>({});
   // Lido por handler de clique e de tecla; num deles é `window`, e reassinar o
   // listener a cada bloco que chega seria trabalho por nada.
@@ -4163,6 +4176,14 @@ export default function App() {
         .catch(() => {});
       // Ao contrário do modo prompt, esta resposta é definitiva no instante do
       // spawn: não muda depois, então basta perguntar uma vez.
+      // Também definitivo no spawn: o shell e o rc não mudam depois.
+      void sessionShellBoot(id)
+        .then((boot) => {
+          if (!disposed) {
+            setShellBoots((prev) => (id in prev ? prev : { ...prev, [id]: boot }));
+          }
+        })
+        .catch(() => {});
       void sessionHookExpected(id)
         .then((expected) => {
           if (!disposed) {
@@ -5296,6 +5317,10 @@ export default function App() {
         <WindowResizeEdges />
         <header
           data-tauri-drag-region
+          // Build de dev: listras diagonais no header, como os apps do GNOME em
+          // desenvolvimento, para nunca confundir com o app instalado. O build
+          // de release não tem `import.meta.env.DEV`.
+          style={DEV_HEADER_STYLE}
           // Sem vidro: o header é transparente sobre o canvas, e é por ele que a
           // aurora tripla aparece no topo da janela (mockup Proposta/PropostaClaro).
           className={`tyba-lift-b flex h-[38px] shrink-0 items-center gap-1 pr-2.5 ${
@@ -6437,6 +6462,25 @@ export default function App() {
                               focusOnMount={s.id === activeId && line.owns}
                               focusNonce={lineFocusNonces[s.id] ?? 0}
                               state={line.state}
+                              boot={shellBoots[s.id] ?? null}
+                              booting={
+                                promptModes[s.id] !== true &&
+                                !isFinishedStatus(s.status)
+                              }
+                              broadcasting={
+                                broadcastOn &&
+                                s.kind.type === "ssh" &&
+                                broadcastSet.includes(s.id)
+                              }
+                              bootHost={
+                                s.kind.type === "ssh"
+                                  ? (sshHosts.find(
+                                      (h) =>
+                                        s.kind.type === "ssh" &&
+                                        h.id === s.kind.host_id,
+                                    )?.alias ?? null)
+                                  : null
+                              }
                               inject={injected[s.id] ?? null}
                               draft={drafts.current[s.id] ?? ""}
                               onDraftChange={rememberDraft}

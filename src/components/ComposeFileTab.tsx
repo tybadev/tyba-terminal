@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { CodeEditor } from "./CodeEditor";
+import { LoadingState } from "./ui/loading";
 import { getEffectiveBase, onEffectiveBaseChange } from "@/theme";
 import { translateError } from "../lib/errors";
 import { dockerComposeFile } from "../lib/ipc";
@@ -15,6 +16,9 @@ export function ComposeFileTab({ project, index }: { project: string; index: num
   const { t } = useTranslation();
   const [file, setFile] = useState<{ path: string; text: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [startedAt, setStartedAt] = useState(() => Date.now());
+  // "Tentar de novo" só muda o nonce: o efeito relê do começo.
+  const [reload, setReload] = useState(0);
   const [isDark, setIsDark] = useState(() => getEffectiveBase() === "dark");
   useEffect(() => onEffectiveBaseChange(() => setIsDark(getEffectiveBase() === "dark")), []);
 
@@ -22,13 +26,14 @@ export function ComposeFileTab({ project, index }: { project: string; index: num
     let alive = true;
     setFile(null);
     setError(null);
+    setStartedAt(Date.now());
     void dockerComposeFile(project, index)
       .then((f) => alive && setFile(f))
       .catch((e) => alive && setError(translateError(e, t)));
     return () => {
       alive = false;
     };
-  }, [project, index, t]);
+  }, [project, index, t, reload]);
 
   return (
     <div className="absolute inset-0 flex flex-col">
@@ -41,12 +46,19 @@ export function ComposeFileTab({ project, index }: { project: string; index: num
         </span>
       </div>
       <div className="relative min-h-0 flex-1">
-        {error ? (
-          <p role="alert" className="px-[18px] py-3 text-[12px] text-tyba-red">
-            {error}
-          </p>
-        ) : !file ? (
-          <p className="px-[18px] py-3 text-[12px] text-tyba-text-faint">{t("filesLoading")}</p>
+        {!file ? (
+          <LoadingState
+            op="editor"
+            step={t("loadComposeFile", { project })}
+            em={[project]}
+            startedAt={startedAt}
+            slowCause={t("loadFilesSlow")}
+            error={error}
+            onRetry={() => setReload((n) => n + 1)}
+            shape="lines"
+            rows={8}
+            className="absolute inset-0"
+          />
         ) : (
           <div className="absolute inset-0">
             <CodeEditor
