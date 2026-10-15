@@ -9,6 +9,7 @@ import {
   DownloadSimple,
   FolderOpen,
   Info,
+  FileText,
   Bell,
   CaretDoubleLeft,
   CaretDoubleRight,
@@ -70,6 +71,7 @@ import {
   type UpdateStatus,
   type LaunchConfig,
   type LaunchConfigId,
+  userConfigPath,
 } from "../lib/ipc";
 import {
   formatDiagnostics,
@@ -136,6 +138,11 @@ const SECTIONS: { id: Section; label: string; hint: string; icon: React.ReactNod
 ];
 
 const RAIL_PREF_KEY = "pref.settings_rail";
+
+/** `/Users/x/.tyba/config.toml` → `~/.tyba/config.toml`. */
+function homeShort(path: string): string {
+  return path.replace(/^\/(?:Users|home)\/[^/]+/, "~");
+}
 
 /**
  * O trilho de seções, à direita como nas outras telas cheias. Aberto mostra o
@@ -228,6 +235,8 @@ function SettingsRail({
 interface Props {
   /** Fecha a tela e volta para onde estava. */
   onClose: () => void;
+  /** Abre o `config.toml` no editor do TYBA. */
+  onOpenConfig: () => void;
   launchConfigs: LaunchConfig[];
   onApplyLaunchConfig: (id: LaunchConfigId) => void;
   onEditLaunchConfig: (id: LaunchConfigId) => void;
@@ -725,6 +734,7 @@ function ShortcutRow({
 
 export function SettingsView({
   onClose,
+  onOpenConfig,
   launchConfigs,
   onApplyLaunchConfig,
   onEditLaunchConfig,
@@ -764,6 +774,12 @@ export function SettingsView({
   const { t, i18n } = useTranslation();
   const [section, setSection] = useState<Section>("general");
   const [railCollapsed, setRailCollapsed] = useState(false);
+  const [configPath, setConfigPath] = useState<string | null>(null);
+  useEffect(() => {
+    void userConfigPath()
+      .then(setConfigPath)
+      .catch(() => {});
+  }, []);
   useEffect(() => {
     void getPref(RAIL_PREF_KEY)
       .then((v) => setRailCollapsed(v === "collapsed"))
@@ -1400,6 +1416,23 @@ export function SettingsView({
           <AboutSection version={version} update={update} />
         )}
         </div>
+        {configPath && (
+          <footer className="flex h-[26px] shrink-0 items-center gap-2.5 border-t border-tyba-border bg-tyba-raised px-[18px] text-[11px] text-tyba-text-faint">
+            <FileText size={12} className="shrink-0" />
+            <span className="truncate">
+              {t("settingsFileIn")}{" "}
+              <span className="text-tyba-text-muted">{homeShort(configPath)}</span>
+            </span>
+            <button
+              onClick={onOpenConfig}
+              className="shrink-0 text-tyba-blue hover:text-tyba-text"
+            >
+              {t("settingsOpenInTyba")}
+            </button>
+            <span className="flex-1" />
+            <span className="hidden truncate lg:inline">{t("settingsFileLive")}</span>
+          </footer>
+        )}
       </div>
       <SettingsRail
         section={section}

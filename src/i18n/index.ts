@@ -218,6 +218,9 @@ const resources = {
       settingsAboutShort: "versão e diagnóstico",
       settingsRailCollapse: "Recolher",
       settingsRailExpand: "Mostrar nomes",
+      settingsFileIn: "tudo isto fica em",
+      settingsOpenInTyba: "Abrir no TYBA",
+      settingsFileLive: "mudou o arquivo à mão? esta tela acompanha",
       shortcutsHint: "Clique num atalho e pressione a combinação nova.",
       defaultSessionDir: "Pasta padrão para novas sessões",
       defaultSessionDirHint:
@@ -2217,6 +2220,9 @@ const resources = {
       settingsAboutShort: "version and diagnostics",
       settingsRailCollapse: "Collapse",
       settingsRailExpand: "Show names",
+      settingsFileIn: "all of this lives in",
+      settingsOpenInTyba: "Open in TYBA",
+      settingsFileLive: "edited the file by hand? this screen follows",
       shortcutsHint: "Click a shortcut and press the new combination.",
       defaultSessionDir: "Default folder for new sessions",
       defaultSessionDirHint:

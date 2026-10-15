@@ -205,6 +205,7 @@ import {
   createSession,
   createTab,
   createWorkspace,
+  userConfigPath,
   disposeSession,
   dockerAvailable,
   dockerListContainers,
@@ -2003,6 +2004,39 @@ export default function App() {
     },
     [layout.workspaces],
   );
+
+  // "Abrir no TYBA" do rodapé das Configurações: o `config.toml` abre no
+  // editor do próprio TYBA, numa sessão na pasta dele — a tela de Arquivos só
+  // abre o que está dentro da raiz de uma sessão. Reusa a sessão se ela ainda
+  // estiver viva, para não empilhar uma por clique.
+  const openUserConfig = useCallback(async () => {
+    const file = await userConfigPath();
+    if (!file) return;
+    const dir = file.slice(0, file.lastIndexOf("/"));
+    const title = file.slice(file.lastIndexOf("/") + 1);
+    try {
+      let session = sessions.find(
+        (s) => s.title === title && !isFinishedStatus(s.status),
+      );
+      if (!session) {
+        session = await createSession({
+          kind: { type: "shell" },
+          cwd: dir,
+          title,
+          cols: 100,
+          rows: 30,
+        });
+        const fresh = session;
+        setSessions((prev) => [...prev, fresh]);
+        await createWorkspace(title, dir, fresh.id);
+      } else {
+        goToSession(session.id);
+      }
+      await openEditorTab(file, undefined, { session: session.id });
+    } catch (e) {
+      toastError(t("editorOpenError"), e);
+    }
+  }, [sessions, goToSession, t]);
 
   /**
    * Salto do quadro: além do workspace e da aba, foca o painel.
@@ -6144,6 +6178,7 @@ export default function App() {
                     <div className="absolute inset-0 flex">
                       <SettingsView
                         onClose={toggleSettings}
+                        onOpenConfig={() => void openUserConfig()}
                         launchConfigs={launchConfigs}
                         onApplyLaunchConfig={applyLaunchConfigById}
                         onEditLaunchConfig={editLaunchConfig}

@@ -1029,6 +1029,9 @@ const encodeBase64 = (data: string): string => {
   return btoa(bin);
 };
 
+/** Onde mora o `config.toml` do usuário; `null` se a pasta foi recusada. */
+export const userConfigPath = () => invoke<string | null>("user_config_path");
+
 export const createSession = (opts: CreateSessionOpts) =>
   invoke<Session>("create_session", { opts });
 
