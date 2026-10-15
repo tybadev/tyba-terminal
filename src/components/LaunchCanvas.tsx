@@ -1,10 +1,4 @@
-import {
-  CloudArrowUp,
-  TerminalWindow,
-  TreeStructure,
-} from "@phosphor-icons/react";
-
-import { AgentIcon } from "./icons/AgentIcon";
+import { TreeStructure } from "@phosphor-icons/react";
 import { useCallback, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
@@ -18,6 +12,17 @@ interface Props {
   selected: SlotId | null;
   onSelect: (slot: SlotId) => void;
   onChange: (root: SlotNode) => void;
+  /** Ações do pane escolhido, no cabeçalho dele (quadro "Launch config"). */
+  onSplit?: (kind: "v" | "h") => void;
+  onRemove?: () => void;
+}
+
+/** A cor da bolinha de cada pane: a mesma linguagem do resto do app. */
+function dotColor(slot: LaunchSlot | undefined): string {
+  if (!slot) return "var(--tyba-text-faint)";
+  if (slot.kind.type === "ssh") return "var(--tyba-cyan)";
+  if (slot.kind.type === "agent") return slot.kind.runner === "codex" ? "var(--tyba-violet)" : "var(--tyba-amber)";
+  return "var(--tyba-green)";
 }
 
 const COMPACT_AREA = 90;
@@ -28,6 +33,8 @@ export function LaunchCanvas({
   selected,
   onSelect,
   onChange,
+  onSplit,
+  onRemove,
 }: Props) {
   const { t } = useTranslation();
   const surface = useRef<HTMLDivElement>(null);
@@ -71,80 +78,94 @@ export function LaunchCanvas({
     setDragging(null);
   }, []);
 
+  const kindLabel = (slot: LaunchSlot | undefined) => {
+    if (!slot) return "";
+    if (slot.kind.type === "ssh") return t("launchSlotRemote");
+    const parts: string[] = [];
+    if (slot.kind.type === "agent") {
+      parts.push(slot.kind.runner === "codex" ? "codex" : "claude");
+      if (slot.kind.runner === "claude_code" && slot.model) parts.push(slot.model);
+    } else {
+      parts.push("shell");
+    }
+    if (slot.cwd_rel?.trim() && slot.cwd_rel !== ".") parts.push(slot.cwd_rel);
+    if (slot.isolate) parts.push(t("launchOwnWorktree"));
+    return parts.join(" · ");
+  };
+
   return (
-    <div
-      ref={surface}
-      className="relative aspect-[16/10] w-full overflow-hidden rounded-md border border-tyba-border-strong bg-tyba-sunken"
-      style={{
-        backgroundImage:
-          "linear-gradient(to right, var(--tyba-border) 1px, transparent 1px), linear-gradient(to bottom, var(--tyba-border) 1px, transparent 1px)",
-        backgroundSize: "24px 24px",
-        backgroundPosition: "center",
-      }}
-    >
+    <div ref={surface} className="relative h-full w-full">
       {layout.panes.map((rect) => {
         const slotId = findSlotOfPane(root, rect.pane);
         const slot = slotId ? slotById.get(slotId) : undefined;
         const isSelected = slotId != null && slotId === selected;
         const compact = rect.w * rect.h < COMPACT_AREA;
-        const kind = slot?.kind.type;
+        const prompt = slot?.initial_prompt?.trim();
         return (
-          <button
+          <div
             key={rect.pane}
-            type="button"
+            role="button"
+            tabIndex={0}
             onClick={() => slotId && onSelect(slotId)}
+            onKeyDown={(e) => {
+              if ((e.key === "Enter" || e.key === " ") && slotId) onSelect(slotId);
+            }}
             aria-pressed={isSelected}
             aria-label={slot?.name ?? t("launchSlotUnnamed")}
-            className={`tyba-focusable absolute flex flex-col gap-1 overflow-hidden p-2 text-left transition-colors ${
+            className={`tyba-focusable absolute flex flex-col overflow-hidden rounded-[8px] bg-tyba-sunken text-left ${
               isSelected
-                ? "border border-tyba-green bg-tyba-raised"
-                : "border border-tyba-border-strong bg-tyba-surface hover:border-tyba-text-faint"
+                ? "shadow-[0_0_0_2px_var(--tyba-green)]"
+                : "shadow-[inset_0_0_0_1px_var(--tyba-border)] hover:shadow-[inset_0_0_0_1px_var(--tyba-border-strong)]"
             }`}
             style={{
-              left: `${rect.x}%`,
-              top: `${rect.y}%`,
-              width: `${rect.w}%`,
-              height: `${rect.h}%`,
+              left: `calc(${rect.x}% + 4px)`,
+              top: `calc(${rect.y}% + 4px)`,
+              width: `calc(${rect.w}% - 8px)`,
+              height: `calc(${rect.h}% - 8px)`,
             }}
           >
-            <span className="flex items-center gap-1.5 truncate">
-              {kind === "agent" ? (
-                <AgentIcon
-                  size={13}
-                  className={isSelected ? "text-tyba-green" : "text-tyba-violet"}
-                />
-              ) : kind === "ssh" ? (
-                <CloudArrowUp size={13} className="text-tyba-cyan" />
-              ) : (
-                <TerminalWindow size={13} className="text-tyba-text-faint" />
+            <div className="flex items-center gap-2 border-b border-tyba-border-soft bg-tyba-raised px-2.5 py-[7px] text-[11.5px]">
+              <span className="size-[7px] shrink-0 rounded-full" style={{ background: dotColor(slot) }} />
+              <span className="truncate text-tyba-text">{slot?.name ?? t("launchSlotUnnamed")}</span>
+              {!compact && <span className="truncate text-tyba-text-faint">{kindLabel(slot)}</span>}
+              <span className="flex-1" />
+              {isSelected && onSplit && (
+                <span className="flex shrink-0 gap-1" onClick={(e) => e.stopPropagation()}>
+                  <button onClick={() => onSplit("v")} className="rounded-[5px] bg-tyba-surface px-1.5 py-0.5 text-[10.5px] text-tyba-text-muted shadow-[inset_0_0_0_1px_var(--tyba-border-field)] hover:text-tyba-text">
+                    ⇥ {t("launchSplitVerticalShort")}
+                  </button>
+                  <button onClick={() => onSplit("h")} className="rounded-[5px] bg-tyba-surface px-1.5 py-0.5 text-[10.5px] text-tyba-text-muted shadow-[inset_0_0_0_1px_var(--tyba-border-field)] hover:text-tyba-text">
+                    ⤓ {t("launchSplitHorizontalShort")}
+                  </button>
+                  {onRemove && (
+                    <button
+                      onClick={onRemove}
+                      aria-label={t("launchRemovePane")}
+                      className="rounded-[5px] bg-tyba-surface px-1.5 py-0.5 text-[10.5px] text-tyba-text-muted shadow-[inset_0_0_0_1px_var(--tyba-border-field)] hover:text-tyba-red"
+                    >
+                      ✕
+                    </button>
+                  )}
+                </span>
               )}
-              <span className="truncate font-mono text-[11px] text-tyba-text">
-                {slot?.name ?? t("launchSlotUnnamed")}
-              </span>
-            </span>
+            </div>
             {!compact && (
-              <span className="truncate font-mono text-[10px] text-tyba-text-faint">
-                {slot?.kind.type === "ssh"
-                  ? t("launchSlotRemote")
-                  : `${slot?.cwd_rel?.trim() ? slot.cwd_rel : "."}${
-                      slot?.isolate ? " · worktree" : ""
-                    }`}
-              </span>
+              <div className="flex flex-col gap-0.5 px-3 py-2.5 font-mono text-[11px] leading-[17px]">
+                <span className={prompt ? "truncate text-tyba-text-muted" : "text-tyba-text-faint"}>
+                  ❯ {prompt || t("launchNoPrompt")}
+                </span>
+                {prompt && (
+                  <span className="text-tyba-text-faint">
+                    {slot?.kind.type === "shell"
+                      ? slot.run_on_open
+                        ? t("launchRunsOnOpen")
+                        : t("launchTypedOnly")
+                      : t("launchSlotPromptHelp")}
+                  </span>
+                )}
+              </div>
             )}
-            {isSelected &&
-              [
-                "left-0 top-0",
-                "right-0 top-0",
-                "left-0 bottom-0",
-                "right-0 bottom-0",
-              ].map((pos) => (
-                <span
-                  key={pos}
-                  aria-hidden
-                  className={`absolute size-[5px] bg-tyba-green ${pos}`}
-                />
-              ))}
-          </button>
+          </div>
         );
       })}
 

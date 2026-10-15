@@ -104,9 +104,9 @@ import {
 import { agentOpenUrlToastInput } from "./lib/agentOpenUrlToast";
 import { agentAlertToast } from "./lib/agentUsage";
 import {
-  LaunchConfigDialog,
+  LaunchConfigScreen,
   type LaunchConfigDraftState,
-} from "./components/LaunchConfigDialog";
+} from "./components/LaunchConfigScreen";
 import { ShortcutsPanel } from "./components/ShortcutsPanel";
 import { ConnectionsView } from "./components/ConnectionsView";
 import {
@@ -5298,11 +5298,6 @@ export default function App() {
         onPickHistory={injectIntoActive}
         onPickSnippet={pickSnippet}
       />
-      <LaunchConfigDialog
-        draft={launchDraft}
-        onClose={() => setLaunchDraft(null)}
-        onSaved={refreshLaunchConfigs}
-      />
       <HostFormDialog
         state={hostEditor}
         groups={hostGroups}
@@ -6171,6 +6166,20 @@ export default function App() {
                         onReviewSession={(id) =>
                           void openDiffContentTab(id).catch(() => {})
                         }
+                      />
+                    </div>
+                  )}
+                  {/* A launch config abre no lugar do shell, por cima de tudo
+                      que estiver na área — inclusive das Configurações, de
+                      onde ela costuma ser chamada. */}
+                  {launchDraft && (
+                    <div className="absolute inset-0 z-30 flex">
+                      <LaunchConfigScreen
+                        key={launchDraft.id ?? "nova"}
+                        draft={launchDraft}
+                        onClose={() => setLaunchDraft(null)}
+                        onSaved={refreshLaunchConfigs}
+                        onOpen={(id) => void applyLaunchConfigById(id)}
                       />
                     </div>
                   )}
