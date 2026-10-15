@@ -1,15 +1,8 @@
 //! O handler do core para o canal shim↔core (shim v2, passo 2, tech-spec
-//! §4): quem decide se um `host_agent` vira sessão gerenciada, e a allowlist
-//! positiva de jaula (§1 / ADR 2026-09-02) que substitui o piso denylist que
-//! o design-review furou em bwrap real.
-//!
-//! A allowlist é a decisão central de segurança desta entrega: `jail_target`
-//! só devolve `Some` quando o toplevel git da cwd é um descendente ESTRITO e
-//! VISÍVEL de `$HOME` — nunca a home em si, nunca sob um dot-dir, nunca fora
-//! dela. Structurally disjunto de toda superfície de segredo do Linux
-//! (dot-dirs, dot-files, fora da home), então nada precisa ser lembrado numa
-//! lista de exclusão — é isso que corrige o furo medido (§XDG_RUNTIME_DIR,
-//! ~/.config/~/.local/~/.cache, /var/tmp, shadow_swallows_worktree).
+//! §4): quem decide se um `host_agent` vira sessão hospedada, e em qual
+//! sessão de shell e cwd. Agente livre (2026-10-15): o claude digitado sobe
+//! sem jaula; a allowlist de jaula (§1 / ADR 2026-09-02) saiu deste caminho,
+//! e só [`visible_strict_descendant`] continua, para o `cd` do retomar.
 
 use std::path::{Component, Path, PathBuf};
 
@@ -20,16 +13,12 @@ use crate::session::SessionId;
 const HOST_AGENT_AGENT: &str = "claude";
 
 /// O que a resolução decidiu, antes de `prepare_hosted_agent` (Track B, em
-/// `agent::session`) montar o `argv`/`env` de verdade: qual sessão hospeda,
-/// em que cwd, e se a jaula entra ou não.
+/// `agent::session`) montar o `argv`/`env` de verdade: qual sessão hospeda e
+/// em que cwd.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedHost {
     pub session_id: SessionId,
     pub cwd: PathBuf,
-    pub jail_target: Option<PathBuf>,
-    /// Por que não há jaula, quando `jail_target` é `None` (M7): o pane
-    /// mostra o motivo em linguagem simples.
-    pub no_jail: Option<NoJailReason>,
     /// Os args do `claude`, já reclassificados aqui como sessão hospedável.
     pub args: Vec<String>,
 }
@@ -42,9 +31,6 @@ pub struct ResolveDeps<'a> {
     pub rows: &'a [ProcRow],
     pub starttime: &'a dyn Fn(u32) -> Option<u64>,
     pub cwd_of: &'a dyn Fn(u32) -> Option<PathBuf>,
-    pub home: &'a Path,
-    pub toplevel: &'a dyn Fn(&Path) -> Option<PathBuf>,
-    pub userns_ok: bool,
 }
 
 /// Review round 1 (correção/contrato), achado MINOR: `/proc/<pid>/cwd` de um
@@ -130,8 +116,7 @@ mod cwd_is_live_tests {
 /// 4. cwd do líder — nunca da requisição.
 /// 5. RECHECK do starttime: se o pid foi reciclado durante os passos 3-4,
 ///    diverge daqui e a resposta é `peer_unresolved` — pior caso de corrida
-///    perdida é gate na cwd da PRÓPRIA sessão do atacante, sem escalação.
-/// 6. a allowlist decide a jaula.
+///    perdida é hospedar na cwd da PRÓPRIA sessão do atacante, sem escalação.
 pub fn resolve_host_request(
     peer_pid: u32,
     request: &ChannelRequest,
@@ -141,8 +126,8 @@ pub fn resolve_host_request(
         return Err(RefusedReason::UnknownAgent);
     }
     // M6-A: o core refaz a classificação do cliente sobre os args que
-    // chegaram. Só sessão de agente é hospedada; flag que desligaria o gate
-    // (ou qualquer coisa que o cliente não devia ter mandado) é recusada.
+    // chegaram. Só sessão de agente é hospedada; flag que tiraria os hooks do
+    // TYBA (ou qualquer coisa que o cliente não devia ter mandado) é recusada.
     if crate::agent::claude_cli::route(&request.args) != crate::agent::claude_cli::ClaudeRoute::Host
     {
         return Err(RefusedReason::ForbiddenArgs);
@@ -166,25 +151,16 @@ pub fn resolve_host_request(
         return Err(RefusedReason::PeerUnresolved);
     }
 
-    let target = jail_target(&cwd, deps.home, deps.toplevel);
-    let no_jail = match &target {
-        None => Some(no_jail_reason(&cwd, deps.home)),
-        Some(_) if !deps.userns_ok => Some(NoJailReason::Sandbox),
-        Some(_) => None,
-    };
-    let jail_target = decide_jail(target, deps.userns_ok);
     Ok(ResolvedHost {
         session_id,
         cwd,
-        jail_target,
-        no_jail,
         args: request.args.clone(),
     })
 }
 
 /// O ponto de entrada de produção — o `ChannelHandler` que `lib.rs` liga ao
-/// `ChannelServer::bind`. Fecha as dependências reais (`/proc`, git,
-/// `userns_usable`) e delega a `resolve_host_request`; em caso de acerto,
+/// `ChannelServer::bind`. Fecha as dependências reais (`/proc`) e delega a
+/// `resolve_host_request`; em caso de acerto,
 /// chama `agent::session::prepare_hosted_agent` (Track B) para montar o
 /// `argv`/`env`/`hooks.json`/`HookServer` de verdade e escrever o plano.
 pub fn handle(
@@ -199,19 +175,11 @@ pub fn handle(
         .filter_map(|id| ctx.pty_pool.leader_pid(id).map(|pid| (id, pid)))
         .collect();
     let rows = crate::agent::process_probe::snapshot();
-    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
-        return ChannelResponse::Refused {
-            reason: RefusedReason::NoCwd,
-        };
-    };
     let deps = ResolveDeps {
         shells: &shells,
         rows: &rows,
         starttime: &crate::repo::process_start_time,
         cwd_of: &crate::repo::process_cwd,
-        home: &home,
-        toplevel: &crate::repo::toplevel,
-        userns_ok: userns_usable(),
     };
     match resolve_host_request(peer_pid, &request, &deps) {
         Err(reason) => ChannelResponse::Refused { reason },
@@ -220,13 +188,12 @@ pub fn handle(
                 ctx,
                 resolved.session_id,
                 resolved.cwd,
-                resolved.jail_target,
-                resolved.no_jail,
                 &resolved.args,
             ) {
-                Ok((plan_path, jailed)) => ChannelResponse::Host {
+                // Agente livre: nunca jaulado.
+                Ok(plan_path) => ChannelResponse::Host {
                     plan_path: plan_path.to_string_lossy().into_owned(),
-                    jailed,
+                    jailed: false,
                 },
                 // Falhou preparar (binário ausente, fs quebrado, git indisponível
                 // no repo alvo): degrada para a MESMA resposta de "não posso
@@ -239,25 +206,6 @@ pub fn handle(
             }
         }
     }
-}
-
-#[cfg(target_os = "linux")]
-fn userns_usable() -> bool {
-    crate::sandbox::bwrap::userns_usable()
-}
-
-/// macOS: a jaula é o Seatbelt (`sandbox-exec`), que não depende de user
-/// namespace. Responder `true` só deixa a allowlist decidir; se o
-/// `Sandbox::wrap` falhar de verdade, `build_hosted_command` degrada para
-/// gate-sem-jaula, nunca para nada.
-#[cfg(target_os = "macos")]
-fn userns_usable() -> bool {
-    true
-}
-
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
-fn userns_usable() -> bool {
-    false
 }
 
 /// O componente que faz `T` deixar de ser um descendente ESTRITO e VISÍVEL de
@@ -282,82 +230,6 @@ pub(crate) fn visible_strict_descendant(candidate: &Path, home: &Path) -> bool {
         // profundidade sobre uma entrada que não deveria existir.
         _ => false,
     })
-}
-
-/// A allowlist positiva (§1), sem vínculo com git (M7 do claude-monitor):
-///
-/// 1. o toplevel git da cwd, SE ele for descendente estrito e visível de
-///    `home` — a jaula cobre o repositório inteiro;
-/// 2. senão a própria cwd, sob a MESMA regra. Cobre pasta sem git e repo cujo
-///    toplevel é a home (um `~/.git` vazio esquecido faz toda pasta da home
-///    resolver toplevel = home): nesse caso a jaula é a cwd, nunca a home
-///    inteira.
-///
-/// Só cwd na própria home, sob um dot-dir ou fora da home fica sem jaula
-/// (`None`, "gate-sem-jaula", nunca recusa) — ver [`no_jail_reason`].
-///
-/// `toplevel` é injetado pelo mesmo motivo de `find_agent::kind_of`: a
-/// resolução real faz `git rev-parse` (`crate::repo::toplevel`), e o teste
-/// prova a decisão sem precisar de um repositório de verdade no disco.
-pub fn jail_target(
-    cwd: &Path,
-    home: &Path,
-    toplevel: impl Fn(&Path) -> Option<PathBuf>,
-) -> Option<PathBuf> {
-    let home = crate::repo::canonicalize_or(home);
-    if let Some(repo) = toplevel(cwd).map(|t| crate::repo::canonicalize_or(&t)) {
-        if visible_strict_descendant(&repo, &home) {
-            return Some(repo);
-        }
-    }
-    let cwd = crate::repo::canonicalize_or(cwd);
-    visible_strict_descendant(&cwd, &home).then_some(cwd)
-}
-
-/// Por que um claude hospedado ficou sem jaula (M7). Vai para o env do
-/// agente (`TYBA_NOJAIL`) e de lá para o pane, que explica em pt-BR.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NoJailReason {
-    /// Aberto direto na home: jaular a home inteira não isola nada.
-    Home,
-    /// Numa pasta oculta (`~/.config/...`): é onde mora segredo.
-    HiddenDir,
-    /// Fora da home.
-    OutsideHome,
-    /// A sandbox do sistema não está disponível (ou falhou ao montar).
-    Sandbox,
-}
-
-impl NoJailReason {
-    pub fn as_env(self) -> &'static str {
-        match self {
-            NoJailReason::Home => "home",
-            NoJailReason::HiddenDir => "hidden_dir",
-            NoJailReason::OutsideHome => "outside_home",
-            NoJailReason::Sandbox => "sandbox",
-        }
-    }
-}
-
-/// O motivo, para uma cwd que [`jail_target`] recusou.
-pub fn no_jail_reason(cwd: &Path, home: &Path) -> NoJailReason {
-    let cwd = crate::repo::canonicalize_or(cwd);
-    let home = crate::repo::canonicalize_or(home);
-    match cwd.strip_prefix(&home) {
-        Ok(rel) if rel.as_os_str().is_empty() => NoJailReason::Home,
-        Ok(_) => NoJailReason::HiddenDir,
-        Err(_) => NoJailReason::OutsideHome,
-    }
-}
-
-/// O segundo eixo da decisão de jaula (§4.7): mesmo com um `jail_target`
-/// positivo, sem user namespace utilizável a sessão degrada para
-/// gate-sem-jaula — nunca recusa, e nunca tenta montar bwrap sem checar
-/// antes (`platform_sandbox()` fail-closed é para o caminho de HOJE, não
-/// para este). Pura sobre o resultado já calculado de `userns_usable()`, pelo
-/// mesmo motivo dos outros: o teste não precisa de bwrap de verdade.
-pub fn decide_jail(target: Option<PathBuf>, userns_ok: bool) -> Option<PathBuf> {
-    target.filter(|_| userns_ok)
 }
 
 #[cfg(test)]
@@ -387,7 +259,7 @@ mod resolve_tests {
     }
 
     /// Deps de um caso feliz de fábrica: peer(200) filho do shell líder(100)
-    /// da sessão `s`, starttime estável, cwd sob um repo visível na home.
+    /// da sessão `s`, starttime estável, cwd viva no disco.
     ///
     /// Review round 1, achado MINOR: `home`/`cwd` moram num `tempfile::
     /// TempDir` de verdade, criado no disco — desde o fix de `cwd_is_live`
@@ -402,31 +274,24 @@ mod resolve_tests {
         session: SessionId,
         shells: Vec<(SessionId, u32)>,
         rows: Vec<ProcRow>,
-        home: PathBuf,
         cwd: PathBuf,
         cwd_of: Box<dyn Fn(u32) -> Option<PathBuf>>,
-        toplevel: Box<dyn Fn(&Path) -> Option<PathBuf>>,
     }
 
     fn fixture() -> Fixture {
         let session = SessionId::new_v4();
         let home_dir = tempfile::tempdir().expect("tempdir da home de teste");
-        // Canônico: no macOS o temp dir é `/var/...`, symlink para
-        // `/private/var/...`, e `jail_target` devolve o caminho canônico.
         let home = crate::repo::canonicalize_or(home_dir.path());
         let cwd = home.join("projetos").join("tyba");
         std::fs::create_dir_all(&cwd).expect("cria o repo de teste no disco");
         let cwd_for_leader = cwd.clone();
-        let cwd_for_toplevel = cwd.clone();
         Fixture {
             _home_dir: home_dir,
             session,
             shells: vec![(session, 100)],
             rows: vec![row(100, 1), row(200, 100)],
-            home,
             cwd,
             cwd_of: Box::new(move |_leader| Some(cwd_for_leader.clone())),
-            toplevel: Box::new(move |_cwd| Some(cwd_for_toplevel.clone())),
         }
     }
 
@@ -434,22 +299,19 @@ mod resolve_tests {
         Some(999)
     }
 
-    fn deps_from(f: &Fixture, userns_ok: bool) -> ResolveDeps<'_> {
+    fn deps_from(f: &Fixture) -> ResolveDeps<'_> {
         ResolveDeps {
             shells: &f.shells,
             rows: &f.rows,
             starttime: &stable_starttime,
             cwd_of: &*f.cwd_of,
-            home: &f.home,
-            toplevel: &*f.toplevel,
-            userns_ok,
         }
     }
 
     #[test]
     fn an_unknown_agent_is_refused_before_touching_proc() {
         let f = fixture();
-        let deps = deps_from(&f, true);
+        let deps = deps_from(&f);
         let mut request = req();
         request.agent = "vim".into();
         assert_eq!(
@@ -461,7 +323,7 @@ mod resolve_tests {
     #[test]
     fn a_peer_unrelated_to_any_shell_is_no_session() {
         let f = fixture();
-        let deps = deps_from(&f, true);
+        let deps = deps_from(&f);
         // 777 não é filho de líder nenhum conhecido.
         assert_eq!(
             resolve_host_request(777, &req(), &deps),
@@ -472,7 +334,7 @@ mod resolve_tests {
     #[test]
     fn a_leader_without_a_resolvable_cwd_is_no_cwd() {
         let f = fixture();
-        let mut deps = deps_from(&f, true);
+        let mut deps = deps_from(&f);
         let none_cwd = |_leader: u32| None;
         deps.cwd_of = &none_cwd;
         assert_eq!(
@@ -491,7 +353,7 @@ mod resolve_tests {
     #[test]
     fn a_deleted_cwd_from_the_kernel_suffix_is_no_cwd_not_a_dangling_bind() {
         let f = fixture();
-        let mut deps = deps_from(&f, true);
+        let mut deps = deps_from(&f);
         let deleted_path = PathBuf::from(format!("{} (deleted)", f.cwd.display()));
         let deleted_cwd = move |_leader: u32| Some(deleted_path.clone());
         deps.cwd_of = &deleted_cwd;
@@ -507,7 +369,7 @@ mod resolve_tests {
     #[test]
     fn a_peer_that_vanishes_before_starttime_can_be_read_is_peer_unresolved() {
         let f = fixture();
-        let mut deps = deps_from(&f, true);
+        let mut deps = deps_from(&f);
         let no_starttime = |_pid: u32| None;
         deps.starttime = &no_starttime;
         assert_eq!(
@@ -519,7 +381,7 @@ mod resolve_tests {
     #[test]
     fn a_recycled_peer_pid_fails_the_toctou_recheck() {
         let f = fixture();
-        let mut deps = deps_from(&f, true);
+        let mut deps = deps_from(&f);
         // Primeira leitura de starttime (antes do trabalho) bate; a segunda
         // (depois de resolver sessão+cwd) diverge — pid foi reciclado no
         // meio da corrida.
@@ -537,22 +399,21 @@ mod resolve_tests {
     }
 
     #[test]
-    fn a_visible_repo_resolves_to_a_jailed_host_request() {
+    fn a_live_cwd_resolves_to_a_host_request_in_the_owning_shell() {
         let f = fixture();
-        let deps = deps_from(&f, true);
+        let deps = deps_from(&f);
         let resolved = resolve_host_request(200, &req(), &deps).expect("deveria resolver");
         assert_eq!(resolved.session_id, f.session);
         assert_eq!(resolved.cwd, f.cwd);
-        assert_eq!(resolved.jail_target, Some(f.cwd.clone()));
     }
 
     /// M6-A: o core refaz a classificação dos args — nunca confia no `_jail`.
     #[test]
-    fn args_that_would_disable_the_gate_are_refused_by_the_core() {
+    fn args_that_would_drop_tybas_hooks_are_refused_by_the_core() {
         let f = fixture();
-        let deps = deps_from(&f, true);
+        let deps = deps_from(&f);
         for args in [
-            vec!["--dangerously-skip-permissions"],
+            vec!["--bare"],
             vec!["--settings", "/tmp/sem-hooks.json"],
             vec!["--resume", "não é um id"],
             // Passthrough nunca devia chegar ao canal: também recusa.
@@ -568,10 +429,27 @@ mod resolve_tests {
         }
     }
 
+    /// Agente livre: pular a permissão do próprio Claude é de quem digita —
+    /// o core hospeda (com os hooks e o guarda-corpo) em vez de recusar.
+    #[test]
+    fn skipping_claudes_own_permissions_is_hosted_by_the_core() {
+        let f = fixture();
+        let deps = deps_from(&f);
+        for args in [
+            vec!["--dangerously-skip-permissions"],
+            vec!["--permission-mode", "bypassPermissions"],
+        ] {
+            let mut request = req();
+            request.args = args.iter().map(|a| a.to_string()).collect();
+            let resolved = resolve_host_request(200, &request, &deps).expect("hospeda");
+            assert_eq!(resolved.args, request.args);
+        }
+    }
+
     #[test]
     fn session_args_ride_along_untouched() {
         let f = fixture();
-        let deps = deps_from(&f, true);
+        let deps = deps_from(&f);
         let mut request = req();
         request.args = vec![
             "--resume".into(),
@@ -582,151 +460,28 @@ mod resolve_tests {
         let resolved = resolve_host_request(200, &request, &deps).expect("hospeda");
         assert_eq!(resolved.args, request.args);
     }
-
-    #[test]
-    fn no_userns_resolves_to_a_gate_only_host_request_not_a_refusal() {
-        let f = fixture();
-        let deps = deps_from(&f, false);
-        let resolved = resolve_host_request(200, &req(), &deps).expect("gate sem jaula não recusa");
-        assert_eq!(resolved.jail_target, None);
-    }
-
-    /// M7: pasta sem git sob a home é jaulada na própria cwd.
-    #[test]
-    fn a_non_git_cwd_is_jailed_at_the_cwd_itself() {
-        let f = fixture();
-        let mut deps = deps_from(&f, true);
-        let no_repo = |_cwd: &Path| None;
-        deps.toplevel = &no_repo;
-        let resolved = resolve_host_request(200, &req(), &deps).expect("sem git hospeda");
-        assert_eq!(resolved.jail_target, Some(f.cwd.clone()));
-        assert_eq!(resolved.no_jail, None);
-    }
-
-    #[test]
-    fn no_userns_reports_the_sandbox_as_the_reason() {
-        let f = fixture();
-        let deps = deps_from(&f, false);
-        let resolved = resolve_host_request(200, &req(), &deps).unwrap();
-        assert_eq!(resolved.no_jail, Some(NoJailReason::Sandbox));
-    }
 }
 
 #[cfg(test)]
-mod allowlist_tests {
+mod visible_strict_descendant_tests {
     use super::*;
 
-    fn git_repo_at(path: &str) -> impl Fn(&Path) -> Option<PathBuf> {
-        let repo = PathBuf::from(path);
-        move |_cwd: &Path| Some(repo.clone())
-    }
-
-    fn no_repo(_cwd: &Path) -> Option<PathBuf> {
-        None
-    }
-
     #[test]
-    fn a_visible_repo_under_home_is_jailed() {
+    fn only_a_strict_visible_descendant_of_home_counts() {
         let home = Path::new("/home/dono");
-        let cwd = Path::new("/home/dono/projetos/tyba");
-        let target = jail_target(cwd, home, git_repo_at("/home/dono/projetos/tyba"));
-        assert_eq!(target, Some(PathBuf::from("/home/dono/projetos/tyba")));
-    }
-
-    /// M7: sem git, a jaula é a própria cwd — git não é pré-requisito.
-    #[test]
-    fn a_non_git_cwd_under_home_is_jailed_at_the_cwd() {
-        let home = Path::new("/home/dono");
-        let cwd = Path::new("/home/dono/scratch");
-        assert_eq!(
-            jail_target(cwd, home, no_repo),
-            Some(PathBuf::from("/home/dono/scratch"))
-        );
-    }
-
-    /// M7, o caso real da máquina do dono: um `~/.git` vazio faz a pasta
-    /// resolver toplevel = home. A jaula cai na cwd, nunca na home inteira.
-    #[test]
-    fn a_repo_whose_toplevel_is_home_falls_back_to_the_cwd() {
-        let home = Path::new("/home/dono");
-        let cwd = Path::new("/home/dono/swell-system/poc-git");
-        assert_eq!(
-            jail_target(cwd, home, git_repo_at("/home/dono")),
-            Some(PathBuf::from("/home/dono/swell-system/poc-git"))
-        );
-    }
-
-    #[test]
-    fn a_subdir_of_a_visible_repo_is_jailed_at_the_repo_root() {
-        let home = Path::new("/home/dono");
-        let cwd = Path::new("/home/dono/projetos/tyba/src");
-        assert_eq!(
-            jail_target(cwd, home, git_repo_at("/home/dono/projetos/tyba")),
-            Some(PathBuf::from("/home/dono/projetos/tyba"))
-        );
-    }
-
-    #[test]
-    fn each_remaining_no_jail_case_has_its_own_reason() {
-        let home = Path::new("/home/dono");
-        for (cwd, reason) in [
-            ("/home/dono", NoJailReason::Home),
-            ("/home/dono/.config/x", NoJailReason::HiddenDir),
-            ("/home/dono/projetos/.oculto/repo", NoJailReason::HiddenDir),
-            ("/var/tmp/repo", NoJailReason::OutsideHome),
+        for (dir, expected) in [
+            ("/home/dono/projetos/tyba", true),
+            ("/home/dono/scratch", true),
+            ("/home/dono", false),
+            ("/home/dono/.config/x", false),
+            ("/home/dono/projetos/.oculto/repo", false),
+            ("/var/tmp/repo", false),
         ] {
-            assert_eq!(jail_target(Path::new(cwd), home, no_repo), None, "{cwd}");
-            assert_eq!(no_jail_reason(Path::new(cwd), home), reason, "{cwd}");
+            assert_eq!(
+                visible_strict_descendant(Path::new(dir), home),
+                expected,
+                "{dir}"
+            );
         }
-    }
-
-    #[test]
-    fn a_repo_that_is_the_home_itself_degrades_to_gate_only() {
-        let home = Path::new("/home/dono");
-        let cwd = Path::new("/home/dono");
-        assert_eq!(jail_target(cwd, home, git_repo_at("/home/dono")), None);
-    }
-
-    #[test]
-    fn a_repo_under_a_dot_dir_degrades_to_gate_only() {
-        let home = Path::new("/home/dono");
-        let cwd = Path::new("/home/dono/.config/myrepo");
-        let target = jail_target(cwd, home, git_repo_at("/home/dono/.config/myrepo"));
-        assert_eq!(
-            target, None,
-            "~/.config carrega segredo — nunca vira raiz gravável"
-        );
-    }
-
-    #[test]
-    fn a_repo_outside_home_degrades_to_gate_only() {
-        let home = Path::new("/home/dono");
-        let cwd = Path::new("/var/tmp/repo");
-        assert_eq!(jail_target(cwd, home, git_repo_at("/var/tmp/repo")), None);
-    }
-
-    #[test]
-    fn a_repo_under_a_deep_dot_ancestor_degrades_to_gate_only() {
-        // O dot-dir pode estar no MEIO do caminho, não só logo abaixo da home.
-        let home = Path::new("/home/dono");
-        let cwd = Path::new("/home/dono/projetos/.oculto/repo");
-        let target = jail_target(cwd, home, git_repo_at("/home/dono/projetos/.oculto/repo"));
-        assert_eq!(target, None);
-    }
-
-    #[test]
-    fn no_userns_degrades_a_positive_target_to_gate_only() {
-        let target = Some(PathBuf::from("/home/dono/projetos/tyba"));
-        assert_eq!(decide_jail(target, false), None);
-    }
-
-    #[test]
-    fn userns_usable_keeps_a_positive_target_jailed() {
-        let target = Some(PathBuf::from("/home/dono/projetos/tyba"));
-        assert_eq!(
-            decide_jail(target.clone(), true),
-            target,
-            "userns disponível não muda a decisão da allowlist"
-        );
     }
 }

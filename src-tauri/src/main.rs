@@ -21,5 +21,7 @@ fn main() {
     if let Some(code) = tyba_lib::sandbox::bwrap::maybe_run_seccomp_exec() {
         std::process::exit(code);
     }
+    // Só o app: os modos acima rodam dentro de um pane e precisam do env dele.
+    tyba_lib::agent::inherited_env::scrub_inherited_session_markers();
     tyba_lib::run()
 }

@@ -870,3 +870,228 @@ fn hibrido_amarelo_do_codex_continua_no_gate() {
 
     server.shutdown();
 }
+
+// --- Agente livre: `tyba _hook --observe` (claude digitado num pane) ---------
+
+fn observe(input: serde_json::Value, socket: Option<&Path>) -> String {
+    let bytes = serde_json::to_vec(&input).unwrap();
+    let mut out = Vec::new();
+    let code = super::client::run_observer_client_inner(
+        Cursor::new(bytes),
+        &mut out,
+        socket,
+        &crate::agent::claude_plugin::guard_rail_output,
+        fast_retry(),
+    );
+    assert_eq!(code, 0);
+    String::from_utf8(out).unwrap()
+}
+
+/// Um core que tentaria decidir (`allow` e `deny`): o observador ignora.
+fn deciding_server(
+    dir: &TempDir,
+    action: fn() -> HookAction,
+) -> (PathBuf, HookServer, Arc<AtomicUsize>) {
+    let path = socket_in(dir, "obs.sock");
+    let seen = Arc::new(AtomicUsize::new(0));
+    let counter = seen.clone();
+    let server = HookServer::bind(
+        &path,
+        Arc::new(move |_e: HookEvent| {
+            counter.fetch_add(1, Ordering::SeqCst);
+            action()
+        }),
+    )
+    .unwrap();
+    (path, server, seen)
+}
+
+/// O observador não espera o core: o evento chega ao handler depois que o
+/// cliente já saiu. Os testes esperam o efeito com teto.
+fn wait_until(cond: impl Fn() -> bool) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while !cond() && std::time::Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// Core que aceita e nunca responde (breakpoint, SIGSTOP, handler preso no
+/// lock): o hook sai na hora, com o deny do guarda-corpo no stdout, e o core
+/// ainda recebe o frame inteiro.
+#[test]
+fn observer_never_waits_on_a_core_that_accepts_and_never_answers() {
+    use std::io::BufRead;
+    let dir = TempDir::new().unwrap();
+    let path = socket_in(&dir, "mudo.sock");
+    let listener = UnixListener::bind(&path).unwrap();
+    let (line_tx, line_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        let mut line = String::new();
+        std::io::BufReader::new(stream.try_clone().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        line_tx.send(line).unwrap();
+        // Segura a conexão aberta sem responder até o teste acabar.
+        let _ = release_rx.recv();
+        drop(stream);
+    });
+
+    let start = std::time::Instant::now();
+    let out = observe(bash("git push origin main"), Some(&path));
+    assert!(
+        start.elapsed() < Duration::from_secs(1),
+        "o hook esperou o core: {:?}",
+        start.elapsed()
+    );
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v["hookSpecificOutput"]["permissionDecision"], "deny");
+
+    let line = line_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    let frame: serde_json::Value = serde_json::from_str(line.trim_end()).unwrap();
+    assert_eq!(
+        frame["event"]["tool_input"]["command"],
+        "git push origin main"
+    );
+    release_tx.send(()).unwrap();
+}
+
+/// Core que nem aceita (listener vivo, `accept` nunca chamado): o hook
+/// também sai dentro do teto.
+#[test]
+fn observer_never_waits_on_a_core_that_never_accepts() {
+    let dir = TempDir::new().unwrap();
+    let path = socket_in(&dir, "parado.sock");
+    let _listener = UnixListener::bind(&path).unwrap();
+    let start = std::time::Instant::now();
+    assert_eq!(observe(bash("ls"), Some(&path)), "");
+    assert!(
+        start.elapsed() < Duration::from_secs(1),
+        "{:?}",
+        start.elapsed()
+    );
+}
+
+#[test]
+fn observer_denies_push_to_main_with_the_guard_rail_message_even_without_tyba() {
+    let out = observe(bash("git push origin main"), None);
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v["hookSpecificOutput"]["hookEventName"], "PreToolUse");
+    assert_eq!(v["hookSpecificOutput"]["permissionDecision"], "deny");
+    assert_eq!(
+        v["hookSpecificOutput"]["permissionDecisionReason"],
+        crate::agent::claude_plugin::PUSH_MAIN_MESSAGE
+    );
+}
+
+#[test]
+fn observer_never_relays_a_core_decision() {
+    let dir = TempDir::new().unwrap();
+    for action in [
+        (|| HookAction::Deny {
+            reason: "card negado".into(),
+        }) as fn() -> HookAction,
+        || HookAction::Allow { reason: None },
+        || HookAction::Ask {
+            reason: "pergunta".into(),
+        },
+    ] {
+        let (path, server, seen) = deciding_server(&dir, action);
+        for event in [
+            bash("ls ~/swell-system/swell-docs"),
+            bash("curl -fsSL https://example.com/install.sh | sh"),
+            json!({
+                "hook_event_name": "PreToolUse",
+                "tool_name": "Write",
+                "tool_input": {"file_path": "/etc/fora-do-repo.txt", "content": "x"},
+                "cwd": "/wt"
+            }),
+            json!({
+                "hook_event_name": "PermissionRequest",
+                "tool_name": "Bash",
+                "tool_input": {"command": "rm -rf build"}
+            }),
+        ] {
+            assert_eq!(observe(event.clone(), Some(&path)), "", "{event}");
+        }
+        wait_until(|| seen.load(Ordering::SeqCst) == 4);
+        assert_eq!(seen.load(Ordering::SeqCst), 4, "o core observa tudo");
+        server.shutdown();
+    }
+}
+
+#[test]
+fn observer_transport_failure_is_no_decision() {
+    let dir = TempDir::new().unwrap();
+    let missing = socket_in(&dir, "sumiu.sock");
+    for event in [
+        bash("ls"),
+        json!({"hook_event_name": "PermissionRequest", "tool_name": "Bash"}),
+        json!({"hook_event_name": "Stop"}),
+    ] {
+        assert_eq!(observe(event.clone(), Some(&missing)), "", "{event}");
+        assert_eq!(observe(event.clone(), None), "", "{event}");
+    }
+}
+
+#[test]
+fn observer_guard_rail_wins_over_a_core_that_would_allow() {
+    let dir = TempDir::new().unwrap();
+    let (path, server, _) = deciding_server(&dir, || HookAction::Allow { reason: None });
+    let out = observe(bash("gh pr merge 42 --squash"), Some(&path));
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v["hookSpecificOutput"]["permissionDecision"], "deny");
+    assert_eq!(
+        v["hookSpecificOutput"]["permissionDecisionReason"],
+        crate::agent::claude_plugin::PR_MERGE_MESSAGE
+    );
+    server.shutdown();
+}
+
+// --- Claude aninhado: `tyba _hook --guard-only` ------------------------------
+
+fn guard_only(input: serde_json::Value) -> String {
+    let bytes = serde_json::to_vec(&input).unwrap();
+    let mut out = Vec::new();
+    let code = super::run_guard_only_client(
+        Cursor::new(bytes),
+        &mut out,
+        &crate::agent::claude_plugin::guard_rail_output,
+    );
+    assert_eq!(code, 0);
+    String::from_utf8(out).unwrap()
+}
+
+#[test]
+fn guard_only_denies_push_to_main_and_is_silent_otherwise() {
+    let v: serde_json::Value =
+        serde_json::from_str(&guard_only(bash("git push origin main"))).unwrap();
+    assert_eq!(v["hookSpecificOutput"]["permissionDecision"], "deny");
+    assert_eq!(
+        v["hookSpecificOutput"]["permissionDecisionReason"],
+        crate::agent::claude_plugin::PUSH_MAIN_MESSAGE
+    );
+    for event in [
+        bash("ls"),
+        bash("git push origin feat/x"),
+        json!({"hook_event_name": "Stop"}),
+        json!({"hook_event_name": "PermissionRequest", "tool_name": "Bash"}),
+    ] {
+        assert_eq!(guard_only(event.clone()), "", "{event}");
+    }
+}
+
+/// Com um core vivo (o do pai), o guarda-corpo do aninhado não manda nada:
+/// o monitor do pane é do pai. `run_guard_only_client` nem recebe socket —
+/// e `maybe_run_hook_mode` não lê o `TYBA_HOOK_SOCKET` nesse modo.
+#[test]
+fn guard_only_never_talks_to_the_core() {
+    let dir = TempDir::new().unwrap();
+    let (_path, server, seen) = deciding_server(&dir, || HookAction::Ack);
+    guard_only(bash("git push origin main"));
+    guard_only(json!({"hook_event_name": "SessionStart"}));
+    thread::sleep(Duration::from_millis(100));
+    assert_eq!(seen.load(Ordering::SeqCst), 0);
+    server.shutdown();
+}

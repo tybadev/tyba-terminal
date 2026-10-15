@@ -4153,10 +4153,18 @@ fn submit_rich_input(
         .pty_pool
         .bracketed_paste(id)
         .ok_or_else(|| format!("sessão não encontrada: {id}"))?;
+    // Um claude digitado num pane de shell é sessão `Shell`, mas quem lê o
+    // input é o agente: sem a estratégia dele (pausa entre a colagem e o
+    // Enter), o Claude Code engole o Enter e o prompt fica parado na caixa.
     let strategy = state
         .sessions
         .get(id)
-        .map(|s| agent::submit_strategy_for(&s.kind))
+        .map(|s| match (&s.kind, state.agent_prober.detected(id)) {
+            (SessionKind::Shell, Some(found)) => {
+                agent::submit_strategy_for(&SessionKind::Agent { runner: found.kind })
+            }
+            (kind, _) => agent::submit_strategy_for(kind),
+        })
         .unwrap_or_default();
     let (normalized, _) = rich_input::normalize(&text);
     let payload =

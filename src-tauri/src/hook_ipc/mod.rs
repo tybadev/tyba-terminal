@@ -13,7 +13,7 @@ mod server;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-pub use client::{request, run_client};
+pub use client::{request, run_client, run_guard_only_client, run_observer_client};
 #[cfg(test)]
 pub(crate) use protocol::hook_event_from_value;
 pub use protocol::ResponseEnvelope;
@@ -50,14 +50,37 @@ pub enum HookAction {
     },
 }
 
+/// `tyba _hook --observe`: o hook do claude digitado num pane (agente livre).
+/// Ver [`client::run_observer_client`].
+pub const OBSERVE_FLAG: &str = "--observe";
+
+/// `tyba _hook --guard-only`: o hook do claude aberto de dentro do claude
+/// hospedado. Só o guarda-corpo, nunca o socket. Ver
+/// [`client::run_guard_only_client`].
+pub const GUARD_ONLY_FLAG: &str = "--guard-only";
+
 pub fn maybe_run_hook_mode() -> Option<i32> {
-    if std::env::args().nth(1).as_deref() != Some("_hook") {
+    let mut args = std::env::args().skip(1);
+    if args.next().as_deref() != Some("_hook") {
         return None;
     }
-    let socket = std::env::var_os("TYBA_HOOK_SOCKET").map(PathBuf::from);
+    let mode = args.next();
+    let socket = || std::env::var_os("TYBA_HOOK_SOCKET").map(PathBuf::from);
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
-    let code = run_client(stdin.lock(), stdout.lock(), socket.as_deref());
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    let guard = &crate::agent::claude_plugin::guard_rail_output;
+    // Windows não tem shim nem claude digitado com hook do TYBA: sem o
+    // guarda-corpo (o módulo é só unix), o modo `_hook` não recusa nada.
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    let guard = &|_: &serde_json::Value| -> Option<String> { None };
+    let code = match mode.as_deref() {
+        Some(GUARD_ONLY_FLAG) => run_guard_only_client(stdin.lock(), stdout.lock(), guard),
+        Some(OBSERVE_FLAG) => {
+            run_observer_client(stdin.lock(), stdout.lock(), socket().as_deref(), guard)
+        }
+        _ => run_client(stdin.lock(), stdout.lock(), socket().as_deref()),
+    };
     Some(code)
 }
 

@@ -1002,8 +1002,9 @@ export const resumeAgentSession = (id: SessionId, cols = 100, rows = 30) =>
   invoke<Session>("resume_agent_session", { id, cols, rows });
 
 /** Retoma, no shell restaurado, a conversa do Claude de antes do restart: o
- * core digita `claude --resume <id>` no próprio shell, que passa pelo gate
- * como qualquer `claude` digitado. Só por clique. */
+ * core digita `claude --resume <id>` no próprio shell, que passa pelo TYBA
+ * como qualquer `claude` digitado (sem jaula, hooks que só observam e o
+ * guarda-corpo). Só por clique. */
 export const resumeShellConversation = (id: SessionId) =>
   invoke<void>("resume_shell_conversation", { id });
 
