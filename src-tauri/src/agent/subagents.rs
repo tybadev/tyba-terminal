@@ -1577,17 +1577,50 @@ mod tests {
         fs::create_dir_all(&sidecar).unwrap();
         let (id_ls, id_curl) = ("a1b2c3d4e5f6a7b8c", "0f1e2d3c4b5a69788");
         let mut session = SessionSubagents::default();
-        session.push_pending(Some("general-purpose".into()), Some("Run ls -la".into()), 10);
+        session.push_pending(
+            Some("general-purpose".into()),
+            Some("Run ls -la".into()),
+            10,
+        );
         session.push_pending(Some("general-purpose".into()), Some("Run curl".into()), 10);
         // o curl começa primeiro e, sem meta.json, leva o nome do primeiro da fila
-        session.promote(id_curl.into(), "general-purpose".into(), None, None, Some(&parent), 11);
-        session.promote(id_ls.into(), "general-purpose".into(), None, None, Some(&parent), 12);
+        session.promote(
+            id_curl.into(),
+            "general-purpose".into(),
+            None,
+            None,
+            Some(&parent),
+            11,
+        );
+        session.promote(
+            id_ls.into(),
+            "general-purpose".into(),
+            None,
+            None,
+            Some(&parent),
+            12,
+        );
         let name = |s: &SessionSubagents, id: &str| {
-            s.runs.iter().find(|r| r.agent_id.as_deref() == Some(id)).unwrap().description.clone()
+            s.runs
+                .iter()
+                .find(|r| r.agent_id.as_deref() == Some(id))
+                .unwrap()
+                .description
+                .clone()
         };
-        assert_eq!(name(&session, id_curl), "Run ls -la", "palpite errado de propósito");
-        write(&sidecar.join(format!("agent-{id_curl}.meta.json")), r#"{"description":"Run curl"}"#);
-        write(&sidecar.join(format!("agent-{id_ls}.meta.json")), r#"{"description":"Run ls -la"}"#);
+        assert_eq!(
+            name(&session, id_curl),
+            "Run ls -la",
+            "palpite errado de propósito"
+        );
+        write(
+            &sidecar.join(format!("agent-{id_curl}.meta.json")),
+            r#"{"description":"Run curl"}"#,
+        );
+        write(
+            &sidecar.join(format!("agent-{id_ls}.meta.json")),
+            r#"{"description":"Run ls -la"}"#,
+        );
         let input = serde_json::json!({ "command": "curl -s x" });
         assert!(session.note_activity(id_curl, tool_activity("Bash", Some(&input), "curl -s x")));
         assert_eq!(name(&session, id_curl), "Run curl");
