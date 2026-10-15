@@ -230,9 +230,16 @@ const searchKeys = (): Record<Section, string[]> => ({
     "historyImportTitle",
     "historyClear",
     "settingsSnippets",
-    ...RICH_INPUT_TOGGLES.map((r) => r.label),
+    "autocompleteAutoOpen",
+    "autocompleteShowUses",
   ],
-  agents: ["reviewAgent", "worktreeDefaultPref", "richInputRegex", "settingsLaunchConfigs"],
+  agents: [
+    "reviewAgent",
+    "worktreeDefaultPref",
+    "richInputRegex",
+    ...RICH_INPUT_TOGGLES.map((r) => r.label),
+    "settingsLaunchConfigs",
+  ],
   security: [...SECURITY_RULES, "securityReadAllow", "securityRepo"],
   integrations: ["dockerIntegration", "claudePlugin", "fileLinks", "defaultEditor"],
   notifications: [...NOTIFY_KINDS.map((k) => k.label), "notifyMacos"],
@@ -1184,18 +1191,6 @@ export function SettingsView({
             <ShellSettings
               lineRows={
                 <>
-                  {RICH_INPUT_TOGGLES.map(({ field, label, hint }) => (
-                    <SettingLine
-                      key={field}
-                      label={t(label)}
-                      hint={hint ? t(hint, { combo: formatCombo(bindings.richInput) }) : undefined}
-                    >
-                      <Switch
-                        checked={richInputPref[field]}
-                        onCheckedChange={(c) => onRichInputPrefChange({ ...richInputPref, [field]: c })}
-                      />
-                    </SettingLine>
-                  ))}
                   <SettingLine label={t("shellIntegration")} hint={t("shellIntegrationHint")}>
                     <Switch
                       checked={shellIntegration}
@@ -1246,6 +1241,19 @@ export function SettingsView({
                 />
               </div>
             </SettingLine>
+            <SettingGroup title={t("settingsAgentComposer")} />
+            {RICH_INPUT_TOGGLES.map(({ field, label, hint }) => (
+              <SettingLine
+                key={field}
+                label={t(label)}
+                hint={hint ? t(hint, { combo: formatCombo(bindings.richInput) }) : undefined}
+              >
+                <Switch
+                  checked={richInputPref[field]}
+                  onCheckedChange={(c) => onRichInputPrefChange({ ...richInputPref, [field]: c })}
+                />
+              </SettingLine>
+            ))}
             <SettingGroup
               title={t("settingsLaunchConfigs")}
               note={

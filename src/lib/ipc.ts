@@ -2647,6 +2647,8 @@ export interface HistoryFilter {
 
 export type SnippetSource = "local" | "repo";
 
+export const commandHistoryTotal = () => invoke<number>("command_history_total");
+
 export interface Snippet {
   id: string;
   name: string;

@@ -6719,10 +6719,16 @@ fn sandbox_overview() -> SandboxOverview {
 /// "▶ ouvir" nas Notificações: toca o som escolhido uma vez (só macOS, só os
 /// sons de `MAC_SOUNDS`).
 #[tauri::command]
-fn preview_notify_sound(name: String) -> Result<(), String> {
+async fn preview_notify_sound(name: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || play_notify_sound(&name))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn play_notify_sound(name: &str) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
-        let path = agent::notify::preview_sound_path(&name).ok_or("som desconhecido")?;
+        let path = agent::notify::preview_sound_path(name).ok_or("som desconhecido")?;
         let mut child = std::process::Command::new("/usr/bin/afplay")
             .arg(path)
             .stdin(std::process::Stdio::null())
@@ -6742,7 +6748,13 @@ fn preview_notify_sound(name: String) -> Result<(), String> {
 
 /// Abre os Ajustes do Sistema em Notificações (endereço fixo, só macOS).
 #[tauri::command]
-fn open_notification_settings() -> Result<(), String> {
+async fn open_notification_settings() -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(open_notification_settings_blocking)
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn open_notification_settings_blocking() -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
         let mut child = std::process::Command::new("/usr/bin/open")
@@ -8401,6 +8413,14 @@ async fn complete_argument(
 }
 
 #[tauri::command]
+fn command_history_total(state: State<'_, AppState>) -> Result<i64, String> {
+    state
+        .store
+        .command_history_total()
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn clear_command_history(
     state: State<'_, AppState>,
     repo_root: Option<String>,
@@ -9425,6 +9445,7 @@ pub fn run() {
             complete_argument,
             suggest_line,
             clear_command_history,
+            command_history_total,
             set_history_enabled,
             agent_stats,
             list_snippets,

@@ -2445,6 +2445,12 @@ impl Store {
         Ok(achados)
     }
 
+    /// Quantos comandos o histórico guarda — a nota do grupo nas Configurações.
+    pub fn command_history_total(&self) -> Result<i64, StoreError> {
+        let conn = self.conn.lock();
+        Ok(conn.query_row("SELECT COUNT(*) FROM command_history", [], |row| row.get(0))?)
+    }
+
     pub fn clear_command_history(&self, repo_root: Option<&str>) -> Result<(), StoreError> {
         let conn = self.conn.lock();
         match repo_root {

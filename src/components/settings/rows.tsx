@@ -18,15 +18,18 @@ export function SettingLine({
   label,
   hint,
   children,
+  below,
 }: {
   label: React.ReactNode;
   hint?: React.ReactNode;
   children?: React.ReactNode;
+  /** Controle largo demais para a coluna da direita: vai embaixo, na largura toda. */
+  below?: React.ReactNode;
 }) {
   return (
     <div
       data-setting-row
-      className="grid grid-cols-[1fr_auto] items-center gap-6 border-b border-tyba-border-soft px-[18px] py-[11px]"
+      className="grid grid-cols-[1fr_auto] items-center gap-x-6 gap-y-3 border-b border-tyba-border-soft px-[18px] py-[11px]"
     >
       <div className="flex min-w-0 flex-col gap-[3px]">
         <span className="text-[13px] text-tyba-text">{label}</span>
@@ -35,6 +38,7 @@ export function SettingLine({
         )}
       </div>
       {children && <div className="flex shrink-0 items-center gap-2.5">{children}</div>}
+      {below && <div className="col-span-2">{below}</div>}
     </div>
   );
 }
