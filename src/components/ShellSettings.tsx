@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { BracketsCurly, Plus, Trash } from "@phosphor-icons/react";
+import { Trash } from "@phosphor-icons/react";
 
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
@@ -22,6 +22,7 @@ import {
 } from "../lib/ipc";
 import { PROMPT_MODE_PREF_KEY, promptModeEnabled } from "../lib/commandLine";
 import { PromptModePicker } from "./PromptModePicker";
+import { SettingGroup, SettingLine, SettingNote } from "./settings/rows";
 import { pushToast, toastError } from "../lib/toast";
 
 const HISTORY_PREF_KEY = "pref.commandHistory";
@@ -38,7 +39,8 @@ function blankSnippet(): Snippet {
   };
 }
 
-export function ShellSettings() {
+/** O miolo da seção Terminal; `lineRows` são as linhas da linha de comando que moram no `SettingsView`. */
+export function ShellSettings({ lineRows }: { lineRows?: React.ReactNode }) {
   const { t } = useTranslation();
   const [historyOn, setHistoryOn] = useState(true);
   const [promptOn, setPromptOn] = useState(false);
@@ -140,135 +142,84 @@ export function ShellSettings() {
   };
 
   return (
-    <section className="mx-auto w-full max-w-[860px]">
-      <span className="tyba-label">{t("promptModeTitle")}</span>
-      <p className="pt-1 text-[11px] leading-relaxed text-tyba-text-faint">
-        {t("promptModeHint")}
-      </p>
-      <PromptModePicker value={promptOn} onChange={togglePrompt} />
-      <p className="pt-2 text-[11px] leading-relaxed text-tyba-amber">
-        {t("promptModeEscape")}
-      </p>
+    <>
+      <SettingGroup title={t("settingsCommandLine")} />
+      {lineRows}
+      <SettingLine label={t("promptModeTitle")} hint={t("promptModeHint")}>
+        <PromptModePicker value={promptOn} onChange={togglePrompt} />
+      </SettingLine>
+      <SettingNote tone="amber">{t("promptModeEscape")}</SettingNote>
 
-      <span className="tyba-label mt-6 block">{t("settingsHistory")}</span>
-      <p className="pt-1 text-[11px] leading-relaxed text-tyba-text-faint">
-        {t("historyHint")}
-      </p>
-      <div className="mt-2 flex items-center gap-3 py-3">
-        <span className="min-w-0 flex-1 text-[13px] text-tyba-text">
-          {t("historyEnabled")}
-        </span>
-        <Button variant="ghost" size="sm" onClick={clear}>
+      <SettingGroup title={t("settingsHistory")} />
+      <SettingLine label={t("historyEnabled")} hint={t("historyHint")}>
+        <Switch checked={historyOn} onCheckedChange={toggleHistory} aria-label={t("historyEnabled")} />
+      </SettingLine>
+      <SettingLine
+        label={t("historyImportTitle")}
+        hint={
+          importSources.length === 0
+            ? t("historyImportNoSources")
+            : importSources
+                .map((source) => t("historyImportFound", { entries: source.entries, path: source.path }))
+                .join(" · ")
+        }
+      >
+        {importProgress && (
+          <span className="text-[11px] tabular-nums text-tyba-text-faint">
+            {importProgress.source} {importProgress.imported}/{importProgress.total}
+          </span>
+        )}
+        <Button variant="ghost" size="sm" onClick={runImport} disabled={importing || importSources.length === 0}>
+          {importing ? t("historyImportRunning") : t("historyImportAction")}
+        </Button>
+      </SettingLine>
+      {importReport?.sources.map((outcome) => (
+        <SettingNote key={outcome.path} tone={outcome.skipped ? "amber" : "faint"}>
+          {outcome.source}:{" "}
+          {outcome.skipped
+            ? t("historyImportSkipped", { reason: outcome.skipped })
+            : t("historyImportDone", { imported: outcome.imported, discarded: outcome.discarded })}
+        </SettingNote>
+      ))}
+      <SettingLine label={t("historyClear")} hint={t("historyClearHint")}>
+        <Button variant="ghost" size="sm" className="text-tyba-red" onClick={clear}>
           {t("historyClear")}
         </Button>
-        <Switch
-          checked={historyOn}
-          onCheckedChange={toggleHistory}
-          aria-label={t("historyEnabled")}
-        />
-      </div>
+      </SettingLine>
 
-      <span className="tyba-label mt-6 block">{t("historyImportTitle")}</span>
-      <p className="pt-1 text-[11px] leading-relaxed text-tyba-text-faint">
-        {t("historyImportHint")}
-      </p>
-      <div className="mt-2 py-3">
-        {importSources.length === 0 ? (
-          <p className="text-[12px] text-tyba-text-faint">
-            {t("historyImportNoSources")}
-          </p>
-        ) : (
-          <ul className="space-y-1">
-            {importSources.map((source) => (
-              <li
-                key={source.path}
-                className="flex items-baseline gap-2 text-[12px]"
-              >
-                <span className="text-tyba-text">{source.source}</span>
-                <span className="min-w-0 flex-1 truncate text-tyba-text-faint">
-                  {t("historyImportFound", {
-                    entries: source.entries,
-                    path: source.path,
-                  })}
-                </span>
-              </li>
-            ))}
-          </ul>
-        )}
-
-        {importReport?.sources.map((outcome) => (
-          <p
-            key={outcome.path}
-            className={`pt-2 text-[11px] ${
-              outcome.skipped ? "text-tyba-amber" : "text-tyba-text-faint"
-            }`}
+      <SettingGroup
+        title={t("settingsSnippets")}
+        note={
+          !draft && (
+            <button onClick={() => setDraft(blankSnippet())} className="text-tyba-blue hover:text-tyba-text">
+              + {t("snippetNew")}
+            </button>
+          )
+        }
+      />
+      {snippets.length === 0 && !draft && <SettingNote>{t("snippetsEmpty")}</SettingNote>}
+      {snippets.map((snippet) => (
+        <div
+          key={snippet.id}
+          className="grid grid-cols-[160px_1fr_auto] items-center gap-4 border-b border-tyba-border-soft px-[18px] py-[9px] text-[12.5px]"
+        >
+          <button onClick={() => setDraft(snippet)} className="truncate text-left text-tyba-text">
+            {snippet.name}
+          </button>
+          <button onClick={() => setDraft(snippet)} className="truncate text-left font-mono text-tyba-text-muted">
+            {snippet.command}
+          </button>
+          <button
+            aria-label={t("snippetDelete")}
+            onClick={() => remove(snippet.id)}
+            className="rounded-[4px] p-1 text-tyba-text-faint hover:bg-tyba-text/[.05] hover:text-tyba-red"
           >
-            {outcome.source}:{" "}
-            {outcome.skipped
-              ? t("historyImportSkipped", { reason: outcome.skipped })
-              : t("historyImportDone", {
-                  imported: outcome.imported,
-                  discarded: outcome.discarded,
-                })}
-          </p>
-        ))}
-
-        <div className="mt-3 flex items-center gap-3">
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={runImport}
-            disabled={importing || importSources.length === 0}
-          >
-            {importing ? t("historyImportRunning") : t("historyImportAction")}
-          </Button>
-          {importProgress && (
-            <span className="text-[11px] tabular-nums text-tyba-text-faint">
-              {importProgress.source} {importProgress.imported}/
-              {importProgress.total}
-            </span>
-          )}
+            <Trash size={14} />
+          </button>
         </div>
-      </div>
-
-      <span className="tyba-label mt-6 block">{t("settingsSnippets")}</span>
-      <p className="pt-1 text-[11px] leading-relaxed text-tyba-text-faint">
-        {t("snippetsHint")}
-      </p>
-
-      <div className="mt-2 divide-y divide-tyba-border">
-        {snippets.length === 0 && !draft && (
-          <p className="py-3 text-[12px] text-tyba-text-faint">
-            {t("snippetsEmpty")}
-          </p>
-        )}
-        {snippets.map((snippet) => (
-          <div key={snippet.id} className="flex items-center gap-3 py-2">
-            <BracketsCurly size={15} className="shrink-0 text-tyba-text-muted" />
-            <button
-              onClick={() => setDraft(snippet)}
-              className="min-w-0 flex-1 text-left"
-            >
-              <span className="block truncate text-[13px] text-tyba-text">
-                {snippet.name}
-              </span>
-              <span className="block truncate font-mono text-[11px] text-tyba-text-faint">
-                {snippet.command}
-              </span>
-            </button>
-            <button
-              aria-label={t("snippetDelete")}
-              onClick={() => remove(snippet.id)}
-              className="shrink-0 rounded-[4px] p-1 text-tyba-text-faint hover:bg-tyba-text/[.05] hover:text-tyba-red"
-            >
-              <Trash size={14} />
-            </button>
-          </div>
-        ))}
-      </div>
-
+      ))}
       {draft ? (
-        <div className="mt-2 flex flex-col gap-2 rounded-[6px] border border-tyba-border p-4">
+        <div className="mx-[18px] mt-2 flex flex-col gap-2 rounded-[6px] border border-tyba-border p-4">
           <input
             spellCheck={false}
             autoCapitalize="off"
@@ -309,17 +260,7 @@ export function ShellSettings() {
             </Button>
           </div>
         </div>
-      ) : (
-        <Button
-          variant="ghost"
-          size="sm"
-          className="mt-2"
-          onClick={() => setDraft(blankSnippet())}
-        >
-          <Plus size={14} />
-          {t("snippetNew")}
-        </Button>
-      )}
-    </section>
+      ) : null}
+    </>
   );
 }

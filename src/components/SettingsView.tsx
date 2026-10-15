@@ -6,7 +6,6 @@ import { changelogUrl } from "@/lib/changelog";
 import {
   ArrowSquareOut,
   Check,
-  Copy,
   DownloadSimple,
   FolderOpen,
   Info,
@@ -23,8 +22,6 @@ import {
   X,
   Keyboard,
   Palette,
-  Plus,
-  Stack,
   TerminalWindow,
   User,
 } from "@phosphor-icons/react";
@@ -35,9 +32,9 @@ import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { SettingGroup, SettingLine, SettingNote } from "./settings/rows";
 import { IS_MAC } from "@/lib/platform";
 import { NOTIFY_KINDS, notifyEnabled } from "@/lib/notifyPrefs";
-import { DockerIcon } from "./icons/DockerIcon";
 import { ClaudePluginSetting } from "./ClaudePluginSetting";
 import { AppIconPicker } from "./AppIconPicker";
 import { LANGUAGES, setLanguage, type LanguageCode } from "../i18n";
@@ -171,40 +168,35 @@ function SecuritySection({ onOpenConfig }: { onOpenConfig: () => void }) {
   }, []);
   return (
     <>
-      <span className="tyba-label">{t("securityFixed")}</span>
-      <div className="divide-y divide-tyba-border">
-        {SECURITY_RULES.map((key) => (
-          <SettingRow key={key} label={t(key)} hint={t(`${key}Hint`)}>
-            <span className="flex shrink-0 items-center gap-1.5 text-[11px] text-tyba-text-faint">
-              <Lock size={12} />
-              {t("securityAlwaysOn")}
-            </span>
-          </SettingRow>
-        ))}
-      </div>
-      <span className="tyba-label mt-6">{t("securityJail")}</span>
-      <div className="divide-y divide-tyba-border">
-        <SettingRow label={t("securityReadAllow")} hint={t("securityReadAllowHint")}>
-          <Button variant="ghost" size="sm" onClick={onOpenConfig}>
-            {t("settingsOpenInTyba")}
-          </Button>
-        </SettingRow>
-        {overview?.error && (
-          <p className="py-2.5 text-[11px] text-tyba-amber">{overview.error}</p>
-        )}
-        {overview && !overview.error && overview.read_allow.length === 0 && (
-          <p className="py-2.5 text-[12px] text-tyba-text-faint">{t("securityReadAllowNone")}</p>
-        )}
-        {overview?.read_allow.map((path) => (
-          <p key={path} className="py-2 font-mono text-[12px] text-tyba-text-muted">
-            {path}
-          </p>
-        ))}
-      </div>
-      <span className="tyba-label mt-6">{t("securityRepo")}</span>
-      <p className="pt-2 text-[12px] leading-relaxed text-tyba-text-faint">
-        {t("securityRepoHint")}
-      </p>
+      <SettingGroup title={t("securityFixed")} note={t("securityFixedNote")} />
+      {SECURITY_RULES.map((key) => (
+        <SettingLine key={key} label={t(key)} hint={t(`${key}Hint`)}>
+          <span className="flex items-center gap-1.5 text-[11px] text-tyba-text-faint">
+            <Lock size={12} />
+            {t("securityAlwaysOn")}
+          </span>
+        </SettingLine>
+      ))}
+      <SettingGroup
+        title={t("securityJail")}
+        note={overview && !overview.error ? t("securityReadAllowCount", { count: overview.read_allow.length }) : undefined}
+      />
+      <SettingLine label={t("securityReadAllow")} hint={t("securityReadAllowHint")}>
+        <Button variant="ghost" size="sm" onClick={onOpenConfig}>
+          {t("settingsOpenInTyba")}
+        </Button>
+      </SettingLine>
+      {overview?.error && <SettingNote tone="amber">{overview.error}</SettingNote>}
+      {overview && !overview.error && overview.read_allow.length === 0 && (
+        <SettingNote>{t("securityReadAllowNone")}</SettingNote>
+      )}
+      {overview?.read_allow.map((path) => (
+        <SettingNote key={path} tone="muted">
+          <span className="font-mono">{path}</span>
+        </SettingNote>
+      ))}
+      <SettingGroup title={t("securityRepo")} />
+      <SettingNote>{t("securityRepoHint")}</SettingNote>
     </>
   );
 }
@@ -461,15 +453,6 @@ function Choice({
   );
 }
 
-function SectionHeader({ title, hint }: { title: string; hint: string }) {
-  return (
-    <>
-      <h2 className="pb-1 text-sm font-medium">{title}</h2>
-      <p className="pb-5 text-[12px] text-tyba-text-faint">{hint}</p>
-    </>
-  );
-}
-
 const MAC_SOUNDS = ["Ping", "Glass", "Submarine", "Hero", "Funk", "Blow"];
 
 
@@ -513,7 +496,7 @@ function NotifyPrefs() {
   return (
     <>
       {NOTIFY_KINDS.map((kind) => (
-        <SettingRow key={kind.id} label={t(kind.label)} hint={t(kind.hint)}>
+        <SettingLine key={kind.id} label={t(kind.label)} hint={t(kind.hint)}>
           <div className="flex items-center gap-2">
             {IS_MAC && enabled[kind.id] && (
               <Select
@@ -537,36 +520,9 @@ function NotifyPrefs() {
               }}
             />
           </div>
-        </SettingRow>
+        </SettingLine>
       ))}
     </>
-  );
-}
-
-function SettingRow({
-  label,
-  hint,
-  children,
-}: {
-  label: string;
-  hint?: string;
-  children: React.ReactNode;
-}) {
-  return (
-    // Sem `px`: a caixa que justificava o recuo de 16px saiu, e o que
-    // ancora a linha agora é o `.tyba-label` do grupo, que mora na margem.
-    // Recuo sem moldura que o explique lê como desalinho.
-    <div data-setting-row className="flex items-center justify-between gap-4 py-2.5">
-      <div className="min-w-0">
-        <p className="text-[13px] text-tyba-text">{label}</p>
-        {hint && (
-          <p className="break-words pt-0.5 text-[11px] leading-relaxed text-tyba-text-faint">
-            {hint}
-          </p>
-        )}
-      </div>
-      <div className="shrink-0">{children}</div>
-    </div>
   );
 }
 
@@ -583,7 +539,7 @@ function ExternalRow({
 }) {
   const { t } = useTranslation();
   return (
-    <SettingRow label={label}>
+    <SettingLine label={label}>
       <button
         onClick={() => void openExternalUrl(href).catch(() => {})}
         aria-label={t("aboutOpenLink", { target: value })}
@@ -592,7 +548,7 @@ function ExternalRow({
         <span className={mono ? "font-mono" : undefined}>{value}</span>
         <ArrowSquareOut size={12} />
       </button>
-    </SettingRow>
+    </SettingLine>
   );
 }
 
@@ -636,123 +592,86 @@ function AboutSection({
 
   return (
     <section className="mx-auto w-full max-w-[860px]">
-      <SectionHeader title={t("settingsAbout")} hint={t("aboutHint")} />
-
-      <div className="mb-6 flex items-center gap-3">
-        <img
-          src={appIcon}
-          alt=""
-          className="size-11 rounded-[10px]"
-          draggable={false}
-        />
-        <div className="min-w-0">
-          <p className="text-[15px] font-medium text-tyba-text">TYBA</p>
-          <p className="pt-0.5 text-[12px] text-tyba-text-faint">
-            {t("aboutTagline")}
-          </p>
+      <div className="flex items-center gap-4 px-[18px] pt-5 pb-4">
+        <img src={appIcon} alt="" className="size-[52px] rounded-[12px]" draggable={false} />
+        <div className="flex min-w-0 flex-col gap-1">
+          <span className="font-display text-[20px] font-bold text-tyba-text">TYBA {version || ""}</span>
+          <span className="text-[12px] text-tyba-text-faint">
+            {t("aboutTagline")} ·{" "}
+            {update ? (
+              <span className="text-tyba-violet">{t("updateAvailable", { version: update.info.version })}</span>
+            ) : (
+              <span className="text-tyba-green">{t("aboutUpToDateShort")}</span>
+            )}
+          </span>
         </div>
       </div>
+      <SettingGroup
+        title={t("aboutDiagnostics")}
+        note={
+          <span className="flex items-center gap-2">
+            {copied && (
+              <span role="status" className="text-tyba-green">
+                {t("aboutCopied")}
+              </span>
+            )}
+            <button
+              disabled={!info}
+              onClick={copy}
+              aria-label={t("aboutCopyDiagnostics")}
+              className="text-tyba-blue hover:text-tyba-text disabled:opacity-50"
+            >
+              {t("aboutCopyDiagnostics")}
+            </button>
+          </span>
+        }
+      />
+      {info?.commit ? (
+        <ExternalRow label={t("aboutCommit")} value={info.commit} href={commitUrl(info.commit)} mono />
+      ) : (
+        <SettingLine label={t("aboutCommit")}>
+          <span className="font-mono text-[12px] text-tyba-text-faint">—</span>
+        </SettingLine>
+      )}
+      <SettingLine label={t("aboutCommitDate")}>
+        <span className="text-[12px] text-tyba-text-muted">{commitDate || "—"}</span>
+      </SettingLine>
+      <SettingLine label={t("aboutPlatform")}>
+        <span className="text-[12px] text-tyba-text-muted">{info ? platformLabel(info) : "—"}</span>
+      </SettingLine>
+      <SettingLine label={t("aboutWebview")}>
+        <span className="text-[12px] text-tyba-text-muted">{info?.webview || "—"}</span>
+      </SettingLine>
+      <SettingGroup title={t("aboutLinks")} />
+      <ExternalRow label={t("aboutRepo")} value="github.com/tybadev/tyba-terminal" href={REPO_URL} />
+      <ExternalRow label={t("aboutDocs")} value="docs.tyba.dev" href={docsUrl(i18n.language)} />
+      <ExternalRow label={t("aboutChangelog")} value="tyba.dev/changelog" href={changelogUrl(i18n.language)} />
+      <ExternalRow label={t("aboutLicense")} value={LICENSE_NAME} href={LICENSE_URL} />
+    </section>
+  );
+}
 
-      <span className="tyba-label">{t("version")}</span>
-      <div className="mt-2 mb-6 flex items-center gap-3 py-3">
-        <div className="min-w-0 flex-1">
-          <p className="font-mono text-[13px] text-tyba-text">
-            {version || "—"}
-          </p>
-          <p className="pt-0.5 text-[11px] text-tyba-text-faint">
-            {update
-              ? t("updateAvailable", { version: update.info.version })
-              : t("updateUpToDate")}
-          </p>
-        </div>
-        {update && (
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-7 shrink-0 gap-1.5 px-2.5 text-[11px] text-tyba-violet"
-            onClick={() =>
-              void openExternalUrl(changelogUrl(i18n.language)).catch(() => {})
-            }
-          >
-            <DownloadSimple size={13} />
-            {t("updateOpenChangelog")}
-          </Button>
-        )}
-      </div>
-
-      <span className="tyba-label">{t("aboutBuild")}</span>
-      <div className="mt-2 divide-y divide-tyba-border">
-        {info?.commit ? (
-          <ExternalRow
-            label={t("aboutCommit")}
-            value={info.commit}
-            href={commitUrl(info.commit)}
-            mono
-          />
-        ) : (
-          <SettingRow label={t("aboutCommit")}>
-            <span className="font-mono text-[12px] text-tyba-text-faint">—</span>
-          </SettingRow>
-        )}
-        <SettingRow label={t("aboutCommitDate")}>
-          <span className="text-[12px] text-tyba-text-muted">
-            {commitDate || "—"}
-          </span>
-        </SettingRow>
-        <SettingRow label={t("aboutPlatform")}>
-          <span className="text-[12px] text-tyba-text-muted">
-            {info ? platformLabel(info) : "—"}
-          </span>
-        </SettingRow>
-        <SettingRow label={t("aboutWebview")}>
-          <span className="text-[12px] text-tyba-text-muted">
-            {info?.webview || "—"}
-          </span>
-        </SettingRow>
-      </div>
-      <div className="mt-2 mb-6 flex items-center gap-2">
+/** Versão e atualização, no fim de Geral. */
+function UpdateRows({ version, update }: { version: string; update: UpdateStatus | null }) {
+  const { t, i18n } = useTranslation();
+  return (
+    <>
+      <SettingGroup title={t("settingsUpdates")} />
+      <SettingLine
+        label={`TYBA ${version || "—"}`}
+        hint={update ? t("updateAvailable", { version: update.info.version }) : t("updateUpToDate")}
+      >
         <Button
           variant="ghost"
           size="sm"
-          disabled={!info}
-          aria-label={t("aboutCopyDiagnostics")}
-          className="h-7 gap-1.5 px-2.5 text-[11px] text-tyba-text-muted hover:text-tyba-text"
-          onClick={copy}
+          className={update ? "text-tyba-violet" : "text-tyba-text-muted"}
+          onClick={() => void openExternalUrl(changelogUrl(i18n.language)).catch(() => {})}
         >
-          <Copy size={13} />
-          {t("aboutCopyDiagnostics")}
+          {update && <DownloadSimple size={13} />}
+          {t("updateOpenChangelog")}
         </Button>
-        {copied && (
-          <span role="status" className="text-[11px] text-tyba-green">
-            {t("aboutCopied")}
-          </span>
-        )}
-      </div>
-
-      <span className="tyba-label">{t("aboutLinks")}</span>
-      <div className="mt-2 divide-y divide-tyba-border">
-        <ExternalRow
-          label={t("aboutRepo")}
-          value="github.com/tybadev/tyba-terminal"
-          href={REPO_URL}
-        />
-        <ExternalRow
-          label={t("aboutDocs")}
-          value="docs.tyba.dev"
-          href={docsUrl(i18n.language)}
-        />
-        <ExternalRow
-          label={t("aboutChangelog")}
-          value="tyba.dev/changelog"
-          href={changelogUrl(i18n.language)}
-        />
-        <ExternalRow
-          label={t("aboutLicense")}
-          value={LICENSE_NAME}
-          href={LICENSE_URL}
-        />
-      </div>
-    </section>
+      </SettingLine>
+    </>
   );
 }
 
@@ -820,8 +739,11 @@ function ShortcutRow({
   }, [listening, onRebind]);
 
   return (
-    <div className="flex h-9 items-center gap-2.5 rounded-[4px] px-2.5 text-[13px] hover:bg-tyba-text/[.03]">
-      <span className="min-w-0 flex-1 truncate">
+    <div
+      data-setting-row
+      className="grid grid-cols-[1fr_auto] items-center gap-4 border-b border-tyba-border-soft px-[18px] py-[5px] text-[12.5px]"
+    >
+      <span className="min-w-0 truncate text-tyba-text">
         {t(ACTION_LABEL_KEYS[action])}
       </span>
       <button
@@ -1108,88 +1030,64 @@ export function SettingsView({
         {!query.trim() && (<>
         {section === "general" && (
           <section className="mx-auto w-full max-w-[860px]">
-            <SectionHeader title={t("settingsGeneral")} hint={t("generalHint")} />
-                        <span className="tyba-label">{t("account")}</span>
-            <div className="mt-2 mb-6 flex items-center gap-3 py-3">
-              <span
-                className="rounded-full p-px"
-                style={{ background: "var(--tyba-gradient)" }}
-              >
-                <span className="flex size-8 items-center justify-center rounded-full bg-tyba-raised text-tyba-text-muted">
-                  <User size={15} weight="bold" />
+            <SettingGroup title={t("account")} />
+            <SettingLine label={t("localAccount")} hint={t("accountHint")}>
+              <span className="rounded-full p-px" style={{ background: "var(--tyba-gradient)" }}>
+                <span className="flex size-7 items-center justify-center rounded-full bg-tyba-raised text-tyba-text-muted">
+                  <User size={13} weight="bold" />
                 </span>
               </span>
-              <div className="min-w-0 flex-1">
-                <p className="pb-1 text-[13px]">{t("localAccount")}</p>
+              <div className="w-[220px]">
                 <TextField
                   value={accountName}
                   placeholder={t("accountNamePlaceholder")}
                   onCommit={onAccountNameChange}
                 />
               </div>
-            </div>
-
-            <span className="tyba-label">{t("defaultSessionDir")}</span>
-            <div className="flex gap-2 pt-2">
-              <TextField
-                value={defaultDir}
-                placeholder="~"
-                onCommit={commitDefaultDir}
+            </SettingLine>
+            <SettingGroup title={t("settingsOnOpen")} />
+            <SettingLine label={t("startup")} hint={t("startupHint")}>
+              <Select
+                value={startup}
+                onChange={(value) => onStartupChange(parseStartupMode(value))}
+                className="w-52"
+                options={[
+                  { value: "resume", label: t("startupResume") },
+                  { value: "keep_layout", label: t("startupKeepLayout") },
+                  { value: "fresh", label: t("startupFresh") },
+                ]}
               />
+            </SettingLine>
+            <SettingLine label={t("defaultSessionDir")} hint={t("defaultSessionDirHint")}>
+              <div className="w-[200px]">
+                <TextField value={defaultDir} placeholder="~" onCommit={commitDefaultDir} />
+              </div>
               <Button
                 variant="ghost"
                 size="sm"
                 onClick={() => void chooseDefaultDir()}
-                className="shrink-0 text-tyba-text-muted hover:text-tyba-text"
+                className="text-tyba-text-muted hover:text-tyba-text"
               >
                 <FolderOpen size={14} />
                 {t("chooseFolder")}
               </Button>
-            </div>
-            <p className="pt-2 text-[11px] text-tyba-text-faint">
-              {t("defaultSessionDirHint")}
-            </p>
-<span className="tyba-label mt-6 block">{t("startup")}</span>
-            <p className="pt-1 text-[11px] leading-relaxed text-tyba-text-faint">
-              {t("startupHint")}
-            </p>
-            <div className="mt-2 divide-y divide-tyba-border">
-              <SettingRow label={t("startup")}>
-                <Select
-                  value={startup}
-                  onChange={(value) => onStartupChange(parseStartupMode(value))}
-                  className="w-56"
-                  options={[
-                    { value: "resume", label: t("startupResume") },
-                    { value: "keep_layout", label: t("startupKeepLayout") },
-                    { value: "fresh", label: t("startupFresh") },
-                  ]}
-                />
-              </SettingRow>
-            </div>
-
-            <span className="tyba-label mt-6 block">{t("language")}</span>
-            <div className="divide-y divide-tyba-border">
-              <SettingRow label={t("language")}>
-                <Select
-                  value={i18n.language}
-                  onChange={(v) => setLanguage(v as LanguageCode)}
-                  className="w-48"
-                  options={LANGUAGES.map((l) => ({
-                    value: l.code,
-                    label: l.label,
-                  }))}
-                />
-              </SettingRow>
-            </div>
-
+            </SettingLine>
+            <SettingGroup title={t("language")} />
+            <SettingLine label={t("language")} hint={t("languageHint")}>
+              <Select
+                value={i18n.language}
+                onChange={(v) => setLanguage(v as LanguageCode)}
+                className="w-52"
+                options={LANGUAGES.map((l) => ({ value: l.code, label: l.label }))}
+              />
+            </SettingLine>
+            <UpdateRows version={version} update={update} />
           </section>
         )}
         {section === "appearance" && (
           <section className="mx-auto w-full max-w-[860px]">
-            <SectionHeader title={t("settingsAppearance")} hint={t("appearanceHint")} />
-            <span className="tyba-label">{t("colorMode")}</span>
-            <div className="flex gap-2 pt-2 pb-6">
+            <SettingGroup title={t("settingsThemes")} />
+            <SettingLine label={t("colorMode")}>
               {THEMES.map((m) => (
                 <Choice
                   key={m}
@@ -1198,31 +1096,9 @@ export function SettingsView({
                   onClick={() => setThemeMode(m)}
                 />
               ))}
-            </div>
-
-            <span className="tyba-label">{t("fontSection")}</span>
-            <div className="grid grid-cols-2 gap-2 pt-2 pb-6">
-              <Select
-                value={uiFont}
-                onChange={(v) => setUiFont(v as UiFont)}
-                options={UI_FONTS.map((f) => ({
-                  value: f,
-                  label: UI_FONT_LABELS[f],
-                }))}
-              />
-              <Select
-                value={String(fontSize)}
-                onChange={(v) => changeFontSize(Number(v))}
-                options={FONT_SIZES.map((s) => ({
-                  value: String(s),
-                  label: `${s}px`,
-                }))}
-              />
-            </div>
-
-            <div className="flex items-center justify-between pb-1">
-              <span className="tyba-label">{t("settingsThemes")}</span>
-              <div className="flex items-center gap-1">
+            </SettingLine>
+            <div className="border-b border-tyba-border-soft px-[18px] py-3">
+              <div className="flex items-center justify-end gap-1 pb-2">
                 <Button
                   variant="ghost"
                   size="xs"
@@ -1241,375 +1117,245 @@ export function SettingsView({
                   {t("importTheme")}
                 </Button>
               </div>
-            </div>
-            <p className="pb-3 text-[11px] text-tyba-text-faint">
-              {t("themeImportHint")}
-            </p>
-            <div className="grid grid-cols-2 gap-2">
-              {themes.map((theme) => {
-                const inUse = theme.id === effectiveThemeId;
-                const ansi = theme.terminal.ansi;
-                return (
-                  <button
-                    key={theme.id}
-                    onClick={() => void applyTheme(theme)}
-                    aria-pressed={inUse}
-                    className={`group relative flex flex-col gap-2 overflow-hidden rounded-[6px] border p-2 text-left transition-colors ${
-                      inUse
-                        ? "border-tyba-green [box-shadow:0_0_0_1px_var(--tyba-green)]"
-                        : "border-tyba-border hover:border-tyba-border-strong"
-                    }`}
-                  >
-                    <div
-                      className="flex h-11 items-end gap-1 rounded-[4px] p-2"
-                      style={{ background: theme.terminal.background }}
+              <div className="grid grid-cols-3 gap-2">
+                {themes.map((theme) => {
+                  const inUse = theme.id === effectiveThemeId;
+                  const ansi = theme.terminal.ansi;
+                  return (
+                    <button
+                      key={theme.id}
+                      onClick={() => void applyTheme(theme)}
+                      aria-pressed={inUse}
+                      className={`group relative flex flex-col gap-2 overflow-hidden rounded-[6px] border p-2 text-left transition-colors ${
+                        inUse
+                          ? "border-tyba-green [box-shadow:0_0_0_1px_var(--tyba-green)]"
+                          : "border-tyba-border hover:border-tyba-border-strong"
+                      }`}
                     >
-                      {[1, 2, 3, 4, 5, 6].map((i) => (
-                        <span
-                          key={i}
-                          className="h-4 flex-1 rounded-[2px]"
-                          style={{ background: ansi[i] }}
-                        />
-                      ))}
-                    </div>
-                    <div className="flex items-center gap-1.5">
-                      <span className="min-w-0 flex-1 truncate text-[12px] text-tyba-text">
-                        {theme.name}
-                      </span>
-                      {inUse && (
-                        <Check
-                          size={12}
-                          weight="bold"
-                          className="shrink-0 text-tyba-green"
-                        />
-                      )}
-                    </div>
-                  </button>
-                );
-              })}
+                      <div
+                        className="flex h-11 items-end gap-1 rounded-[4px] p-2"
+                        style={{ background: theme.terminal.background }}
+                      >
+                        {[1, 2, 3, 4, 5, 6].map((i) => (
+                          <span key={i} className="h-4 flex-1 rounded-[2px]" style={{ background: ansi[i] }} />
+                        ))}
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <span className="min-w-0 flex-1 truncate text-[12px] text-tyba-text">{theme.name}</span>
+                        {inUse && <Check size={12} weight="bold" className="shrink-0 text-tyba-green" />}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
             </div>
-
-            <div className="pt-6">
+            <SettingGroup title={t("fontSection")} />
+            <SettingLine label={t("fontSection")} hint={t("fontHint")}>
+              <Select
+                value={uiFont}
+                onChange={(v) => setUiFont(v as UiFont)}
+                className="w-44"
+                options={UI_FONTS.map((f) => ({ value: f, label: UI_FONT_LABELS[f] }))}
+              />
+              <Select
+                value={String(fontSize)}
+                onChange={(v) => changeFontSize(Number(v))}
+                className="w-24"
+                options={FONT_SIZES.map((s) => ({ value: String(s), label: `${s}px` }))}
+              />
+            </SettingLine>
+            <div className="border-b border-tyba-border-soft px-[18px] py-3">
               <AppIconPicker />
             </div>
-<span className="tyba-label mt-6 block">{t("settingsSidebar")}</span>
-            <div className="divide-y divide-tyba-border">
-              <SettingRow
-                label={t("sidebarToggleBehavior", {
-                  combo: formatCombo(bindings.panel),
-                })}
-              >
-                <Select
-                  value={togglePref}
-                  onChange={(v) => onTogglePrefChange(v as SidebarTogglePref)}
-                  className="w-48"
-                  options={[
-                    { value: "hidden", label: t("collapseAll") },
-                    { value: "rail", label: t("collapseRail") },
-                  ]}
-                />
-              </SettingRow>
-              <SettingRow label={t("sidebarDetails")}>
-                <Switch
-                  checked={detailsPref === "on"}
-                  onCheckedChange={(c) => onDetailsPrefChange(c ? "on" : "off")}
-                />
-              </SettingRow>
-              <SettingRow
-                label={t("gitStatusToggle")}
-                hint={t("gitStatusHint")}
-              >
-                <Switch
-                  checked={showGitStatus}
-                  onCheckedChange={onShowGitStatusChange}
-                />
-              </SettingRow>
-                          </div>
-<span className="tyba-label mt-6 block">{t("settingsChipsBar")}</span>
-            <div className="divide-y divide-tyba-border">
-              <SettingRow
-                label={t("toolbarToggle")}
-                hint={t("toolbarHint")}
-              >
-                <Switch
-                  checked={toolbarPref.enabled}
-                  onCheckedChange={(c) =>
-                    onToolbarPrefChange({ ...toolbarPref, enabled: c })
-                  }
-                />
-              </SettingRow>
-                          </div>
-{toolbarPref.enabled && (
-              <ToolbarChipsEditor pref={toolbarPref} onChange={onToolbarPrefChange} />
+            <SettingGroup title={t("settingsSidebar")} />
+            <SettingLine label={t("sidebarToggleBehavior", { combo: formatCombo(bindings.panel) })}>
+              <Select
+                value={togglePref}
+                onChange={(v) => onTogglePrefChange(v as SidebarTogglePref)}
+                className="w-44"
+                options={[
+                  { value: "hidden", label: t("collapseAll") },
+                  { value: "rail", label: t("collapseRail") },
+                ]}
+              />
+            </SettingLine>
+            <SettingLine label={t("sidebarDetails")}>
+              <Switch
+                checked={detailsPref === "on"}
+                onCheckedChange={(c) => onDetailsPrefChange(c ? "on" : "off")}
+              />
+            </SettingLine>
+            <SettingLine label={t("gitStatusToggle")} hint={t("gitStatusHint")}>
+              <Switch checked={showGitStatus} onCheckedChange={onShowGitStatusChange} />
+            </SettingLine>
+            <SettingGroup title={t("settingsChipsBar")} note={t("chipsDragNote")} />
+            <SettingLine label={t("toolbarToggle")} hint={t("toolbarHint")}>
+              <Switch
+                checked={toolbarPref.enabled}
+                onCheckedChange={(c) => onToolbarPrefChange({ ...toolbarPref, enabled: c })}
+              />
+            </SettingLine>
+            {toolbarPref.enabled && (
+              <div className="px-[18px] pb-3">
+                <ToolbarChipsEditor pref={toolbarPref} onChange={onToolbarPrefChange} />
+              </div>
             )}
-
           </section>
         )}
         {section === "terminal" && (
           <section className="mx-auto w-full max-w-[860px]">
-            <SectionHeader title={t("settingsTerminal")} hint={t("settingsTerminalHint")} />
-            <div className="divide-y divide-tyba-border">
-              {RICH_INPUT_TOGGLES.map(({ field, label, hint }) => (
-                <SettingRow
-                  key={field}
-                  label={t(label)}
-                  hint={
-                    hint
-                      ? t(hint, { combo: formatCombo(bindings.richInput) })
-                      : undefined
-                  }
-                >
-                  <Switch
-                    checked={richInputPref[field]}
-                    onCheckedChange={(c) =>
-                      onRichInputPrefChange({ ...richInputPref, [field]: c })
-                    }
-                  />
-                </SettingRow>
-              ))}
-                          </div>
-<div className="mt-2 flex items-start gap-3 py-3">
-              <span className="mt-0.5 shrink-0 text-tyba-text-muted">
-                <TerminalWindow size={18} />
-              </span>
-              <div className="min-w-0 flex-1">
-                <p className="text-[13px] text-tyba-text">
-                  {t("shellIntegration")}
-                </p>
-                <p className="pt-1 text-[11px] leading-relaxed text-tyba-text-faint">
-                  {t("shellIntegrationHint")}
-                </p>
-              </div>
-              <Switch
-                checked={shellIntegration}
-                onCheckedChange={onShellIntegrationChange}
-                aria-label={t("shellIntegration")}
-                className="mt-0.5"
-              />
-            </div>
-
-            
+            <ShellSettings
+              lineRows={
+                <>
+                  {RICH_INPUT_TOGGLES.map(({ field, label, hint }) => (
+                    <SettingLine
+                      key={field}
+                      label={t(label)}
+                      hint={hint ? t(hint, { combo: formatCombo(bindings.richInput) }) : undefined}
+                    >
+                      <Switch
+                        checked={richInputPref[field]}
+                        onCheckedChange={(c) => onRichInputPrefChange({ ...richInputPref, [field]: c })}
+                      />
+                    </SettingLine>
+                  ))}
+                  <SettingLine label={t("shellIntegration")} hint={t("shellIntegrationHint")}>
+                    <Switch
+                      checked={shellIntegration}
+                      onCheckedChange={onShellIntegrationChange}
+                      aria-label={t("shellIntegration")}
+                    />
+                  </SettingLine>
+                </>
+              }
+            />
           </section>
         )}
-        {section === "terminal" && <ShellSettings />}
         {section === "agents" && (
           <section className="mx-auto w-full max-w-[860px]">
-            <SectionHeader title={t("settingsAgents")} hint={t("settingsAgentsHint")} />
-            <span className="tyba-label mt-6 block">{t("reviewAgent")}</span>
-            <p className="pt-1 text-[11px] leading-relaxed text-tyba-text-faint">
-              {t("reviewAgentHint")}
-            </p>
-            <div className="mt-2 divide-y divide-tyba-border">
-              <SettingRow label={t("reviewAgent")}>
-                <Select
-                  value={
-                    reviewAgent === "claude" || reviewAgent === "codex"
-                      ? reviewAgent
-                      : "custom"
-                  }
-                  onChange={(v) =>
-                    onReviewAgentChange(v === "custom" ? "" : v)
-                  }
-                  className="w-56"
-                  options={[
-                    { value: "claude", label: "Claude Code" },
-                    { value: "codex", label: "Codex" },
-                    { value: "custom", label: t("reviewAgentCustom") },
-                  ]}
-                />
-              </SettingRow>
-              {reviewAgent !== "claude" && reviewAgent !== "codex" && (
-                <SettingRow
-                  label={t("reviewAgentCustomCommand")}
-                  hint={t("reviewAgentCustomHint")}
-                >
-                  <TextField
-                    value={reviewAgent}
-                    placeholder="claude --model opus"
-                    onCommit={onReviewAgentChange}
-                  />
-                </SettingRow>
-              )}
-            </div>
-<span className="tyba-label mt-6 block">{t("settingsSessions")}</span>
-            <div className="divide-y divide-tyba-border">
-              <SettingRow
-                label={t("worktreeDefaultPref")}
-                hint={t("worktreeDefaultHint")}
-              >
-                <Switch
-                  checked={worktreeDefault}
-                  onCheckedChange={onWorktreeDefaultChange}
-                />
-              </SettingRow>
-              <SettingRow
-                label={t("richInputRegex")}
-                hint={
-                  richInputRegexInvalid
-                    ? t("richInputRegexInvalid")
-                    : t("richInputRegexHint")
-                }
-              >
+            <SettingGroup title={t("settingsReview")} />
+            <SettingLine label={t("reviewAgent")} hint={t("reviewAgentHint")}>
+              <Select
+                value={reviewAgent === "claude" || reviewAgent === "codex" ? reviewAgent : "custom"}
+                onChange={(v) => onReviewAgentChange(v === "custom" ? "" : v)}
+                className="w-52"
+                options={[
+                  { value: "claude", label: "Claude Code" },
+                  { value: "codex", label: "Codex" },
+                  { value: "custom", label: t("reviewAgentCustom") },
+                ]}
+              />
+            </SettingLine>
+            {reviewAgent !== "claude" && reviewAgent !== "codex" && (
+              <SettingLine label={t("reviewAgentCustomCommand")} hint={t("reviewAgentCustomHint")}>
                 <div className="w-64">
-                  <TextField
-                    value={richInputPref.agentRegex}
-                    placeholder="^(claude|codex|gemini)\b"
-                    onCommit={(v) =>
-                      onRichInputPrefChange({
-                        ...richInputPref,
-                        agentRegex: v,
-                      })
-                    }
-                  />
+                  <TextField value={reviewAgent} placeholder="claude --model opus" onCommit={onReviewAgentChange} />
                 </div>
-              </SettingRow>
-                          </div>
-<span className="tyba-label mt-6 block">{t("settingsLaunchConfigs")}</span>
-            <div className="mt-4 flex flex-col gap-2">
-              {launchConfigs.length === 0 && (
-                <span className="text-[12px] text-tyba-text-faint">
-                  {t("launchNoConfigs")}
-                </span>
-              )}
-              {launchConfigs.map((config) => (
-                <div
-                  key={config.id}
-                  className="flex items-center gap-3 rounded-md border border-tyba-border p-2.5"
-                >
-                  <Stack size={15} className="shrink-0 text-tyba-violet" />
-                  <div className="flex min-w-0 flex-1 flex-col">
-                    <span className="truncate text-[13px] text-tyba-text">
-                      {config.name}
-                    </span>
-                    <span className="truncate font-mono text-[11px] text-tyba-text-faint">
-                      {config.repo_root} · {config.slots.length}{" "}
-                      {config.slots.length === 1 ? "pane" : "panes"}
-                    </span>
-                  </div>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => onApplyLaunchConfig(config.id)}
-                  >
-                    {t("launchOpen")}
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => onEditLaunchConfig(config.id)}
-                  >
-                    {t("launchEdit")}
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="text-tyba-red"
-                    onClick={() => onDeleteLaunchConfig(config.id)}
-                  >
-                    {t("launchDelete")}
-                  </Button>
-                </div>
-              ))}
-              <Button
-                variant="ghost"
-                size="sm"
-                className="self-start"
-                onClick={onNewLaunchConfig}
+              </SettingLine>
+            )}
+            <SettingGroup title={t("settingsSessions")} />
+            <SettingLine label={t("worktreeDefaultPref")} hint={t("worktreeDefaultHint")}>
+              <Switch checked={worktreeDefault} onCheckedChange={onWorktreeDefaultChange} />
+            </SettingLine>
+            <SettingLine
+              label={t("richInputRegex")}
+              hint={richInputRegexInvalid ? t("richInputRegexInvalid") : t("richInputRegexHint")}
+            >
+              <div className="w-60 font-mono">
+                <TextField
+                  value={richInputPref.agentRegex}
+                  placeholder="^(claude|codex|gemini)\b"
+                  onCommit={(v) => onRichInputPrefChange({ ...richInputPref, agentRegex: v })}
+                />
+              </div>
+            </SettingLine>
+            <SettingGroup
+              title={t("settingsLaunchConfigs")}
+              note={
+                <button onClick={onNewLaunchConfig} className="text-tyba-blue hover:text-tyba-text">
+                  + {t("launchConfigNew")}
+                </button>
+              }
+            />
+            {launchConfigs.length === 0 && <SettingNote>{t("launchNoConfigs")}</SettingNote>}
+            {launchConfigs.map((config) => (
+              <SettingLine
+                key={config.id}
+                label={config.name}
+                hint={`${config.repo_root} · ${config.slots.length} ${config.slots.length === 1 ? "pane" : "panes"}`}
               >
-                <Plus size={14} />
-                {t("launchConfigNew")}
-              </Button>
-            </div>
-
+                <Button variant="ghost" size="sm" onClick={() => onApplyLaunchConfig(config.id)}>
+                  {t("launchOpen")}
+                </Button>
+                <Button variant="ghost" size="sm" onClick={() => onEditLaunchConfig(config.id)}>
+                  {t("launchEdit")}
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="text-tyba-red"
+                  onClick={() => onDeleteLaunchConfig(config.id)}
+                >
+                  {t("launchDelete")}
+                </Button>
+              </SettingLine>
+            ))}
           </section>
         )}
         {section === "security" && (
           <section className="mx-auto w-full max-w-[860px]">
-            <SectionHeader title={t("settingsSecurity")} hint={t("settingsSecurityHint")} />
             <SecuritySection onOpenConfig={onOpenConfig} />
           </section>
         )}
         {section === "integrations" && (
           <section className="mx-auto w-full max-w-[860px]">
-            <SectionHeader title={t("settingsIntegrations")} hint={t("settingsIntegrationsHint")} />
-            <div className="mt-2 flex items-start gap-3 py-3">
-              <span className="mt-0.5 shrink-0 text-tyba-text-muted">
-                <DockerIcon size={18} />
-              </span>
-              <div className="min-w-0 flex-1">
-                <p className="text-[13px] text-tyba-text">
-                  {t("dockerIntegration")}
-                </p>
-                <p className="pt-1 text-[11px] leading-relaxed text-tyba-text-faint">
-                  {t("dockerIntegrationHint")}
-                </p>
-              </div>
+            <SettingGroup title="Docker" />
+            <SettingLine label={t("dockerIntegration")} hint={t("dockerIntegrationHint")}>
               <Switch
                 checked={showContainers}
                 onCheckedChange={onShowContainersChange}
                 aria-label={t("dockerIntegration")}
-                className="mt-0.5"
               />
-            </div>
-
+            </SettingLine>
+            <SettingGroup title="Claude Code" />
             <ClaudePluginSetting />
-<span className="tyba-label mt-6 block">{t("defaultEditor")}</span>
-            <p className="pt-1 text-[11px] leading-relaxed text-tyba-text-faint">
-              {t("defaultEditorHint")}
-            </p>
-            <div className="mt-2 divide-y divide-tyba-border">
-              <SettingRow
-                label={t("defaultEditor")}
-                hint={editorPath ?? t("defaultEditorSystemHint")}
-              >
-                <Select
-                  value={editor}
-                  onChange={onEditorChange}
-                  className="w-56"
-                  options={[
-                    { value: "", label: t("defaultEditorSystem") },
-                    ...editors.map((e) => ({ value: e.id, label: e.name })),
-                  ]}
-                />
-              </SettingRow>
-            </div>
-
-            
+            <SettingGroup title={t("settingsEditor")} />
+            <SettingLine label={t("defaultEditor")} hint={editorPath ?? t("defaultEditorHint")}>
+              <Select
+                value={editor}
+                onChange={onEditorChange}
+                className="w-52"
+                options={[
+                  { value: "", label: t("defaultEditorSystem") },
+                  ...editors.map((e) => ({ value: e.id, label: e.name })),
+                ]}
+              />
+            </SettingLine>
           </section>
         )}
         {section === "notifications" && (
           <section className="mx-auto w-full max-w-[860px]">
-            <SectionHeader title={t("settingsNotifications")} hint={t("settingsNotificationsHint")} />
-            <div className="divide-y divide-tyba-border">
-              <NotifyPrefs />
-            </div>
-
+            <SettingGroup title={t("settingsAgents")} />
+            <NotifyPrefs />
           </section>
         )}
         {section === "shortcuts" && (
           <section className="mx-auto w-full max-w-[860px]">
-            <SectionHeader
-              title={t("settingsShortcuts")}
-              hint={t("shortcutsHint")}
-            />
-            {actionsByCategory().map(([category, actions]) =>
+            {actionsByCategory().map(([category, actions], i) =>
               actions.length === 0 ? null : (
-                <div key={category} className="mb-5 last:mb-0">
-                  <span className="tyba-label">
-                    {t(KEY_CATEGORY_LABEL_KEYS[category])}
-                  </span>
-                  <div className="flex flex-col gap-px pt-2">
-                    {actions.map((action) => (
-                      <ShortcutRow
-                        key={action}
-                        action={action}
-                        combo={bindings[action]}
-                        onRebind={(combo) =>
-                          onBindingsChange({ ...bindings, [action]: combo })
-                        }
-                      />
-                    ))}
-                  </div>
+                <div key={category}>
+                  <SettingGroup
+                    title={t(KEY_CATEGORY_LABEL_KEYS[category])}
+                    note={i === 0 ? t("shortcutsClickToChange") : undefined}
+                  />
+                  {actions.map((action) => (
+                    <ShortcutRow
+                      key={action}
+                      action={action}
+                      combo={bindings[action]}
+                      onRebind={(combo) => onBindingsChange({ ...bindings, [action]: combo })}
+                    />
+                  ))}
                 </div>
               ),
             )}
