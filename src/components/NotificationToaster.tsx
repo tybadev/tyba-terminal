@@ -90,6 +90,9 @@ interface Props {
   /** Distância da borda direita para a pilha de cards. Com a superfície de
    * agentes aberta, a pilha anda para a esquerda dela em vez de cobri-la. */
   viewportRightPx?: number;
+  /** Sessões de shell com um claude/codex digitado rodando: o fim de turno
+   * delas avisa igual ao do agente gerenciado. */
+  typedAgentSessions: ReadonlySet<SessionId>;
 }
 
 export function NotificationToaster({
@@ -100,6 +103,7 @@ export function NotificationToaster({
   onGoToSession,
   hiddenApprovalIds,
   viewportRightPx,
+  typedAgentSessions,
 }: Props) {
   const { t } = useTranslation();
   const [toasts, setToasts] = useState<ApprovalToastItem[]>([]);
@@ -128,6 +132,8 @@ export function NotificationToaster({
   const sessionsRef = useRef(sessions);
   sessionsRef.current = sessions;
   const activeSessionRef = useRef(activeSessionId);
+  const typedAgentsRef = useRef(typedAgentSessions);
+  typedAgentsRef.current = typedAgentSessions;
   activeSessionRef.current = activeSessionId;
 
   const dismissOutcome = (key: string) => {
@@ -152,7 +158,8 @@ export function NotificationToaster({
 
   useEffect(() => {
     for (const session of sessions) {
-      if (session.kind.type !== "agent") continue;
+      const managed = session.kind.type === "agent";
+      if (!managed && !typedAgentsRef.current.has(session.id)) continue;
       const status = session.status;
       const prev = prevStates.current.get(session.id);
       const next = status.state;
@@ -186,7 +193,10 @@ export function NotificationToaster({
         setTimeout(() => {
           settleTimers.current.delete(session.id);
           const latest = sessionsRef.current.find((s) => s.id === session.id);
-          if (latest?.status.state !== "idle" || !latest.attention) return;
+          // `attention` só existe na sessão gerenciada; no claude digitado o
+          // turno fechado já é o sinal.
+          if (latest?.status.state !== "idle") return;
+          if (managed && !latest.attention) return;
           if (!document.hasFocus() || activeSessionRef.current === session.id) {
             return;
           }

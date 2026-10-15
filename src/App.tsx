@@ -1952,6 +1952,11 @@ export default function App() {
     };
   }, []);
 
+  const typedAgentSessions = useMemo(
+    () => new Set(detectedBySession.keys()),
+    [detectedBySession],
+  );
+
   const probedDetection = useRef<Set<string>>(new Set());
   useEffect(() => {
     const live = new Set(sessions.map((s) => s.id));
@@ -5289,6 +5294,7 @@ export default function App() {
             })
           }
           onGoToSession={goToSession}
+          typedAgentSessions={typedAgentSessions}
         />
       </ErrorBoundary>
       <CommandPalette
