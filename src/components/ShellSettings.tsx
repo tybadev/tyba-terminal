@@ -22,7 +22,6 @@ import {
   type Snippet,
 } from "../lib/ipc";
 import { PROMPT_MODE_PREF_KEY, promptModeEnabled } from "../lib/commandLine";
-import { PromptModePicker } from "./PromptModePicker";
 import { SettingGroup, SettingLine, SettingNote } from "./settings/rows";
 import {
   autocompleteAutoOpen,
@@ -160,12 +159,9 @@ export function ShellSettings({ lineRows }: { lineRows?: React.ReactNode }) {
     <>
       <SettingGroup title={t("settingsCommandLine")} />
       {lineRows}
-      <SettingLine
-        label={t("promptModeTitle")}
-        hint={t("promptModeHint")}
-        below={<PromptModePicker value={promptOn} onChange={togglePrompt} />}
-      />
-      <SettingNote tone="amber">{t("promptModeEscape")}</SettingNote>
+      <SettingLine label={t("promptModeTitle")} hint={t("promptModeShortHint")}>
+        <Switch checked={promptOn} onCheckedChange={togglePrompt} aria-label={t("promptModeTitle")} />
+      </SettingLine>
 
       <SettingGroup title={t("settingsAutocomplete")} />
       <SettingLine label={t("autocompleteAutoOpen")} hint={t("autocompleteAutoOpenHint")}>
@@ -223,7 +219,7 @@ export function ShellSettings({ lineRows }: { lineRows?: React.ReactNode }) {
       ))}
       <SettingLine label={t("historyClear")} hint={t("historyClearHint")}>
         <Button variant="ghost" size="sm" className="text-tyba-red" onClick={clear}>
-          {t("historyClear")}
+          {t("historyClearShort")}
         </Button>
       </SettingLine>
 

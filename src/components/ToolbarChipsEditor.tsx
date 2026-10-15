@@ -18,13 +18,12 @@ import {
   SortableContext,
   sortableKeyboardCoordinates,
   useSortable,
-  verticalListSortingStrategy,
+  rectSortingStrategy,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { DotsSixVertical } from "@phosphor-icons/react";
 
 import {
-  DEFAULT_TOOLBAR,
   type ChipId,
   type ToolbarPref,
 } from "../lib/repoSnapshots";
@@ -108,7 +107,7 @@ function ChipPill({ id, overlay }: { id: ChipId; overlay?: boolean }) {
   const { t } = useTranslation();
   return (
     <span
-      className={`flex w-full items-center gap-1.5 rounded-[5px] border border-tyba-border bg-tyba-surface px-2 py-1 text-[12px] text-tyba-text ${
+      className={`flex items-center gap-1.5 rounded-[6px] border border-tyba-border-field bg-tyba-raised py-[5px] pr-[9px] pl-1.5 text-[12px] text-tyba-text ${
         overlay ? "shadow-lg" : ""
       }`}
     >
@@ -140,27 +139,20 @@ function Zone({ zone, chips }: { zone: ToolbarZone; chips: ChipId[] }) {
   const { t } = useTranslation();
   const { setNodeRef } = useDroppable({ id: zone });
   return (
-    <div className="flex min-w-0 flex-col gap-1.5">
-      <span className="tyba-label">{t(ZONE_LABEL_KEYS[zone])}</span>
-      <SortableContext items={chips} strategy={verticalListSortingStrategy}>
-        <ul
-          ref={setNodeRef}
-          className={`flex min-h-[72px] flex-col gap-1 rounded-[6px] border p-1.5 ${
-            chips.length === 0
-              ? "border-dashed border-tyba-border"
-              : "border-tyba-border/60"
-          }`}
-        >
+    <div className="flex min-w-0 flex-1 flex-col gap-2 rounded-[8px] border border-tyba-border bg-tyba-raised px-3.5 py-3">
+      <span className="text-[11px] uppercase tracking-[.06em] text-tyba-text-faint">
+        {t(ZONE_LABEL_KEYS[zone])}
+      </span>
+      <SortableContext items={chips} strategy={rectSortingStrategy}>
+        <ul ref={setNodeRef} className="flex min-h-[30px] flex-wrap gap-1.5">
           {chips.map((id) => (
             <SortableChip key={id} id={id} />
           ))}
-          {chips.length === 0 && (
-            <li className="flex flex-1 items-center justify-center text-[11px] text-tyba-text-faint">
-              {t("chipsZoneEmpty")}
-            </li>
-          )}
         </ul>
       </SortableContext>
+      <span className="text-[10.5px] text-tyba-text-ghost">
+        {zone === "hidden" ? t("chipsZoneHiddenHint") : t("chipsZoneDropHint")}
+      </span>
     </div>
   );
 }
@@ -212,21 +204,7 @@ export function ToolbarChipsEditor({ pref, onChange }: Props) {
   };
 
   return (
-    <div className="mt-3 rounded-[8px] border border-tyba-border p-3">
-      <div className="flex items-baseline justify-between pb-2">
-        <div>
-          <div className="text-[13px] text-tyba-text">{t("chipsEditorTitle")}</div>
-          <div className="text-[11px] text-tyba-text-faint">
-            {t("chipsEditorHint")}
-          </div>
-        </div>
-        <button
-          onClick={() => onChange({ ...DEFAULT_TOOLBAR, enabled: pref.enabled })}
-          className="shrink-0 text-[11px] text-tyba-text-muted transition-colors hover:text-tyba-text"
-        >
-          {t("chipsEditorReset")}
-        </button>
-      </div>
+    <div className="border-b border-tyba-border-soft px-[18px] pt-1 pb-3">
       <ToolbarPreview pref={shown} />
       <DndContext
         sensors={sensors}
@@ -266,7 +244,7 @@ export function ToolbarChipsEditor({ pref, onChange }: Props) {
           setActiveId(null);
         }}
       >
-        <div className="grid grid-cols-3 gap-2">
+        <div className="flex gap-2.5">
           {TOOLBAR_ZONES.map((zone) => (
             <Zone key={zone} zone={zone} chips={shown[zone]} />
           ))}
