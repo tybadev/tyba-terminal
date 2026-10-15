@@ -1703,6 +1703,12 @@ export default function App() {
   if (filesTarget) lastFilesSessionRef.current = filesTarget;
   const filesScreenSession =
     filesTarget ?? (filesMotion.mounted ? lastFilesSessionRef.current : null);
+  // Launch config e Configurações entram e saem como as outras telas cheias.
+  const launchMotion = usePresence(launchDraft !== null, reducedMotion ? 0 : 260);
+  const lastLaunchDraftRef = useRef<LaunchConfigDraftState | null>(null);
+  if (launchDraft) lastLaunchDraftRef.current = launchDraft;
+  const shownLaunchDraft = launchDraft ?? (launchMotion.mounted ? lastLaunchDraftRef.current : null);
+  const [settingsExiting, setSettingsExiting] = useState(false);
   const dockerMotion = usePresence(dockerPanelTarget !== null, reducedMotion ? 0 : 260);
   const lastDockerSessionRef = useRef<Session | null>(null);
   if (dockerPanelTarget) lastDockerSessionRef.current = dockerPanelTarget;
@@ -3762,6 +3768,19 @@ export default function App() {
       void openViewTab("settings").catch(() => {});
     }
   }, [activeTab, closeTabAndRefresh]);
+
+  // Fechar pelo ✕/Esc toca a saída antes de a aba sumir.
+  const closeSettingsAnimated = useCallback(() => {
+    if (reducedMotion) {
+      toggleSettings();
+      return;
+    }
+    setSettingsExiting(true);
+    window.setTimeout(() => {
+      setSettingsExiting(false);
+      toggleSettings();
+    }, 260);
+  }, [reducedMotion, toggleSettings]);
 
   const changeTogglePref = useCallback((value: SidebarTogglePref) => {
     setTogglePref(value);
@@ -6187,11 +6206,14 @@ export default function App() {
                   {/* A launch config abre no lugar do shell, por cima de tudo
                       que estiver na área — inclusive das Configurações, de
                       onde ela costuma ser chamada. */}
-                  {launchDraft && (
-                    <div className="absolute inset-0 z-30 flex">
+                  {shownLaunchDraft && (
+                    <div
+                      className="tyba-git-screen absolute inset-0 z-30 flex"
+                      data-exiting={launchMotion.exiting}
+                    >
                       <LaunchConfigScreen
-                        key={launchDraft.id ?? "nova"}
-                        draft={launchDraft}
+                        key={shownLaunchDraft.id ?? "nova"}
+                        draft={shownLaunchDraft}
                         onClose={() => setLaunchDraft(null)}
                         onSaved={refreshLaunchConfigs}
                         onOpen={(id) => void applyLaunchConfigById(id)}
@@ -6199,9 +6221,9 @@ export default function App() {
                     </div>
                   )}
                   {activeTab?.view === "settings" && (
-                    <div className="absolute inset-0 flex">
+                    <div className="tyba-git-screen absolute inset-0 flex" data-exiting={settingsExiting}>
                       <SettingsView
-                        onClose={toggleSettings}
+                        onClose={closeSettingsAnimated}
                         onOpenConfig={() => void openUserConfig()}
                         launchConfigs={launchConfigs}
                         onApplyLaunchConfig={applyLaunchConfigById}
