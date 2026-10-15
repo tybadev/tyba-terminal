@@ -104,9 +104,9 @@ import {
 import { agentOpenUrlToastInput } from "./lib/agentOpenUrlToast";
 import { agentAlertToast } from "./lib/agentUsage";
 import {
-  LaunchConfigDialog,
+  LaunchConfigScreen,
   type LaunchConfigDraftState,
-} from "./components/LaunchConfigDialog";
+} from "./components/LaunchConfigScreen";
 import { ShortcutsPanel } from "./components/ShortcutsPanel";
 import { ConnectionsView } from "./components/ConnectionsView";
 import {
@@ -289,6 +289,7 @@ import {
   sessionGitStatus,
   setAgentMatchPattern,
   submitRichInput,
+  submitShellLine,
   setPref,
   setSideViewExpanded,
   setSideViewRatio,
@@ -785,9 +786,23 @@ export default function App() {
   useEffect(() => {
     let unlisten: (() => void) | null = null;
     let disposed = false;
-    void onLaunchConfigPrefill(({ session_id, prompt }) => {
-      setLaunchPrefills((prev) => ({ ...prev, [session_id]: prompt }));
-      setRichInputOpened((prev) => new Set(prev).add(session_id));
+    void onLaunchConfigPrefill(({ session_id, prompt, submit }) => {
+      const prefill = () => {
+        setLaunchPrefills((prev) => ({ ...prev, [session_id]: prompt }));
+        setRichInputOpened((prev) => new Set(prev).add(session_id));
+      };
+      if (!submit) {
+        prefill();
+        return;
+      }
+      // Slot de shell com "rodar ao abrir": o mesmo Enter da linha do TYBA,
+      // que espera o editor de linha do shell recém-aberto. Comando pela
+      // metade ou falha cai no prefill: o comando fica à vista, sem rodar.
+      void submitShellLine(session_id, prompt)
+        .then((outcome) => {
+          if (outcome === "incomplete") prefill();
+        })
+        .catch(prefill);
     }).then((un) => {
       if (disposed) un();
       else unlisten = un;
@@ -5298,11 +5313,6 @@ export default function App() {
         onPickHistory={injectIntoActive}
         onPickSnippet={pickSnippet}
       />
-      <LaunchConfigDialog
-        draft={launchDraft}
-        onClose={() => setLaunchDraft(null)}
-        onSaved={refreshLaunchConfigs}
-      />
       <HostFormDialog
         state={hostEditor}
         groups={hostGroups}
@@ -6171,6 +6181,20 @@ export default function App() {
                         onReviewSession={(id) =>
                           void openDiffContentTab(id).catch(() => {})
                         }
+                      />
+                    </div>
+                  )}
+                  {/* A launch config abre no lugar do shell, por cima de tudo
+                      que estiver na área — inclusive das Configurações, de
+                      onde ela costuma ser chamada. */}
+                  {launchDraft && (
+                    <div className="absolute inset-0 z-30 flex">
+                      <LaunchConfigScreen
+                        key={launchDraft.id ?? "nova"}
+                        draft={launchDraft}
+                        onClose={() => setLaunchDraft(null)}
+                        onSaved={refreshLaunchConfigs}
+                        onOpen={(id) => void applyLaunchConfigById(id)}
                       />
                     </div>
                   )}

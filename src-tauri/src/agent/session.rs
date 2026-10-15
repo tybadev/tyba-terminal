@@ -1406,7 +1406,9 @@ fn build_hosted_command(
     let mut env = crate::repo_config::agent_env(config.as_ref(), user_env);
     apply_git_overrides(&mut env);
 
-    let mut cmd = runner.build_command(cwd, &env, hook_setup, None);
+    // Agente digitado no shell: o modelo é o que o usuário passou nos args, não
+    // o de uma launch config.
+    let mut cmd = runner.build_command(cwd, &env, hook_setup, None, None);
     // M6-A: os args que o usuário digitou (`-c`, `--resume <id>`, `-p ...`),
     // já reclassificados pelo `channel_host`, entram como argv depois do
     // `--settings` dos hooks e ANTES do wrap da jaula — nunca por shell.
@@ -1623,6 +1625,7 @@ pub fn resume_agent_session(
         // é quem herda de `previous`. Ver `Session::opened_by_gate`.
         opened_by_gate: false,
         resume_conversation: None,
+        agent_model: None,
         prepared_worktree: None,
     };
     spawn_prepared(
@@ -1880,7 +1883,13 @@ fn spawn_prepared(
     let mut env = crate::repo_config::agent_env(config.as_ref(), &user_env);
     apply_git_overrides(&mut env);
 
-    let mut cmd = runner.build_command(&worktree.path, &env, &hook_setup, resume.as_deref());
+    let mut cmd = runner.build_command(
+        &worktree.path,
+        &env,
+        &hook_setup,
+        resume.as_deref(),
+        opts.agent_model.as_deref(),
+    );
     // M5 do claude-monitor: a jaula só libera o `file-history/<sessão>` da
     // conversa desta sessão, então o id precisa ser conhecido no spawn. Retomar
     // já o traz; conversa nova do Claude ganha um UUID nosso via

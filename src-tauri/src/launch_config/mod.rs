@@ -5,9 +5,10 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::agent::claude_model_alias;
 use crate::layout::{PaneRow, SplitKind, Workspace};
 use crate::session::redact::redact;
-use crate::session::SessionKind;
+use crate::session::{AgentRunnerKind, SessionKind};
 use crate::worktree::slugify;
 
 pub const EVENT_PREFILL: &str = "launch-config://prefill";
@@ -40,6 +41,8 @@ pub enum LaunchConfigError {
     RemoteCannotIsolate(String),
     #[error("slot de container não é suportado em launch config: {0}")]
     ContainerSlot(String),
+    #[error("modelo inválido no slot {0}: use opus, sonnet ou haiku")]
+    InvalidModel(String),
     #[error("store: {0}")]
     Store(#[from] crate::session::store::StoreError),
 }
@@ -74,6 +77,34 @@ pub struct Slot {
     pub isolate: bool,
     #[serde(default)]
     pub initial_prompt: Option<String>,
+    /// Alias de modelo do agente Claude (`opus`/`sonnet`/`haiku`). Fora de
+    /// agente Claude é ignorado — ver [`Slot::agent_model`].
+    #[serde(default)]
+    pub model: Option<String>,
+    /// Só para slot de SHELL: o `initial_prompt` é um comando, digitado e
+    /// enviado ao abrir. Em agente fica ignorado de propósito — o prompt chega
+    /// escrito e quem dá o Enter é o usuário, nunca a configuração.
+    #[serde(default)]
+    pub run_on_open: bool,
+}
+
+impl Slot {
+    /// O modelo que vai para o spawn: só em agente Claude e só se passar na
+    /// allowlist. O `validate` já recusou o inválido no save; isto é a mesma
+    /// regra relida do que voltou do SQLite.
+    pub fn agent_model(&self) -> Option<&'static str> {
+        match &self.kind {
+            SessionKind::Agent {
+                runner: AgentRunnerKind::ClaudeCode,
+            } => self.model.as_deref().and_then(claude_model_alias),
+            _ => None,
+        }
+    }
+
+    /// Se o prefill deste slot é enviado com Enter. Só shell — agente nunca.
+    pub fn submits_on_open(&self) -> bool {
+        self.run_on_open && matches!(self.kind, SessionKind::Shell)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -153,6 +184,8 @@ pub struct SlotRow {
     pub cwd_rel: Option<String>,
     pub isolate: i64,
     pub initial_prompt: Option<String>,
+    pub model: Option<String>,
+    pub run_on_open: i64,
     pub position: i64,
 }
 
@@ -201,6 +234,8 @@ pub fn to_rows(config: &LaunchConfig) -> LaunchConfigRows {
             cwd_rel: slot.cwd_rel.clone(),
             isolate: slot.isolate as i64,
             initial_prompt: slot.initial_prompt.clone(),
+            model: slot.model.clone(),
+            run_on_open: slot.run_on_open as i64,
             position: i as i64,
         });
     }
@@ -253,6 +288,8 @@ pub fn from_rows(rows: &LaunchConfigRows) -> Vec<LaunchConfig> {
                     cwd_rel: s.cwd_rel.clone(),
                     isolate: s.isolate != 0,
                     initial_prompt: s.initial_prompt.clone(),
+                    model: s.model.clone(),
+                    run_on_open: s.run_on_open != 0,
                 })
             })
             .collect();
@@ -341,6 +378,18 @@ pub fn validate(draft: &LaunchConfigDraft) -> Result<(), LaunchConfigError> {
                 return Err(LaunchConfigError::RemoteCannotIsolate(slot.name.clone()))
             }
             _ => {}
+        }
+        // Recusa no save em vez de descartar calado: quem digitou um modelo
+        // fora da lista precisa saber que ele não vai valer. Fora de agente
+        // Claude o campo não é olhado — o spawn o ignora de todo jeito.
+        let is_claude = matches!(
+            slot.kind,
+            SessionKind::Agent {
+                runner: AgentRunnerKind::ClaudeCode
+            }
+        );
+        if is_claude && slot.model.is_some() && slot.agent_model().is_none() {
+            return Err(LaunchConfigError::InvalidModel(slot.name.clone()));
         }
     }
 
@@ -540,6 +589,8 @@ pub fn snapshot_workspace(
                 cwd_rel,
                 isolate,
                 initial_prompt: None,
+                model: None,
+                run_on_open: false,
             };
             let mut row = row.clone();
             row.session_id = Some(slot.id.to_string());
@@ -598,6 +649,8 @@ mod tests {
             cwd_rel: None,
             isolate: false,
             initial_prompt: None,
+            model: None,
+            run_on_open: false,
         }
     }
 
@@ -791,6 +844,88 @@ mod tests {
         ));
     }
 
+    fn draft_of(slot: &Slot) -> LaunchConfigDraft {
+        LaunchConfigDraft {
+            name: "cfg".into(),
+            repo_root: "/repo".into(),
+            slots: vec![slot.clone()],
+            tabs: vec![ConfigTab {
+                id: Uuid::new_v4(),
+                title: None,
+                root: leaf(slot),
+            }],
+        }
+    }
+
+    fn claude_slot(model: Option<&str>) -> Slot {
+        let mut s = slot("claude");
+        s.kind = SessionKind::Agent {
+            runner: AgentRunnerKind::ClaudeCode,
+        };
+        s.model = model.map(str::to_string);
+        s
+    }
+
+    #[test]
+    fn claude_model_outside_the_allowlist_is_refused_on_save() {
+        for ok in ["opus", "sonnet", "haiku"] {
+            assert!(validate(&draft_of(&claude_slot(Some(ok)))).is_ok(), "{ok}");
+        }
+        assert!(validate(&draft_of(&claude_slot(None))).is_ok());
+        for bad in [
+            "opus; rm -rf /",
+            "--dangerously-skip-permissions",
+            "Opus",
+            "",
+        ] {
+            assert!(
+                matches!(
+                    validate(&draft_of(&claude_slot(Some(bad)))),
+                    Err(LaunchConfigError::InvalidModel(_))
+                ),
+                "{bad:?} tinha de ser recusado"
+            );
+        }
+    }
+
+    /// O que voltou do SQLite passa pela allowlist de novo, e só agente Claude
+    /// leva modelo para o spawn.
+    #[test]
+    fn agent_model_is_only_for_claude_and_only_from_the_allowlist() {
+        assert_eq!(claude_slot(Some("opus")).agent_model(), Some("opus"));
+        assert_eq!(
+            claude_slot(Some("--dangerously-skip-permissions")).agent_model(),
+            None
+        );
+        let mut codex = claude_slot(Some("opus"));
+        codex.kind = SessionKind::Agent {
+            runner: AgentRunnerKind::Codex,
+        };
+        assert_eq!(codex.agent_model(), None);
+        let mut shell = slot("sh");
+        shell.model = Some("opus".into());
+        assert_eq!(shell.agent_model(), None);
+    }
+
+    /// Agente nunca recebe Enter automático, nem com a flag gravada.
+    #[test]
+    fn only_shell_slots_submit_on_open() {
+        let mut shell = slot("sh");
+        shell.run_on_open = true;
+        assert!(shell.submits_on_open());
+        shell.run_on_open = false;
+        assert!(!shell.submits_on_open());
+        let mut agent = claude_slot(None);
+        agent.run_on_open = true;
+        assert!(!agent.submits_on_open());
+        let mut ssh = slot("vps");
+        ssh.kind = SessionKind::Ssh {
+            host_id: "h1".into(),
+        };
+        ssh.run_on_open = true;
+        assert!(!ssh.submits_on_open());
+    }
+
     #[test]
     fn container_slot_is_refused() {
         let mut c = slot("db");
@@ -900,7 +1035,10 @@ mod tests {
         core.kind = SessionKind::Agent {
             runner: AgentRunnerKind::ClaudeCode,
         };
-        let shell = slot("shell");
+        core.model = Some("sonnet".into());
+        let mut shell = slot("shell");
+        shell.initial_prompt = Some("bun run dev".into());
+        shell.run_on_open = true;
         let tree = SlotNode::Split {
             id: Uuid::new_v4(),
             split: SplitKind::V,
@@ -924,6 +1062,11 @@ mod tests {
         assert!(core_back.isolate);
         assert_eq!(core_back.cwd_rel.as_deref(), Some("src-tauri"));
         assert_eq!(core_back.initial_prompt.as_deref(), Some("cuida do core"));
+        assert_eq!(core_back.model.as_deref(), Some("sonnet"));
+        assert!(!core_back.run_on_open);
+        let shell_back = back.slots.iter().find(|s| s.name == "shell").unwrap();
+        assert!(shell_back.run_on_open);
+        assert_eq!(shell_back.model, None);
         assert!(matches!(
             core_back.kind,
             SessionKind::Agent {

@@ -111,6 +111,8 @@ CREATE TABLE IF NOT EXISTS launch_config_slot (
     cwd_rel TEXT,
     isolate INTEGER NOT NULL DEFAULT 0,
     initial_prompt TEXT,
+    model TEXT,
+    run_on_open INTEGER NOT NULL DEFAULT 0,
     position INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS launch_config_tab (
@@ -542,6 +544,11 @@ pub enum StoreError {
 ///     sistema (`tar`, `rsync`, `chmod`, `kill`, `sed`…) e de linguagem (`node`,
 ///     `python`, `go`, `uv`…). Mesmo motivo do 7. Conferido em 2026-10-14:
 ///     nenhuma branch local nem remota usava 13.
+/// 14 — `launch_config_slot.model` e `.run_on_open` entram: o modelo do
+///     agente Claude do slot e o "rodar ao abrir" do slot de shell. Os dois
+///     nascem vazios/desligados — a configuração que já existia continua
+///     abrindo do jeito de antes. Conferido em 2026-10-15: nenhuma branch
+///     local nem remota usava 14.
 ///
 /// Degrau próprio para cada um, e nunca linha nova na [`BASELINE_COLUMNS`]: a
 /// base só roda em banco na versão 0, então quem já subiu de versão nunca mais
@@ -553,7 +560,7 @@ pub enum StoreError {
 /// `from >= SCHEMA_VERSION` antes de olhar degrau nenhum. O teste discriminante
 /// de cada um passa isolado, porque simula o banco na versão anterior, que é
 /// justamente o caso em que ambos rodam.
-const SCHEMA_VERSION: i64 = 13;
+const SCHEMA_VERSION: i64 = 14;
 
 /// Colunas da versão 1, na ordem em que nasceram. Guardadas por `table_info` em
 /// vez de tentadas às cegas porque os três estados possíveis convergem aqui: o
@@ -796,6 +803,34 @@ fn migrate_approval_origin(conn: &Connection) -> Result<(), StoreError> {
              ON approval_history (session_id, status)",
             [],
         )?;
+        Ok(())
+    })();
+    match result {
+        Ok(()) => conn.execute_batch("COMMIT")?,
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            return Err(e);
+        }
+    }
+    Ok(())
+}
+
+/// Degrau 14, numa transação só pelo mesmo motivo do 8: as duas colunas são as
+/// opções do mesmo slot, e o `SELECT` do load lê as duas — com uma só, toda
+/// launch config deixaria de carregar.
+fn migrate_launch_slot_options(conn: &Connection) -> Result<(), StoreError> {
+    conn.execute_batch("BEGIN")?;
+    let result = (|| -> Result<(), StoreError> {
+        if !has_column(conn, "launch_config_slot", "model")? {
+            conn.execute("ALTER TABLE launch_config_slot ADD COLUMN model TEXT", [])?;
+        }
+        if !has_column(conn, "launch_config_slot", "run_on_open")? {
+            conn.execute(
+                "ALTER TABLE launch_config_slot
+                 ADD COLUMN run_on_open INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+        }
         Ok(())
     })();
     match result {
@@ -1077,6 +1112,18 @@ fn migrate(conn: &Connection) -> Result<Vec<String>, StoreError> {
         true
     };
 
+    let launch_slot_options_applied = if from < 14 {
+        match migrate_launch_slot_options(conn) {
+            Ok(()) => true,
+            Err(e) => {
+                skipped.push(format!("launch_config_slot opções (degrau 14): {e}"));
+                false
+            }
+        }
+    } else {
+        true
+    };
+
     let reached = match (
         baseline_applied,
         scrollback_applied,
@@ -1090,20 +1137,24 @@ fn migrate(conn: &Connection) -> Result<Vec<String>, StoreError> {
         spec_reseed_applied,
         conversation_cwd_applied,
         spec_reseed_13_applied,
+        launch_slot_options_applied,
     ) {
-        (true, true, true, true, true, true, true, true, true, true, true, true) => SCHEMA_VERSION,
-        (true, true, true, true, true, true, true, true, true, true, true, false) => 12,
-        (true, true, true, true, true, true, true, true, true, true, false, _) => 11,
-        (true, true, true, true, true, true, true, true, true, false, _, _) => 10,
-        (true, true, true, true, true, true, true, true, false, _, _, _) => 9,
-        (true, true, true, true, true, true, true, false, _, _, _, _) => 8,
-        (true, true, true, true, true, true, false, _, _, _, _, _) => 7,
-        (true, true, true, true, true, false, _, _, _, _, _, _) => 5,
-        (true, true, true, true, false, _, _, _, _, _, _, _) => 4,
-        (true, true, true, false, _, _, _, _, _, _, _, _) => 3,
-        (true, true, false, _, _, _, _, _, _, _, _, _) => 2,
-        (true, false, _, _, _, _, _, _, _, _, _, _) => 1,
-        (false, _, _, _, _, _, _, _, _, _, _, _) => from,
+        (true, true, true, true, true, true, true, true, true, true, true, true, true) => {
+            SCHEMA_VERSION
+        }
+        (true, true, true, true, true, true, true, true, true, true, true, true, false) => 13,
+        (true, true, true, true, true, true, true, true, true, true, true, false, _) => 12,
+        (true, true, true, true, true, true, true, true, true, true, false, _, _) => 11,
+        (true, true, true, true, true, true, true, true, true, false, _, _, _) => 10,
+        (true, true, true, true, true, true, true, true, false, _, _, _, _) => 9,
+        (true, true, true, true, true, true, true, false, _, _, _, _, _) => 8,
+        (true, true, true, true, true, true, false, _, _, _, _, _, _) => 7,
+        (true, true, true, true, true, false, _, _, _, _, _, _, _) => 5,
+        (true, true, true, true, false, _, _, _, _, _, _, _, _) => 4,
+        (true, true, true, false, _, _, _, _, _, _, _, _, _) => 3,
+        (true, true, false, _, _, _, _, _, _, _, _, _, _) => 2,
+        (true, false, _, _, _, _, _, _, _, _, _, _, _) => 1,
+        (false, _, _, _, _, _, _, _, _, _, _, _, _) => from,
     };
     if reached > from {
         conn.pragma_update(None, "user_version", reached)?;
@@ -2906,8 +2957,9 @@ impl Store {
         for s in &rows.slots {
             tx.execute(
                 "INSERT INTO launch_config_slot
-                     (id, config_id, name, kind, cwd_rel, isolate, initial_prompt, position)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                     (id, config_id, name, kind, cwd_rel, isolate, initial_prompt,
+                      model, run_on_open, position)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 params![
                     s.id,
                     s.config_id,
@@ -2916,6 +2968,8 @@ impl Store {
                     s.cwd_rel,
                     s.isolate,
                     s.initial_prompt,
+                    s.model,
+                    s.run_on_open,
                     s.position
                 ],
             )?;
@@ -2969,7 +3023,8 @@ impl Store {
             .collect::<Result<Vec<_>, _>>()?;
 
         let mut stmt = conn.prepare(
-            "SELECT id, config_id, name, kind, cwd_rel, isolate, initial_prompt, position
+            "SELECT id, config_id, name, kind, cwd_rel, isolate, initial_prompt,
+                    model, run_on_open, position
              FROM launch_config_slot ORDER BY position",
         )?;
         let slots = stmt
@@ -2982,7 +3037,9 @@ impl Store {
                     cwd_rel: row.get(4)?,
                     isolate: row.get(5)?,
                     initial_prompt: row.get(6)?,
-                    position: row.get(7)?,
+                    model: row.get(7)?,
+                    run_on_open: row.get(8)?,
+                    position: row.get(9)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -4003,6 +4060,7 @@ mod tests {
         (9, "command_history", "host_id"),
         (10, "approval_history", "origin"),
         (12, "sessions", "agent_conversation_cwd"),
+        (14, "launch_config_slot", "model"),
     ];
 
     /// Colunas que nascem num degrau que já tem linha em [`STEP_COLUMNS`]. Lista
@@ -4014,6 +4072,7 @@ mod tests {
         (9, "sessions", "ssh_integration"),
         (10, "approval_history", "call_key"),
         (10, "approval_history", "status"),
+        (14, "launch_config_slot", "run_on_open"),
     ];
 
     /// Degraus que nascem uma TABELA em vez de uma coluna, e em qual número.
@@ -4558,6 +4617,44 @@ mod tests {
             "sessão SSH de antes da entrega estava viva: sem o backfill o boot a esqueceria"
         );
         assert!(!store.ssh_logged_in(shell.id).unwrap());
+    }
+
+    /// Degrau 14 a partir de um banco na 13: o slot que já existia ganha as
+    /// duas colunas sem perder nada, e nasce sem modelo e sem rodar ao abrir —
+    /// a configuração antiga abre igual a antes.
+    #[test]
+    fn banco_na_13_ganha_modelo_e_rodar_ao_abrir_nos_slots() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tyba.db");
+        {
+            let store = Store::open(&path).unwrap();
+            let conn = store.conn.lock();
+            conn.execute_batch(
+                r#"INSERT INTO launch_config_slot
+                     (id, config_id, name, kind, cwd_rel, isolate, initial_prompt, position)
+                 VALUES ('s1', 'c1', 'core', '{"type":"shell"}', NULL, 0, 'ls', 0);
+                 ALTER TABLE launch_config_slot DROP COLUMN model;
+                 ALTER TABLE launch_config_slot DROP COLUMN run_on_open;"#,
+            )
+            .unwrap();
+            conn.pragma_update(None, "user_version", 13).unwrap();
+        }
+
+        let store = Store::open(&path).unwrap();
+
+        assert_eq!(user_version(&store), SCHEMA_VERSION);
+        assert_eq!(store.degraded(), None);
+        assert!(column_exists(&store, "launch_config_slot", "model"));
+        assert!(column_exists(&store, "launch_config_slot", "run_on_open"));
+        let slots = store.load_launch_configs().unwrap().slots;
+        assert_eq!(
+            slots.len(),
+            1,
+            "o degrau não pode perder o slot que já existia"
+        );
+        assert_eq!(slots[0].initial_prompt.as_deref(), Some("ls"));
+        assert_eq!(slots[0].model, None);
+        assert_eq!(slots[0].run_on_open, 0);
     }
 
     /// Degrau 9 a partir de um banco na 8: a chave de integração nasce ligada e

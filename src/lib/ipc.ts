@@ -1844,6 +1844,12 @@ export interface LaunchSlot {
   cwd_rel: string | null;
   isolate: boolean;
   initial_prompt: string | null;
+  /** Alias do modelo do agente Claude: `opus`, `sonnet` ou `haiku`. Outro
+   * valor é recusado no save; fora de agente Claude é ignorado. */
+  model?: string | null;
+  /** Só shell: o `initial_prompt` é um comando digitado e enviado ao abrir.
+   * Em agente é ignorado — o prompt chega escrito, esperando o Enter. */
+  run_on_open?: boolean;
 }
 
 export interface LaunchConfigTab {
@@ -1924,10 +1930,17 @@ export const launchConfigSeed = (workspaceId?: WorkspaceId) =>
     workspaceId: workspaceId ?? null,
   });
 
+export interface LaunchConfigPrefill {
+  session_id: SessionId;
+  prompt: string;
+  /** `true` só para slot de shell com `run_on_open`: o comando é enviado. */
+  submit: boolean;
+}
+
 export const onLaunchConfigPrefill = (
-  handler: (payload: { session_id: SessionId; prompt: string }) => void,
+  handler: (payload: LaunchConfigPrefill) => void,
 ): Promise<UnlistenFn> =>
-  listen<{ session_id: SessionId; prompt: string }>(
+  listen<LaunchConfigPrefill>(
     "launch-config://prefill",
     (e) => handler(e.payload),
   );
