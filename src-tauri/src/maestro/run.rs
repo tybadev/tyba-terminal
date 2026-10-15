@@ -1,5 +1,5 @@
-//! Motor de execução do Maestro: processos e notas (agente e integração
-//! chegam nos blocos seguintes).
+//! Motor de execução do Maestro: processos, notas e agentes (integração
+//! chega no bloco seguinte).
 //!
 //! ▶ Executar cria um [`Run`] e uma pasta `~/.tyba/maestro/runs/<run>/<nó>/
 //! {in,out}` (0700). Um nó começa quando todas as ligações que chegam nele já
@@ -17,7 +17,8 @@ use std::sync::{Arc, Weak};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
-use super::{EdgeKind, Graph, Node, NodeKind, OutputKind, Stored};
+use super::agent::AgentTurn;
+use super::{EdgeKind, Graph, Node, NodeKind, OutputKind, Runner, Stored};
 use crate::session::store::Store;
 
 /// Execuções guardadas por grafo; a poda apaga a pasta das mais antigas.
@@ -479,8 +480,27 @@ pub struct ProcessLaunch {
     pub args: Vec<String>,
 }
 
+/// O que o host precisa para subir o agente de um nó.
+#[derive(Debug, Clone)]
+pub struct AgentLaunch {
+    pub title: String,
+    pub cwd: PathBuf,
+    pub runner: Runner,
+    pub prompt: String,
+    pub in_dir: PathBuf,
+    pub out_dir: PathBuf,
+}
+
 /// Efeitos fora do agendador: subir processo, matar, avisar o front.
 pub trait RunHost: Send + Sync + 'static {
+    /// Sobe o agente livre e devolve o id da sessão. `on_turn` roda uma vez,
+    /// quando o primeiro turno fecha (ou o agente sai antes disso). O agente
+    /// segue vivo depois.
+    fn spawn_agent(
+        &self,
+        launch: AgentLaunch,
+        on_turn: Box<dyn FnOnce(AgentTurn) + Send>,
+    ) -> Result<String, String>;
     /// Sobe o processo num PTY e devolve o id da sessão. `on_exit` roda quando
     /// o PTY fecha.
     fn spawn_process(
@@ -520,6 +540,9 @@ pub struct Runs<H: RunHost> {
     store: Arc<Store>,
     root: Option<PathBuf>,
     active: Mutex<HashMap<String, Active>>,
+    /// Sessões de agente de cada run: continuam vivas depois do nó pronto, e
+    /// o Parar as mata mesmo com o run já fechado.
+    agents: Mutex<HashMap<String, Vec<String>>>,
     me: Weak<Runs<H>>,
 }
 
@@ -534,6 +557,7 @@ impl<H: RunHost> Runs<H> {
             store,
             root,
             active: Mutex::new(HashMap::new()),
+            agents: Mutex::new(HashMap::new()),
             me: me.clone(),
         })
     }
@@ -598,17 +622,25 @@ impl<H: RunHost> Runs<H> {
     }
 
     pub fn stop(&self, run_id: &str) -> Result<(), String> {
-        let (snapshot, kill) = {
-            let mut active = self.active.lock();
-            let Some(mut a) = active.remove(run_id) else {
-                return Err("execução não está rodando".into());
-            };
+        let stopped = self.active.lock().remove(run_id).map(|mut a| {
             let kill = a.sched.stop(now());
             (a.sched.run().clone(), kill)
-        };
-        self.publish(&snapshot);
+        });
+        let agents = self.agents.lock().remove(run_id).unwrap_or_default();
+        if stopped.is_none() && agents.is_empty() {
+            return Err("execução não está rodando".into());
+        }
+        let mut kill: Vec<String> = Vec::new();
+        if let Some((snapshot, sessions)) = stopped {
+            self.publish(&snapshot);
+            kill.extend(sessions);
+        }
+        kill.extend(agents);
+        let mut seen = HashSet::new();
         for session in kill {
-            self.host.kill(&session);
+            if seen.insert(session.clone()) {
+                self.host.kill(&session);
+            }
         }
         Ok(())
     }
@@ -708,8 +740,11 @@ impl<H: RunHost> Runs<H> {
                     Err(e) => Launched::Finished(Outcome::failed(format!("gravar a nota: {e}"))),
                 }
             }
-            NodeKind::Agent { .. } | NodeKind::Integration { .. } => {
+            NodeKind::Integration { .. } => {
                 Launched::Finished(Outcome::failed("ainda não suportado"))
+            }
+            NodeKind::Agent { runner, prompt, .. } => {
+                self.launch_agent(run_id, &start, *runner, prompt)
             }
             NodeKind::Process { command, .. } => {
                 if let Err(e) = materialize(&start.in_dir, &start.inputs) {
@@ -736,6 +771,85 @@ impl<H: RunHost> Runs<H> {
                 }
             }
         }
+    }
+
+    /// Entradas em `in/`, snapshot de diff na largada e o agente livre na
+    /// pasta do workspace.
+    fn launch_agent(&self, run_id: &str, start: &Start, runner: Runner, prompt: &str) -> Launched {
+        let written = match materialize(&start.in_dir, &start.inputs) {
+            Ok(w) => w,
+            Err(e) => {
+                return Launched::Finished(Outcome::failed(format!("preparar entradas: {e}")))
+            }
+        };
+        let inputs: Vec<(EdgeKind, PathBuf)> =
+            start.inputs.iter().map(|i| i.kind).zip(written).collect();
+        let prompt = crate::snippet::render(prompt, &start.variables);
+        let prompt = super::agent::build_prompt(&prompt, &inputs);
+        let snapshot = super::agent::snapshot(&start.graph_dir);
+        let me = self.me.clone();
+        let (run, node, out_dir) = (
+            run_id.to_string(),
+            start.node.id.clone(),
+            start.out_dir.clone(),
+        );
+        let on_turn = Box::new(move |turn: AgentTurn| {
+            if let Some(runs) = me.upgrade() {
+                runs.agent_turn_ended(&run, &node, &out_dir, snapshot.as_ref(), turn);
+            }
+        });
+        let launch = AgentLaunch {
+            title: start.node.title.clone(),
+            cwd: start.graph_dir.clone(),
+            runner,
+            prompt,
+            in_dir: start.in_dir.clone(),
+            out_dir: start.out_dir.clone(),
+        };
+        match self.host.spawn_agent(launch, on_turn) {
+            Ok(session) => {
+                self.agents
+                    .lock()
+                    .entry(run_id.to_string())
+                    .or_default()
+                    .push(session.clone());
+                Launched::Session(session)
+            }
+            Err(e) => Launched::Finished(Outcome::failed(format!("subir o agente: {e}"))),
+        }
+    }
+
+    /// O primeiro turno fechou: grava `context.md` (redigido) e `diff.patch`
+    /// e segue o grafo. O agente continua vivo.
+    fn agent_turn_ended(
+        &self,
+        run_id: &str,
+        node_id: &str,
+        out_dir: &Path,
+        snapshot: Option<&super::agent::Snapshot>,
+        turn: AgentTurn,
+    ) {
+        if !self.active.lock().contains_key(run_id) {
+            return;
+        }
+        let outcome = match turn {
+            AgentTurn::Exited => Outcome::failed("o agente saiu antes de fechar o turno"),
+            AgentTurn::Failed(reason) => Outcome::failed(reason),
+            AgentTurn::Done { text } => agent_outputs(out_dir, snapshot, text.as_deref()),
+        };
+        {
+            let mut active = self.active.lock();
+            let Some(a) = active.get_mut(run_id) else {
+                return;
+            };
+            if !a.sched.finish(node_id, outcome, now()) {
+                return;
+            }
+        }
+        if let Some(run) = self.snapshot_and_retire(run_id) {
+            self.publish(&run);
+        }
+        self.advance(run_id);
     }
 
     /// O PTY do processo fechou: lê o `.exit` e segue o grafo.
@@ -772,6 +886,44 @@ impl<H: RunHost> Runs<H> {
             self.publish(&run);
         }
         self.advance(run_id);
+    }
+}
+
+/// Saídas do agente pronto: `context.md` sempre (vazio sem fala) e
+/// `diff.patch` só com snapshot (sem git, o destino recebe diff vazio).
+fn agent_outputs(
+    out_dir: &Path,
+    snapshot: Option<&super::agent::Snapshot>,
+    text: Option<&str>,
+) -> Outcome {
+    let mut outputs = HashMap::new();
+    let context = out_dir.join("context.md");
+    let body = super::agent::context_markdown(text.unwrap_or_default());
+    if let Err(e) = std::fs::write(&context, &body) {
+        return Outcome::failed(format!("gravar o contexto: {e}"));
+    }
+    outputs.insert(EdgeKind::Context, context.to_string_lossy().into_owned());
+    if let Some(snap) = snapshot {
+        let patch = out_dir.join("diff.patch");
+        let diff = super::agent::diff_since(snap);
+        if let Err(e) = std::fs::write(&patch, &diff) {
+            return Outcome::failed(format!("gravar o diff: {e}"));
+        }
+        outputs.insert(EdgeKind::Diff, patch.to_string_lossy().into_owned());
+    }
+    eprintln!(
+        "[maestro] agente pronto: contexto {} bytes, diff {}",
+        body.len(),
+        if snapshot.is_some() {
+            "gravado"
+        } else {
+            "sem git"
+        }
+    );
+    Outcome {
+        ok: true,
+        outputs,
+        ..Outcome::default()
     }
 }
 
@@ -870,6 +1022,68 @@ impl RunHost for TauriHost {
         // Sessão de nó não volta no boot: é do run, não da grade.
         let _ = state.store.remove_session(session.id);
         Ok(session.id.to_string())
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn spawn_agent(
+        &self,
+        launch: AgentLaunch,
+        on_turn: Box<dyn FnOnce(AgentTurn) + Send>,
+    ) -> Result<String, String> {
+        use tauri::Manager;
+        let state = self.app.state::<crate::AppState>();
+        let ctx = crate::agent::session::AgentSessionCtx {
+            app: self.app.clone(),
+            sessions: Arc::clone(&state.sessions),
+            pty_pool: Arc::clone(&state.pty_pool),
+            approvals: Arc::clone(&state.approvals),
+            store: Arc::clone(&state.store),
+            servers: Arc::clone(&state.hook_servers),
+            subagents: Arc::clone(&state.subagents),
+        };
+        let spec = crate::agent::session::FreeAgentSpec {
+            runner: super::agent::runner_kind(launch.runner),
+            cwd: launch.cwd,
+            title: launch.title,
+            prompt: launch.prompt,
+            extra_env: vec![
+                (
+                    "TYBA_IN".into(),
+                    launch.in_dir.to_string_lossy().into_owned(),
+                ),
+                (
+                    "TYBA_OUT".into(),
+                    launch.out_dir.to_string_lossy().into_owned(),
+                ),
+            ],
+            cols: 100,
+            rows: 30,
+        };
+        let handle = self.app.clone();
+        let (session, tail) = crate::agent::session::spawn_free_agent(&ctx, spec, move |id| {
+            let state = handle.state::<crate::AppState>();
+            state.sessions.set_status(
+                &handle,
+                id,
+                crate::session::SessionStatus::Exited { code: -1 },
+            );
+            let _ = state.store.remove_session(id);
+        })?;
+        // Sessão de nó não volta no boot: é do run, não da grade.
+        let _ = state.store.remove_session(session.id);
+        let sessions = Arc::clone(&state.sessions);
+        let id = session.id;
+        super::agent::watch_first_turn(move || sessions.get(id).map(|s| s.status), tail, on_turn);
+        Ok(session.id.to_string())
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    fn spawn_agent(
+        &self,
+        _launch: AgentLaunch,
+        _on_turn: Box<dyn FnOnce(AgentTurn) + Send>,
+    ) -> Result<String, String> {
+        Err("o nó de agente ainda não roda neste sistema".into())
     }
 
     fn kill(&self, session_id: &str) {
@@ -1111,9 +1325,35 @@ mod tests {
         app: tauri::AppHandle<tauri::test::MockRuntime>,
         pool: crate::pty::PtyPool,
         runs: Mutex<Vec<Run>>,
+        /// Agentes de mentira: o que cada um recebeu e quem foi morto.
+        agents: Mutex<Vec<AgentLaunch>>,
+        killed: Mutex<Vec<String>>,
+    }
+
+    /// Fixture sintética: chave no formato `sk-` que a redação pega.
+    fn fake_key() -> String {
+        format!("sk-{}", "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6")
     }
 
     impl RunHost for Arc<PtyHost> {
+        /// Sem CLI de verdade: o "agente" cria um arquivo na pasta e fecha o
+        /// turno com uma fala que carrega um segredo.
+        fn spawn_agent(
+            &self,
+            launch: AgentLaunch,
+            on_turn: Box<dyn FnOnce(AgentTurn) + Send>,
+        ) -> Result<String, String> {
+            self.agents.lock().push(launch.clone());
+            std::thread::spawn(move || {
+                std::fs::write(launch.cwd.join(format!("{}.txt", launch.title)), "feito\n")
+                    .unwrap();
+                on_turn(AgentTurn::Done {
+                    text: Some(format!("pronto, usei {}", fake_key())),
+                });
+            });
+            Ok(format!("agente-{}", uuid::Uuid::new_v4()))
+        }
+
         fn spawn_process(
             &self,
             launch: ProcessLaunch,
@@ -1140,7 +1380,10 @@ mod tests {
         }
 
         fn kill(&self, session_id: &str) {
-            let _ = self.pool.kill(session_id.parse().unwrap());
+            self.killed.lock().push(session_id.to_string());
+            if let Ok(id) = session_id.parse() {
+                let _ = self.pool.kill(id);
+            }
         }
 
         fn emit(&self, run: &Run) {
@@ -1161,6 +1404,8 @@ mod tests {
             app: app.handle().clone(),
             pool: crate::pty::PtyPool::new(),
             runs: Mutex::new(Vec::new()),
+            agents: Mutex::new(Vec::new()),
+            killed: Mutex::new(Vec::new()),
         });
         let store = Arc::new(Store::open_in_memory().unwrap());
         (Runs::new(Arc::clone(&host), store, Some(root)), host, app)
@@ -1215,15 +1460,13 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn failing_process_skips_dependent_and_agent_is_unsupported() {
+    fn failing_process_skips_dependent_and_integration_is_unsupported() {
         let dir = tempfile::tempdir().unwrap();
         let (runs, _host, _app) = pty_runs(dir.path().join("runs"));
-        let agent = node(
+        let integration = node(
             "a",
-            NodeKind::Agent {
-                runner: Runner::Claude,
-                role: String::new(),
-                prompt: "oi".into(),
+            NodeKind::Integration {
+                integration_id: "i".into(),
             },
         );
         let g = graph(
@@ -1231,7 +1474,7 @@ mod tests {
                 process("p", "exit 3"),
                 process("q", "true"),
                 note("n"),
-                agent,
+                integration,
             ],
             vec![edge("e1", "p", "q", EdgeKind::Log)],
         );
@@ -1263,6 +1506,95 @@ mod tests {
         assert_eq!(run.status, RunStatus::Stopped);
         assert_eq!(run.nodes["p"].status, NodeStatus::Stopped);
         assert!(!host.pool.is_alive(session.parse().unwrap()));
+    }
+
+    fn agent(id: &str, prompt: &str) -> Node {
+        node(
+            id,
+            NodeKind::Agent {
+                runner: Runner::Claude,
+                role: String::new(),
+                prompt: prompt.into(),
+            },
+        )
+    }
+
+    fn git(dir: &Path, args: &[&str]) {
+        let ok = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok, "git {args:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn agent_node_produces_redacted_context_and_diff_and_stop_kills_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        git(&repo, &["init", "-q"]);
+        git(&repo, &["config", "user.email", "t@example.com"]);
+        git(&repo, &["config", "user.name", "t"]);
+        std::fs::write(repo.join("README.md"), "x\n").unwrap();
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-q", "-m", "init"]);
+
+        let (runs, host, _app) = pty_runs(dir.path().join("runs"));
+        let mut g = graph(
+            vec![
+                agent("a", "Faça {{coisa}}."),
+                agent("b", "Revise."),
+                process("q", "cat \"$TYBA_IN/context.md\" \"$TYBA_IN/diff.patch\""),
+            ],
+            vec![
+                edge("e1", "a", "b", EdgeKind::Context),
+                edge("e2", "a", "q", EdgeKind::Context),
+                edge("e3", "a", "q", EdgeKind::Diff),
+            ],
+        );
+        g.dir = repo.to_string_lossy().into_owned();
+        g.variables.insert("coisa".into(), "o plano".into());
+        let run = runs.start(g).unwrap();
+        let run = wait_finished(&runs, &run.id);
+        assert_eq!(run.status, RunStatus::Done, "{run:?}");
+
+        let a = &run.nodes["a"];
+        let context = std::fs::read_to_string(&a.outputs[&EdgeKind::Context]).unwrap();
+        assert!(context.contains("pronto"), "{context}");
+        assert!(
+            !context.contains(&fake_key()),
+            "contexto sem redação: {context}"
+        );
+        let diff = std::fs::read_to_string(&a.outputs[&EdgeKind::Diff]).unwrap();
+        assert!(diff.contains("a.txt"), "{diff}");
+
+        let launches = host.agents.lock().clone();
+        let la = launches.iter().find(|l| l.title == "a").unwrap();
+        assert_eq!(la.prompt, "Faça o plano.");
+        assert_eq!(la.cwd, repo);
+        let lb = launches.iter().find(|l| l.title == "b").unwrap();
+        assert!(
+            lb.prompt.starts_with("Revise.\n\nEntradas"),
+            "{}",
+            lb.prompt
+        );
+        assert!(lb.prompt.contains("context.md (contexto)"), "{}", lb.prompt);
+
+        let q_log = std::fs::read_to_string(&run.nodes["q"].outputs[&EdgeKind::Log]).unwrap();
+        assert!(q_log.contains("pronto"), "{q_log}");
+        assert!(!q_log.contains(&fake_key()), "{q_log}");
+
+        // Run fechado, agentes vivos: o Parar ainda os mata.
+        runs.stop(&run.id).unwrap();
+        let killed = host.killed.lock().clone();
+        for id in ["a", "b"] {
+            let session = run.nodes[id].session_id.clone().unwrap();
+            assert!(killed.contains(&session), "{id}: {killed:?}");
+        }
+        assert!(runs.stop(&run.id).is_err());
     }
 
     #[test]

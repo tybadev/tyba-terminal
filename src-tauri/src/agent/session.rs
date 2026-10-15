@@ -150,6 +150,8 @@ struct HandlerCtx {
     /// `PreToolUse` nunca vira card nem espera ninguém — ver
     /// [`session_route`].
     observe_only: bool,
+    /// Agente de nó do Maestro: onde o fim do turno fica para ele ler.
+    turn_tail: Option<SharedTurnTail>,
 }
 
 fn main_window_focused(app: &AppHandle) -> bool {
@@ -920,6 +922,9 @@ fn record_inferred_notification(
 
 fn handle_event(ctx: &HandlerCtx, event: HookEvent) -> HookAction {
     capture_conversation_id(ctx, &event);
+    if let Some(tail) = &ctx.turn_tail {
+        note_turn_tail(&mut tail.lock().expect("turn tail lock"), &event);
+    }
     // Antes do roteamento: o `PreToolUse` pode ficar bloqueado no gate de um
     // vermelho, e a pendente anterior tem de fechar já, não depois da decisão.
     let outcome = record_inferred(
@@ -1568,6 +1573,7 @@ pub fn prepare_hosted_agent(
         turn_settle: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         seen_transcript: Arc::new(Mutex::new(None)),
         observe_only: true,
+        turn_tail: None,
     };
     // Review round 1, achado BLOQUEANTE: derruba o HookServer ANTIGO desta
     // sessão ANTES de religar em `socket_path` — nunca depois. `runtime_dir(id)`
@@ -1597,6 +1603,264 @@ pub fn prepare_hosted_agent(
         return Err(format!("escrita do plano de execução: {e}"));
     }
     Ok(runtime.join(LAUNCH_PLAN_FILE))
+}
+
+/// O que o Maestro pede para subir o agente de um nó.
+pub struct FreeAgentSpec {
+    pub runner: AgentRunnerKind,
+    /// A pasta do workspace. Sem worktree.
+    pub cwd: PathBuf,
+    pub title: String,
+    /// Vai como argumento inicial do CLI (`claude "<prompt>"`).
+    pub prompt: String,
+    /// Somado ao env do usuário (`TYBA_IN`/`TYBA_OUT`).
+    pub extra_env: Vec<(String, String)>,
+    pub cols: u16,
+    pub rows: u16,
+}
+
+/// O fim de turno como o hook do fio principal o viu. O status da sessão
+/// guarda só um resumo curto; o Maestro precisa da fala inteira.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct TurnTail {
+    pub transcript_path: Option<PathBuf>,
+    /// `last_assistant_message` do `Stop` (Codex): a fala final, sem settle.
+    pub last_message: Option<String>,
+    /// O turno acabou por erro da API (`StopFailure`).
+    pub failure: Option<String>,
+}
+
+pub type SharedTurnTail = Arc<Mutex<TurnTail>>;
+
+fn note_turn_tail(tail: &mut TurnTail, event: &HookEvent) {
+    if event.agent_id.is_some() {
+        return;
+    }
+    if let Some(path) = event
+        .raw
+        .get("transcript_path")
+        .and_then(|p| p.as_str())
+        .filter(|p| !p.is_empty())
+    {
+        tail.transcript_path = Some(PathBuf::from(path));
+    }
+    match event.hook_event_name.as_str() {
+        "Stop" => {
+            if let Some(m) = event
+                .raw
+                .get("last_assistant_message")
+                .and_then(|m| m.as_str())
+            {
+                tail.last_message = Some(m.to_string());
+            }
+        }
+        "StopFailure" => {
+            let error = crate::agent::usage::stop_failure_error(&event.raw);
+            tail.failure =
+                Some(crate::agent::usage::stop_failure_reason(error.as_deref()).to_string());
+        }
+        _ => {}
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+struct FreeCommand {
+    cmd: portable_pty::CommandBuilder,
+    worktree_root: PathBuf,
+    /// Sempre `true`: o hook do nó só observa, como o do claude digitado.
+    observe_only: bool,
+}
+
+/// Prompt que começa com `-` viraria flag do CLI. Um espaço na frente o
+/// mantém posicional (commander e clap só tratam como opção o que começa
+/// com `-`).
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn prompt_arg(prompt: &str) -> String {
+    if prompt.starts_with('-') {
+        format!(" {prompt}")
+    } else {
+        prompt.to_string()
+    }
+}
+
+/// O env do agente do nó: o do usuário, como num terminal, com o PATH do
+/// shell de login, sem o que desligaria os hooks, mais o que o nó pede.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn free_agent_env(
+    user_env: HashMap<String, String>,
+    extra: &[(String, String)],
+) -> HashMap<String, String> {
+    let mut env = user_env;
+    for key in HOSTED_ENV_REMOVE {
+        env.remove(*key);
+    }
+    let login = crate::shell_path::login_env();
+    if let Some(path) = login.path {
+        env.insert("PATH".into(), path);
+    }
+    if let Some(sock) = login.ssh_auth_sock {
+        env.insert("SSH_AUTH_SOCK".into(), sock);
+    }
+    for (k, v) in extra {
+        env.insert(k.clone(), v.clone());
+    }
+    env
+}
+
+/// O argv/env do agente livre do Maestro, sem `AppHandle` (testável): hooks
+/// de observação, prompt como argumento, `Sandbox` passthrough.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[allow(clippy::too_many_arguments)]
+fn build_free_command(
+    runner: &dyn AgentRunner,
+    cwd: &Path,
+    env: &HashMap<String, String>,
+    hook_setup: &HookSetup,
+    socket_path: &Path,
+    runtime: &Path,
+    exe: &Path,
+    prompt: &str,
+) -> Result<FreeCommand, String> {
+    use crate::sandbox::Sandbox;
+
+    let worktree_root = crate::repo::toplevel(cwd)
+        .map(|top| crate::repo::canonicalize_or(&top))
+        .unwrap_or_else(|| cwd.to_path_buf());
+    let mut cmd = runner.build_command(cwd, env, hook_setup, None, None);
+    if !prompt.is_empty() {
+        cmd.arg(prompt_arg(prompt));
+    }
+    cmd.env("TYBA_HOOK_SOCKET", socket_path);
+    cmd.env("TYBA_JAILED", "0");
+    let spec = passthrough_spec(cwd, runtime, socket_path, exe);
+    let cmd = crate::sandbox::passthrough::PassthroughSandbox.wrap(cmd, &spec)?;
+    Ok(FreeCommand {
+        cmd,
+        worktree_root,
+        observe_only: true,
+    })
+}
+
+/// Agente de um nó do Maestro: **livre e observado**, igual ao claude
+/// digitado ([`prepare_hosted_agent`]) — sem jaula, env do usuário, hooks de
+/// observação com o guarda-corpo do `PreToolUse` (`tyba _hook --observe`),
+/// subagentes registrados —, mas subido direto pelo core, na pasta do
+/// workspace, sem worktree. Claude e Codex (o Codex pelas `--config` de
+/// [`crate::agent::codex_hooks`], com o mesmo hook observador).
+///
+/// Devolve também o [`SharedTurnTail`], de onde o Maestro lê a fala final.
+/// No `on_exit` o próprio spawn desfaz o que montou (servidor de hooks,
+/// subagentes, prompt nativo pendente) antes de chamar o do chamador.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub fn spawn_free_agent(
+    ctx: &AgentSessionCtx,
+    spec: FreeAgentSpec,
+    on_exit: impl FnOnce(SessionId) + Send + 'static,
+) -> Result<(Session, SharedTurnTail), String> {
+    let id = SessionId::new_v4();
+    let runtime = runtime_dir(id)?;
+    let socket_path = runtime.join(HOOK_SOCKET_FILE);
+    if socket_path.as_os_str().len() > MAX_SOCKET_PATH {
+        return Err("path do socket de hooks excede o limite do sistema".into());
+    }
+
+    let runner = build_runner(&spec.runner)?;
+    let exe = std::env::current_exe().map_err(|e| format!("exe do Tyba: {e}"))?;
+    let hook_cmd = observer_hook_command(&exe);
+    let env = free_agent_env(std::env::vars().collect(), &spec.extra_env);
+    if matches!(runner.kind(), AgentRunnerKind::ClaudeCode) {
+        let settings = observer_session_settings(
+            &hook_cmd,
+            session_statusline(&exe, &env, &[&spec.cwd, &main_repo_root(&spec.cwd)]),
+        );
+        let settings_body = serde_json::to_string_pretty(&settings)
+            .map_err(|e| format!("settings de hooks: {e}"))?;
+        crate::session::write_private(&runtime, HOOK_SETTINGS_FILE, &settings_body)
+            .map_err(|e| format!("escrita dos settings de hooks: {e}"))?;
+    }
+    let hook_setup = HookSetup {
+        settings_path: runtime.join(HOOK_SETTINGS_FILE),
+        hook_command: hook_cmd,
+    };
+
+    let FreeCommand {
+        cmd,
+        worktree_root,
+        observe_only,
+    } = build_free_command(
+        runner.as_ref(),
+        &spec.cwd,
+        &env,
+        &hook_setup,
+        &socket_path,
+        &runtime,
+        &exe,
+        &spec.prompt,
+    )?;
+
+    ctx.subagents.register_session(id);
+    let tail = SharedTurnTail::default();
+    let handler_ctx = HandlerCtx {
+        app: ctx.app.clone(),
+        sessions: ctx.sessions.clone(),
+        approvals: ctx.approvals.clone(),
+        store: ctx.store.clone(),
+        subagents: ctx.subagents.clone(),
+        session_id: id,
+        runner_kind: runner.kind(),
+        repo_root: main_repo_root(&worktree_root),
+        agent_home: agent_home(&env),
+        worktree_root: worktree_root.clone(),
+        turn_settle: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        seen_transcript: Arc::new(Mutex::new(None)),
+        observe_only,
+        turn_tail: Some(tail.clone()),
+    };
+    let server = HookServer::bind(
+        &socket_path,
+        Arc::new(move |event| handle_event(&handler_ctx, event)),
+    )
+    .map_err(|e| format!("socket de hooks: {e}"))?;
+    ctx.servers.insert(id, server);
+
+    let (app, servers, subagents, store) = (
+        ctx.app.clone(),
+        ctx.servers.clone(),
+        ctx.subagents.clone(),
+        ctx.store.clone(),
+    );
+    let teardown = move |id: SessionId| {
+        servers.shutdown(id);
+        subagents.remove_session(&app, id);
+        let _ = store.deny_pending_inferred_for_session(&id.to_string(), now_ms());
+        on_exit(id);
+    };
+    let repo_root = crate::repo::toplevel(&spec.cwd).map(|r| crate::repo::canonicalize_or(&r));
+    let session = ctx
+        .sessions
+        .spawn_session(
+            ctx.app.clone(),
+            &ctx.pty_pool,
+            id,
+            cmd,
+            SessionKind::Agent {
+                runner: runner.kind(),
+            },
+            spec.title,
+            repo_root,
+            None,
+            None,
+            spec.cols,
+            spec.rows,
+            false,
+            teardown,
+        )
+        .map_err(|e| {
+            ctx.servers.shutdown(id);
+            ctx.subagents.remove_session(&ctx.app, id);
+            e.to_string()
+        })?;
+    Ok((session, tail))
 }
 
 /// Sobe o agente de novo na conversa nativa que a sessão morta deixou no disco.
@@ -1994,6 +2258,7 @@ fn spawn_prepared(
         turn_settle: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         seen_transcript: Arc::new(Mutex::new(None)),
         observe_only: false,
+        turn_tail: None,
     };
     let server = HookServer::bind(
         &socket_path,
@@ -2335,6 +2600,140 @@ mod build_hosted_command_tests {
         let settings = plan.argv.iter().position(|a| a == "--settings").unwrap();
         assert_eq!(&plan.argv[plan.argv.len() - 4..], &args[..]);
         assert!(settings < plan.argv.len() - 4);
+    }
+
+    fn free(runner: &dyn AgentRunner, cwd: &Path, runtime: &Path, prompt: &str) -> FreeCommand {
+        let env = HashMap::from([("PATH".to_string(), "/usr/bin".to_string())]);
+        build_free_command(
+            runner,
+            cwd,
+            &env,
+            &hook_setup(runtime),
+            &runtime.join(HOOK_SOCKET_FILE),
+            runtime,
+            &std::env::current_exe().unwrap(),
+            prompt,
+        )
+        .expect("o agente do nó sempre monta")
+    }
+
+    fn argv(cmd: &portable_pty::CommandBuilder) -> Vec<String> {
+        cmd.get_argv()
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    /// O nó do Maestro sobe como o claude digitado: o hook só observa, e
+    /// nenhum evento (nem o `PermissionRequest` do Codex) cai no gate.
+    #[test]
+    fn maestro_agent_is_observe_only_and_never_reaches_the_gate() {
+        let cwd = tempfile::tempdir().unwrap();
+        let runtime = tempfile::tempdir().unwrap();
+        for runner in [
+            &ClaudeCodeRunner as &dyn AgentRunner,
+            &CodexRunner as &dyn AgentRunner,
+        ] {
+            let built = free(runner, cwd.path(), runtime.path(), "revise");
+            assert!(built.observe_only);
+            for name in ["PreToolUse", "PermissionRequest"] {
+                assert_ne!(
+                    session_route(&runner.kind(), name, built.observe_only),
+                    HookRoute::ToolUse,
+                    "{name}"
+                );
+            }
+            let argv = argv(&built.cmd);
+            assert_eq!(argv.last().map(String::as_str), Some("revise"));
+            assert!(
+                !argv
+                    .iter()
+                    .any(|a| a.contains("sandbox-exec") || a.contains("bwrap")),
+                "nada de jaula: {argv:?}"
+            );
+            assert!(built
+                .cmd
+                .iter_extra_env_as_str()
+                .any(|(k, _)| k == "TYBA_HOOK_SOCKET"));
+        }
+        // O Codex leva o hook observador nas `--config`.
+        let codex = argv(&free(&CodexRunner, cwd.path(), runtime.path(), "x").cmd);
+        assert!(
+            codex.iter().any(|a| a.contains("_hook --observe")),
+            "{codex:?}"
+        );
+    }
+
+    #[test]
+    fn prompt_starting_with_dash_stays_positional() {
+        let cwd = tempfile::tempdir().unwrap();
+        let runtime = tempfile::tempdir().unwrap();
+        let built = free(
+            &ClaudeCodeRunner,
+            cwd.path(),
+            runtime.path(),
+            "--dangerously",
+        );
+        assert_eq!(
+            argv(&built.cmd).last().map(String::as_str),
+            Some(" --dangerously")
+        );
+        let empty = free(&ClaudeCodeRunner, cwd.path(), runtime.path(), "");
+        assert!(!argv(&empty.cmd).iter().any(|a| a.is_empty()));
+    }
+
+    #[test]
+    fn free_agent_env_drops_hook_killers_and_adds_node_vars() {
+        let user = HashMap::from([
+            ("CLAUDE_CODE_SIMPLE".to_string(), "1".to_string()),
+            ("MY_VAR".to_string(), "x".to_string()),
+        ]);
+        let env = free_agent_env(user, &[("TYBA_IN".into(), "/r/in".into())]);
+        assert!(!env.contains_key("CLAUDE_CODE_SIMPLE"));
+        assert_eq!(env.get("MY_VAR").map(String::as_str), Some("x"));
+        assert_eq!(env.get("TYBA_IN").map(String::as_str), Some("/r/in"));
+    }
+
+    fn hook(raw: serde_json::Value, agent_id: Option<&str>) -> HookEvent {
+        HookEvent {
+            hook_event_name: raw["hook_event_name"].as_str().unwrap_or("").into(),
+            tool_name: None,
+            tool_input: None,
+            notification_type: None,
+            cwd: None,
+            agent_id: agent_id.map(str::to_string),
+            agent_type: None,
+            raw,
+        }
+    }
+
+    #[test]
+    fn turn_tail_keeps_only_the_main_thread() {
+        let mut tail = TurnTail::default();
+        note_turn_tail(
+            &mut tail,
+            &hook(
+                serde_json::json!({"hook_event_name": "Stop", "transcript_path": "/t/a.jsonl",
+                    "last_assistant_message": "pronto"}),
+                None,
+            ),
+        );
+        note_turn_tail(
+            &mut tail,
+            &hook(
+                serde_json::json!({"hook_event_name": "Stop", "transcript_path": "/t/sub.jsonl",
+                    "last_assistant_message": "do subagente"}),
+                Some("sub-1"),
+            ),
+        );
+        assert_eq!(tail.transcript_path, Some(PathBuf::from("/t/a.jsonl")));
+        assert_eq!(tail.last_message.as_deref(), Some("pronto"));
+        assert!(tail.failure.is_none());
+        note_turn_tail(
+            &mut tail,
+            &hook(serde_json::json!({"hook_event_name": "StopFailure"}), None),
+        );
+        assert!(tail.failure.is_some());
     }
 }
 
