@@ -5,6 +5,10 @@ import {
   CaretDown,
   CaretRight,
   Check,
+  CheckCircle,
+  Circle,
+  CircleDashed,
+  CircleHalf,
   DotsThree,
   FolderOpen,
   GearSix,
@@ -21,6 +25,7 @@ import {
   TerminalWindow,
   User,
   X,
+  XCircle,
 } from "@phosphor-icons/react";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -357,6 +362,8 @@ import {
   connectingHostIds,
   isFinishedStatus,
   mergeSessionUpdate,
+  statusGlyph,
+  type StatusGlyph,
 } from "./lib/sessionStatus";
 import {
   AGENTS_PANEL_LINGER_MS,
@@ -719,6 +726,26 @@ const withHostingState = (p: AgentDetectedPayload): DetectedAgentState | null =>
  * (reinstall, limpar dados do app) é mostrar o toast de novo, nunca um gate
  * a menos: não é decisão de segurança. */
 const HOSTING_INTRO_TOAST_SEEN_KEY = "tyba.shim-v2-hosting-intro-seen";
+
+/** Forma e cor de cada estado no cartão da barra lateral. */
+const STATUS_GLYPH: Record<
+  StatusGlyph,
+  { icon: typeof Circle; weight: "regular" | "fill" | "bold"; className: string }
+> = {
+  progress: {
+    icon: CircleHalf,
+    weight: "fill",
+    className: "text-tyba-blue motion-safe:animate-pulse",
+  },
+  done: { icon: CheckCircle, weight: "fill", className: "text-tyba-green" },
+  waiting: {
+    icon: CircleDashed,
+    weight: "bold",
+    className: "text-tyba-amber motion-safe:animate-pulse",
+  },
+  failed: { icon: XCircle, weight: "fill", className: "text-tyba-red" },
+  resting: { icon: Circle, weight: "regular", className: "text-tyba-text-faint" },
+};
 
 export default function App() {
   const { t, i18n } = useTranslation();
@@ -4958,22 +4985,17 @@ export default function App() {
     const runningCmd = isConfig || isWtView ? null : workspaceCommand(w);
     const hoverAgent = runner ?? agentFromCommand(runningCmd);
     const agentStatus = isConfig || isWtView ? null : workspaceAgentStatus(w);
+    // O estado é o ícone (`STATUS_GLYPH`); o texto ao lado diz só o que o
+    // ícone não diz: de quem é, a pergunta pendente, o motivo da falha.
+    const agentLabel = agentStatus ? t(agentStatus.visual.labelKey) : null;
     const agentDetail = (() => {
       if (!agentStatus) return null;
-      const label = t(agentStatus.visual.labelKey);
-      // Observado não tem `hint` nem `reason`: o que a tela diz é o estado, e
-      // mais nada. O nome do agente é o que orienta — sem ele a linha diria
-      // "sem sinal" sem dizer de quem.
-      if (agentStatus.observed) {
-        return `${agentStatus.observed.agent} · ${label}`;
-      }
+      if (agentStatus.observed) return agentStatus.observed.agent;
       const status = agentStatus.session.status;
-      if (status.state === "awaiting_input" && status.hint) {
-        return `${label}: ${status.hint}`;
-      }
-      if (status.state === "failed") return `${label}: ${status.reason}`;
-      if (status.state === "running") return runningCmd ?? label;
-      return label;
+      if (status.state === "awaiting_input" && status.hint) return status.hint;
+      if (status.state === "failed") return status.reason;
+      if (status.state === "running" && runningCmd) return runningCmd;
+      return hoverAgent ?? agentLabel;
     })();
     // Cartão do mockup Proposta no visual (ativa sobe, ponto de estado à
     // direita), com os dados de sempre: caminho/host, agente ou comando,
@@ -5101,10 +5123,22 @@ export default function App() {
               {showDetails && (
                 <span className="flex w-full items-center gap-1.5">
                   {agentStatus && agentDetail ? (
-                    <span className="flex min-w-0 items-center gap-1">
-                      <span
-                        className={`size-1 shrink-0 rounded-full ${agentStatus.visual.dotClass}`}
-                      />
+                    <span
+                      className="flex min-w-0 items-center gap-1"
+                      title={agentLabel ?? undefined}
+                    >
+                      {(() => {
+                        const glyph = STATUS_GLYPH[statusGlyph(agentStatus.visual.labelKey)];
+                        const Icon = glyph.icon;
+                        return (
+                          <Icon
+                            size={11}
+                            weight={glyph.weight}
+                            aria-label={agentLabel ?? undefined}
+                            className={`shrink-0 ${glyph.className}`}
+                          />
+                        );
+                      })()}
                       <span
                         className={`min-w-0 truncate font-mono text-[11px] leading-none ${agentStatus.visual.textClass}`}
                       >
