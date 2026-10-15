@@ -1111,8 +1111,13 @@ export const openSessionTunnel = (
 export const closeSessionTunnel = (sessionId: SessionId, tunnelId: string) =>
   invoke<void>("close_session_tunnel", { sessionId, tunnelId });
 
+/** A tela de Serviços na seção Túneis (o core redireciona o painel antigo). */
 export const openTunnelsPanel = (id: SessionId) =>
   invoke<void>("open_tunnels_panel", { id });
+
+/** Tela de Serviços e portas da sessão (`side_view = "services:<id>"`). */
+export const openServicesPanel = (id: SessionId) =>
+  invoke<void>("open_services_panel", { id });
 
 export const onSessionTunnels = (
   handler: (p: { session_id: SessionId; tunnels: SessionTunnel[] }) => void,
@@ -1609,9 +1614,20 @@ export interface DockerScreenState {
   hide_stopped: boolean;
 }
 
+export type ServicesSection = "ports" | "processes" | "tunnels";
+
+export interface ServicesScreenState {
+  section: ServicesSection;
+  /** "Só das minhas sessões" (ligado por padrão). */
+  only_mine: boolean;
+  /** Porta escolhida (o detalhe). */
+  selected: number | null;
+}
+
 export interface Screens {
   files: FilesScreenState;
   docker: DockerScreenState;
+  services: ServicesScreenState;
 }
 
 export const filesScreenActivate = (workspace: WorkspaceId, view: string) =>
@@ -3485,3 +3501,114 @@ export const lspSymbolPath = (
   line: number,
   character: number,
 ) => invoke<string[]>("lsp_symbol_path", { id, path, line, character });
+
+// --- Serviços e portas -------------------------------------------------------
+
+export type ServiceOrigin =
+  | { kind: "session"; session_id: SessionId }
+  | { kind: "tyba" }
+  | { kind: "docker" }
+  | { kind: "outside" }
+  | { kind: "system" }
+  | { kind: "other_user" };
+
+/** Por que o core não encerra o processo. */
+export type KillRefusal =
+  | "pid1"
+  | "tyba"
+  | "system"
+  | "other_user"
+  | "session_shell"
+  | "docker"
+  | "unknown";
+
+export interface PortEntry {
+  port: number;
+  addresses: string[];
+  pid: number;
+  /** Identidade do processo junto do pid: volta no encerrar. */
+  start_ms: number;
+  comm: string;
+  /** Já redigido no core. */
+  command: string;
+  origin: ServiceOrigin;
+  cpu_percent: number | null;
+  rss_bytes: number | null;
+  pgid: number | null;
+  refusal: KillRefusal | null;
+}
+
+export interface RemotePort {
+  port: number;
+  addresses: string[];
+  process: string | null;
+  pid: number | null;
+}
+
+export type ServicesList =
+  | { target: "local"; ports: PortEntry[] }
+  | { target: "remote"; alias: string; ports: RemotePort[] };
+
+export interface ServiceTreeNode {
+  pid: number;
+  start_ms: number;
+  depth: number;
+  comm: string;
+  command: string;
+  ports: number[];
+  cpu_percent: number | null;
+  rss_bytes: number | null;
+  refusal: KillRefusal | null;
+}
+
+export type SignalTarget = { kind: "group"; pgid: number } | { kind: "process"; pid: number };
+
+export interface ServiceDetail {
+  tree: ServiceTreeNode[];
+  group: { pid: number; comm: string }[];
+  target: SignalTarget | null;
+}
+
+export interface SessionProcs {
+  session_id: SessionId;
+  nodes: ServiceTreeNode[];
+}
+
+export interface KillOutcome {
+  exited: boolean;
+  target: SignalTarget | null;
+  /** > 0: o SIGKILL fica disponível depois disso (segundo comando). */
+  force_after_ms: number;
+}
+
+export const servicesList = (id: SessionId) => invoke<ServicesList>("services_list", { id });
+
+export const servicesDetail = (pid: number) => invoke<ServiceDetail>("services_detail", { pid });
+
+export const servicesProcesses = () => invoke<SessionProcs[]>("services_processes");
+
+export const servicesKill = (pid: number, startMs: number) =>
+  invoke<KillOutcome>("services_kill", { pid, startMs });
+
+export const servicesForceKill = (pid: number, startMs: number) =>
+  invoke<KillOutcome>("services_force_kill", { pid, startMs });
+
+export const servicesBringHere = (sessionId: SessionId, port: number) =>
+  invoke<SessionTunnel>("services_bring_here", { sessionId, port });
+
+export const servicesSessionPorts = () =>
+  invoke<Record<SessionId, number[]>>("services_session_ports");
+
+export const onSessionPorts = (
+  handler: (ports: Record<SessionId, number[]>) => void,
+): Promise<UnlistenFn> =>
+  listen<Record<SessionId, number[]>>("services://session-ports", (e) => handler(e.payload));
+
+export const servicesScreenSection = (workspace: WorkspaceId, section: ServicesSection) =>
+  invoke<void>("services_screen_section", { workspace, section });
+
+export const servicesScreenOnlyMine = (workspace: WorkspaceId, onlyMine: boolean) =>
+  invoke<void>("services_screen_only_mine", { workspace, onlyMine });
+
+export const servicesScreenSelect = (workspace: WorkspaceId, port: number | null) =>
+  invoke<void>("services_screen_select", { workspace, port });

@@ -25,6 +25,7 @@ export const MENU_EXTRA_IDS = [
   "menu:docs",
   "menu:changelog",
   "menu:issues",
+  "menu:services",
 ] as const;
 
 export type MenuExtraId = (typeof MENU_EXTRA_IDS)[number];
@@ -164,6 +165,7 @@ export function buildMenuSpec(t: Translate, bindings: Bindings): MenuSpec {
           { kind: "separator" },
           action("panel", t, bindings),
           action("files", t, bindings),
+          extra("menu:services", t("servicesTitle")),
         ],
       },
       {

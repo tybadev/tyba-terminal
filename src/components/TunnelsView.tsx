@@ -1,10 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ArrowsOutSimple, ArrowsInSimple, X } from "@phosphor-icons/react";
+import { ArrowsLeftRight } from "@phosphor-icons/react";
 
 import { Button } from "@/components/ui/button";
 import { RiskyTunnelConfirm } from "@/components/RiskyTunnelConfirm";
-import { PanelIcon } from "@/components/SidePanelBar";
 import type { Session, SessionTunnel, Tunnel, TunnelKind } from "@/lib/ipc";
 import {
   closeSessionTunnel,
@@ -17,9 +16,6 @@ import { BLANK_TUNNEL, describeTunnel } from "@/lib/tunnels";
 interface Props {
   session: Session;
   hostAlias: string;
-  expanded: boolean;
-  onToggleExpand: () => void;
-  onClose: () => void;
 }
 
 function dotClass(t: SessionTunnel): string {
@@ -48,13 +44,8 @@ const BTN =
 const FIELD =
   "h-[30px] rounded-[6px] border border-tyba-border-field bg-tyba-sunken px-2 font-mono text-[12px] text-tyba-text outline-none focus:border-tyba-cyan/50";
 
-export function TunnelsView({
-  session,
-  hostAlias,
-  expanded,
-  onToggleExpand,
-  onClose,
-}: Props) {
+/** Seção Túneis da tela de Serviços e portas (era o painel lateral). */
+export function TunnelsView({ session, hostAlias }: Props) {
   const { t } = useTranslation();
   const [tunnels, setTunnels] = useState<SessionTunnel[]>([]);
   const [draft, setDraft] = useState<Tunnel>(BLANK_TUNNEL);
@@ -118,13 +109,11 @@ export function TunnelsView({
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-      {/* Fundo do painel lateral que o contém; cabeçalho como o dos mockups
-          Painel*: `padding: 12px 16px`, ícone 16, título 13px. */}
-      <header className="flex shrink-0 items-center gap-2.5 tyba-divide-b px-4 py-3">
-        <PanelIcon kind="tunnels" size={16} className="shrink-0 text-tyba-cyan" />
-        <span className="min-w-0 flex-1 truncate text-[13px] text-tyba-text">
-          {t("tunnelsTitle")} · {hostAlias}
-        </span>
+      {/* Barra de topo da tela cheia: 46px, como as outras seções. */}
+      <header className="flex h-[46px] shrink-0 items-center gap-3 tyba-divide-b bg-[var(--tyba-panel-bg)] px-[18px] text-[12px]">
+        <ArrowsLeftRight size={16} className="shrink-0 text-tyba-cyan" />
+        <span className="shrink-0 text-[14px] font-medium text-tyba-text">{t("tunnelsTitle")}</span>
+        <span className="min-w-0 flex-1 truncate text-tyba-text-faint">{hostAlias}</span>
         {!adding && !pendingRisky && (
           <button
             type="button"
@@ -134,27 +123,9 @@ export function TunnelsView({
             {t("tunnelsNew")}
           </button>
         )}
-        <button
-          onClick={onToggleExpand}
-          aria-label={t(expanded ? "tunnelsCollapse" : "tunnelsExpand")}
-          className="text-tyba-text-faint hover:text-tyba-text"
-        >
-          {expanded ? (
-            <ArrowsInSimple size={13} />
-          ) : (
-            <ArrowsOutSimple size={13} />
-          )}
-        </button>
-        <button
-          onClick={onClose}
-          aria-label={t("tunnelsClose")}
-          className="text-tyba-text-faint hover:text-tyba-text"
-        >
-          <X size={13} />
-        </button>
       </header>
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3.5">
+      <div className="min-h-0 flex-1 overflow-y-auto px-[18px] py-3.5">
         {tunnels.length === 0 && !adding && (
           <p className="py-1 text-[12px] text-tyba-text-faint">
             {t("tunnelsEmpty")}

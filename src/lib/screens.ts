@@ -9,18 +9,20 @@ import type {
   DockerSection,
   FilesScreenState,
   FilesSection,
+  ServicesSection,
   SessionId,
   Workspace,
   WorkspaceId,
 } from "./ipc";
 import { parseSideView } from "./sidePanel";
 
-export type ScreenKind = "git" | "files" | "docker";
+export type ScreenKind = "git" | "files" | "docker" | "services";
 
 /** Ordem do trilho, de cima para baixo. */
 export const FILES_SECTIONS: readonly FilesSection[] = ["files", "search", "recent"];
 export const DOCKER_SECTIONS: readonly DockerSection[] = ["containers", "compose", "images", "volumes"];
 export const CONTAINER_PANES: readonly ContainerPane[] = ["logs", "shell", "files", "details"];
+export const SERVICES_SECTIONS: readonly ServicesSection[] = ["ports", "processes", "tunnels"];
 
 /** O `side_view` é uma tela cheia (cobre abas e shell), não painel lateral? */
 export function screenOf(
@@ -28,7 +30,12 @@ export function screenOf(
 ): { kind: ScreenKind; session: SessionId } | null {
   const view = parseSideView(sideView);
   if (!view) return null;
-  if (view.kind === "git" || view.kind === "files" || view.kind === "docker") {
+  if (
+    view.kind === "git" ||
+    view.kind === "files" ||
+    view.kind === "docker" ||
+    view.kind === "services"
+  ) {
     return { kind: view.kind, session: view.session };
   }
   return null;

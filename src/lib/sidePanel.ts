@@ -11,7 +11,7 @@ import type { SessionId } from "./ipc";
 export type PanelKind =
   | "history"
   | "docker"
-  | "tunnels"
+  | "services"
   | "files"
   | "git"
   | "diff"
@@ -20,11 +20,12 @@ export type PanelKind =
 /** Toda aba vira `side_view` no core. */
 export type SlotPanel = PanelKind;
 
-/** Ordem do mockup (Navegacao/PainelGit): túneis só aparece em sessão SSH. */
+/** Ordem do mockup (Navegacao/PainelGit). Serviços e portas (o plugue) vem
+ *  depois do Docker; os túneis SSH moram numa seção dessa tela. */
 export const PANEL_ORDER: readonly PanelKind[] = [
   "history",
   "docker",
-  "tunnels",
+  "services",
   "files",
   "git",
   "diff",
@@ -34,7 +35,7 @@ export const PANEL_ORDER: readonly PanelKind[] = [
 const PREFIX: Record<SlotPanel, string> = {
   history: "history:",
   docker: "docker:",
-  tunnels: "tunnels:",
+  services: "services:",
   files: "files:",
   git: "git:",
   diff: "diff:",
@@ -144,8 +145,6 @@ export function visiblePanels(input: VisibilityInput): PanelKind[] {
     switch (kind) {
       case "docker":
         return input.showDocker;
-      case "tunnels":
-        return input.isSsh;
       case "git":
         return input.hasRepo;
       // O Diff é seção da tela de Git (Revisar), não ícone no header.
@@ -178,8 +177,8 @@ export function panelAriaLabel(
       return input.dockerRunning > 0
         ? t("sidePanelDockerRunning", { count: input.dockerRunning })
         : t("sidePanelDocker");
-    case "tunnels":
-      return t("tunnelsAction");
+    case "services":
+      return t("servicesTitle");
     case "files":
       return t("filesPanel");
     case "git":

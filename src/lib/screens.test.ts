@@ -31,6 +31,7 @@ describe("screenOf", () => {
     expect(screenOf(`files:${A}`)).toEqual({ kind: "files", session: A });
     expect(screenOf(`docker:${A}`)).toEqual({ kind: "docker", session: A });
     expect(screenOf(`git:${A}`)).toEqual({ kind: "git", session: A });
+    expect(screenOf(`services:${A}`)).toEqual({ kind: "services", session: A });
   });
   test("o resto continua painel lateral", () => {
     expect(screenOf(`history:${A}`)).toBeNull();
