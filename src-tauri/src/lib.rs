@@ -15,6 +15,7 @@ pub mod hook_ipc;
 pub mod launch_config;
 pub mod layout;
 pub mod lsp;
+pub mod maestro;
 pub mod menu;
 pub mod notifications;
 pub mod profile;
@@ -8507,6 +8508,76 @@ fn delete_snippet(state: State<'_, AppState>, id: String) -> Result<(), String> 
     state.store.delete_snippet(&id).map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+fn maestro_list_graphs(state: State<'_, AppState>) -> Result<Vec<maestro::Graph>, String> {
+    state.store.list_maestro_graphs().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn maestro_get_graph(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<Option<maestro::Graph>, String> {
+    Ok(state
+        .store
+        .get_maestro_graph(&id)
+        .map_err(|e| e.to_string())?
+        .map(|stored| stored.value))
+}
+
+/// Valida no core antes de gravar: o front oferece só ligação válida, mas não
+/// é quem decide. Grafo salvo pelo dono é dele — fica consentido.
+#[tauri::command]
+fn maestro_save_graph(state: State<'_, AppState>, graph: maestro::Graph) -> Result<(), String> {
+    let integrations = state
+        .store
+        .list_maestro_integrations()
+        .map_err(|e| e.to_string())?;
+    maestro::validate_graph(&graph, &integrations).map_err(|e| e.to_string())?;
+    state
+        .store
+        .save_maestro_graph(&graph, true, None)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn maestro_delete_graph(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    state
+        .store
+        .delete_maestro_graph(&id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn maestro_list_integrations(
+    state: State<'_, AppState>,
+) -> Result<Vec<maestro::Integration>, String> {
+    state
+        .store
+        .list_maestro_integrations()
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn maestro_save_integration(
+    state: State<'_, AppState>,
+    integration: maestro::Integration,
+) -> Result<(), String> {
+    maestro::validate_integration(&integration).map_err(|e| e.to_string())?;
+    state
+        .store
+        .save_maestro_integration(&integration, true, None)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn maestro_delete_integration(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    state
+        .store
+        .delete_maestro_integration(&id)
+        .map_err(|e| e.to_string())
+}
+
 /// Histórico de notificações: mais nova primeiro, até 500, dos últimos 7 dias.
 #[tauri::command]
 async fn notifications_list(
@@ -9467,6 +9538,13 @@ pub fn run() {
             list_snippets,
             save_snippet,
             delete_snippet,
+            maestro_list_graphs,
+            maestro_get_graph,
+            maestro_save_graph,
+            maestro_delete_graph,
+            maestro_list_integrations,
+            maestro_save_integration,
+            maestro_delete_integration,
             snippet_placeholders,
             notifications_list,
             notifications_mark_read,

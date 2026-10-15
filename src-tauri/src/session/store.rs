@@ -252,6 +252,23 @@ CREATE TABLE IF NOT EXISTS notification (
     read INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS notification_by_time ON notification (at_ms);
+CREATE TABLE IF NOT EXISTS maestro_graph (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    dir TEXT NOT NULL,
+    body_json TEXT NOT NULL,
+    updated_at_ms INTEGER NOT NULL,
+    imported_hash TEXT,
+    consented INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS maestro_integration (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    body_json TEXT NOT NULL,
+    updated_at_ms INTEGER NOT NULL,
+    imported_hash TEXT,
+    consented INTEGER NOT NULL DEFAULT 0
+);
 ";
 
 /// Teto do histórico. Sem ele a tabela cresce com o uso e nunca encolhe: é a
@@ -2794,6 +2811,148 @@ impl Store {
             params![id, crate::approvals::now_ms() as i64],
         )?;
         Ok(())
+    }
+
+    pub fn list_maestro_graphs(&self) -> Result<Vec<crate::maestro::Graph>, StoreError> {
+        let conn = self.conn.lock();
+        let mut stmt =
+            conn.prepare("SELECT body_json FROM maestro_graph ORDER BY updated_at_ms DESC")?;
+        let bodies = stmt
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(bodies
+            .iter()
+            .map(|b| serde_json::from_str(b))
+            .collect::<Result<_, _>>()?)
+    }
+
+    pub fn get_maestro_graph(
+        &self,
+        id: &str,
+    ) -> Result<Option<crate::maestro::Stored<crate::maestro::Graph>>, StoreError> {
+        self.get_maestro_row("maestro_graph", id)
+    }
+
+    /// Grava (ou substitui) o grafo. `imported_hash = None` mantém o que já
+    /// estava: edição do dono depois de importar não apaga a origem.
+    pub fn save_maestro_graph(
+        &self,
+        graph: &crate::maestro::Graph,
+        consented: bool,
+        imported_hash: Option<&str>,
+    ) -> Result<(), StoreError> {
+        let body = serde_json::to_string(graph)?;
+        let conn = self.conn.lock();
+        conn.execute(
+            "INSERT INTO maestro_graph
+                 (id, name, dir, body_json, updated_at_ms, imported_hash, consented)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(id) DO UPDATE SET
+                 name = ?2, dir = ?3, body_json = ?4, updated_at_ms = ?5,
+                 imported_hash = COALESCE(?6, imported_hash), consented = ?7",
+            params![
+                graph.id,
+                graph.name,
+                graph.dir,
+                body,
+                crate::approvals::now_ms() as i64,
+                imported_hash,
+                consented,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_maestro_graph(&self, id: &str) -> Result<(), StoreError> {
+        let conn = self.conn.lock();
+        conn.execute("DELETE FROM maestro_graph WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    pub fn list_maestro_integrations(
+        &self,
+    ) -> Result<Vec<crate::maestro::Integration>, StoreError> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare("SELECT body_json FROM maestro_integration ORDER BY name")?;
+        let bodies = stmt
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(bodies
+            .iter()
+            .map(|b| serde_json::from_str(b))
+            .collect::<Result<_, _>>()?)
+    }
+
+    pub fn get_maestro_integration(
+        &self,
+        id: &str,
+    ) -> Result<Option<crate::maestro::Stored<crate::maestro::Integration>>, StoreError> {
+        self.get_maestro_row("maestro_integration", id)
+    }
+
+    /// Mesma regra de `save_maestro_graph` para `imported_hash`.
+    pub fn save_maestro_integration(
+        &self,
+        integration: &crate::maestro::Integration,
+        consented: bool,
+        imported_hash: Option<&str>,
+    ) -> Result<(), StoreError> {
+        let body = serde_json::to_string(integration)?;
+        let conn = self.conn.lock();
+        conn.execute(
+            "INSERT INTO maestro_integration
+                 (id, name, body_json, updated_at_ms, imported_hash, consented)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(id) DO UPDATE SET
+                 name = ?2, body_json = ?3, updated_at_ms = ?4,
+                 imported_hash = COALESCE(?5, imported_hash), consented = ?6",
+            params![
+                integration.id,
+                integration.name,
+                body,
+                crate::approvals::now_ms() as i64,
+                imported_hash,
+                consented,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_maestro_integration(&self, id: &str) -> Result<(), StoreError> {
+        let conn = self.conn.lock();
+        conn.execute("DELETE FROM maestro_integration WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    /// `table` é sempre uma das duas tabelas do Maestro, nunca entrada externa.
+    fn get_maestro_row<T: serde::de::DeserializeOwned>(
+        &self,
+        table: &'static str,
+        id: &str,
+    ) -> Result<Option<crate::maestro::Stored<T>>, StoreError> {
+        use rusqlite::OptionalExtension;
+        let conn = self.conn.lock();
+        let row = conn
+            .query_row(
+                &format!("SELECT body_json, consented, imported_hash FROM {table} WHERE id = ?1"),
+                params![id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, bool>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((body, consented, imported_hash)) = row else {
+            return Ok(None);
+        };
+        Ok(Some(crate::maestro::Stored {
+            value: serde_json::from_str(&body)?,
+            consented,
+            imported_hash,
+        }))
     }
 
     pub fn save_layout(&self, rows: &LayoutRows) -> Result<(), StoreError> {
@@ -6480,5 +6639,104 @@ mod tests {
 
         store.delete_snippet("s-1").unwrap();
         assert!(store.list_snippets().unwrap().is_empty());
+    }
+
+    #[test]
+    fn maestro_graph_round_trip_keeps_consent_and_hash() {
+        use crate::maestro::{
+            Edge, EdgeKind, Graph, Node, NodeKind, OutputKind, Position, Runner, Size,
+        };
+        let store = Store::open_in_memory().unwrap();
+        let graph = Graph {
+            id: "g-1".into(),
+            name: "revisão".into(),
+            dir: "/tmp/repo".into(),
+            nodes: vec![
+                Node {
+                    id: "a".into(),
+                    title: "Claude".into(),
+                    kind: NodeKind::Agent {
+                        runner: Runner::Claude,
+                        role: "autor".into(),
+                        prompt: "corrija {{alvo}}".into(),
+                    },
+                    position: Position { x: 10.0, y: 20.5 },
+                    size: Size { w: 480.0, h: 320.0 },
+                },
+                Node {
+                    id: "p".into(),
+                    title: "Testes".into(),
+                    kind: NodeKind::Process {
+                        command: "cargo test".into(),
+                        output: OutputKind::Log,
+                        file: None,
+                    },
+                    position: Position { x: 600.0, y: 20.0 },
+                    size: Size { w: 480.0, h: 320.0 },
+                },
+            ],
+            edges: vec![Edge {
+                id: "e1".into(),
+                from: "a".into(),
+                to: "p".into(),
+                kind: EdgeKind::Diff,
+            }],
+            variables: [("alvo".to_string(), "parser".to_string())].into(),
+        };
+        assert!(store.get_maestro_graph("g-1").unwrap().is_none());
+
+        store
+            .save_maestro_graph(&graph, false, Some("hash-importado"))
+            .unwrap();
+        let got = store.get_maestro_graph("g-1").unwrap().unwrap();
+        assert_eq!(got.value, graph);
+        assert!(!got.consented);
+        assert_eq!(got.imported_hash.as_deref(), Some("hash-importado"));
+
+        // O dono edita e salva: consente, mas a origem importada fica.
+        let edited = Graph {
+            name: "revisão 2".into(),
+            ..graph.clone()
+        };
+        store.save_maestro_graph(&edited, true, None).unwrap();
+        let got = store.get_maestro_graph("g-1").unwrap().unwrap();
+        assert_eq!(got.value, edited);
+        assert!(got.consented);
+        assert_eq!(got.imported_hash.as_deref(), Some("hash-importado"));
+        assert_eq!(store.list_maestro_graphs().unwrap(), vec![edited]);
+
+        store.delete_maestro_graph("g-1").unwrap();
+        assert!(store.list_maestro_graphs().unwrap().is_empty());
+    }
+
+    #[test]
+    fn maestro_integration_round_trip_and_delete() {
+        use crate::maestro::{EdgeKind, Integration, OutputKind, Trigger};
+        let store = Store::open_in_memory().unwrap();
+        let integration = Integration {
+            id: "i-1".into(),
+            name: "resumir log".into(),
+            script: "tail -n 20 \"$TYBA_IN/log.txt\" > \"$TYBA_OUT/log.txt\"".into(),
+            trigger: Trigger::OnInput {
+                kind: EdgeKind::Log,
+            },
+            output: OutputKind::Log,
+            file: None,
+        };
+        store
+            .save_maestro_integration(&integration, true, None)
+            .unwrap();
+        let got = store.get_maestro_integration("i-1").unwrap().unwrap();
+        assert_eq!(got.value, integration);
+        assert!(got.consented);
+        assert_eq!(got.imported_hash, None);
+        assert_eq!(
+            store.list_maestro_integrations().unwrap(),
+            vec![integration]
+        );
+
+        store.delete_maestro_integration("i-1").unwrap();
+        assert!(store.list_maestro_integrations().unwrap().is_empty());
+        assert!(store.get_maestro_integration("i-1").unwrap().is_none());
     }
 }
