@@ -222,6 +222,9 @@ export function CommandLine({
   // ele aceita. Sem esta trava, um segundo Enter na espera enviaria o MESMO
   // texto de novo — e o shell rodaria o comando duas vezes.
   const [submitting, setSubmitting] = useState(false);
+  // O último Enter caiu em comando incompleto: sem aviso, a quebra de linha
+  // parece o terminal travado. Some na próxima tecla.
+  const [incomplete, setIncomplete] = useState<"slash" | "open" | null>(null);
   // As linhas já enviadas do comando que o shell ainda está esperando fechar.
   //
   // O terminal fica escondido em modo prompt, e a caixa se limpa a cada Enter:
@@ -562,10 +565,12 @@ export function CommandLine({
           // Só se o texto ainda for o do Enter: a espera pelo shell pode
           // durar, e o que foi digitado nela não pode ser atropelado.
           if (textRef.current === value) {
+            setIncomplete(/\\\n/.test(value) ? "slash" : "open");
             apply(`${value.slice(0, start)}\n${value.slice(end)}`, start + 1);
           }
           return;
         }
+        setIncomplete(null);
         setPending((prev) => (continuing ? [...prev, value] : [value]));
         apply("", 0);
         setHits([]);
@@ -882,6 +887,7 @@ export function CommandLine({
             }
             onChange={(e) => {
               setText(e.target.value);
+              setIncomplete(null);
               setCaret(e.target.selectionStart ?? 0);
               setMenuOpen(false);
               setDispensada(false);
@@ -902,6 +908,11 @@ export function CommandLine({
               focused && !waiting && !selecting ? "caret-transparent" : ""
             }`}
           />
+          {incomplete && (
+            <div className="pb-1 font-mono text-[11px] text-tyba-text-faint">
+              {t(incomplete === "slash" ? "commandLineIncompleteSlash" : "commandLineIncomplete")}
+            </div>
+          )}
           </div>
         </div>
         )}

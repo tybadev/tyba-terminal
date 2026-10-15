@@ -96,6 +96,9 @@ const resources = {
       snippetInsert: "Inserir",
       snippetPreview: "Vai para a linha de comando — você aperta Enter.",
       commandLineFailed: "Não deu para enviar o comando",
+      commandLineIncomplete: "Comando incompleto — o shell ainda espera o resto.",
+      commandLineIncompleteSlash:
+        "A \\ no fim da linha junta ela com a de baixo — o shell ainda espera o resto.",
       blockShowAll_one: "mostrar mais {{count}} linha",
       blockShowAll_other: "mostrar mais {{count}} linhas",
       blockTruncated_one: "{{count}} linha cortada pelo limite do bloco",
@@ -2072,6 +2075,9 @@ const resources = {
       snippetInsert: "Insert",
       snippetPreview: "Goes to the command line — you press Enter.",
       commandLineFailed: "Could not send the command",
+      commandLineIncomplete: "Incomplete command — the shell is still waiting for the rest.",
+      commandLineIncompleteSlash:
+        "A \\ at the end of a line joins it with the next — the shell is still waiting for the rest.",
       blockShowAll_one: "show {{count}} more line",
       blockShowAll_other: "show {{count}} more lines",
       blockTruncated_one: "{{count}} line cut by the block limit",
