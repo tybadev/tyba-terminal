@@ -81,6 +81,12 @@ export function buildAgentTree(
   const ordered = subagents
     .map((run, index) => ({ run, index }))
     .sort((a, b) => {
+      // Quem espera por você vem antes de tudo: com muitos rodando, o pedido
+      // não pode ficar escondido no fim da lista.
+      const waits = (run: SubagentRun) =>
+        run.agent_id != null && (pendingBy.get(run.agent_id) ?? 0) > 0;
+      const waitDiff = Number(waits(b.run)) - Number(waits(a.run));
+      if (waitDiff !== 0) return waitDiff;
       const activeDiff = Number(isActive(b.run)) - Number(isActive(a.run));
       if (activeDiff !== 0) return activeDiff;
       const startDiff = b.run.started_at_ms - a.run.started_at_ms;

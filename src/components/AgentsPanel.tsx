@@ -70,6 +70,9 @@ const LIGHT_LABEL: Record<AgentLight, string> = {
   blocked: "subagentsStatusBlocked",
 };
 
+/** Acima de tantos subagentes vivos na rodada, a caixa AGORA vira uma linha. */
+const COMPACT_NOW_AFTER = 3;
+
 function PendingBadge({ count }: { count: number }) {
   const { t } = useTranslation();
   if (count === 0) return null;
@@ -255,6 +258,12 @@ export function AgentsPanel({
             {rounds.map((round) => {
               const expanded = roundOpen[round.round] ?? round.latest;
               const visible = expanded ? round.rows : collapsedRows(round);
+              // Muitos rodando juntos: a caixa AGORA vira uma linha (o texto
+              // inteiro fica no hover e no detalhe aberto).
+              const compactNow =
+                round.rows.filter(
+                  (r) => r.light === "running" || r.light === "starting" || r.light === "awaiting",
+                ).length > COMPACT_NOW_AFTER;
               return (
                 <section key={round.round} className="min-w-0">
                   {rounds.length > 1 && (
@@ -276,6 +285,7 @@ export function AgentsPanel({
                         key={row.key}
                         sessionId={session.id}
                         row={row}
+                        compactNow={compactNow}
                         approval={
                           row.run.agent_id
                             ? (inline.get(row.run.agent_id) ?? null)
@@ -352,9 +362,12 @@ function SubagentRow({
   approval,
   open,
   onToggle,
+  compactNow = false,
 }: {
   sessionId: Session["id"];
   row: AgentTreeRow;
+  /** Muitos rodando na rodada: a ação em curso numa linha só. */
+  compactNow?: boolean;
   /** O pedido pendente mais antigo deste subagente, se houver. */
   approval: ApprovalRequest | null;
   open: boolean;
@@ -415,15 +428,31 @@ function SubagentRow({
               />
             )}
           </span>
-          {!awaiting && line && <SubagentLineText line={line} />}
+          {!awaiting && line && line.kind !== "run" && line.kind !== "tool" && (
+            <SubagentLineText line={line} />
+          )}
         </span>
       </button>
+      {/* O que está executando AGORA, inteiro (mockup Subagentes): a linha
+          cortada não deixava ver o comando. */}
+      {line && (line.kind === "run" || line.kind === "tool") && (
+        <NowBox
+          line={line}
+          compact={compactNow && !open}
+          recent={compactNow && !open ? [] : (row.run.recent_activity ?? [])}
+        />
+      )}
       {awaiting && approval && <InlineApproval approval={approval} />}
       {open && (
         <div className="min-w-0 pb-2 pl-[17px] pt-1">
-          <p className="truncate pb-1 text-[10.5px] text-tyba-text-faint">
-            {row.run.agent_type || t("agentsUnknownType")} ·{" "}
-            {t(LIGHT_LABEL[row.light])}
+          <p className="flex min-w-0 items-center gap-2 pb-1 text-[10.5px] text-tyba-text-faint">
+            <span className="min-w-0 truncate">
+              {row.run.agent_type || t("agentsUnknownType")} ·{" "}
+              {t(LIGHT_LABEL[row.light])}
+            </span>
+            {row.run.status !== "done" && (
+              <span className="shrink-0 text-tyba-green">● {t("agentsLive")}</span>
+            )}
           </p>
           <SubagentTranscript
             sessionId={sessionId}
@@ -433,6 +462,62 @@ function SubagentRow({
         </div>
       )}
     </li>
+  );
+}
+
+/** A ação em curso, inteira: ferramenta + comando ou caminho, em mono. */
+function NowBox({
+  line,
+  compact = false,
+  recent = [],
+}: {
+  line: NonNullable<ReturnType<typeof subagentLine>>;
+  compact?: boolean;
+  /** As ações anteriores, mais nova primeiro. */
+  recent?: { tool: string; detail: string | null; at_ms: number }[];
+}) {
+  const { t } = useTranslation();
+  if (line.kind !== "run" && line.kind !== "tool") return null;
+  const tool = line.kind === "run" ? "Bash" : line.tool;
+  const detail = line.detail;
+  return (
+    <>
+    <div
+      title={compact ? `${tool} ${detail ?? ""}` : undefined}
+      className={`ml-[17px] flex min-w-0 gap-2 rounded-[6px] bg-tyba-sunken px-2.5 shadow-[inset_0_0_0_1px_var(--tyba-border)] ${
+        compact ? "mb-1 items-center py-1" : "mb-1.5 mt-1 items-start py-1.5"
+      }`}
+    >
+      <span className="shrink-0 pt-px text-[9.5px] tracking-[0.06em] text-tyba-cyan">
+        {t("agentsNow")}
+      </span>
+      <span className="shrink-0 font-mono text-[11px] text-tyba-blue">{tool}</span>
+      {detail && (
+        <span
+          className={`min-w-0 flex-1 font-mono text-[12px] leading-[17px] text-tyba-text ${
+            compact ? "truncate" : "break-all"
+          }`}
+        >
+          {detail}
+        </span>
+      )}
+    </div>
+      {recent.length > 0 && (
+        <ul className="mb-1.5 ml-[17px] flex min-w-0 flex-col gap-0.5">
+          {recent.map((r) => (
+            <li key={`${r.at_ms}-${r.tool}`} className="flex min-w-0 gap-2 text-[11px] text-tyba-text-faint">
+              <span className="w-[48px] shrink-0 tabular-nums">{t("agentsAgo", { time: formatElapsed(Date.now() - r.at_ms) })}</span>
+              <span className="shrink-0 font-mono">{r.tool}</span>
+              {r.detail && (
+                <span className="min-w-0 truncate font-mono text-tyba-text-muted" title={r.detail}>
+                  {r.detail}
+                </span>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </>
   );
 }
 

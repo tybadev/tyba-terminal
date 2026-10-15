@@ -31,6 +31,9 @@ const MIN_SUBAGENT_ID_LEN: usize = 8;
 /// completo vive no transcript; o painel só precisa do recente.
 const MAX_SETTLED_RUNS: usize = 40;
 
+/// Quantas ações anteriores o painel mostra embaixo do AGORA.
+const MAX_RECENT_ACTIVITY: usize = 2;
+
 /// Um `agent_id` real de subagente do Claude Code é hexadecimal (17 chars nesta
 /// máquina). Item de fila / prompt enfileirado não carrega um id assim — o gate
 /// evita transformar stop espúrio em entrada fantasma no painel.
@@ -69,6 +72,14 @@ pub struct SubagentRun {
     /// chamou (`PreToolUse` com `agent_id`). Some quando ele termina — aí quem
     /// fala é o `summary`.
     pub activity: Option<ToolActivity>,
+    /// A descrição veio do `meta.json` do próprio subagente (e não do palpite
+    /// por ordem): não precisa mais ser conferida.
+    pub description_confirmed: bool,
+    /// Quando a `activity` atual começou (ms), para o "há Ns" do painel.
+    pub activity_at_ms: Option<u64>,
+    /// As ações anteriores, da mais nova para a mais antiga (até
+    /// [`MAX_RECENT_ACTIVITY`]). O painel mostra embaixo do AGORA.
+    pub recent: Vec<(ToolActivity, u64)>,
     /// Tamanho do sidecar quando o subagente foi acordado (Done→Running). O
     /// fim que já estava no arquivo é o da volta anterior: só conta fim por
     /// arquivo depois que ele crescer além disto.
@@ -99,6 +110,17 @@ pub struct SubagentRunDto {
     pub activity_tool: Option<String>,
     /// O argumento curto dela (comando, caminho, padrão), redigido.
     pub activity_detail: Option<String>,
+    /// Quando a ação em curso começou (ms).
+    pub activity_at_ms: Option<u64>,
+    /// Ações anteriores, mais nova primeiro, redigidas; vazio se terminado.
+    pub recent_activity: Vec<RecentActivityDto>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RecentActivityDto {
+    pub tool: String,
+    pub detail: Option<String>,
+    pub at_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -131,6 +153,19 @@ impl SubagentRunDto {
             activity_detail: live_activity(run)
                 .and_then(|a| a.detail.as_deref())
                 .map(|d| redact(d).into_owned()),
+            activity_at_ms: live_activity(run).and(run.activity_at_ms),
+            recent_activity: if run.status == SubagentStatus::Done {
+                Vec::new()
+            } else {
+                run.recent
+                    .iter()
+                    .map(|(a, at_ms)| RecentActivityDto {
+                        tool: a.tool.clone(),
+                        detail: a.detail.as_deref().map(|d| redact(d).into_owned()),
+                        at_ms: *at_ms,
+                    })
+                    .collect()
+            },
         }
     }
 }
@@ -302,6 +337,9 @@ impl SessionSubagents {
             transcript_path: None,
             parent_transcript_path: None,
             activity: None,
+            activity_at_ms: None,
+            description_confirmed: false,
+            recent: Vec::new(),
             stale_end_len: None,
         });
     }
@@ -329,10 +367,19 @@ impl SessionSubagents {
         self.rearm_for_new_round();
         // O tipo exato primeiro; senão, um `Agent` pedido sem `subagent_type`
         // (o Claude escolhe o tipo, e o `SubagentStart` diz qual).
-        let slot = self
-            .runs
-            .iter()
-            .position(|run| run.status == SubagentStatus::Starting && run.agent_type == agent_type)
+        let by_description = description.as_deref().and_then(|wanted| {
+            self.runs.iter().position(|run| {
+                run.status == SubagentStatus::Starting
+                    && (run.agent_type == agent_type || run.agent_type.is_empty())
+                    && run.description == wanted
+            })
+        });
+        let slot = by_description
+            .or_else(|| {
+                self.runs.iter().position(|run| {
+                    run.status == SubagentStatus::Starting && run.agent_type == agent_type
+                })
+            })
             .or_else(|| {
                 self.runs.iter().position(|run| {
                     run.status == SubagentStatus::Starting && run.agent_type.is_empty()
@@ -343,6 +390,9 @@ impl SessionSubagents {
                 let run = &mut self.runs[index];
                 run.agent_id = Some(agent_id.clone());
                 run.agent_type = agent_type;
+                if let Some(real) = description.as_deref().filter(|d| !d.trim().is_empty()) {
+                    run.description = real.to_owned();
+                }
                 run.status = SubagentStatus::Running;
                 run.transcript_path = transcript_path;
                 run.parent_transcript_path = parent_transcript_path.map(Path::to_path_buf);
@@ -362,6 +412,9 @@ impl SessionSubagents {
                     transcript_path,
                     parent_transcript_path: parent_transcript_path.map(Path::to_path_buf),
                     activity: None,
+                    activity_at_ms: None,
+                    description_confirmed: false,
+                    recent: Vec::new(),
                     stale_end_len: None,
                 });
             }
@@ -401,6 +454,8 @@ impl SessionSubagents {
             run.interrupted = false;
             run.blocked = false;
             run.activity = None;
+            run.activity_at_ms = None;
+            run.recent.clear();
             // O sidecar ainda termina no fim da volta anterior: sem isto, o
             // watcher o leria de novo e fecharia o subagente recém-acordado.
             run.stale_end_len = run
@@ -452,6 +507,7 @@ impl SessionSubagents {
         last_assistant_message: Option<String>,
         now: u64,
     ) -> bool {
+        self.refresh_description(&agent_id);
         let summary = last_assistant_message
             .as_deref()
             .and_then(|message| clean_summary(message, SUMMARY_MAX_CHARS));
@@ -493,6 +549,9 @@ impl SessionSubagents {
             transcript_path: None,
             parent_transcript_path: None,
             activity: None,
+            activity_at_ms: None,
+            description_confirmed: false,
+            recent: Vec::new(),
             stale_end_len: None,
         });
         true
@@ -501,16 +560,59 @@ impl SessionSubagents {
     /// Guarda o que o subagente `agent_id` está fazendo. `false` quando nada
     /// mudou (subagente desconhecido, já terminado, ou a mesma atividade):
     /// aí não há o que emitir.
+    fn confirm_description(&mut self, agent_id: &str) {
+        if let Some(run) = self
+            .runs
+            .iter_mut()
+            .find(|run| run.agent_id.as_deref() == Some(agent_id))
+        {
+            run.description_confirmed = true;
+        }
+    }
+
+    /// Nome ainda do palpite por ordem: tenta o `meta.json` do próprio id de
+    /// novo (no start ele pode não existir ainda). `true` se mudou.
+    fn refresh_description(&mut self, agent_id: &str) -> bool {
+        let Some(run) = self
+            .runs
+            .iter_mut()
+            .find(|run| run.agent_id.as_deref() == Some(agent_id) && !run.description_confirmed)
+        else {
+            return false;
+        };
+        let Some(real) = run
+            .parent_transcript_path
+            .as_deref()
+            .and_then(|p| meta_description_by_id(p, agent_id))
+        else {
+            return false;
+        };
+        run.description_confirmed = true;
+        if run.description == real {
+            return false;
+        }
+        run.description = real;
+        true
+    }
+
     fn note_activity(&mut self, agent_id: &str, activity: ToolActivity) -> bool {
+        let renamed = self.refresh_description(agent_id);
         let Some(run) = self.runs.iter_mut().find(|run| {
             run.agent_id.as_deref() == Some(agent_id) && run.status != SubagentStatus::Done
         }) else {
             return false;
         };
         if run.activity.as_ref() == Some(&activity) {
-            return false;
+            return renamed;
+        }
+        let now = now_ms();
+        if let Some(prev) = run.activity.take() {
+            run.recent
+                .insert(0, (prev, run.activity_at_ms.unwrap_or(now)));
+            run.recent.truncate(MAX_RECENT_ACTIVITY);
         }
         run.activity = Some(activity);
+        run.activity_at_ms = Some(now);
         true
     }
 
@@ -844,17 +946,29 @@ impl SubagentTracker {
             &agent_type,
             hint.as_deref(),
         );
+        // A descrição de verdade mora no `agent-<id>.meta.json` do próprio
+        // subagente. Com vários do mesmo tipo disparados juntos, os starts
+        // chegam fora da ordem das chamadas, e casar pelo tipo trocava os nomes.
+        let real = transcript_path
+            .as_deref()
+            .and_then(meta_description)
+            .or_else(|| parent_transcript_path.and_then(|p| meta_description_by_id(p, &agent_id)));
+        let confirmed = real.is_some();
+        let description = real.or(description);
         let (payload, targets, coordination) = {
             let mut sessions = self.sessions.lock().expect("subagents lock");
             let entry = sessions.get_mut(&session)?;
             entry.promote(
-                agent_id,
+                agent_id.clone(),
                 agent_type,
                 description,
                 transcript_path,
                 parent_transcript_path,
                 now_ms(),
             );
+            if confirmed {
+                entry.confirm_description(&agent_id);
+            }
             let coordination = (!entry.coordinated).then_some(Coordination {
                 viewer_disarmed: entry.viewer_disarmed,
                 panel_disarmed: entry.panel_disarmed,
@@ -1165,6 +1279,35 @@ fn transcript_by_agent_id(sidecar: &Path, agent_id: &str) -> Option<PathBuf> {
     candidate.is_file().then_some(candidate)
 }
 
+/// A descrição gravada pelo Claude no `agent-<id>.meta.json` ao lado do
+/// transcript do subagente. Leitura curta e defensiva: falha vira `None`.
+fn meta_description(transcript: &Path) -> Option<String> {
+    let name = transcript.file_name()?.to_str()?;
+    let base = name.strip_suffix(".jsonl")?;
+    read_meta_description(&transcript.with_file_name(format!("{base}.meta.json")))
+}
+
+/// A mesma descrição achada só pelo id, sem depender do transcript existir:
+/// `<sessão>/subagents/agent-<id>.meta.json` ao lado do transcript pai.
+fn meta_description_by_id(parent_transcript: &Path, agent_id: &str) -> Option<String> {
+    let bare = agent_id.strip_prefix("agent-").unwrap_or(agent_id);
+    if !is_plausible_subagent_id(bare) {
+        return None;
+    }
+    read_meta_description(&sidecar_dir(parent_transcript).join(format!("agent-{bare}.meta.json")))
+}
+
+fn read_meta_description(meta: &Path) -> Option<String> {
+    let body = std::fs::read(meta).ok().filter(|b| b.len() <= 64 * 1024)?;
+    let value: Value = serde_json::from_slice(&body).ok()?;
+    value
+        .get("description")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|d| !d.is_empty())
+        .map(str::to_owned)
+}
+
 fn meta_sibling_jsonl(meta_path: &Path) -> PathBuf {
     let name = meta_path
         .file_name()
@@ -1365,6 +1508,168 @@ mod tests {
         assert_eq!(dto.activity_tool, None);
         assert_eq!(dto.activity_detail, None);
         assert_eq!(dto.summary.as_deref(), Some("pronto"));
+    }
+
+    #[test]
+    fn three_of_the_same_type_keep_their_own_names_when_starts_arrive_out_of_order() {
+        // Print do dono (2026-10-14): 3 Explore disparados juntos; os starts
+        // chegaram fora da ordem e os nomes trocaram de dono.
+        let mut session = SessionSubagents::default();
+        for d in [
+            "Listar arquivos .rs",
+            "Listar arquivos .ts",
+            "Contar linhas do README",
+        ] {
+            session.push_pending(Some("Explore".into()), Some(d.into()), 10);
+        }
+        // starts: README, .rs, .ts — com a descrição real lida do meta.json
+        session.promote(
+            "c".into(),
+            "Explore".into(),
+            Some("Contar linhas do README".into()),
+            None,
+            None,
+            11,
+        );
+        session.promote(
+            "a".into(),
+            "Explore".into(),
+            Some("Listar arquivos .rs".into()),
+            None,
+            None,
+            12,
+        );
+        session.promote(
+            "b".into(),
+            "Explore".into(),
+            Some("Listar arquivos .ts".into()),
+            None,
+            None,
+            13,
+        );
+        let name = |id: &str| {
+            session
+                .runs
+                .iter()
+                .find(|r| r.agent_id.as_deref() == Some(id))
+                .unwrap()
+                .description
+                .clone()
+        };
+        assert_eq!(name("a"), "Listar arquivos .rs");
+        assert_eq!(name("b"), "Listar arquivos .ts");
+        assert_eq!(name("c"), "Contar linhas do README");
+        assert_eq!(
+            session.runs.len(),
+            3,
+            "nenhum placeholder sobrando nem duplicado"
+        );
+    }
+
+    #[test]
+    fn name_guessed_by_order_is_fixed_when_the_meta_json_shows_up() {
+        // Print do dono (2026-10-14): 4 general-purpose; no start o meta.json
+        // ainda não existia, o palpite por ordem trocou os nomes.
+        let dir = TempDir::new().unwrap();
+        let parent = dir.path().join("session.jsonl");
+        write(&parent, "{}");
+        let sidecar = sidecar_dir(&parent);
+        fs::create_dir_all(&sidecar).unwrap();
+        let (id_ls, id_curl) = ("a1b2c3d4e5f6a7b8c", "0f1e2d3c4b5a69788");
+        let mut session = SessionSubagents::default();
+        session.push_pending(
+            Some("general-purpose".into()),
+            Some("Run ls -la".into()),
+            10,
+        );
+        session.push_pending(Some("general-purpose".into()), Some("Run curl".into()), 10);
+        // o curl começa primeiro e, sem meta.json, leva o nome do primeiro da fila
+        session.promote(
+            id_curl.into(),
+            "general-purpose".into(),
+            None,
+            None,
+            Some(&parent),
+            11,
+        );
+        session.promote(
+            id_ls.into(),
+            "general-purpose".into(),
+            None,
+            None,
+            Some(&parent),
+            12,
+        );
+        let name = |s: &SessionSubagents, id: &str| {
+            s.runs
+                .iter()
+                .find(|r| r.agent_id.as_deref() == Some(id))
+                .unwrap()
+                .description
+                .clone()
+        };
+        assert_eq!(
+            name(&session, id_curl),
+            "Run ls -la",
+            "palpite errado de propósito"
+        );
+        write(
+            &sidecar.join(format!("agent-{id_curl}.meta.json")),
+            r#"{"description":"Run curl"}"#,
+        );
+        write(
+            &sidecar.join(format!("agent-{id_ls}.meta.json")),
+            r#"{"description":"Run ls -la"}"#,
+        );
+        let input = serde_json::json!({ "command": "curl -s x" });
+        assert!(session.note_activity(id_curl, tool_activity("Bash", Some(&input), "curl -s x")));
+        assert_eq!(name(&session, id_curl), "Run curl");
+        session.mark_stopped(id_ls.into(), None, Some("ok".into()), 20);
+        assert_eq!(name(&session, id_ls), "Run ls -la");
+    }
+
+    #[test]
+    fn meta_description_reads_the_agents_own_meta_json() {
+        let dir = TempDir::new().unwrap();
+        let jsonl = dir.path().join("agent-abc123.jsonl");
+        write(&jsonl, "{}");
+        write(
+            &dir.path().join("agent-abc123.meta.json"),
+            r#"{"agentType":"Explore","description":"  Listar arquivos .ts  "}"#,
+        );
+        assert_eq!(
+            meta_description(&jsonl).as_deref(),
+            Some("Listar arquivos .ts")
+        );
+        assert_eq!(meta_description(&dir.path().join("agent-zzz.jsonl")), None);
+    }
+
+    #[test]
+    fn recent_activity_keeps_the_last_two_and_clears_on_done() {
+        let mut session = SessionSubagents::default();
+        session.promote("a1".into(), "explore".into(), None, None, None, 10);
+        for path in ["a.rs", "b.rs", "c.rs", "d.rs"] {
+            let input = serde_json::json!({ "file_path": path });
+            assert!(session.note_activity("a1", tool_activity("Read", Some(&input), path)));
+        }
+        let dto = SubagentRunDto::redacted(&session.runs[0]);
+        assert_eq!(dto.activity_detail.as_deref(), Some("d.rs"));
+        let recent: Vec<_> = dto
+            .recent_activity
+            .iter()
+            .map(|r| r.detail.as_deref())
+            .collect();
+        assert_eq!(
+            recent,
+            vec![Some("c.rs"), Some("b.rs")],
+            "mais nova primeiro, só 2"
+        );
+        assert!(dto.activity_at_ms.is_some());
+
+        session.mark_stopped("a1".into(), None, Some("pronto".into()), 20);
+        let dto = SubagentRunDto::redacted(&session.runs[0]);
+        assert!(dto.recent_activity.is_empty());
+        assert_eq!(dto.activity_at_ms, None);
     }
 
     #[test]
