@@ -27,8 +27,12 @@ import {
   lineToken,
   type LineState,
   type MenuItem,
+  argValue,
+  discoveryItems,
+  type ArgGroup,
   menuItems,
   menuRows,
+  moveDiscovery,
   moveSelection,
   pathToken,
   replaceToken,
@@ -382,7 +386,17 @@ export function CommandLine({
 
   // Uma lista só, na ordem de proximidade da caixa: o item 0 é o que encosta
   // nela. Ver `menuItems` — é lá que o comando que só falhou sai.
-  const items = menuItems({ commands: hits, args, bins, paths });
+  // Com argumento na mesa (`git `, `git commit -`) a lista é de DESCOBERTA:
+  // agrupada, lida de cima para baixo. Sem ele, é a do histórico, que cresce
+  // a partir da caixa.
+  const discovery = args.length > 0 && state !== "continuation";
+  const items = discovery
+    ? discoveryItems(args, paths)
+    : menuItems({ commands: hits, args, bins, paths });
+  // Na descoberta, o cinza é a linha em destaque — a escolhida, ou a primeira.
+  // Eram duas coisas diferentes, e a lista mostrava `apply` enquanto o cinza
+  // dizia `add`.
+  const focusItem = discovery ? items[index >= 0 ? index : 0] : undefined;
   // Caminho ganha do histórico no cinza: quem já digitou `cd sr` está
   // escolhendo um diretório, não repetindo um comando inteiro.
   const pathGhost =
@@ -391,9 +405,15 @@ export function CommandLine({
       : "";
   // Flag nunca é caminho: `--l` não existe em disco, e tentar completá-lo como
   // arquivo só produziria silêncio.
+  const argCandidate =
+    focusItem?.kind === "argument"
+      ? argValue(focusItem, arg?.value ?? "")
+      : discovery
+        ? undefined
+        : args[0]?.value;
   const argGhost =
-    arg && args.length > 0 && args[0].value.startsWith(arg.value)
-      ? args[0].value.slice(arg.value.length)
+    arg && argCandidate && argCandidate.startsWith(arg.value)
+      ? argCandidate.slice(arg.value.length)
       : "";
   // Comando ganha do histórico e perde para caminho e argumento. Quem digitou
   // `pn` na coluna 1 está escolhendo um COMANDO — e o histórico, que completa a
@@ -441,7 +461,7 @@ export function CommandLine({
         ? menu.querySelector<HTMLElement>(`[data-index="${index}"]`)
         : null;
     if (!chosen) {
-      menu.scrollTop = menu.scrollHeight;
+      menu.scrollTop = discovery ? 0 : menu.scrollHeight;
       return;
     }
     // À mão e não `scrollIntoView`: aquele rola também os ancestrais, e a
@@ -452,7 +472,7 @@ export function CommandLine({
     else if (bottom > menu.scrollTop + menu.clientHeight) {
       menu.scrollTop = bottom - menu.clientHeight;
     }
-  }, [showMenu, index, items.length]);
+  }, [showMenu, index, items.length, discovery]);
 
   const resize = () => {
     const el = inputRef.current;
@@ -526,7 +546,7 @@ export function CommandLine({
         setMenuOpen(false);
         return;
       case "argument":
-        takeArg(item.value);
+        takeArg(argValue(item, arg?.value ?? ""));
         return;
       case "binary":
         takeBinary(item.name);
@@ -615,6 +635,11 @@ export function CommandLine({
     // A lista está ACIMA da caixa: ↑ sobe nela (para o mais antigo), ↓ desce
     // de volta. Entrar nela é o gesto que autoriza o Enter a aplicar; do item
     // colado na caixa, ↓ devolve o cursor à linha sem nada escolhido.
+    if (showMenu && discovery && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+      e.preventDefault();
+      setIndex(moveDiscovery(index, e.key, items.length));
+      return;
+    }
     if (showMenu && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
       e.preventDefault();
       if (e.key === "ArrowDown" && index < 0) {
@@ -744,7 +769,16 @@ export function CommandLine({
           className="tyba-flow-line tyba-flow-line--live pointer-events-none absolute inset-x-0 top-0"
         />
       )}
-      {showMenu && (
+      {showMenu && discovery && (
+        <DiscoveryMenu
+          items={items}
+          index={index}
+          menuRef={menuRef}
+          onPick={applyItem}
+          t={t}
+        />
+      )}
+      {showMenu && !discovery && (
         // Desenhada INVERTIDA (`menuRows`): o item 0 — o último executado, ou o
         // mais provável — é a última linha, colada na caixa. Mais antigo é
         // mais longe dela, e ↑ sobe em direção a ele.
@@ -931,6 +965,109 @@ export function CommandLine({
           </span>
         )}
       </div>
+    </div>
+  );
+}
+
+const GROUP_LABEL: Record<ArgGroup, string> = {
+  used: "commandLineGroupUsed",
+  subcommand: "commandLineGroupSubcommands",
+  option: "commandLineGroupFlags",
+  value: "commandLineGroupValues",
+  path: "commandLineGroupPaths",
+};
+
+/**
+ * A lista de descoberta: grupos de cima para baixo, nome e descrição lado a
+ * lado numa caixa presa ao cursor, e um rodapé com a descrição inteira da linha
+ * em destaque. Ver o quadro "Autocompletar e ajuda de comando" no canvas.
+ */
+function DiscoveryMenu({
+  items,
+  index,
+  menuRef,
+  onPick,
+  t,
+}: {
+  items: MenuItem[];
+  index: number;
+  menuRef: React.RefObject<HTMLDivElement>;
+  onPick: (item: MenuItem) => void;
+  t: (key: string, vars?: Record<string, string | number>) => string;
+}) {
+  const focus = items[index >= 0 ? index : 0];
+  const groupOf = (item: MenuItem): ArgGroup =>
+    item.kind === "argument" ? (item.group ?? "value") : "path";
+  const counts = new Map<ArgGroup, number>();
+  for (const item of items) counts.set(groupOf(item), (counts.get(groupOf(item)) ?? 0) + 1);
+  const name = (item: MenuItem) =>
+    item.kind === "argument"
+      ? item.alias
+        ? `${item.value}, ${item.alias}`
+        : item.value
+      : item.kind === "path"
+        ? item.value
+        : "";
+  return (
+    <div className="absolute bottom-full left-[18px] z-20 mb-1 w-[480px] max-w-[calc(100%-36px)] overflow-hidden rounded-[10px] border border-tyba-border-field bg-tyba-raised shadow-lg">
+      <div ref={menuRef} className="max-h-[260px] overflow-y-auto pb-1">
+        {items.map((item, i) => {
+          const group = groupOf(item);
+          const first = i === 0 || groupOf(items[i - 1]) !== group;
+          const chosen = i === index;
+          const ghost = index < 0 && i === 0;
+          const uses = item.kind === "argument" ? (item.uses ?? 0) : 0;
+          return (
+            <div key={item.key}>
+              {first && (
+                <div className="flex justify-between px-3 pb-1 pt-2 font-mono text-[10px] uppercase tracking-[.06em] text-tyba-text-faint">
+                  <span>{t(GROUP_LABEL[group])}</span>
+                  <span className="normal-case tracking-normal">
+                    {group === "used"
+                      ? t("commandLineGroupUsedNote")
+                      : t("commandLineGroupCount", { count: counts.get(group) ?? 0 })}
+                  </span>
+                </div>
+              )}
+              <button
+                data-index={i}
+                onMouseDown={(event) => {
+                  event.preventDefault();
+                  onPick(item);
+                }}
+                className={`mx-1.5 flex h-[26px] w-[calc(100%-12px)] items-center gap-3 rounded-[5px] px-2 text-left font-mono text-[12px] ${
+                  chosen
+                    ? "bg-tyba-green/15 text-tyba-text ring-1 ring-inset ring-tyba-green/35"
+                    : ghost
+                      ? "bg-tyba-text/[.05] text-tyba-text"
+                      : "text-tyba-text-muted hover:bg-tyba-text/[.04]"
+                }`}
+              >
+                <span className="w-[140px] shrink-0 truncate" title={name(item)}>
+                  {name(item)}
+                </span>
+                <span className="min-w-0 flex-1 truncate text-[11px] text-tyba-text-faint">
+                  {item.kind === "argument" ? item.description : ""}
+                </span>
+                {uses > 0 && (
+                  <span className="shrink-0 text-[10px] text-tyba-text-faint">{uses}×</span>
+                )}
+              </button>
+            </div>
+          );
+        })}
+      </div>
+      {focus && (
+        <div className="flex flex-col gap-0.5 border-t border-tyba-border-soft px-3.5 pb-1.5 pt-2 font-mono">
+          <span className="text-[12px] text-tyba-text">{name(focus)}</span>
+          {focus.kind === "argument" && focus.description && (
+            <span className="line-clamp-2 text-[11px] leading-4 text-tyba-text-muted">
+              {focus.description}
+            </span>
+          )}
+          <span className="mt-1 text-[10px] text-tyba-text-faint">{t("commandLineMenuKeys")}</span>
+        </div>
+      )}
     </div>
   );
 }

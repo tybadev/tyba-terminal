@@ -722,7 +722,15 @@ export type MenuItem =
       command: string;
       label: string | null;
     }
-  | { kind: "argument"; key: string; value: string; description: string | null }
+  | {
+      kind: "argument";
+      key: string;
+      value: string;
+      description: string | null;
+      uses?: number;
+      alias?: string | null;
+      group?: ArgGroup;
+    }
   | { kind: "binary"; key: string; name: string; binKind: string }
   | { kind: "path"; key: string; value: string };
 
@@ -734,7 +742,7 @@ export interface MenuSources {
     kind: "history" | "snippet";
     label: string | null;
   }[];
-  args: { value: string; description: string | null }[];
+  args: { value: string; description: string | null; uses?: number; alias?: string | null }[];
   bins: { name: string; kind: string }[];
   paths: string[];
 }
@@ -788,6 +796,78 @@ export function menuItems(sources: MenuSources): MenuItem[] {
     items.push({ kind: "path", key: `path:${path}`, value: path });
   }
   return items;
+}
+
+/** De onde vem cada linha da lista de descoberta — vira o título do grupo. */
+export type ArgGroup = "used" | "subcommand" | "option" | "value" | "path";
+
+export const ARG_GROUP_ORDER: ArgGroup[] = ["used", "subcommand", "option", "value", "path"];
+
+interface ArgSource {
+  value: string;
+  description: string | null;
+  uses: number;
+  kind: string | null;
+  alias: string | null;
+}
+
+/**
+ * A lista de descoberta (o que vem depois de `git `), na ordem de LEITURA:
+ * de cima para baixo, o que você usa primeiro (mais usado no topo), depois o
+ * que a base oferece — subcomandos, flags, valores (branch, script…) — e por
+ * fim os arquivos.
+ *
+ * É outra lista que a do ↑: aquela é histórico e cresce a partir da caixa;
+ * esta é para descobrir, e se lê como um menu.
+ */
+export function discoveryItems(args: ArgSource[], paths: string[]): MenuItem[] {
+  const group = (a: ArgSource): ArgGroup =>
+    a.uses > 0
+      ? "used"
+      : a.kind === "subcommand"
+        ? "subcommand"
+        : a.kind === "option"
+          ? "option"
+          : "value";
+  const items: MenuItem[] = [];
+  const used = args.filter((a) => a.uses > 0).sort((a, b) => b.uses - a.uses);
+  const rest = args.filter((a) => a.uses <= 0);
+  for (const g of ARG_GROUP_ORDER) {
+    if (g === "path") continue;
+    for (const a of g === "used" ? used : rest.filter((r) => group(r) === g)) {
+      items.push({
+        kind: "argument",
+        key: `arg:${a.value}`,
+        value: a.value,
+        description: a.description,
+        uses: a.uses,
+        alias: a.alias,
+        group: g,
+      });
+    }
+  }
+  for (const path of paths) {
+    items.push({ kind: "path", key: `path:${path}`, value: path });
+  }
+  return items;
+}
+
+/**
+ * O valor que um argumento escolhido escreve: quem já digitou `--` quer a
+ * forma longa da flag, não a curta da mesma linha.
+ */
+export function argValue(item: { value: string; alias?: string | null }, typed: string): string {
+  return item.alias && typed.startsWith("--") ? item.alias : item.value;
+}
+
+/**
+ * Seta na lista de descoberta: ↓ desce (da caixa entra no primeiro), ↑ sobe, e
+ * do primeiro devolve para a caixa (`-1`, nada escolhido).
+ */
+export function moveDiscovery(index: number, key: "ArrowUp" | "ArrowDown", length: number): number {
+  if (length <= 0) return -1;
+  if (key === "ArrowDown") return Math.min(index + 1, length - 1);
+  return index <= 0 ? -1 : index - 1;
 }
 
 /**

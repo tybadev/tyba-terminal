@@ -17,6 +17,9 @@ import {
   paneLine,
   lineToken,
   menuItems,
+  discoveryItems,
+  argValue,
+  moveDiscovery,
   menuRows,
   moveSelection,
   pathToken,
@@ -916,5 +919,55 @@ describe("moveSelection", () => {
 
   it("índice que sobrou de uma lista maior é preso no fim", () => {
     expect(moveSelection(9, "ArrowDown", 3)).toBe(2);
+  });
+});
+
+describe("discoveryItems", () => {
+  const a = (value: string, kind: string | null, uses = 0, alias: string | null = null) => ({
+    value,
+    description: null,
+    uses,
+    kind,
+    alias,
+  });
+
+  it("o que você usa vem primeiro, mais usado no topo, depois subcomando, flag e valor", () => {
+    const items = discoveryItems(
+      [
+        a("add", "subcommand"),
+        a("--amend", "option"),
+        a("main", null),
+        a("commit", "subcommand", 3),
+        a("status", "subcommand", 9),
+      ],
+      ["src/"],
+    );
+    expect(items.map((i) => i.key)).toEqual([
+      "arg:status",
+      "arg:commit",
+      "arg:add",
+      "arg:--amend",
+      "arg:main",
+      "path:src/",
+    ]);
+    expect(items[0]).toMatchObject({ group: "used" });
+    expect(items[3]).toMatchObject({ group: "option" });
+  });
+});
+
+describe("argValue", () => {
+  it("com -- digitado escreve a forma longa", () => {
+    expect(argValue({ value: "-m", alias: "--message" }, "--")).toBe("--message");
+    expect(argValue({ value: "-m", alias: "--message" }, "-")).toBe("-m");
+    expect(argValue({ value: "status" }, "")).toBe("status");
+  });
+});
+
+describe("moveDiscovery", () => {
+  it("↓ entra no primeiro, ↑ do primeiro volta para a caixa", () => {
+    expect(moveDiscovery(-1, "ArrowDown", 3)).toBe(0);
+    expect(moveDiscovery(2, "ArrowDown", 3)).toBe(2);
+    expect(moveDiscovery(1, "ArrowUp", 3)).toBe(0);
+    expect(moveDiscovery(0, "ArrowUp", 3)).toBe(-1);
   });
 });

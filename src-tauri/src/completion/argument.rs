@@ -201,9 +201,137 @@ pub fn rank(candidates: Vec<String>, used: &[String]) -> Vec<String> {
     ranked
 }
 
+/// Quantas vezes cada próximo token já rodou depois de `prefix`.
+///
+/// `rows` é `(comando, vezes)` do histórico. `git commit -m a` e `git commit
+/// --amend` somam os dois em `commit` quando o prefixo é `git `.
+pub fn token_uses(
+    rows: &[(String, u32)],
+    prefix: &str,
+    token: &str,
+) -> std::collections::HashMap<String, u32> {
+    let mut uses = std::collections::HashMap::new();
+    for (command, count) in rows {
+        let Some(next) = command
+            .strip_prefix(prefix)
+            .and_then(|rest| rest.split_whitespace().next())
+        else {
+            continue;
+        };
+        if next.starts_with(token) && next != token {
+            *uses.entry(next.to_string()).or_insert(0) += count;
+        }
+    }
+    uses
+}
+
+/// Uma linha da lista: o valor, o que ele faz e de onde veio.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Candidate {
+    pub value: String,
+    pub description: Option<String>,
+    pub uses: u32,
+    /// `subcommand` ou `option` quando a base conhece; senão `None`.
+    pub kind: Option<String>,
+    /// A forma longa da mesma flag, quando as duas vieram: `-m` + `--message`.
+    pub alias: Option<String>,
+}
+
+/// Junta a flag curta e a longa numa linha só (`-m, --message`).
+///
+/// O par é reconhecido pela descrição igual, que é como a base registra as
+/// duas formas da mesma flag. A curta fica como valor (é a que se digita), a
+/// longa vira `alias`, e o uso das duas soma.
+pub fn pair_flags(candidates: Vec<Candidate>) -> Vec<Candidate> {
+    let is_short = |v: &str| v.len() == 2 && v.starts_with('-') && !v.starts_with("--");
+    let is_option = |c: &Candidate| c.kind.as_deref() == Some("option");
+    // Primeiro os pares, depois a saída: a longa pode vir antes da curta na
+    // lista, e ela some de onde estiver.
+    let mut partner: Vec<Option<usize>> = vec![None; candidates.len()];
+    let mut absorbed = vec![false; candidates.len()];
+    for (i, short) in candidates.iter().enumerate() {
+        if !is_short(&short.value) || !is_option(short) || short.description.is_none() {
+            continue;
+        }
+        let found = candidates.iter().enumerate().position(|(j, long)| {
+            !absorbed[j]
+                && long.value.starts_with("--")
+                && is_option(long)
+                && long.description == short.description
+        });
+        if let Some(j) = found {
+            absorbed[j] = true;
+            partner[i] = Some(j);
+        }
+    }
+    candidates
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !absorbed[*i])
+        .map(|(i, c)| {
+            let mut item = c.clone();
+            if let Some(j) = partner[i] {
+                item.alias = Some(candidates[j].value.clone());
+                item.uses += candidates[j].uses;
+            }
+            item
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn cand(value: &str, desc: Option<&str>, kind: Option<&str>, uses: u32) -> Candidate {
+        Candidate {
+            value: value.to_string(),
+            description: desc.map(str::to_string),
+            uses,
+            kind: kind.map(str::to_string),
+            alias: None,
+        }
+    }
+
+    #[test]
+    fn uso_soma_por_proximo_token() {
+        let rows = vec![
+            ("git commit -m a".to_string(), 3),
+            ("git commit --amend".to_string(), 2),
+            ("git status".to_string(), 5),
+            ("git".to_string(), 9),
+        ];
+        let uses = token_uses(&rows, "git ", "");
+        assert_eq!(uses.get("commit"), Some(&5));
+        assert_eq!(uses.get("status"), Some(&5));
+        assert_eq!(uses.len(), 2);
+        assert!(!token_uses(&rows, "git ", "st").contains_key("commit"));
+    }
+
+    #[test]
+    fn flag_curta_e_longa_viram_uma_linha() {
+        let msg = Some("Use the given message");
+        let out = pair_flags(vec![
+            cand("--message", msg, Some("option"), 1),
+            cand("-m", msg, Some("option"), 4),
+            cand("--amend", Some("Replace the tip"), Some("option"), 0),
+            cand("main", None, None, 0),
+        ]);
+        let values: Vec<&str> = out.iter().map(|c| c.value.as_str()).collect();
+        assert_eq!(values, vec!["-m", "--amend", "main"]);
+        assert_eq!(out[0].alias.as_deref(), Some("--message"));
+        assert_eq!(out[0].uses, 5);
+    }
+
+    #[test]
+    fn descricao_diferente_nao_junta() {
+        let out = pair_flags(vec![
+            cand("-a", Some("all"), Some("option"), 0),
+            cand("--amend", Some("amend"), Some("option"), 0),
+        ]);
+        assert_eq!(out.len(), 2);
+        assert!(out.iter().all(|c| c.alias.is_none()));
+    }
 
     #[test]
     fn a_tabela_reconhece_o_subcomando_e_nao_so_o_binario() {
