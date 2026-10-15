@@ -120,6 +120,7 @@ function ComposeOutputPanel({ run }: { run: ComposeRun }) {
 export function DockerComposeSection({
   projects,
   loaded,
+  loading,
   selected,
   hideStopped,
   host,
@@ -132,6 +133,8 @@ export function DockerComposeSection({
   projects: ComposeProject[];
   /** A lista de containers já chegou (antes disso não se escolhe projeto). */
   loaded: boolean;
+  /** O carregamento da tela (esqueleto + etapa), enquanto `!loaded`. */
+  loading: React.ReactNode;
   selected: string | null;
   hideStopped: boolean;
   /** Alias SSH numa sessão remota; `null` = docker local. */
@@ -387,7 +390,7 @@ export function DockerComposeSection({
         </div>
         <div className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-2 py-1">
           {!loaded ? (
-            <p className="px-2 py-2 text-[12px] text-tyba-text-faint">{t("filesLoading")}</p>
+            <div className="-mx-2 -my-1">{loading}</div>
           ) : visible.length === 0 ? (
             <p className="px-2 py-2 text-[12px] text-tyba-text-faint">
               {projects.length > 0 ? t("dockerScreenNoRunningProjects") : t("dockerScreenNoProjects")}
@@ -403,11 +406,11 @@ export function DockerComposeSection({
       <div className="flex min-w-0 flex-1 flex-col bg-tyba-sunken">
         {current ? (
           content(current)
-        ) : (
+        ) : loaded ? (
           <div className="flex flex-1 items-center justify-center text-[12px] text-tyba-text-faint">
-            {loaded ? t("dockerScreenNoProjects") : t("filesLoading")}
+            {t("dockerScreenNoProjects")}
           </div>
-        )}
+        ) : null}
       </div>
     </div>
   );

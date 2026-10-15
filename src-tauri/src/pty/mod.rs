@@ -111,6 +111,47 @@ impl LineEditorGate {
     }
 }
 
+/// O que o core sabe do shell que está subindo, para a linha do TYBA dizer a
+/// etapa real ("carregando o ~/.zshrc") enquanto espera o primeiro prompt, em
+/// vez de um "carregando o shell" que não diz nada.
+///
+/// Só fatos do spawn: o shell e o rc que ele vai ler. Caminho com `~`, nunca
+/// conteúdo do arquivo nem variável de ambiente.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ShellBoot {
+    /// `zsh`, `bash`…
+    pub shell: String,
+    /// O rc do usuário que o shell lê ao subir, já com `~`; `None` quando o
+    /// core não sabe (shell sem integração).
+    pub rc: Option<String>,
+    /// Epoch em ms do spawn.
+    pub started_at_ms: u64,
+}
+
+impl ShellBoot {
+    /// O rc que o shell integrado lê, como o usuário o reconhece. `zsh` lê o
+    /// `.zshrc` do `ZDOTDIR` dele (ou da home); `bash` integrado roda a cadeia
+    /// de login e o `~/.bashrc` (ver `tyba-bash-rc.sh`).
+    pub fn rc_label(shell: &str, zdotdir: Option<&str>, home: Option<&str>) -> Option<String> {
+        let home = home.filter(|h| !h.is_empty());
+        match shell {
+            "zsh" => {
+                let dir = zdotdir.filter(|d| !d.is_empty()).or(home)?;
+                let dir = dir.trim_end_matches('/');
+                let path = format!("{dir}/.zshrc");
+                Some(match home.map(|h| h.trim_end_matches('/')) {
+                    Some(h) if path.starts_with(&format!("{h}/")) => {
+                        format!("~{}", &path[h.len()..])
+                    }
+                    _ => path,
+                })
+            }
+            "bash" => Some("~/.bashrc".to_string()),
+            _ => None,
+        }
+    }
+}
+
 struct ScreenState {
     parser: vt100::Parser,
     pending: Vec<u8>,
@@ -127,6 +168,8 @@ struct ScreenState {
     /// tem como saber a diferença — ela mostraria para sempre uma linha
     /// dizendo que o shell está carregando.
     hook_expected: bool,
+    /// O shell e o rc do spawn — ver [`ShellBoot`]. `None` fora de shell local.
+    boot: Option<ShellBoot>,
     /// Aberto pelo mesmo `633;P` que atualiza o campo acima — ver
     /// [`LineEditorGate`].
     line_editor: Arc<LineEditorGate>,
@@ -147,6 +190,7 @@ impl ScreenState {
             attachers: HashMap::new(),
             prompt_mode: false,
             hook_expected: false,
+            boot: None,
             line_editor: Arc::new(LineEditorGate::default()),
             continuation: false,
             prompt_ready: false,
@@ -1518,6 +1562,21 @@ impl PtyPool {
         if let Some(handle) = ptys.get(&id) {
             handle.screen.lock().hook_expected = expected;
         }
+    }
+
+    /// Marcado pelo `SessionManager` logo depois do spawn de um shell local.
+    pub fn set_shell_boot(&self, id: PtyId, boot: ShellBoot) {
+        let ptys = self.ptys.lock();
+        if let Some(handle) = ptys.get(&id) {
+            handle.screen.lock().boot = Some(boot);
+        }
+    }
+
+    /// O shell que está subindo nesta sessão, para a linha dizer a etapa.
+    pub fn shell_boot(&self, id: PtyId) -> Option<ShellBoot> {
+        let ptys = self.ptys.lock();
+        let boot = ptys.get(&id)?.screen.lock().boot.clone();
+        boot
     }
 
     /// O par de escrita de [`Self::prompt_mode`], para quem REATA uma sessão
@@ -3341,6 +3400,51 @@ mod tests {
         assert_eq!(pool.shell_at_prompt(busy), Some(false));
         assert_eq!(pool.shell_at_prompt(super::PtyId::new_v4()), None);
         pool.kill_all();
+    }
+
+    #[test]
+    fn shell_boot_guarda_o_shell_e_o_rc_do_spawn() {
+        let pool = super::PtyPool::new();
+        let (_leader, _child) = pooled_session(&pool);
+        let id = *pool.ptys.lock().keys().next().expect("sessão no pool");
+        assert_eq!(pool.shell_boot(id), None);
+        let boot = super::ShellBoot {
+            shell: "zsh".into(),
+            rc: Some("~/.zshrc".into()),
+            started_at_ms: 42,
+        };
+        pool.set_shell_boot(id, boot.clone());
+        assert_eq!(pool.shell_boot(id), Some(boot));
+        assert_eq!(pool.shell_boot(super::PtyId::new_v4()), None);
+    }
+
+    #[test]
+    fn rc_label_mostra_o_rc_com_til_e_so_para_shell_integrado() {
+        use super::ShellBoot;
+        let home = Some("/Users/ana");
+        assert_eq!(
+            ShellBoot::rc_label("zsh", None, home).as_deref(),
+            Some("~/.zshrc")
+        );
+        assert_eq!(
+            ShellBoot::rc_label("zsh", Some("/Users/ana/.config/zsh/"), home).as_deref(),
+            Some("~/.config/zsh/.zshrc")
+        );
+        // ZDOTDIR fora da home fica absoluto; prefixo parecido não vira `~`.
+        assert_eq!(
+            ShellBoot::rc_label("zsh", Some("/etc/zsh"), home).as_deref(),
+            Some("/etc/zsh/.zshrc")
+        );
+        assert_eq!(
+            ShellBoot::rc_label("zsh", Some("/Users/anabela"), home).as_deref(),
+            Some("/Users/anabela/.zshrc")
+        );
+        assert_eq!(ShellBoot::rc_label("zsh", Some(""), None), None);
+        assert_eq!(
+            ShellBoot::rc_label("bash", None, home).as_deref(),
+            Some("~/.bashrc")
+        );
+        assert_eq!(ShellBoot::rc_label("fish", None, home), None);
     }
 
     #[test]

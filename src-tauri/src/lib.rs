@@ -7151,6 +7151,14 @@ fn session_prompt_mode(state: State<'_, AppState>, id: SessionId) -> bool {
 /// e acaba prometendo uma linha de comando que nunca chega.
 ///
 /// `false` também para sessão inexistente ou já morta: sem PTY não há hook.
+/// O shell que está subindo (qual, e o rc que lê): a etapa real da linha do
+/// TYBA enquanto o primeiro prompt não chega. `None` em sessão remota, de
+/// agente ou já morta.
+#[tauri::command]
+fn session_shell_boot(state: State<'_, AppState>, id: SessionId) -> Option<pty::ShellBoot> {
+    state.pty_pool.shell_boot(id)
+}
+
 #[tauri::command]
 fn session_hook_expected(state: State<'_, AppState>, id: SessionId) -> bool {
     state.pty_pool.hook_expected(id).unwrap_or(false)
@@ -8778,6 +8786,7 @@ pub fn run() {
             toggle_prompt_mode,
             session_prompt_mode,
             session_hook_expected,
+            session_shell_boot,
             session_line_echo,
             session_blocks,
             search_command_history,
