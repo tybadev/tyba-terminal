@@ -6716,6 +6716,47 @@ fn sandbox_overview() -> SandboxOverview {
     }
 }
 
+/// "▶ ouvir" nas Notificações: toca o som escolhido uma vez (só macOS, só os
+/// sons de `MAC_SOUNDS`).
+#[tauri::command]
+fn preview_notify_sound(name: String) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let path = agent::notify::preview_sound_path(&name).ok_or("som desconhecido")?;
+        let mut child = std::process::Command::new("/usr/bin/afplay")
+            .arg(path)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        // Colhe o processo quando o som acaba, para não sobrar zumbi.
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = name;
+    Ok(())
+}
+
+/// Abre os Ajustes do Sistema em Notificações (endereço fixo, só macOS).
+#[tauri::command]
+fn open_notification_settings() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let mut child = std::process::Command::new("/usr/bin/open")
+            .arg("x-apple.systempreferences:com.apple.Notifications-Settings.extension")
+            .stdin(std::process::Stdio::null())
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
+    }
+    Ok(())
+}
+
 #[tauri::command]
 fn open_view_tab(app: AppHandle, state: State<'_, AppState>, view: String) -> Result<(), String> {
     if view != layout::VIEW_SETTINGS
@@ -9457,6 +9498,8 @@ pub fn run() {
             open_view_tab,
             user_config_path,
             sandbox_overview,
+            preview_notify_sound,
+            open_notification_settings,
             splash::splash_done,
         ])
         .build(tauri::generate_context!())

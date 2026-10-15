@@ -1029,6 +1029,13 @@ const encodeBase64 = (data: string): string => {
   return btoa(bin);
 };
 
+/** Toca o som de notificação uma vez (macOS). */
+export const previewNotifySound = (name: string) =>
+  invoke<void>("preview_notify_sound", { name });
+
+/** Ajustes do Sistema → Notificações (macOS). */
+export const openNotificationSettings = () => invoke<void>("open_notification_settings");
+
 /** Pastas extras de leitura da jaula dos agentes (`[sandbox] read_allow`). */
 export interface SandboxOverview {
   read_allow: string[];

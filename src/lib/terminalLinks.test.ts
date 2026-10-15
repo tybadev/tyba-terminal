@@ -1,10 +1,12 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, it, test } from "bun:test";
 
 import {
+  findPathsInLine,
   findUrlsAcrossRows,
   findUrlsInLine,
   hasOpenModifier,
   logicalLineWindow,
+  parsePathUri,
   type WrappedRow,
 } from "./terminalLinks";
 
@@ -135,5 +137,35 @@ describe("hasOpenModifier", () => {
     expect(hasOpenModifier({ metaKey: false, ctrlKey: false }, false)).toBe(
       false,
     );
+  });
+});
+
+describe("findPathsInLine", () => {
+  const paths = (line: string) => findPathsInLine(line).map((p) => [p.path, p.line ?? null]);
+
+  it("acha caminho com barra e com :linha", () => {
+    expect(paths("error at src/app.tsx:12:3 near")).toEqual([["src/app.tsx", 12]]);
+    expect(paths("see ./scripts/gen.ts")).toEqual([["./scripts/gen.ts", null]]);
+    expect(paths("/Users/x/repo/a.rs:7")).toEqual([["/Users/x/repo/a.rs", 7]]);
+    expect(paths("main.go:40: undefined")).toEqual([["main.go", 40]]);
+  });
+
+  it("ignora versão, palavra com ponto solta e o que está dentro de URL", () => {
+    expect(paths("bun 1.2.3 e.g. package.json")).toEqual([]);
+    expect(paths("https://github.com/a/b/blob/main/src/x.ts")).toEqual([]);
+  });
+
+  it("guarda a posição para sublinhar o trecho certo", () => {
+    const [m] = findPathsInLine("  at lib/x.ts:3");
+    expect(m.start).toBe(5);
+    expect(m.end).toBe(15);
+  });
+});
+
+describe("parsePathUri", () => {
+  it("lê caminho e linha; recusa o que não é do TYBA", () => {
+    expect(parsePathUri("tyba-path:src/a.ts:12")).toEqual({ path: "src/a.ts", line: 12 });
+    expect(parsePathUri("tyba-path:src/a.ts")).toEqual({ path: "src/a.ts", line: undefined });
+    expect(parsePathUri("https://x.dev")).toBeNull();
   });
 });

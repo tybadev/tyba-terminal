@@ -31,7 +31,8 @@ import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { SettingGroup, SettingLine, SettingNote } from "./settings/rows";
+import { SettingGroup, SettingLine, SettingNote, SettingStatus } from "./settings/rows";
+import { fileLinksEnabled, setFileLinksEnabled } from "../lib/fileLinks";
 import { ThemePicker } from "./settings/ThemePicker";
 import { IS_MAC } from "@/lib/platform";
 import { NOTIFY_KINDS, notifyEnabled } from "@/lib/notifyPrefs";
@@ -71,6 +72,10 @@ import {
   type LaunchConfig,
   type LaunchConfigId,
   userConfigPath,
+  dockerAvailable,
+  openNotificationSettings,
+  previewNotifySound,
+  updateCheck,
   sandboxOverview,
   type SandboxOverview,
 } from "../lib/ipc";
@@ -229,8 +234,8 @@ const searchKeys = (): Record<Section, string[]> => ({
   ],
   agents: ["reviewAgent", "worktreeDefaultPref", "richInputRegex", "settingsLaunchConfigs"],
   security: [...SECURITY_RULES, "securityReadAllow", "securityRepo"],
-  integrations: ["dockerIntegration", "claudePlugin", "defaultEditor"],
-  notifications: NOTIFY_KINDS.map((k) => k.label),
+  integrations: ["dockerIntegration", "claudePlugin", "fileLinks", "defaultEditor"],
+  notifications: [...NOTIFY_KINDS.map((k) => k.label), "notifyMacos"],
   shortcuts: Object.values(ACTION_LABEL_KEYS),
   about: ["version", "aboutCopyDiagnostics"],
 });
@@ -468,6 +473,16 @@ function NotifyPrefs() {
       {NOTIFY_KINDS.map((kind) => (
         <SettingLine key={kind.id} label={t(kind.label)} hint={t(kind.hint)}>
           <div className="flex items-center gap-2">
+            {IS_MAC && enabled[kind.id] && (sound[kind.id] ?? kind.defaultSound) && (
+              <button
+                onClick={() =>
+                  void previewNotifySound(sound[kind.id] ?? kind.defaultSound).catch(() => {})
+                }
+                className="text-[11px] text-tyba-blue hover:text-tyba-text"
+              >
+                ▶ {t("notifyListen")}
+              </button>
+            )}
             {IS_MAC && enabled[kind.id] && (
               <Select
                 value={sound[kind.id] ?? kind.defaultSound}
@@ -492,6 +507,19 @@ function NotifyPrefs() {
           </div>
         </SettingLine>
       ))}
+      {IS_MAC && (
+        <>
+          <SettingGroup title={t("notifySystem")} />
+          <SettingLine label={t("notifyMacos")} hint={t("notifyMacosHint")}>
+            <button
+              onClick={() => void openNotificationSettings().catch(() => {})}
+              className="text-[11px] text-tyba-blue hover:text-tyba-text"
+            >
+              {t("notifyMacosOpen")}
+            </button>
+          </SettingLine>
+        </>
+      )}
     </>
   );
 }
@@ -624,20 +652,36 @@ function AboutSection({
 /** Versão e atualização, no fim de Geral. */
 function UpdateRows({ version, update }: { version: string; update: UpdateStatus | null }) {
   const { t, i18n } = useTranslation();
+  // O resultado de "Verificar agora" vale mais que o do boot: é mais novo.
+  const [checked, setChecked] = useState<UpdateStatus | null | undefined>(undefined);
+  const [checking, setChecking] = useState(false);
+  const current = checked === undefined ? update : checked;
+  const check = () => {
+    setChecking(true);
+    void updateCheck()
+      .then(setChecked)
+      .catch((e) => toastError(t("updateCheckFailed"), e))
+      .finally(() => setChecking(false));
+  };
   return (
     <>
       <SettingGroup title={t("settingsUpdates")} />
       <SettingLine
         label={`TYBA ${version || "—"}`}
-        hint={update ? t("updateAvailable", { version: update.info.version }) : t("updateUpToDate")}
+        hint={
+          current ? t("updateAvailable", { version: current.info.version }) : t("updateUpToDate")
+        }
       >
+        <Button variant="ghost" size="sm" disabled={checking} onClick={check}>
+          {checking ? t("updateChecking") : t("updateCheckNow")}
+        </Button>
         <Button
           variant="ghost"
           size="sm"
-          className={update ? "text-tyba-violet" : "text-tyba-text-muted"}
+          className={current ? "text-tyba-violet" : "text-tyba-text-muted"}
           onClick={() => void openExternalUrl(changelogUrl(i18n.language)).catch(() => {})}
         >
-          {update && <DownloadSimple size={13} />}
+          {current && <DownloadSimple size={13} />}
           {t("updateOpenChangelog")}
         </Button>
       </SettingLine>
@@ -773,6 +817,14 @@ export function SettingsView({
   const [section, setSection] = useState<Section>("general");
   const [railCollapsed, setRailCollapsed] = useState(false);
   const [configPath, setConfigPath] = useState<string | null>(null);
+  const [dockerUp, setDockerUp] = useState<boolean | null>(null);
+  const [filesInTyba, setFilesInTyba] = useState(fileLinksEnabled);
+  useEffect(() => {
+    if (section !== "integrations" || !showContainers) return;
+    void dockerAvailable()
+      .then(setDockerUp)
+      .catch(() => setDockerUp(false));
+  }, [section, showContainers]);
   const [query, setQuery] = useState("");
   const contentRef = useRef<HTMLDivElement>(null);
   const searchEntries = useMemo(
@@ -1236,6 +1288,11 @@ export function SettingsView({
           <section className="mx-auto w-full max-w-[860px]">
             <SettingGroup title="Docker" />
             <SettingLine label={t("dockerIntegration")} hint={t("dockerIntegrationHint")}>
+              {showContainers && dockerUp !== null && (
+                <SettingStatus tone={dockerUp ? "green" : "faint"}>
+                  {dockerUp ? t("dockerRunning") : t("dockerNotFound")}
+                </SettingStatus>
+              )}
               <Switch
                 checked={showContainers}
                 onCheckedChange={onShowContainersChange}
@@ -1245,6 +1302,15 @@ export function SettingsView({
             <SettingGroup title="Claude Code" />
             <ClaudePluginSetting />
             <SettingGroup title={t("settingsEditor")} />
+            <SettingLine label={t("fileLinks")} hint={t("fileLinksHint", { combo: IS_MAC ? "⌘" : "Ctrl" })}>
+              <Switch
+                checked={filesInTyba}
+                onCheckedChange={(c) => {
+                  setFilesInTyba(c);
+                  setFileLinksEnabled(c);
+                }}
+              />
+            </SettingLine>
             <SettingLine label={t("defaultEditor")} hint={editorPath ?? t("defaultEditorHint")}>
               <Select
                 value={editor}
