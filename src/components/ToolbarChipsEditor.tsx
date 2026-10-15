@@ -52,6 +52,53 @@ const ZONE_LABEL_KEYS: Record<ToolbarZone, string> = {
   hidden: "chipsZoneHidden",
 };
 
+/**
+ * A barra como ela vai ficar, com valores de exemplo — e acompanhando o
+ * arrasto: o chip aparece no lugar novo enquanto ainda está na mão.
+ */
+function ToolbarPreview({ pref }: { pref: ToolbarPref }) {
+  const { t } = useTranslation();
+  const sample = (id: ChipId) => {
+    switch (id) {
+      case "cwd":
+        return <span>tyba-terminal</span>;
+      case "branch":
+        return <span className="text-tyba-blue">main</span>;
+      case "diffCount":
+        return (
+          <span>
+            <span className="text-tyba-green">+12</span>{" "}
+            <span className="text-tyba-red">−3</span>
+          </span>
+        );
+      case "reviewDiff":
+        return (
+          <span className="rounded-[4px] border border-tyba-border-field px-1.5">
+            {t("toolbarReviewDiff")}
+          </span>
+        );
+      case "aheadBehind":
+        return <span className="text-tyba-green">↑2</span>;
+      case "clock":
+        return <span className="tabular-nums">23:50</span>;
+    }
+  };
+  return (
+    <div aria-hidden className="mb-3 overflow-hidden rounded-[6px] border border-tyba-border">
+      <div className="flex h-7 items-center gap-3.5 bg-tyba-raised px-3 font-mono text-[11px] text-tyba-text-muted">
+        {pref.left.map((id) => (
+          <span key={id}>{sample(id)}</span>
+        ))}
+        <span className="flex-1" />
+        {pref.right.map((id) => (
+          <span key={id}>{sample(id)}</span>
+        ))}
+      </div>
+      <div className="h-9 bg-tyba-sunken px-3 pt-2 font-mono text-[12px] text-tyba-text-ghost">❯ _</div>
+    </div>
+  );
+}
+
 interface Props {
   pref: ToolbarPref;
   onChange: (next: ToolbarPref) => void;
@@ -180,6 +227,7 @@ export function ToolbarChipsEditor({ pref, onChange }: Props) {
           {t("chipsEditorReset")}
         </button>
       </div>
+      <ToolbarPreview pref={shown} />
       <DndContext
         sensors={sensors}
         collisionDetection={closestCorners}
