@@ -494,6 +494,7 @@ fn kill(f: &Follower) {
 /// órfão: pai init/launchd (o TYBA morreu sem a saída normal — crash, `kill`,
 /// reinício do dev) e exatamente a forma de [`super::spawn_logs_follow`]. Um
 /// `docker logs` rodado à mão tem o shell como pai e nunca casa.
+#[cfg_attr(not(unix), allow(dead_code))]
 pub(crate) fn orphan_follower_pid(line: &str) -> Option<i32> {
     let mut it = line.split_whitespace();
     let pid: i32 = it.next()?.parse().ok()?;
