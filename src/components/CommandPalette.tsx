@@ -381,7 +381,9 @@ export function CommandPalette({
   }, [open]);
 
   useEffect(() => {
-    if (!open || mode !== "snippets") return;
+    // No ⌘P também: a paleta de ações lista os snippets que casam com a busca
+    // (como a do Warp mostra os Workflows junto das ações).
+    if (!open || (mode !== "snippets" && mode !== "actions")) return;
     let alive = true;
     void listSnippets(historyScope.repoRoot)
       .then((found) => {
@@ -525,7 +527,9 @@ export function CommandPalette({
           </CommandGroup>
         )}
 
-        {mode === "snippets" && (
+        {/* No ⌘P só com busca: vazia, a paleta de ações fica como era. */}
+        {(mode === "snippets" ||
+          (mode === "actions" && query.trim() !== "" && snippets.length > 0)) && (
           <CommandGroup heading={t("paletteSnippets")}>
             {snippets.map((snippet) => (
               <CommandItem

@@ -7576,6 +7576,13 @@ async fn submit_shell_line(
         .ok_or_else(|| format!("sessão não encontrada: {id}"))?;
     let continuing = state.pty_pool.continuation(id).unwrap_or(false);
     let (normalized, _) = rich_input::normalize(&text);
+    // Snippet chamado pelo nome vira o comando dele (S5). Só no começo de um
+    // comando: na continuação o texto é o resto de outro.
+    let normalized = if continuing {
+        normalized
+    } else {
+        expand_snippet_alias(&state, id, &normalized)?.unwrap_or(normalized)
+    };
     if shell_line_waits(&normalized, bracketed, continuing) {
         return Ok(ShellSubmit::Incomplete);
     }
@@ -7587,6 +7594,37 @@ async fn submit_shell_line(
         .write(id, &bytes)
         .map_err(|e| e.to_string())?;
     Ok(ShellSubmit::Sent)
+}
+
+/// A linha, se ela chama um snippet pelo nome, já trocada pelo comando dele.
+/// Ver [`snippet::expand_alias`].
+fn expand_snippet_alias(
+    state: &AppState,
+    id: SessionId,
+    line: &str,
+) -> Result<Option<String>, String> {
+    let cwd = session_cwd_of(state, id).ok();
+    let snippets = snippets_for(state, cwd.as_deref()).unwrap_or_default();
+    if snippets.is_empty() {
+        return Ok(None);
+    }
+    let sid = id.to_string();
+    let shadows = |name: &str| {
+        completion::binary::path_names(&sid)
+            .iter()
+            .any(|n| n == name)
+            || completion::binary::reported(&sid)
+                .iter()
+                .any(|c| c.name == name)
+    };
+    match snippet::expand_alias(line, &snippets, &shadows) {
+        Ok(Some((hit, command))) => {
+            let _ = state.store.touch_snippet(&hit.id);
+            Ok(Some(command))
+        }
+        Ok(None) => Ok(None),
+        Err(e) => Err(e.to_string()),
+    }
 }
 
 /// O que o Enter da linha do TYBA fez.
@@ -8467,11 +8505,19 @@ async fn list_snippets(
     state: State<'_, AppState>,
     repo_root: Option<String>,
 ) -> Result<Vec<snippet::Snippet>, String> {
+    snippets_for(&state, repo_root.as_deref().map(std::path::Path::new))
+}
+
+/// Os snippets que valem em `dir`: locais e, com consentimento, os do repo.
+fn snippets_for(
+    state: &AppState,
+    dir: Option<&std::path::Path>,
+) -> Result<Vec<snippet::Snippet>, String> {
     let mut snippets = state.store.list_snippets().map_err(|e| e.to_string())?;
-    let Some(root) = repo_root else {
+    let Some(root) = dir else {
         return Ok(snippets);
     };
-    let param = repo::canonicalize_or(std::path::Path::new(&root));
+    let param = repo::canonicalize_or(root);
     let Some(top) = repo::toplevel(&param).map(|t| repo::canonicalize_or(&t)) else {
         return Ok(snippets);
     };
