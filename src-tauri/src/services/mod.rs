@@ -39,6 +39,7 @@ pub const CHIP_POLL: Duration = Duration::from_secs(10);
 /// SIGKILL só depois disso desde o SIGTERM.
 pub const FORCE_AFTER: Duration = Duration::from_secs(5);
 /// Teto de qualquer `lsof`/`ps`.
+#[cfg_attr(not(unix), allow(dead_code))]
 const RUN_TIMEOUT: Duration = Duration::from_secs(5);
 /// Quanto o TERM espera para dizer "saiu".
 const TERM_WAIT: Duration = Duration::from_millis(2000);
@@ -49,6 +50,7 @@ const TREE_CAP: usize = 60;
 
 /// Roda um binário por caminho absoluto, sem shell, com env vazio (só
 /// `LC_ALL=C`), stdin nulo, saída lida até `max_bytes` e teto de tempo.
+#[cfg_attr(not(unix), allow(dead_code))]
 pub(crate) fn run_bounded(
     bin: &Path,
     args: &[&str],
