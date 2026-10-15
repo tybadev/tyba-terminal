@@ -16,6 +16,7 @@ pub mod conversation;
 pub mod credentials;
 pub mod disk_observer;
 pub mod hooks_settings;
+pub mod inherited_env;
 pub mod notify;
 pub mod process_probe;
 pub mod session;
