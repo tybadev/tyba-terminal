@@ -639,6 +639,15 @@ const SIDEBAR_WIDTH: Record<SidebarMode, number> = {
   hidden: 0,
 };
 
+/** Listras do header só no build de dev (ver o `<header>` do App). */
+const DEV_HEADER_STYLE: React.CSSProperties | undefined = import.meta.env.DEV
+  ? {
+      backgroundImage:
+        // Borda em degradê (desfocada), não corte seco: presente sem pesar.
+        "repeating-linear-gradient(-45deg, transparent 0, color-mix(in srgb, var(--tyba-text) 5%, transparent) 7px, transparent 14px, transparent 26px)",
+    }
+  : undefined;
+
 function IconAction({
   label,
   shortcut,
@@ -5296,6 +5305,10 @@ export default function App() {
         <WindowResizeEdges />
         <header
           data-tauri-drag-region
+          // Build de dev: listras diagonais no header, como os apps do GNOME em
+          // desenvolvimento, para nunca confundir com o app instalado. O build
+          // de release não tem `import.meta.env.DEV`.
+          style={DEV_HEADER_STYLE}
           // Sem vidro: o header é transparente sobre o canvas, e é por ele que a
           // aurora tripla aparece no topo da janela (mockup Proposta/PropostaClaro).
           className={`tyba-lift-b flex h-[38px] shrink-0 items-center gap-1 pr-2.5 ${
