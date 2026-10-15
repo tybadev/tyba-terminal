@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { searchSettings } from "../lib/settingsSearch";
 import { useTranslation } from "react-i18next";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { changelogUrl } from "@/lib/changelog";
@@ -9,6 +10,7 @@ import {
   DownloadSimple,
   FolderOpen,
   Info,
+  MagnifyingGlass,
   FileText,
   Bell,
   CaretDoubleLeft,
@@ -138,6 +140,41 @@ const SECTIONS: { id: Section; label: string; hint: string; icon: React.ReactNod
 ];
 
 const RAIL_PREF_KEY = "pref.settings_rail";
+
+/**
+ * O que a busca conhece, por seção: chaves de i18n do nome. A descrição é a
+ * chave `<nome>Hint` quando existe. Atalhos e notificações entram inteiros.
+ */
+// Função e não constante: as listas que ela usa moram mais abaixo no módulo.
+const searchKeys = (): Record<Section, string[]> => ({
+  general: ["account", "defaultSessionDir", "startup", "language"],
+  appearance: [
+    "colorMode",
+    "fontSection",
+    "settingsThemes",
+    "appIconSection",
+    "settingsSidebar",
+    "sidebarDetails",
+    "gitStatusToggle",
+    "settingsChipsBar",
+    "toolbarToggle",
+  ],
+  terminal: [
+    "promptModeTitle",
+    "shellIntegration",
+    "settingsHistory",
+    "historyEnabled",
+    "historyImportTitle",
+    "historyClear",
+    "settingsSnippets",
+    ...RICH_INPUT_TOGGLES.map((r) => r.label),
+  ],
+  agents: ["reviewAgent", "worktreeDefaultPref", "richInputRegex", "settingsLaunchConfigs"],
+  integrations: ["dockerIntegration", "claudePlugin", "defaultEditor"],
+  notifications: NOTIFY_KINDS.map((k) => k.label),
+  shortcuts: Object.values(ACTION_LABEL_KEYS),
+  about: ["version", "aboutCopyDiagnostics"],
+});
 
 /** `/Users/x/.tyba/config.toml` → `~/.tyba/config.toml`. */
 function homeShort(path: string): string {
@@ -450,7 +487,7 @@ function SettingRow({
     // Sem `px`: a caixa que justificava o recuo de 16px saiu, e o que
     // ancora a linha agora é o `.tyba-label` do grupo, que mora na margem.
     // Recuo sem moldura que o explique lê como desalinho.
-    <div className="flex items-center justify-between gap-4 py-2.5">
+    <div data-setting-row className="flex items-center justify-between gap-4 py-2.5">
       <div className="min-w-0">
         <p className="text-[13px] text-tyba-text">{label}</p>
         {hint && (
@@ -775,6 +812,38 @@ export function SettingsView({
   const [section, setSection] = useState<Section>("general");
   const [railCollapsed, setRailCollapsed] = useState(false);
   const [configPath, setConfigPath] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+  const contentRef = useRef<HTMLDivElement>(null);
+  const searchEntries = useMemo(
+    () =>
+      SECTIONS.flatMap(({ id }) =>
+        searchKeys()[id].map((key) => ({
+          section: id,
+          label: t(key, { combo: "" }),
+          hint: i18n.exists(`${key}Hint`) ? t(`${key}Hint`, { combo: "" }) : undefined,
+        })),
+      ),
+    [t, i18n],
+  );
+  const results = useMemo(() => searchSettings(searchEntries, query), [searchEntries, query]);
+  // Da busca para a linha: troca de seção e, depois de ela desenhar, rola até
+  // o texto e acende a linha por um instante.
+  const goToSetting = (section: Section, label: string) => {
+    setQuery("");
+    setSection(section);
+    requestAnimationFrame(() => {
+      const root = contentRef.current;
+      if (!root) return;
+      const hit = Array.from(root.querySelectorAll<HTMLElement>("p, span, label, button")).find(
+        (el) => el.childElementCount === 0 && el.textContent?.trim() === label.trim(),
+      );
+      const row = (hit?.closest("[data-setting-row]") as HTMLElement | null) ?? hit;
+      if (!row) return;
+      row.scrollIntoView({ block: "center" });
+      row.classList.add("tyba-setting-flash");
+      window.setTimeout(() => row.classList.remove("tyba-setting-flash"), 1200);
+    });
+  };
   useEffect(() => {
     void userConfigPath()
       .then(setConfigPath)
@@ -904,11 +973,70 @@ export function SettingsView({
         <header className="flex h-[46px] shrink-0 items-center gap-3 border-b border-tyba-border bg-tyba-raised px-[18px] text-[12px]">
           <GearSix size={16} className="shrink-0 text-tyba-green" />
           <span className="text-[14px] font-medium text-tyba-text">{t("settings")}</span>
-          <span className="truncate text-tyba-text-faint">
+          <span className="min-w-0 flex-1 truncate text-tyba-text-faint">
             {t(current.label)} · {t(current.hint)}
           </span>
+          <label className="flex w-[260px] shrink-0 items-center gap-2 rounded-[6px] border border-tyba-border-field px-2.5 py-1 text-tyba-text-faint focus-within:border-tyba-border-strong">
+            <MagnifyingGlass size={13} className="shrink-0" />
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  setQuery("");
+                  (e.target as HTMLInputElement).blur();
+                }
+                if (e.key === "Enter" && results[0]) {
+                  goToSetting(results[0].section, results[0].label);
+                }
+              }}
+              placeholder={t("settingsSearch")}
+              spellCheck={false}
+              autoCorrect="off"
+              autoCapitalize="off"
+              className="min-w-0 flex-1 bg-transparent text-[12px] text-tyba-text outline-none placeholder:text-tyba-text-ghost"
+            />
+          </label>
         </header>
-        <div className="min-h-0 flex-1 overflow-y-auto bg-tyba-sunken px-8 pt-4 pb-8">
+        <div
+          ref={contentRef}
+          className="min-h-0 flex-1 overflow-y-auto bg-tyba-sunken px-8 pt-4 pb-8"
+        >
+        {query.trim() && (
+          <section className="mx-auto w-full max-w-lg">
+            <span className="tyba-label">
+              {t("settingsSearchResults", { count: results.length })}
+            </span>
+            <div className="mt-2 flex flex-col">
+              {results.length === 0 && (
+                <span className="py-3 text-[12px] text-tyba-text-faint">
+                  {t("settingsSearchEmpty")}
+                </span>
+              )}
+              {results.map((r) => (
+                <button
+                  key={`${r.section}:${r.label}`}
+                  onClick={() => goToSetting(r.section, r.label)}
+                  className="flex flex-col gap-0.5 rounded-[6px] px-2.5 py-2 text-left hover:bg-tyba-text/[.04]"
+                >
+                  <span className="text-[13px] text-tyba-text">
+                    {r.label}
+                    <span className="text-[11px] text-tyba-text-faint">
+                      {" "}· {t(SECTIONS.find((x) => x.id === r.section)?.label ?? "")}
+                    </span>
+                  </span>
+                  {r.hint && (
+                    <span className="line-clamp-2 text-[11px] leading-relaxed text-tyba-text-faint">
+                      {r.hint}
+                    </span>
+                  )}
+                </button>
+              ))}
+            </div>
+          </section>
+        )}
+        {!query.trim() && (<>
         {section === "general" && (
           <section className="mx-auto w-full max-w-lg">
             <SectionHeader title={t("settingsGeneral")} hint={t("generalHint")} />
@@ -1415,6 +1543,7 @@ export function SettingsView({
         {section === "about" && (
           <AboutSection version={version} update={update} />
         )}
+        </>)}
         </div>
         {configPath && (
           <footer className="flex h-[26px] shrink-0 items-center gap-2.5 border-t border-tyba-border bg-tyba-raised px-[18px] text-[11px] text-tyba-text-faint">
