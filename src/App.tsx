@@ -67,7 +67,6 @@ import { AgentsQueue } from "./components/AgentsQueue";
 import { AgentsSidebar } from "./components/AgentsSidebar";
 import { ClaudeIcon } from "./components/icons/ClaudeIcon";
 import { OpenAIIcon } from "./components/icons/OpenAIIcon";
-import { Clock } from "./components/Clock";
 import { CommandPalette } from "./components/CommandPalette";
 import { ConfirmHost } from "./components/ConfirmHost";
 import { ToastHost } from "./components/ToastHost";
@@ -5447,8 +5446,6 @@ export default function App() {
           </div>
 
           <div className="h-full flex-1" data-tauri-drag-region />
-
-          <Clock />
 
           <SidePanelBar
             tabs={panelTabs}
