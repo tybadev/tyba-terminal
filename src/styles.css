@@ -1571,3 +1571,10 @@ samp {
 .files-markdown tbody tr:nth-child(even) {
   background: color-mix(in srgb, var(--tyba-text) 3%, transparent);
 }
+
+/* Busca das Configurações: a linha encontrada acende por um instante. */
+.tyba-setting-flash {
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--tyba-green) 12%, transparent);
+  transition: background 0.6s ease;
+}
