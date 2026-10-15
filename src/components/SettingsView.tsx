@@ -5,7 +5,6 @@ import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { changelogUrl } from "@/lib/changelog";
 import {
   ArrowSquareOut,
-  Check,
   DownloadSimple,
   FolderOpen,
   Info,
@@ -33,6 +32,7 @@ import { Select } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { SettingGroup, SettingLine, SettingNote } from "./settings/rows";
+import { ThemePicker } from "./settings/ThemePicker";
 import { IS_MAC } from "@/lib/platform";
 import { NOTIFY_KINDS, notifyEnabled } from "@/lib/notifyPrefs";
 import { ClaudePluginSetting } from "./ClaudePluginSetting";
@@ -47,13 +47,11 @@ import {
   type UiFont,
 } from "../font";
 import {
-  applyTheme,
   getEffectiveBase,
   getThemeMode,
   onEffectiveBaseChange,
   onThemeModeChange,
   setThemeMode,
-  THEMES,
   type Theme,
   type ThemeMode,
 } from "../theme";
@@ -395,11 +393,6 @@ const RICH_INPUT_TOGGLES: RichInputToggle[] = [
   },
 ];
 
-const THEME_MODE_KEYS: Record<ThemeMode, string> = {
-  dark: "themeDark",
-  light: "themeLight",
-  system: "themeSystem",
-};
 
 const FONT_SIZES = [11, 12, 13, 14, 15, 16];
 
@@ -429,29 +422,6 @@ function copyThemeExample() {
   void navigator.clipboard?.writeText(THEME_EXAMPLE).catch(() => {});
 }
 
-function Choice({
-  active,
-  label,
-  onClick,
-}: {
-  active: boolean;
-  label: string;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      className={`flex h-8 items-center gap-2 rounded-[4px] border px-3 text-[13px] transition-colors ${
-        active
-          ? "border-tyba-border-strong bg-tyba-text/[.04] text-tyba-text"
-          : "border-tyba-border text-tyba-text-muted hover:text-tyba-text"
-      }`}
-    >
-      {active && <Check size={12} weight="bold" className="text-tyba-green" />}
-      {label}
-    </button>
-  );
-}
 
 const MAC_SOUNDS = ["Ping", "Glass", "Submarine", "Hero", "Funk", "Blow"];
 
@@ -954,7 +924,6 @@ export function SettingsView({
     }
   };
 
-  const effectiveThemeId = themeState ? themeState[effBase].id : null;
 
   const current = SECTIONS.find((item) => item.id === section) ?? SECTIONS[0];
 
@@ -1086,69 +1055,25 @@ export function SettingsView({
         )}
         {section === "appearance" && (
           <section className="mx-auto w-full max-w-[860px]">
-            <SettingGroup title={t("settingsThemes")} />
-            <SettingLine label={t("colorMode")}>
-              {THEMES.map((m) => (
-                <Choice
-                  key={m}
-                  active={mode === m}
-                  label={t(THEME_MODE_KEYS[m])}
-                  onClick={() => setThemeMode(m)}
-                />
-              ))}
-            </SettingLine>
-            <div className="border-b border-tyba-border-soft px-[18px] py-3">
-              <div className="flex items-center justify-end gap-1 pb-2">
-                <Button
-                  variant="ghost"
-                  size="xs"
-                  onClick={() => copyThemeExample()}
-                  className="text-tyba-text-muted hover:text-tyba-text"
-                >
-                  {t("copyThemeExample")}
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="xs"
-                  onClick={() => void importTheme()}
-                  className="text-tyba-text-muted hover:text-tyba-text"
-                >
-                  <DownloadSimple size={13} />
-                  {t("importTheme")}
-                </Button>
-              </div>
-              <div className="grid grid-cols-3 gap-2">
-                {themes.map((theme) => {
-                  const inUse = theme.id === effectiveThemeId;
-                  const ansi = theme.terminal.ansi;
-                  return (
-                    <button
-                      key={theme.id}
-                      onClick={() => void applyTheme(theme)}
-                      aria-pressed={inUse}
-                      className={`group relative flex flex-col gap-2 overflow-hidden rounded-[6px] border p-2 text-left transition-colors ${
-                        inUse
-                          ? "border-tyba-green [box-shadow:0_0_0_1px_var(--tyba-green)]"
-                          : "border-tyba-border hover:border-tyba-border-strong"
-                      }`}
-                    >
-                      <div
-                        className="flex h-11 items-end gap-1 rounded-[4px] p-2"
-                        style={{ background: theme.terminal.background }}
-                      >
-                        {[1, 2, 3, 4, 5, 6].map((i) => (
-                          <span key={i} className="h-4 flex-1 rounded-[2px]" style={{ background: ansi[i] }} />
-                        ))}
-                      </div>
-                      <div className="flex items-center gap-1.5">
-                        <span className="min-w-0 flex-1 truncate text-[12px] text-tyba-text">{theme.name}</span>
-                        {inUse && <Check size={12} weight="bold" className="shrink-0 text-tyba-green" />}
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
+            <SettingGroup
+              title={t("settingsThemes")}
+              note={
+                <span className="flex items-center gap-2">
+                  {t("themesCount", { count: themes.length })} ·
+                  <button onClick={() => copyThemeExample()} className="text-tyba-blue hover:text-tyba-text">
+                    {t("copyThemeExample")}
+                  </button>
+                </span>
+              }
+            />
+            <ThemePicker
+              themes={themes}
+              state={themeState}
+              mode={mode}
+              effectiveBase={effBase}
+              onMode={setThemeMode}
+              onImport={() => void importTheme()}
+            />
             <SettingGroup title={t("fontSection")} />
             <SettingLine label={t("fontSection")} hint={t("fontHint")}>
               <Select
