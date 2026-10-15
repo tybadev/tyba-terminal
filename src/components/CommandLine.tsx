@@ -7,6 +7,7 @@ import {
   type BinarySuggestion,
   type ArgumentSuggestion,
   writeControl,
+  wipeBlocks,
   type CommandSuggestion,
   type SessionId,
 } from "../lib/ipc";
@@ -604,6 +605,13 @@ export function CommandLine({
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (waiting) return;
+    // Ctrl+L limpa a tela como o `clear`: some a lista de blocos, o rascunho
+    // fica. É o gesto de todo terminal, e na linha do TYBA não fazia nada.
+    if (e.ctrlKey && !e.metaKey && !e.altKey && e.key.toLowerCase() === "l") {
+      e.preventDefault();
+      void wipeBlocks(sessionId).catch(() => {});
+      return;
+    }
     const bytes = controlBytes({
       key: e.key,
       ctrl: e.ctrlKey,

@@ -7645,6 +7645,14 @@ fn write_control(state: State<'_, AppState>, id: SessionId, bytes: String) -> Re
 
 /// Consulta o modo prompt em vez de esperar o evento: quem assina depois do
 /// primeiro prompt nunca receberia o `633;P` e ficaria sem a linha de comando.
+/// Ctrl+L na linha de comando: limpa a lista de blocos da sessão, pelo mesmo
+/// caminho do `clear` (apaga do disco e avisa o front), sem rodar comando nem
+/// deixar bloco.
+#[tauri::command]
+fn wipe_blocks(id: SessionId) {
+    blocks::submit(blocks::Work::Wipe(id.to_string()));
+}
+
 /// Blocos já gravados de uma sessão, para reabrir mostrando o que aconteceu
 /// antes. Nada é gravado sem ser usado (ADR de 2026-07-10).
 #[tauri::command]
@@ -9444,6 +9452,7 @@ pub fn run() {
             session_shell_boot,
             session_line_echo,
             session_blocks,
+            wipe_blocks,
             search_command_history,
             scan_shell_history_sources,
             import_shell_history,

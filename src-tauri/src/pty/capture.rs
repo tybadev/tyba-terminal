@@ -585,16 +585,18 @@ impl CaptureMachine {
             let alt_screen = self.capture.is_alt_screen();
             let dropped = self.capture.dropped();
             let bytes = self.capture.take();
-            if crate::blocks::wipes_the_screen(&command) {
+            let wipes = crate::blocks::wipes_the_screen(&command);
+            if wipes {
                 // Em modo bloco a tela É a lista de blocos: limpar sem levá-los
                 // junto é o `clear` não fazer nada, que foi o que aconteceu.
                 //
-                // O bloco do próprio `clear` continua — some o que veio antes, e
-                // fica quem mandou sumir. Sem ele a lista fica vazia e o painel
-                // vira um preto sem explicação.
+                // E o bloco do próprio `clear` some junto, como no Warp. Ele
+                // ficava porque a lista começava no topo e vazia virava um
+                // preto sem explicação; com a lista colada na linha de comando
+                // (de baixo para cima), vazia é só o prompt.
                 actions.push(Action::Wipe);
             }
-            if !command.is_empty() {
+            if !command.is_empty() && !wipes {
                 actions.push(Action::Finalize(FinishedBlock {
                     command,
                     exit_code,
@@ -1323,11 +1325,14 @@ mod tests {
     }
 
     #[test]
-    fn clear_asks_for_the_list_to_be_wiped_and_still_leaves_its_own_block() {
+    fn clear_wipes_the_list_and_leaves_no_block_of_its_own() {
         let mut machine = in_prompt_mode();
         let actions = machine.on_chunk(&one_shot_chunk("clear", ""), 2_000, false);
         assert!(actions.contains(&Action::Wipe));
-        assert!(finalized(actions).is_some(), "quem mandou sumir fica");
+        assert!(
+            finalized(actions).is_none(),
+            "o clear some junto, como no Warp"
+        );
     }
 
     #[test]

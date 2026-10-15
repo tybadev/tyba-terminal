@@ -1029,11 +1029,13 @@ export const BlockList = memo(function BlockList({
         // metade que o terminal ocupa.
         className="pointer-events-auto h-full overflow-y-auto overscroll-contain bg-tyba-sunken pb-3 pt-2.5"
       >
-        {/* Ancorado em CIMA: a pilha começa no topo do painel e cresce para
-            baixo. Ancorada embaixo, poucos blocos deixavam um vão enorme acima
-            do primeiro. Com a lista maior que o painel não muda nada — ela
-            rola até o fim do mesmo jeito (ver o efeito de reancorar). */}
-        <div className="flex min-h-full flex-col">
+        {/* Ancorado EMBAIXO, de baixo para cima como no Warp (decisão do dono,
+            15/10, quadro Proposta): o último comando fica colado na linha
+            onde se digita, e o vão sobra em cima, longe do olho. Já foi
+            ancorado em cima, e o vão ficava entre o último bloco e o prompt.
+            Com a lista maior que o painel não muda nada — ela rola até o fim
+            do mesmo jeito (ver o efeito de reancorar). */}
+        <div className="flex min-h-full flex-col justify-end">
           {opened && (
             <SessionOpened
               cwd={opened.cwd}
