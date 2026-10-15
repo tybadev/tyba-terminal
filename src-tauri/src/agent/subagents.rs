@@ -72,6 +72,9 @@ pub struct SubagentRun {
     /// chamou (`PreToolUse` com `agent_id`). Some quando ele termina — aí quem
     /// fala é o `summary`.
     pub activity: Option<ToolActivity>,
+    /// A descrição veio do `meta.json` do próprio subagente (e não do palpite
+    /// por ordem): não precisa mais ser conferida.
+    pub description_confirmed: bool,
     /// Quando a `activity` atual começou (ms), para o "há Ns" do painel.
     pub activity_at_ms: Option<u64>,
     /// As ações anteriores, da mais nova para a mais antiga (até
@@ -335,6 +338,7 @@ impl SessionSubagents {
             parent_transcript_path: None,
             activity: None,
             activity_at_ms: None,
+            description_confirmed: false,
             recent: Vec::new(),
             stale_end_len: None,
         });
@@ -409,6 +413,7 @@ impl SessionSubagents {
                     parent_transcript_path: parent_transcript_path.map(Path::to_path_buf),
                     activity: None,
                     activity_at_ms: None,
+                    description_confirmed: false,
                     recent: Vec::new(),
                     stale_end_len: None,
                 });
@@ -502,6 +507,7 @@ impl SessionSubagents {
         last_assistant_message: Option<String>,
         now: u64,
     ) -> bool {
+        self.refresh_description(&agent_id);
         let summary = last_assistant_message
             .as_deref()
             .and_then(|message| clean_summary(message, SUMMARY_MAX_CHARS));
@@ -544,6 +550,7 @@ impl SessionSubagents {
             parent_transcript_path: None,
             activity: None,
             activity_at_ms: None,
+            description_confirmed: false,
             recent: Vec::new(),
             stale_end_len: None,
         });
@@ -553,14 +560,50 @@ impl SessionSubagents {
     /// Guarda o que o subagente `agent_id` está fazendo. `false` quando nada
     /// mudou (subagente desconhecido, já terminado, ou a mesma atividade):
     /// aí não há o que emitir.
+    fn confirm_description(&mut self, agent_id: &str) {
+        if let Some(run) = self
+            .runs
+            .iter_mut()
+            .find(|run| run.agent_id.as_deref() == Some(agent_id))
+        {
+            run.description_confirmed = true;
+        }
+    }
+
+    /// Nome ainda do palpite por ordem: tenta o `meta.json` do próprio id de
+    /// novo (no start ele pode não existir ainda). `true` se mudou.
+    fn refresh_description(&mut self, agent_id: &str) -> bool {
+        let Some(run) = self
+            .runs
+            .iter_mut()
+            .find(|run| run.agent_id.as_deref() == Some(agent_id) && !run.description_confirmed)
+        else {
+            return false;
+        };
+        let Some(real) = run
+            .parent_transcript_path
+            .as_deref()
+            .and_then(|p| meta_description_by_id(p, agent_id))
+        else {
+            return false;
+        };
+        run.description_confirmed = true;
+        if run.description == real {
+            return false;
+        }
+        run.description = real;
+        true
+    }
+
     fn note_activity(&mut self, agent_id: &str, activity: ToolActivity) -> bool {
+        let renamed = self.refresh_description(agent_id);
         let Some(run) = self.runs.iter_mut().find(|run| {
             run.agent_id.as_deref() == Some(agent_id) && run.status != SubagentStatus::Done
         }) else {
             return false;
         };
         if run.activity.as_ref() == Some(&activity) {
-            return false;
+            return renamed;
         }
         let now = now_ms();
         if let Some(prev) = run.activity.take() {
@@ -906,21 +949,26 @@ impl SubagentTracker {
         // A descrição de verdade mora no `agent-<id>.meta.json` do próprio
         // subagente. Com vários do mesmo tipo disparados juntos, os starts
         // chegam fora da ordem das chamadas, e casar pelo tipo trocava os nomes.
-        let description = transcript_path
+        let real = transcript_path
             .as_deref()
             .and_then(meta_description)
-            .or(description);
+            .or_else(|| parent_transcript_path.and_then(|p| meta_description_by_id(p, &agent_id)));
+        let confirmed = real.is_some();
+        let description = real.or(description);
         let (payload, targets, coordination) = {
             let mut sessions = self.sessions.lock().expect("subagents lock");
             let entry = sessions.get_mut(&session)?;
             entry.promote(
-                agent_id,
+                agent_id.clone(),
                 agent_type,
                 description,
                 transcript_path,
                 parent_transcript_path,
                 now_ms(),
             );
+            if confirmed {
+                entry.confirm_description(&agent_id);
+            }
             let coordination = (!entry.coordinated).then_some(Coordination {
                 viewer_disarmed: entry.viewer_disarmed,
                 panel_disarmed: entry.panel_disarmed,
@@ -1236,8 +1284,21 @@ fn transcript_by_agent_id(sidecar: &Path, agent_id: &str) -> Option<PathBuf> {
 fn meta_description(transcript: &Path) -> Option<String> {
     let name = transcript.file_name()?.to_str()?;
     let base = name.strip_suffix(".jsonl")?;
-    let meta = transcript.with_file_name(format!("{base}.meta.json"));
-    let body = std::fs::read(&meta).ok().filter(|b| b.len() <= 64 * 1024)?;
+    read_meta_description(&transcript.with_file_name(format!("{base}.meta.json")))
+}
+
+/// A mesma descrição achada só pelo id, sem depender do transcript existir:
+/// `<sessão>/subagents/agent-<id>.meta.json` ao lado do transcript pai.
+fn meta_description_by_id(parent_transcript: &Path, agent_id: &str) -> Option<String> {
+    let bare = agent_id.strip_prefix("agent-").unwrap_or(agent_id);
+    if !is_plausible_subagent_id(bare) {
+        return None;
+    }
+    read_meta_description(&sidecar_dir(parent_transcript).join(format!("agent-{bare}.meta.json")))
+}
+
+fn read_meta_description(meta: &Path) -> Option<String> {
+    let body = std::fs::read(meta).ok().filter(|b| b.len() <= 64 * 1024)?;
     let value: Value = serde_json::from_slice(&body).ok()?;
     value
         .get("description")
@@ -1503,6 +1564,35 @@ mod tests {
             3,
             "nenhum placeholder sobrando nem duplicado"
         );
+    }
+
+    #[test]
+    fn name_guessed_by_order_is_fixed_when_the_meta_json_shows_up() {
+        // Print do dono (2026-10-14): 4 general-purpose; no start o meta.json
+        // ainda não existia, o palpite por ordem trocou os nomes.
+        let dir = TempDir::new().unwrap();
+        let parent = dir.path().join("session.jsonl");
+        write(&parent, "{}");
+        let sidecar = sidecar_dir(&parent);
+        fs::create_dir_all(&sidecar).unwrap();
+        let (id_ls, id_curl) = ("a1b2c3d4e5f6a7b8c", "0f1e2d3c4b5a69788");
+        let mut session = SessionSubagents::default();
+        session.push_pending(Some("general-purpose".into()), Some("Run ls -la".into()), 10);
+        session.push_pending(Some("general-purpose".into()), Some("Run curl".into()), 10);
+        // o curl começa primeiro e, sem meta.json, leva o nome do primeiro da fila
+        session.promote(id_curl.into(), "general-purpose".into(), None, None, Some(&parent), 11);
+        session.promote(id_ls.into(), "general-purpose".into(), None, None, Some(&parent), 12);
+        let name = |s: &SessionSubagents, id: &str| {
+            s.runs.iter().find(|r| r.agent_id.as_deref() == Some(id)).unwrap().description.clone()
+        };
+        assert_eq!(name(&session, id_curl), "Run ls -la", "palpite errado de propósito");
+        write(&sidecar.join(format!("agent-{id_curl}.meta.json")), r#"{"description":"Run curl"}"#);
+        write(&sidecar.join(format!("agent-{id_ls}.meta.json")), r#"{"description":"Run ls -la"}"#);
+        let input = serde_json::json!({ "command": "curl -s x" });
+        assert!(session.note_activity(id_curl, tool_activity("Bash", Some(&input), "curl -s x")));
+        assert_eq!(name(&session, id_curl), "Run curl");
+        session.mark_stopped(id_ls.into(), None, Some("ok".into()), 20);
+        assert_eq!(name(&session, id_ls), "Run ls -la");
     }
 
     #[test]
