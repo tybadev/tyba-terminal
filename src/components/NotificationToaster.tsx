@@ -360,8 +360,16 @@ export function NotificationToaster({
 
   const visibleToasts = visibleApprovalToasts(toasts, hiddenApprovalIds);
 
-  const sessionTitle = (id: SessionId) =>
-    sessions.find((s) => s.id === id)?.title ?? id.slice(0, 8);
+  // Sessão de shell se chama pelo shell ("zsh"), que não diz de onde veio o
+  // aviso: com repo, vale o nome do projeto.
+  const sessionTitle = (id: SessionId) => {
+    const session = sessions.find((s) => s.id === id);
+    if (!session) return id.slice(0, 8);
+    if (session.kind.type === "shell" && session.repo_root) {
+      return session.repo_root.split("/").filter(Boolean).pop() ?? session.title;
+    }
+    return session.title;
+  };
 
   const decide = (
     request: ApprovalRequest,
@@ -637,7 +645,17 @@ export function NotificationToaster({
               if (!nextOpen) dismissOutcome(outcome.key);
             }}
           >
-            <div className="flex items-start gap-2">
+            {/* O card inteiro leva à sessão: o link embaixo é o alvo do
+                teclado, mas quem usa o mouse clica no card. */}
+            <div
+              className="flex cursor-pointer items-start gap-2"
+              onClick={(event) => {
+                if ((event.target as HTMLElement).closest("button")) return;
+                dismissOutcome(outcome.key);
+                void sessionMarkSeen(outcome.sessionId).catch(() => {});
+                onGoToSession(outcome.sessionId);
+              }}
+            >
               {outcome.kind === "failed" ? (
                 <XCircle
                   aria-hidden="true"
