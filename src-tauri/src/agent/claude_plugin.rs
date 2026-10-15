@@ -1,19 +1,24 @@
-//! Plugin do TYBA para o Claude Code (M6-B do claude-monitor, modelo Warp).
+//! Plugin do TYBA para o Claude Code (modelo Warp: o agente roda livre, o
+//! TYBA observa).
 //!
-//! O shim e o wrapper (M6-A) pegam quase todo `claude` digitado num pane. O
-//! que escapa — caminho absoluto, `npx`, binário com outro nome — roda cru.
-//! Este plugin, instalado só por ação explícita do usuário, faz o próprio
-//! Claude avisar o TYBA nesses casos:
+//! O claude que o usuário roda num pane pede permissão pelo prompt dele
+//! mesmo; o plugin, instalado só por ação explícita do usuário, não nega
+//! ferramenta nenhuma. Ele faz duas coisas:
 //!
 //! - Fora do TYBA (sem `TYBA_PANE_TOKEN`) o hook sai na hora com 0: um `sh`
 //!   puro, sem `jq` e sem spawn de binário nenhum.
 //! - Num claude já com gate (`TYBA_HOOK_SOCKET` do `--settings` da sessão
 //!   gerenciada/hospedada, ou `TYBA_HOSTED=1`) também sai: os eventos já
 //!   chegam pelos hooks da sessão, e não podem chegar duas vezes.
-//! - Num claude cru dentro de um pane: o `SessionStart` avisa o core (o pane
-//!   mostra "sem gate" em vermelho) e o `PreToolUse`/`PermissionRequest`
-//!   negam escrita, Bash e rede, mandando rodar `claude` direto no pane.
-//!   Ferramentas só de leitura passam.
+//! - Num claude cru dentro de um pane: `SessionStart`, `Notification`,
+//!   `PermissionRequest`, `Stop` e `Subagent*` só avisam o core — nenhum
+//!   responde nada ao Claude. O `PreToolUse` (só `Bash`) aplica o
+//!   guarda-corpo fixo: `git push` para main/master e merge de PR/MR são
+//!   recusados com motivo; todo o resto fica sem decisão, e o prompt nativo
+//!   do Claude decide.
+//!
+//! O guarda-corpo é texto de comando: pega engano, não agente determinado
+//! (script, alias contornam). Fronteira de verdade não mora aqui.
 //!
 //! Canal: o mesmo socket 0600 do shim→core, com peer cred, mais um token por
 //! pane (`TYBA_PANE_TOKEN`) que o core confere. Nada aqui usa
@@ -31,74 +36,268 @@ pub const PLUGIN_ID: &str = "tyba@tyba";
 
 const HOOK_SCRIPT: &str = include_str!("claude_plugin_hook.sh");
 
-/// Os eventos que o plugin escuta (o `SessionStart` em todas as origens).
+/// Os eventos que o plugin só repassa ao core (o `SessionStart` em todas as
+/// origens). O `PreToolUse` fica de fora: é local, só o guarda-corpo.
 const SESSION_START_MATCHER: &str = "startup|resume|clear|compact|fork";
-const EVENTS: &[&str] = &[
+const OBSERVED_EVENTS: &[&str] = &[
     "SessionStart",
-    "PreToolUse",
-    "PermissionRequest",
     "Notification",
+    "PermissionRequest",
     "Stop",
+    "SubagentStart",
+    "SubagentStop",
 ];
 
-/// Ferramentas que só leem ou só organizam o próprio Claude: passam num
-/// claude cru. Todo o resto — escrita, Bash, rede, MCP, qualquer ferramenta
-/// nova que ninguém classificou — é negado. Lista positiva de propósito.
-const READ_ONLY_TOOLS: &[&str] = &[
-    "Read",
-    "Glob",
-    "Grep",
-    "LS",
-    "NotebookRead",
-    "TodoRead",
-    "TodoWrite",
-    "Task",
-    "Agent",
-    "TaskOutput",
-    "BashOutput",
-    "ToolSearch",
-    "Skill",
-    "AskUserQuestion",
-    "EnterPlanMode",
-    "ExitPlanMode",
-];
+pub const PUSH_MAIN_MESSAGE: &str = "TYBA: push para main/master por agente é recusado (guarda-corpo fixo do TYBA). Faça o push numa branch própria e abra um PR; o merge na main fica com o humano.";
+pub const PR_MERGE_MESSAGE: &str = "TYBA: merge de PR/MR por agente é recusado (guarda-corpo fixo do TYBA). Deixe o PR aberto; quem revisa e faz o merge é o humano.";
 
-pub const RAW_DENY_MESSAGE: &str = "TYBA: este claude está rodando fora do gate (caminho absoluto, npx ou parecido). Escrita, Bash e rede estão bloqueados. Saia e rode `claude` direto no pane do TYBA para ter aprovação e jaula.";
+/// Quantos `sh -c '...'`/`eval` aninhados o guarda-corpo abre.
+const MAX_NESTING: usize = 4;
 
-/// O motivo da recusa, ou `None` se a ferramenta é só de leitura.
-pub fn raw_tool_decision(tool: &str) -> Option<&'static str> {
-    (!READ_ONLY_TOOLS.contains(&tool)).then_some(RAW_DENY_MESSAGE)
+/// O guarda-corpo do `PreToolUse` do `Bash`: o motivo da recusa, ou `None`
+/// (sem decisão). `cwd` é o da sessão; `current_branch` só é chamado para
+/// `git push` sem refspec (ou `HEAD`), que empurra a branch atual.
+///
+/// Texto entre aspas é argumento, não comando: `echo "git push origin main"`
+/// passa. `sh -c '...'`, `eval` e `$(...)` são abertos.
+pub fn guard_rail(
+    command: &str,
+    cwd: &Path,
+    current_branch: &dyn Fn(&Path) -> Option<String>,
+) -> Option<&'static str> {
+    guard_rail_at(command, cwd, current_branch, 0)
 }
 
-/// O que o hook imprime no stdout para o Claude. `None` = nada a dizer
-/// (deixa o fluxo normal seguir).
-pub fn hook_output(event: &str, deny: Option<&str>) -> Option<String> {
-    let reason = deny?;
-    let value = match event {
-        "PreToolUse" => json!({
+fn guard_rail_at(
+    command: &str,
+    cwd: &Path,
+    current_branch: &dyn Fn(&Path) -> Option<String>,
+    depth: usize,
+) -> Option<&'static str> {
+    if depth > MAX_NESTING {
+        return None;
+    }
+    for words in simple_commands(command) {
+        let words = canonical_words(&words);
+        let Some((program, args)) = words.split_first() else {
+            continue;
+        };
+        let name = Path::new(program)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("");
+        let verdict = match name {
+            "sh" | "bash" | "zsh" | "dash" | "ksh" => {
+                shell_script(args).and_then(|s| guard_rail_at(s, cwd, current_branch, depth + 1))
+            }
+            "eval" => guard_rail_at(&args.join(" "), cwd, current_branch, depth + 1),
+            "git" => git_push_hits_main(args, cwd, current_branch).then_some(PUSH_MAIN_MESSAGE),
+            "gh" if args.starts_with(&["pr".into(), "merge".into()]) => Some(PR_MERGE_MESSAGE),
+            "glab" if args.starts_with(&["mr".into(), "merge".into()]) => Some(PR_MERGE_MESSAGE),
+            _ => None,
+        };
+        if verdict.is_some() {
+            return verdict;
+        }
+    }
+    None
+}
+
+/// Quebra o script em comandos simples, já sem aspas: `&&`, `||`, `;`, `|`,
+/// `&`, quebra de linha, parênteses e crase separam. Não é um parser de
+/// shell — é o bastante para achar o começo de cada comando.
+fn simple_commands(script: &str) -> Vec<Vec<String>> {
+    let mut commands = Vec::new();
+    let mut words: Vec<String> = Vec::new();
+    let mut word = String::new();
+    let mut in_word = false;
+    let mut chars = script.chars();
+    let end_word = |words: &mut Vec<String>, word: &mut String, in_word: &mut bool| {
+        if *in_word {
+            words.push(std::mem::take(word));
+            *in_word = false;
+        }
+    };
+    while let Some(c) = chars.next() {
+        match c {
+            '\'' => {
+                in_word = true;
+                word.extend(chars.by_ref().take_while(|&q| q != '\''));
+            }
+            '"' => {
+                in_word = true;
+                while let Some(q) = chars.next() {
+                    match q {
+                        '"' => break,
+                        '\\' => word.extend(chars.next()),
+                        _ => word.push(q),
+                    }
+                }
+            }
+            '\\' => {
+                in_word = true;
+                word.extend(chars.next().filter(|&n| n != '\n'));
+            }
+            '#' if !in_word => {
+                chars.by_ref().find(|&n| n == '\n');
+                end_word(&mut words, &mut word, &mut in_word);
+                commands.push(std::mem::take(&mut words));
+            }
+            ' ' | '\t' => end_word(&mut words, &mut word, &mut in_word),
+            '\n' | ';' | '&' | '|' | '(' | ')' | '`' => {
+                end_word(&mut words, &mut word, &mut in_word);
+                commands.push(std::mem::take(&mut words));
+            }
+            _ => {
+                in_word = true;
+                word.push(c);
+            }
+        }
+    }
+    end_word(&mut words, &mut word, &mut in_word);
+    commands.push(words);
+    commands.retain(|w| !w.is_empty());
+    commands
+}
+
+/// Tira o que vem antes do programa de verdade: atribuições de env
+/// (`FOO=1 git push`, cf. CVE-2026-48721 do Warp) e os prefixos `env`,
+/// `command`, `exec`, `nohup`, `time` com as opções deles.
+fn canonical_words(words: &[String]) -> &[String] {
+    let is_assignment = |w: &str| {
+        w.split_once('=').is_some_and(|(name, _)| {
+            name.chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+                && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        })
+    };
+    let mut rest = words;
+    loop {
+        let before = rest.len();
+        while rest.first().is_some_and(|w| is_assignment(w)) {
+            rest = &rest[1..];
+        }
+        if rest
+            .first()
+            .is_some_and(|w| matches!(w.as_str(), "env" | "command" | "exec" | "nohup" | "time"))
+        {
+            rest = &rest[1..];
+            while rest.first().is_some_and(|w| w.starts_with('-')) {
+                rest = &rest[1..];
+            }
+        }
+        if rest.len() == before {
+            return rest;
+        }
+    }
+}
+
+/// O script de `sh -c '...'` (também `-lc`, `-ec`...).
+fn shell_script(args: &[String]) -> Option<&str> {
+    let flag = args
+        .iter()
+        .position(|a| a.starts_with('-') && !a.starts_with("--") && a.contains('c'))?;
+    args.get(flag + 1).map(String::as_str)
+}
+
+fn is_main_ref(name: &str) -> bool {
+    matches!(
+        name.strip_prefix("refs/heads/").unwrap_or(name),
+        "main" | "master"
+    )
+}
+
+/// `git [opções globais] push ...` cujo destino é main/master: refspec
+/// explícita (`main`, `+main`, `HEAD:main`, `x:refs/heads/main`), `--all`/
+/// `--mirror`, ou sem refspec (ou `HEAD`) com a branch atual sendo main.
+fn git_push_hits_main(
+    args: &[String],
+    cwd: &Path,
+    current_branch: &dyn Fn(&Path) -> Option<String>,
+) -> bool {
+    let mut dir = cwd.to_path_buf();
+    let mut i = 0;
+    while let Some(a) = args.get(i) {
+        match a.as_str() {
+            "-C" => {
+                if let Some(d) = args.get(i + 1) {
+                    dir = dir.join(d);
+                }
+                i += 2;
+            }
+            "-c" | "--git-dir" | "--work-tree" | "--namespace" | "--config-env" => i += 2,
+            _ if a.starts_with('-') => i += 1,
+            _ => break,
+        }
+    }
+    if args.get(i).map(String::as_str) != Some("push") {
+        return false;
+    }
+    let mut positional = Vec::new();
+    let mut rest = args[i + 1..].iter();
+    while let Some(a) = rest.next() {
+        match a.as_str() {
+            "--all" | "--mirror" | "--branches" => return true,
+            "--repo" | "-o" | "--push-option" | "--receive-pack" | "--exec" => {
+                rest.next();
+            }
+            "--" => positional.extend(rest.by_ref()),
+            _ if a.starts_with('-') => {}
+            _ => positional.push(a),
+        }
+    }
+    let on_main = || current_branch(&dir).is_some_and(|b| is_main_ref(&b));
+    let refspecs = positional.get(1..).unwrap_or(&[]);
+    if refspecs.is_empty() {
+        return on_main();
+    }
+    refspecs.iter().any(|spec| {
+        let spec = spec.trim_start_matches('+');
+        let dst = spec.rsplit_once(':').map_or(spec, |(_, d)| d);
+        if dst == "HEAD" {
+            on_main()
+        } else {
+            is_main_ref(dst)
+        }
+    })
+}
+
+/// O que o hook imprime no stdout para o Claude. Só o `PreToolUse` do `Bash`
+/// que bate no guarda-corpo tem algo a dizer (`deny` com motivo); qualquer
+/// outro caso é `None` — stdout vazio e saída 0, que para o Claude Code é
+/// "sem decisão": o fluxo de permissão normal dele segue.
+pub fn hook_output(
+    payload: &Value,
+    current_branch: &dyn Fn(&Path) -> Option<String>,
+) -> Option<String> {
+    let field = |k: &str| payload.get(k).and_then(Value::as_str);
+    if field("hook_event_name")? != "PreToolUse" || field("tool_name")? != "Bash" {
+        return None;
+    }
+    let command = payload.get("tool_input")?.get("command")?.as_str()?;
+    let cwd = PathBuf::from(field("cwd").filter(|c| !c.is_empty()).unwrap_or("."));
+    let reason = guard_rail(command, &cwd, current_branch)?;
+    Some(
+        json!({
             "hookSpecificOutput": {
                 "hookEventName": "PreToolUse",
                 "permissionDecision": "deny",
                 "permissionDecisionReason": reason,
             }
-        }),
-        "PermissionRequest" => json!({
-            "hookSpecificOutput": {
-                "hookEventName": "PermissionRequest",
-                "decision": { "behavior": "deny", "message": reason },
-            }
-        }),
-        _ => return None,
-    };
-    Some(value.to_string())
+        })
+        .to_string(),
+    )
 }
 
-/// Decisão do evento inteiro: só `PreToolUse`/`PermissionRequest` decidem.
-pub fn event_decision(event: &str, tool: Option<&str>) -> Option<&'static str> {
-    match event {
-        "PreToolUse" | "PermissionRequest" => raw_tool_decision(tool.unwrap_or("")),
-        _ => None,
-    }
+/// A branch atual de `dir` (`git symbolic-ref --short HEAD`, que também
+/// responde numa branch ainda sem commit), pelo git read-only do TYBA. Só
+/// roda para `git push` sem refspec.
+fn current_branch(dir: &Path) -> Option<String> {
+    let mut cmd = crate::worktree::git_in(dir);
+    cmd.args(["symbolic-ref", "--short", "-q", "HEAD"]);
+    let out = crate::worktree::run_git(cmd, "branch atual").ok()?;
+    Some(String::from_utf8_lossy(&out).trim().to_string())
 }
 
 // --- Arquivos do plugin ------------------------------------------------------
@@ -110,7 +309,7 @@ pub fn marketplace_json() -> Value {
         "plugins": [{
             "name": PLUGIN,
             "source": "./plugin",
-            "description": "Avisa o TYBA quando um claude roda fora do gate num pane, e bloqueia escrita, Bash e rede nele.",
+            "description": "Avisa o TYBA do que o claude faz num pane (início, pedido de permissão, fim) e recusa push para main/master e merge de PR.",
         }]
     })
 }
@@ -118,23 +317,26 @@ pub fn marketplace_json() -> Value {
 pub fn plugin_json() -> Value {
     json!({
         "name": PLUGIN,
-        "description": "Integração do TYBA: claude fora do gate num pane do TYBA fica visível e sem escrita, Bash ou rede. Fora do TYBA não faz nada.",
+        "description": "Integração do TYBA: o claude num pane do TYBA avisa o app quando precisa de você, e push para main/master e merge de PR são recusados. Fora do TYBA não faz nada.",
         "version": env!("CARGO_PKG_VERSION"),
         "author": { "name": "TYBA" },
     })
 }
 
 pub fn hooks_json() -> Value {
-    let command = "${CLAUDE_PLUGIN_ROOT}/scripts/hook.sh";
+    let command = "\"${CLAUDE_PLUGIN_ROOT}/scripts/hook.sh\"";
     let mut hooks = serde_json::Map::new();
-    for event in EVENTS {
+    for event in OBSERVED_EVENTS.iter().chain(&["PreToolUse"]) {
         let mut entry = json!({ "hooks": [{ "type": "command", "command": command }] });
-        if *event == "SessionStart" {
-            entry["matcher"] = json!(SESSION_START_MATCHER);
+        match *event {
+            "SessionStart" => entry["matcher"] = json!(SESSION_START_MATCHER),
+            // O guarda-corpo só olha `Bash`: as outras ferramentas nem chamam o hook.
+            "PreToolUse" => entry["matcher"] = json!("Bash"),
+            _ => {}
         }
         hooks.insert((*event).to_string(), json!([entry]));
     }
-    json!({ "description": "TYBA: gate para claude fora do TYBA num pane", "hooks": hooks })
+    json!({ "description": "TYBA: observa o claude num pane e recusa push para main/master e merge de PR", "hooks": hooks })
 }
 
 pub fn hook_script() -> &'static str {
@@ -338,8 +540,9 @@ pub fn tool_summary(tool: &str, input: Option<&Value>) -> String {
 }
 
 /// Ponto de entrada de `tyba _plugin-hook`, chamado pelo `hook.sh` do plugin
-/// só num claude cru dentro de um pane. Sempre sai com 0: a decisão vai no
-/// stdout. Sem o core, decide sozinho com a mesma regra.
+/// só num claude cru dentro de um pane. Sempre sai com 0. O guarda-corpo do
+/// `PreToolUse` é decidido aqui, sem o core (o comando inteiro não atravessa
+/// o canal); os eventos observados vão ao core e não respondem nada.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub fn maybe_run_plugin_hook() -> Option<i32> {
     use std::io::Read;
@@ -361,27 +564,23 @@ pub fn maybe_run_plugin_hook() -> Option<i32> {
     let mut raw = Vec::new();
     let _ = std::io::stdin().take(MAX_STDIN).read_to_end(&mut raw);
     let payload: Value = serde_json::from_slice(&raw).unwrap_or(Value::Null);
+    if let Some(out) = hook_output(&payload, &current_branch) {
+        println!("{out}");
+    }
     let event = payload
         .get("hook_event_name")
         .and_then(Value::as_str)
-        .unwrap_or("")
-        .to_string();
-    let tool = payload
-        .get("tool_name")
-        .and_then(Value::as_str)
-        .map(str::to_string);
-    let summary = tool
-        .as_deref()
-        .map(|t| tool_summary(t, payload.get("tool_input")));
-
-    let local = event_decision(&event, tool.as_deref());
-    let core = crate::hook_ipc::channel::send_plugin_event(token, event.clone(), tool, summary);
-    let deny = match core {
-        Some(crate::hook_ipc::channel::ChannelResponse::Plugin { deny }) => deny,
-        _ => local.map(str::to_string),
-    };
-    if let Some(out) = hook_output(&event, deny.as_deref()) {
-        println!("{out}");
+        .unwrap_or("");
+    if OBSERVED_EVENTS.contains(&event) {
+        let tool = payload
+            .get("tool_name")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let summary = tool
+            .as_deref()
+            .map(|t| tool_summary(t, payload.get("tool_input")));
+        let _ =
+            crate::hook_ipc::channel::send_plugin_event(token, event.to_string(), tool, summary);
     }
     Some(0)
 }
@@ -393,34 +592,16 @@ pub fn maybe_run_plugin_hook() -> Option<i32> {
 
 // --- Core: evento do plugin ---------------------------------------------------
 
-/// O que o core decidiu sobre um evento do plugin.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PluginVerdict {
-    pub session: crate::session::SessionId,
-    pub deny: Option<String>,
-    /// `SessionStart`: marcar o pane como "claude sem gate".
-    pub mark_raw: bool,
-}
-
 /// Valida o evento: o token tem que ser o de um pane, e o peer tem que
-/// descender do shell DESSE pane. Qualquer falha é `None` — o evento é
-/// ignorado (e o cliente aplica a regra local, que só nega).
+/// descender do shell DESSE pane. Devolve o pane; qualquer falha é `None` —
+/// o evento é ignorado.
 pub fn resolve_plugin_event(
     token: &str,
     peer_session: Option<crate::session::SessionId>,
     session_for_token: impl Fn(&str) -> Option<crate::session::SessionId>,
-    event: &str,
-    tool: Option<&str>,
-) -> Option<PluginVerdict> {
+) -> Option<crate::session::SessionId> {
     let session = session_for_token(token)?;
-    if peer_session != Some(session) {
-        return None;
-    }
-    Some(PluginVerdict {
-        session,
-        deny: event_decision(event, tool).map(str::to_string),
-        mark_raw: event == "SessionStart",
-    })
+    (peer_session == Some(session)).then_some(session)
 }
 
 /// Comparação em tempo constante para o token — não vaza por tempo quantos
@@ -438,38 +619,218 @@ mod tests {
     use super::*;
     use crate::session::SessionId;
 
+    /// Branch atual falsa: `main` em qualquer pasta com "main" no nome,
+    /// `feat/x` no resto.
+    fn fake_branch(dir: &Path) -> Option<String> {
+        Some(if dir.to_string_lossy().contains("main") {
+            "main".into()
+        } else {
+            "feat/x".into()
+        })
+    }
+
+    fn guard(command: &str) -> Option<&'static str> {
+        guard_rail(command, Path::new("/repo/feat"), &fake_branch)
+    }
+
     #[test]
-    fn read_only_tools_pass_and_everything_else_is_denied() {
-        for tool in ["Read", "Glob", "Grep", "TodoWrite", "Task"] {
-            assert_eq!(raw_tool_decision(tool), None, "{tool}");
-        }
-        for tool in [
-            "Bash",
-            "Write",
-            "Edit",
-            "MultiEdit",
-            "NotebookEdit",
-            "WebFetch",
-            "WebSearch",
-            "mcp__github__create_issue",
-            "FerramentaNova",
-            "",
+    fn guard_rail_denies_push_to_main_or_master() {
+        for cmd in [
+            "git push origin main",
+            "git push origin master",
+            "git push origin HEAD:main",
+            "git push -f origin master",
+            "git push --force-with-lease origin main",
+            "git push origin +main",
+            "git push origin x:refs/heads/main",
+            "git push origin feature:main",
+            "git push origin :main",
+            "git push -u origin feat/x main",
+            "git push --all origin",
+            "git push origin -- main",
+            "/usr/bin/git push origin main",
+            "git -C /outro push origin main",
+            "git -c push.default=current push origin main",
+            "FOO=1 git push origin main",
+            "FOO=1 BAR='a b' git push origin main",
+            "env FOO=1 git push origin main",
+            "env -i git push origin main",
+            "command git push origin main",
+            "exec git push origin main",
+            "cargo test && git push origin main",
+            "cargo test; git push origin main",
+            "make || git push origin main",
+            "echo ok | git push origin main",
+            "true\ngit push origin main",
+            "sh -c 'git push origin main'",
+            "bash -lc \"cd x && git push origin main\"",
+            "sh -c 'sh -c \"git push origin main\"'",
+            "eval git push origin main",
+            "(git push origin main)",
+            "echo $(git push origin main)",
+            "git push 'origin' \"main\"",
         ] {
-            assert_eq!(raw_tool_decision(tool), Some(RAW_DENY_MESSAGE), "{tool}");
+            assert_eq!(guard(cmd), Some(PUSH_MAIN_MESSAGE), "{cmd}");
         }
     }
 
     #[test]
-    fn hook_output_speaks_the_claude_hook_protocol() {
-        let pre: Value =
-            serde_json::from_str(&hook_output("PreToolUse", Some("não")).unwrap()).unwrap();
-        assert_eq!(pre["hookSpecificOutput"]["permissionDecision"], "deny");
-        assert_eq!(pre["hookSpecificOutput"]["permissionDecisionReason"], "não");
-        let perm: Value =
-            serde_json::from_str(&hook_output("PermissionRequest", Some("não")).unwrap()).unwrap();
-        assert_eq!(perm["hookSpecificOutput"]["decision"]["behavior"], "deny");
-        assert_eq!(hook_output("PreToolUse", None), None);
-        assert_eq!(hook_output("Stop", Some("x")), None);
+    fn guard_rail_denies_bare_push_only_when_the_branch_is_main() {
+        let on_main = |cmd| guard_rail(cmd, Path::new("/repo/main"), &fake_branch);
+        for cmd in [
+            "git push",
+            "git push origin",
+            "git push -u origin",
+            "git push origin HEAD",
+        ] {
+            assert_eq!(guard(cmd), None, "{cmd} em feat/x");
+            assert_eq!(on_main(cmd), Some(PUSH_MAIN_MESSAGE), "{cmd} em main");
+        }
+        // `-C` muda a pasta em que a branch é lida.
+        assert_eq!(guard("git -C ../main push"), Some(PUSH_MAIN_MESSAGE));
+        assert_eq!(on_main("git -C /repo/feat push"), None);
+        // Push explícito para outra branch não pergunta a branch atual.
+        assert_eq!(on_main("git push origin feat/x"), None);
+        // Sem repositório (branch desconhecida): sem decisão.
+        assert_eq!(
+            guard_rail("git push", Path::new("/x"), &|_: &Path| None),
+            None
+        );
+    }
+
+    #[test]
+    fn guard_rail_denies_pr_merge() {
+        for cmd in [
+            "gh pr merge",
+            "gh pr merge 42 --squash",
+            "FOO=1 gh pr merge 42",
+            "gh pr checks && gh pr merge --auto",
+            "glab mr merge 7",
+            "sh -c 'glab mr merge 7'",
+        ] {
+            assert_eq!(guard(cmd), Some(PR_MERGE_MESSAGE), "{cmd}");
+        }
+    }
+
+    #[test]
+    fn guard_rail_lets_everything_else_through() {
+        for cmd in [
+            "git push origin feat/x",
+            "git push origin main-fix",
+            "git push origin feat/main",
+            "git push origin HEAD:feat/x",
+            "git push origin --delete feat/x",
+            "git log main",
+            "git checkout main",
+            "git merge main",
+            "git pull origin main",
+            "gh pr view 42",
+            "gh pr create --base main",
+            "gh pr list",
+            "glab mr view 7",
+            "ls ~/x",
+            "rm -rf target",
+            "curl https://example.com",
+            // Escolha documentada: texto entre aspas é argumento, não comando.
+            "echo \"git push origin main\"",
+            "echo 'gh pr merge 42'",
+            "git commit -m 'git push origin main'",
+            "git push origin feat/x # main",
+            "",
+        ] {
+            assert_eq!(guard(cmd), None, "{cmd}");
+        }
+    }
+
+    #[test]
+    fn current_branch_reads_the_repo_of_the_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let ok = std::process::Command::new("git")
+            .args(["init", "-q", "-b", "main"])
+            .current_dir(dir.path())
+            .status()
+            .unwrap();
+        assert!(ok.success());
+        assert_eq!(current_branch(dir.path()).as_deref(), Some("main"));
+        assert_eq!(
+            guard_rail("git push", dir.path(), &current_branch),
+            Some(PUSH_MAIN_MESSAGE)
+        );
+        let outside = tempfile::tempdir().unwrap();
+        assert_eq!(current_branch(outside.path()), None);
+    }
+
+    fn pre_tool_use(tool: &str, input: Value) -> Value {
+        json!({
+            "hook_event_name": "PreToolUse",
+            "session_id": "00000000-0000-0000-0000-000000000000",
+            "cwd": "/repo/feat",
+            "tool_name": tool,
+            "tool_input": input,
+        })
+    }
+
+    #[test]
+    fn hook_output_denies_only_the_guard_rail_and_is_silent_otherwise() {
+        let deny = hook_output(
+            &pre_tool_use("Bash", json!({"command": "git push origin main"})),
+            &fake_branch,
+        )
+        .expect("nega");
+        let deny: Value = serde_json::from_str(&deny).unwrap();
+        assert_eq!(deny["hookSpecificOutput"]["hookEventName"], "PreToolUse");
+        assert_eq!(deny["hookSpecificOutput"]["permissionDecision"], "deny");
+        assert_eq!(
+            deny["hookSpecificOutput"]["permissionDecisionReason"],
+            PUSH_MAIN_MESSAGE
+        );
+        let merge = hook_output(
+            &pre_tool_use("Bash", json!({"command": "gh pr merge 1"})),
+            &fake_branch,
+        )
+        .unwrap();
+        assert!(merge.contains(PR_MERGE_MESSAGE));
+
+        // O `cwd` do payload é o que decide a branch de um push sem refspec.
+        let mut bare = pre_tool_use("Bash", json!({"command": "git push"}));
+        assert_eq!(hook_output(&bare, &fake_branch), None);
+        bare["cwd"] = json!("/repo/main");
+        assert!(hook_output(&bare, &fake_branch).is_some());
+
+        // Escrita, Bash comum e rede: nada — nem `allow`. Quem decide é o
+        // prompt nativo do Claude.
+        for payload in [
+            pre_tool_use(
+                "Write",
+                json!({"file_path": "/repo/feat/a.rs", "content": "x"}),
+            ),
+            pre_tool_use("Edit", json!({"file_path": "/repo/feat/a.rs"})),
+            pre_tool_use("Bash", json!({"command": "ls ~/x"})),
+            pre_tool_use("Bash", json!({"command": "rm -rf ~/x"})),
+            pre_tool_use("WebFetch", json!({"url": "https://example.com"})),
+            pre_tool_use("mcp__github__create_issue", json!({})),
+            // Ferramenta que não é `Bash` não passa pelo guarda-corpo.
+            pre_tool_use("Task", json!({"command": "git push origin main"})),
+            pre_tool_use("Bash", json!({})),
+        ] {
+            assert_eq!(hook_output(&payload, &fake_branch), None, "{payload}");
+        }
+
+        // `PermissionRequest` só avisa o core: nunca responde, nem para o
+        // que o guarda-corpo nega.
+        for event in [
+            "PermissionRequest",
+            "SessionStart",
+            "Notification",
+            "Stop",
+            "SubagentStart",
+            "SubagentStop",
+        ] {
+            let mut payload = pre_tool_use("Bash", json!({"command": "git push origin main"}));
+            payload["hook_event_name"] = json!(event);
+            assert_eq!(hook_output(&payload, &fake_branch), None, "{event}");
+        }
+        assert_eq!(hook_output(&Value::Null, &fake_branch), None);
     }
 
     #[test]
@@ -480,12 +841,18 @@ mod tests {
             !text.contains("onFailure"),
             "hook global nunca falha fechado"
         );
-        for event in EVENTS {
+        for event in OBSERVED_EVENTS.iter().chain(&["PreToolUse"]) {
             assert!(v["hooks"][event].is_array(), "{event}");
         }
         assert_eq!(
             v["hooks"]["SessionStart"][0]["matcher"],
             "startup|resume|clear|compact|fork"
+        );
+        assert_eq!(v["hooks"]["PreToolUse"][0]["matcher"], "Bash");
+        assert_eq!(
+            v["hooks"]["Stop"][0]["hooks"][0]["command"],
+            "\"${CLAUDE_PLUGIN_ROOT}/scripts/hook.sh\"",
+            "caminho do plugin entre aspas"
         );
     }
 
@@ -630,35 +997,17 @@ mod tests {
         let other = SessionId::new_v4();
         let lookup = |t: &str| token_eq(t, "segredo-do-pane").then_some(pane);
 
-        let ok = resolve_plugin_event(
-            "segredo-do-pane",
-            Some(pane),
-            lookup,
-            "PreToolUse",
-            Some("Bash"),
-        )
-        .expect("aceita");
-        assert_eq!(ok.deny.as_deref(), Some(RAW_DENY_MESSAGE));
-        assert!(!ok.mark_raw);
-
         assert_eq!(
-            resolve_plugin_event("errado", Some(pane), lookup, "SessionStart", None),
-            None
+            resolve_plugin_event("segredo-do-pane", Some(pane), lookup),
+            Some(pane)
         );
+        assert_eq!(resolve_plugin_event("errado", Some(pane), lookup), None);
         assert_eq!(
-            resolve_plugin_event("segredo-do-pane", Some(other), lookup, "SessionStart", None),
+            resolve_plugin_event("segredo-do-pane", Some(other), lookup),
             None,
             "token certo vindo de outro pane é recusado"
         );
-        assert_eq!(
-            resolve_plugin_event("segredo-do-pane", None, lookup, "SessionStart", None),
-            None
-        );
-        let start =
-            resolve_plugin_event("segredo-do-pane", Some(pane), lookup, "SessionStart", None)
-                .unwrap();
-        assert!(start.mark_raw);
-        assert_eq!(start.deny, None);
+        assert_eq!(resolve_plugin_event("segredo-do-pane", None, lookup), None);
     }
 
     #[test]
@@ -716,6 +1065,7 @@ mod tests {
             .stdin(std::process::Stdio::null())
             .output()
             .expect("hook roda");
+        assert!(out.stdout.is_empty(), "o hook.sh nunca escreve no stdout");
         (out.status.code().unwrap_or(-1), log.exists())
     }
 

@@ -495,9 +495,8 @@ fn agent_payload(
 
 /// M6-B: um evento do plugin do Claude Code. O token tem que ser o de um
 /// pane e o peer tem que estar na árvore do shell desse pane; senão o core
-/// recusa e o cliente aplica a regra local (que só nega). `SessionStart`
-/// marca o pane como "claude sem gate" e reemite a detecção; ferramenta
-/// negada vai para o histórico de aprovações já redigida.
+/// recusa. O plugin só observa: o evento chega validado e nada é respondido
+/// ao Claude (o guarda-corpo do `PreToolUse` é decidido no próprio cliente).
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn handle_plugin_event(
     app: &AppHandle,
@@ -521,43 +520,14 @@ fn handle_plugin_event(
         .collect();
     let rows = agent::process_probe::snapshot();
     let peer_session = agent::process_probe::find_owning_session(peer_pid, &shells, &rows);
-    let event = request.event.as_deref().unwrap_or("");
-    let Some(verdict) = agent::claude_plugin::resolve_plugin_event(
-        token,
-        peer_session,
-        |t| state.sessions.session_for_pane_token(t),
-        event,
-        request.tool.as_deref(),
-    ) else {
+    if agent::claude_plugin::resolve_plugin_event(token, peer_session, |t| {
+        state.sessions.session_for_pane_token(t)
+    })
+    .is_none()
+    {
         return refused;
-    };
-    if verdict.mark_raw && !state.agent_prober.is_raw_plugin(verdict.session) {
-        state.agent_prober.mark_raw_plugin(verdict.session);
-        let detected = state.agent_prober.detected(verdict.session);
-        if detected.is_some() {
-            let _ = app.emit(
-                agent::process_probe::EVENT_CHANGED,
-                agent_payload(&state, verdict.session, detected),
-            );
-        }
     }
-    if verdict.deny.is_some() && event == "PreToolUse" {
-        let summary = request
-            .summary
-            .as_deref()
-            .map(|s| crate::session::redact::redact(s).into_owned())
-            .unwrap_or_else(|| request.tool.clone().unwrap_or_default());
-        agent::session::record_history(
-            &state.store,
-            verdict.session,
-            summary,
-            None,
-            approvals::RiskLevel::Red,
-            "denied_raw",
-            approvals::now_ms(),
-        );
-    }
-    ChannelResponse::Plugin { deny: verdict.deny }
+    ChannelResponse::Plugin
 }
 
 /// A decisão pura de quando o disk observer (F1→F2) entra em ação: só para

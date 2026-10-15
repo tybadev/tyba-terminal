@@ -438,10 +438,6 @@ impl AgentProber {
         self.detected.lock().get(&session).cloned()
     }
 
-    pub fn mark_raw_plugin(&self, session: SessionId) {
-        self.raw_plugin.lock().insert(session);
-    }
-
     pub fn clear_raw_plugin(&self, session: SessionId) {
         self.raw_plugin.lock().remove(&session);
     }
