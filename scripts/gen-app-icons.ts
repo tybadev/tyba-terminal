@@ -93,10 +93,10 @@ function iconComposer(): void {
   const layer = mark.replace("<svg ", `<svg width="${size}" height="${size}" `);
   writeFileSync(join(dir, "Assets", "tyba-mark.svg"), layer);
   const doc = {
-    "fill-specializations": [
-      { value: { solid: srgb(THEMES.light.bg) } },
-      { appearance: "dark", value: { solid: srgb(THEMES.dark.bg) } },
-    ],
+    // Fundo BLACKOUT nos dois modos (decisão do dono): com o claro aqui, o
+    // Finder e o Spotlight mostravam o ícone branco no modo claro enquanto o
+    // Dock (`app_icon.rs`) ficava preto.
+    "fill-specializations": [{ value: { solid: srgb(THEMES.dark.bg) } }],
     groups: [
       {
         layers: [{ "image-name": "tyba-mark.svg", name: "tyba-mark" }],
