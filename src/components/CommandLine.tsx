@@ -11,6 +11,7 @@ import {
   type SessionId,
 } from "../lib/ipc";
 import { compactPath } from "../lib/workspaceCwd";
+import { autocompleteAutoOpen, autocompleteShowUses } from "../lib/autocompletePrefs";
 import { elapsedSeconds, isSlow, shellBootStep, type ShellBoot } from "../lib/loading";
 import { useNow } from "./ui/loading";
 import { toastError } from "../lib/toast";
@@ -446,7 +447,9 @@ export function CommandLine({
   // Anunciada não é escolhida: abre sem seleção, e o Enter roda o que está
   // escrito (ver `enterAplicaSugestao`).
   const anuncia =
-    !dispensada && ((cmdPrefix !== null && bins.length > 0) || args.length > 0);
+    autocompleteAutoOpen() &&
+    !dispensada &&
+    ((cmdPrefix !== null && bins.length > 0) || args.length > 0);
   const showMenu = (menuOpen || anuncia) && items.length > 0 && !continuing;
   const rows = menuRows(items);
 
@@ -1049,7 +1052,7 @@ function DiscoveryMenu({
                 <span className="min-w-0 flex-1 truncate text-[11px] text-tyba-text-faint">
                   {item.kind === "argument" ? item.description : ""}
                 </span>
-                {uses > 0 && (
+                {uses > 0 && autocompleteShowUses() && (
                   <span className="shrink-0 text-[10px] text-tyba-text-faint">{uses}×</span>
                 )}
               </button>

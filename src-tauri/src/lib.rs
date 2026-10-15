@@ -8401,6 +8401,14 @@ async fn complete_argument(
 }
 
 #[tauri::command]
+fn command_history_total(state: State<'_, AppState>) -> Result<i64, String> {
+    state
+        .store
+        .command_history_total()
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn clear_command_history(
     state: State<'_, AppState>,
     repo_root: Option<String>,
@@ -9425,6 +9433,7 @@ pub fn run() {
             complete_argument,
             suggest_line,
             clear_command_history,
+            command_history_total,
             set_history_enabled,
             agent_stats,
             list_snippets,

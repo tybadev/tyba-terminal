@@ -10,6 +10,7 @@ import {
   getPref,
   importShellHistory,
   listSnippets,
+  commandHistoryTotal,
   onShellHistoryImportProgress,
   scanShellHistorySources,
   setPref,
@@ -23,6 +24,12 @@ import {
 import { PROMPT_MODE_PREF_KEY, promptModeEnabled } from "../lib/commandLine";
 import { PromptModePicker } from "./PromptModePicker";
 import { SettingGroup, SettingLine, SettingNote } from "./settings/rows";
+import {
+  autocompleteAutoOpen,
+  autocompleteShowUses,
+  setAutocompleteAutoOpen,
+  setAutocompleteShowUses,
+} from "../lib/autocompletePrefs";
 import { pushToast, toastError } from "../lib/toast";
 
 const HISTORY_PREF_KEY = "pref.commandHistory";
@@ -44,6 +51,14 @@ export function ShellSettings({ lineRows }: { lineRows?: React.ReactNode }) {
   const { t } = useTranslation();
   const [historyOn, setHistoryOn] = useState(true);
   const [promptOn, setPromptOn] = useState(false);
+  const [autoOpen, setAutoOpen] = useState(autocompleteAutoOpen);
+  const [showUses, setShowUses] = useState(autocompleteShowUses);
+  const [historyTotal, setHistoryTotal] = useState<number | null>(null);
+  useEffect(() => {
+    void commandHistoryTotal()
+      .then(setHistoryTotal)
+      .catch(() => {});
+  }, []);
   const [snippets, setSnippets] = useState<Snippet[]>([]);
   const [draft, setDraft] = useState<Snippet | null>(null);
   const [importSources, setImportSources] = useState<ShellHistorySource[]>([]);
@@ -145,12 +160,37 @@ export function ShellSettings({ lineRows }: { lineRows?: React.ReactNode }) {
     <>
       <SettingGroup title={t("settingsCommandLine")} />
       {lineRows}
-      <SettingLine label={t("promptModeTitle")} hint={t("promptModeHint")}>
-        <PromptModePicker value={promptOn} onChange={togglePrompt} />
-      </SettingLine>
+      <SettingLine
+        label={t("promptModeTitle")}
+        hint={t("promptModeHint")}
+        below={<PromptModePicker value={promptOn} onChange={togglePrompt} />}
+      />
       <SettingNote tone="amber">{t("promptModeEscape")}</SettingNote>
 
-      <SettingGroup title={t("settingsHistory")} />
+      <SettingGroup title={t("settingsAutocomplete")} />
+      <SettingLine label={t("autocompleteAutoOpen")} hint={t("autocompleteAutoOpenHint")}>
+        <Switch
+          checked={autoOpen}
+          onCheckedChange={(c) => {
+            setAutoOpen(c);
+            setAutocompleteAutoOpen(c);
+          }}
+        />
+      </SettingLine>
+      <SettingLine label={t("autocompleteShowUses")} hint={t("autocompleteShowUsesHint")}>
+        <Switch
+          checked={showUses}
+          onCheckedChange={(c) => {
+            setShowUses(c);
+            setAutocompleteShowUses(c);
+          }}
+        />
+      </SettingLine>
+
+      <SettingGroup
+        title={t("settingsHistory")}
+        note={historyTotal !== null ? t("historyTotal", { count: historyTotal }) : undefined}
+      />
       <SettingLine label={t("historyEnabled")} hint={t("historyHint")}>
         <Switch checked={historyOn} onCheckedChange={toggleHistory} aria-label={t("historyEnabled")} />
       </SettingLine>
@@ -201,7 +241,7 @@ export function ShellSettings({ lineRows }: { lineRows?: React.ReactNode }) {
       {snippets.map((snippet) => (
         <div
           key={snippet.id}
-          className="grid grid-cols-[160px_1fr_auto] items-center gap-4 border-b border-tyba-border-soft px-[18px] py-[9px] text-[12.5px]"
+          className="grid grid-cols-[160px_1fr_auto_auto] items-center gap-4 border-b border-tyba-border-soft px-[18px] py-[9px] text-[12.5px]"
         >
           <button onClick={() => setDraft(snippet)} className="truncate text-left text-tyba-text">
             {snippet.name}
@@ -209,6 +249,9 @@ export function ShellSettings({ lineRows }: { lineRows?: React.ReactNode }) {
           <button onClick={() => setDraft(snippet)} className="truncate text-left font-mono text-tyba-text-muted">
             {snippet.command}
           </button>
+          <span className="text-[11px] text-tyba-text-faint">
+            {snippet.source === "repo" ? t("snippetScopeRepo") : t("snippetScopeGlobal")}
+          </span>
           <button
             aria-label={t("snippetDelete")}
             onClick={() => remove(snippet.id)}
