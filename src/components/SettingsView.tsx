@@ -4,7 +4,6 @@ import { useTranslation } from "react-i18next";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { changelogUrl } from "@/lib/changelog";
 import {
-  ArrowSquareOut,
   DownloadSimple,
   FolderOpen,
   Info,
@@ -17,7 +16,6 @@ import {
   CaretDoubleRight,
   GearSix,
   PlugsConnected,
-  Robot,
   X,
   Keyboard,
   Palette,
@@ -101,6 +99,7 @@ import {
   KEY_CATEGORY_LABEL_KEYS,
   type Bindings,
   type KeyAction,
+  DEFAULT_BINDINGS,
 } from "../lib/keys";
 import { Shortcut } from "@/components/ui/kbd";
 import { toastError } from "../lib/toast";
@@ -112,7 +111,7 @@ import {
 import { ShellSettings } from "./ShellSettings";
 import { ToolbarChipsEditor } from "./ToolbarChipsEditor";
 import type { RichInputPref } from "../lib/richInput";
-import type { ToolbarPref } from "../lib/repoSnapshots";
+import { DEFAULT_TOOLBAR, type ToolbarPref } from "../lib/repoSnapshots";
 import { parseStartupMode } from "../lib/startup";
 
 export type SidebarTogglePref = "hidden" | "rail";
@@ -133,16 +132,16 @@ type Section =
   | "about";
 
 /** As seções, na ordem do trilho: cada uma é um assunto, não uma gaveta. */
-const SECTIONS: { id: Section; label: string; hint: string; icon: React.ReactNode }[] = [
-  { id: "general", label: "settingsGeneral", hint: "settingsGeneralShort", icon: <User size={16} /> },
-  { id: "appearance", label: "settingsAppearance", hint: "settingsAppearanceShort", icon: <Palette size={16} /> },
-  { id: "terminal", label: "settingsTerminal", hint: "settingsTerminalShort", icon: <TerminalWindow size={16} /> },
-  { id: "agents", label: "settingsAgents", hint: "settingsAgentsShort", icon: <Robot size={16} /> },
-  { id: "security", label: "settingsSecurity", hint: "settingsSecurityShort", icon: <ShieldCheck size={16} /> },
-  { id: "integrations", label: "settingsIntegrations", hint: "settingsIntegrationsShort", icon: <PlugsConnected size={16} /> },
-  { id: "notifications", label: "settingsNotifications", hint: "settingsNotificationsShort", icon: <Bell size={16} /> },
-  { id: "shortcuts", label: "settingsShortcuts", hint: "settingsShortcutsShort", icon: <Keyboard size={16} /> },
-  { id: "about", label: "settingsAbout", hint: "settingsAboutShort", icon: <Info size={16} /> },
+const SECTIONS: { id: Section; label: string; hint: string; long: string; icon: React.ReactNode }[] = [
+  { id: "general", label: "settingsGeneral", hint: "settingsGeneralShort", long: "settingsGeneralLong", icon: <GearSix size={16} /> },
+  { id: "appearance", label: "settingsAppearance", hint: "settingsAppearanceShort", long: "settingsAppearanceLong", icon: <Palette size={16} /> },
+  { id: "terminal", label: "settingsTerminal", hint: "settingsTerminalShort", long: "settingsTerminalHint", icon: <TerminalWindow size={16} /> },
+  { id: "agents", label: "settingsAgents", hint: "settingsAgentsShort", long: "settingsAgentsHint", icon: <User size={16} /> },
+  { id: "security", label: "settingsSecurity", hint: "settingsSecurityShort", long: "settingsSecurityHint", icon: <ShieldCheck size={16} /> },
+  { id: "integrations", label: "settingsIntegrations", hint: "settingsIntegrationsShort", long: "settingsIntegrationsHint", icon: <PlugsConnected size={16} /> },
+  { id: "notifications", label: "settingsNotifications", hint: "settingsNotificationsShort", long: "settingsNotificationsHint", icon: <Bell size={16} /> },
+  { id: "shortcuts", label: "settingsShortcuts", hint: "settingsShortcutsShort", long: "shortcutsHint", icon: <Keyboard size={16} /> },
+  { id: "about", label: "settingsAbout", hint: "settingsAboutShort", long: "aboutHint", icon: <Info size={16} /> },
 ];
 
 const RAIL_PREF_KEY = "pref.settings_rail";
@@ -480,16 +479,6 @@ function NotifyPrefs() {
       {NOTIFY_KINDS.map((kind) => (
         <SettingLine key={kind.id} label={t(kind.label)} hint={t(kind.hint)}>
           <div className="flex items-center gap-2">
-            {IS_MAC && enabled[kind.id] && (sound[kind.id] ?? kind.defaultSound) && (
-              <button
-                onClick={() =>
-                  void previewNotifySound(sound[kind.id] ?? kind.defaultSound).catch(() => {})
-                }
-                className="text-[11px] text-tyba-blue hover:text-tyba-text"
-              >
-                ▶ {t("notifyListen")}
-              </button>
-            )}
             {IS_MAC && enabled[kind.id] && (
               <Select
                 value={sound[kind.id] ?? kind.defaultSound}
@@ -503,6 +492,16 @@ function NotifyPrefs() {
                   { value: "", label: t("notifySilent") },
                 ]}
               />
+            )}
+            {IS_MAC && enabled[kind.id] && (sound[kind.id] ?? kind.defaultSound) && (
+              <button
+                onClick={() =>
+                  void previewNotifySound(sound[kind.id] ?? kind.defaultSound).catch(() => {})
+                }
+                className="text-[11px] text-tyba-blue hover:text-tyba-text"
+              >
+                ▶ {t("notifyListen")}
+              </button>
             )}
             <Switch
               checked={enabled[kind.id] ?? kind.defaultEnabled}
@@ -531,29 +530,31 @@ function NotifyPrefs() {
   );
 }
 
-function ExternalRow({
-  label,
-  value,
-  href,
-  mono,
-}: {
-  label: string;
-  value: string;
-  href: string;
-  mono?: boolean;
-}) {
+/** Linha de informação do Sobre: rótulo em coluna fixa, valor ao lado. */
+function InfoRow({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div
+      data-setting-row
+      className="grid grid-cols-[160px_1fr] gap-4 border-b border-tyba-border-soft px-[18px] py-2 text-[12.5px]"
+    >
+      <span className="text-tyba-text-faint">{label}</span>
+      <span className="min-w-0 truncate text-tyba-text-muted">{children}</span>
+    </div>
+  );
+}
+
+function ExternalRow({ label, value, href }: { label: string; value: string; href: string }) {
   const { t } = useTranslation();
   return (
-    <SettingLine label={label}>
+    <InfoRow label={label}>
       <button
         onClick={() => void openExternalUrl(href).catch(() => {})}
         aria-label={t("aboutOpenLink", { target: value })}
-        className="flex items-center gap-1.5 text-[12px] text-tyba-text-muted transition-colors hover:text-tyba-text"
+        className="text-tyba-blue underline underline-offset-2 hover:text-tyba-text"
       >
-        <span className={mono ? "font-mono" : undefined}>{value}</span>
-        <ArrowSquareOut size={12} />
+        {value}
       </button>
-    </SettingLine>
+    </InfoRow>
   );
 }
 
@@ -624,33 +625,36 @@ function AboutSection({
               disabled={!info}
               onClick={copy}
               aria-label={t("aboutCopyDiagnostics")}
-              className="text-tyba-blue hover:text-tyba-text disabled:opacity-50"
+              className="text-tyba-blue underline underline-offset-2 hover:text-tyba-text disabled:opacity-50"
             >
               {t("aboutCopyDiagnostics")}
             </button>
           </span>
         }
       />
-      {info?.commit ? (
-        <ExternalRow label={t("aboutCommit")} value={info.commit} href={commitUrl(info.commit)} mono />
-      ) : (
-        <SettingLine label={t("aboutCommit")}>
-          <span className="font-mono text-[12px] text-tyba-text-faint">—</span>
-        </SettingLine>
-      )}
-      <SettingLine label={t("aboutCommitDate")}>
-        <span className="text-[12px] text-tyba-text-muted">{commitDate || "—"}</span>
-      </SettingLine>
-      <SettingLine label={t("aboutPlatform")}>
-        <span className="text-[12px] text-tyba-text-muted">{info ? platformLabel(info) : "—"}</span>
-      </SettingLine>
-      <SettingLine label={t("aboutWebview")}>
-        <span className="text-[12px] text-tyba-text-muted">{info?.webview || "—"}</span>
-      </SettingLine>
+      <InfoRow label={t("aboutBuild")}>
+        {version || "—"} ({import.meta.env.DEV ? "dev" : "release"})
+      </InfoRow>
+      <InfoRow label={t("aboutCommit")}>
+        {info?.commit ? (
+          <button
+            onClick={() => void openExternalUrl(commitUrl(info.commit)).catch(() => {})}
+            aria-label={t("aboutOpenLink", { target: info.commit })}
+            className="font-mono hover:text-tyba-text"
+          >
+            {info.commit}
+            {commitDate && ` · ${commitDate}`}
+          </button>
+        ) : (
+          "—"
+        )}
+      </InfoRow>
+      <InfoRow label={t("aboutPlatform")}>{info ? platformLabel(info) : "—"}</InfoRow>
+      <InfoRow label={t("aboutWebview")}>{info?.webview || "—"}</InfoRow>
       <SettingGroup title={t("aboutLinks")} />
       <ExternalRow label={t("aboutRepo")} value="github.com/tybadev/tyba-terminal" href={REPO_URL} />
       <ExternalRow label={t("aboutDocs")} value="docs.tyba.dev" href={docsUrl(i18n.language)} />
-      <ExternalRow label={t("aboutChangelog")} value="tyba.dev/changelog" href={changelogUrl(i18n.language)} />
+      <ExternalRow label={t("aboutWhatChanged")} value="changelog" href={changelogUrl(i18n.language)} />
       <ExternalRow label={t("aboutLicense")} value={LICENSE_NAME} href={LICENSE_URL} />
     </section>
   );
@@ -990,10 +994,10 @@ export function SettingsView({
     <div className="flex min-h-0 flex-1">
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="flex h-[46px] shrink-0 items-center gap-3 border-b border-tyba-border bg-tyba-raised px-[18px] text-[12px]">
-          <GearSix size={16} className="shrink-0 text-tyba-green" />
+          <span className="shrink-0 text-tyba-green">{current.icon}</span>
           <span className="text-[14px] font-medium text-tyba-text">{t("settings")}</span>
           <span className="min-w-0 flex-1 truncate text-tyba-text-faint">
-            {t(current.label)} · {t(current.hint)}
+            {t(current.label)} · {t(current.long)}
           </span>
           <label className="flex w-[260px] shrink-0 items-center gap-2 rounded-[6px] border border-tyba-border-field px-2.5 py-1 text-tyba-text-faint focus-within:border-tyba-border-strong">
             <MagnifyingGlass size={13} className="shrink-0" />
@@ -1059,7 +1063,7 @@ export function SettingsView({
         {section === "general" && (
           <section className="mx-auto w-full max-w-[860px]">
             <SettingGroup title={t("account")} />
-            <SettingLine label={t("localAccount")} hint={t("accountHint")}>
+            <SettingLine label={t("accountNameLabel")} hint={t("accountHint")}>
               <span className="rounded-full p-px" style={{ background: "var(--tyba-gradient)" }}>
                 <span className="flex size-7 items-center justify-center rounded-full bg-tyba-raised text-tyba-text-muted">
                   <User size={13} weight="bold" />
@@ -1118,7 +1122,8 @@ export function SettingsView({
               title={t("settingsThemes")}
               note={
                 <span className="flex items-center gap-2">
-                  {t("themesCount", { count: themes.length })} ·
+                  {t("themesCount", { count: themes.length })}
+                  <span>·</span>
                   <button onClick={() => copyThemeExample()} className="text-tyba-blue hover:text-tyba-text">
                     {t("copyThemeExample")}
                   </button>
@@ -1134,7 +1139,7 @@ export function SettingsView({
               onImport={() => void importTheme()}
             />
             <SettingGroup title={t("fontSection")} />
-            <SettingLine label={t("fontSection")} hint={t("fontHint")}>
+            <SettingLine label={t("fontTerminalLabel")} hint={t("fontHint")}>
               <Select
                 value={uiFont}
                 onChange={(v) => setUiFont(v as UiFont)}
@@ -1172,18 +1177,30 @@ export function SettingsView({
             <SettingLine label={t("gitStatusToggle")} hint={t("gitStatusHint")}>
               <Switch checked={showGitStatus} onCheckedChange={onShowGitStatusChange} />
             </SettingLine>
-            <SettingGroup title={t("settingsChipsBar")} note={t("chipsDragNote")} />
+            <SettingGroup
+              title={t("settingsChipsBar")}
+              note={
+                <span className="flex items-center gap-2">
+                  {t("chipsDragNote")}
+                  <span>·</span>
+                  <button
+                    onClick={() => onToolbarPrefChange({ ...DEFAULT_TOOLBAR, enabled: toolbarPref.enabled })}
+                    className="text-tyba-blue hover:text-tyba-text"
+                  >
+                    {t("chipsEditorReset")}
+                  </button>
+                </span>
+              }
+            />
+            {toolbarPref.enabled && (
+              <ToolbarChipsEditor pref={toolbarPref} onChange={onToolbarPrefChange} />
+            )}
             <SettingLine label={t("toolbarToggle")} hint={t("toolbarHint")}>
               <Switch
                 checked={toolbarPref.enabled}
                 onCheckedChange={(c) => onToolbarPrefChange({ ...toolbarPref, enabled: c })}
               />
             </SettingLine>
-            {toolbarPref.enabled && (
-              <div className="px-[18px] pb-3">
-                <ToolbarChipsEditor pref={toolbarPref} onChange={onToolbarPrefChange} />
-              </div>
-            )}
           </section>
         )}
         {section === "terminal" && (
@@ -1230,7 +1247,7 @@ export function SettingsView({
               <Switch checked={worktreeDefault} onCheckedChange={onWorktreeDefaultChange} />
             </SettingLine>
             <SettingLine
-              label={t("richInputRegex")}
+              label={t("richInputRegexLabel")}
               hint={richInputRegexInvalid ? t("richInputRegexInvalid") : t("richInputRegexHint")}
             >
               <div className="w-60 font-mono">
@@ -1257,9 +1274,13 @@ export function SettingsView({
             <SettingGroup
               title={t("settingsLaunchConfigs")}
               note={
-                <button onClick={onNewLaunchConfig} className="text-tyba-blue hover:text-tyba-text">
-                  + {t("launchConfigNew")}
-                </button>
+                <span className="flex items-center gap-2">
+                  {launchConfigs.length}
+                  <span>·</span>
+                  <button onClick={onNewLaunchConfig} className="text-tyba-blue hover:text-tyba-text">
+                    + {t("launchConfigNewShort")}
+                  </button>
+                </span>
               }
             />
             {launchConfigs.length === 0 && <SettingNote>{t("launchNoConfigs")}</SettingNote>}
@@ -1310,15 +1331,6 @@ export function SettingsView({
             <SettingGroup title="Claude Code" />
             <ClaudePluginSetting />
             <SettingGroup title={t("settingsEditor")} />
-            <SettingLine label={t("fileLinks")} hint={t("fileLinksHint", { combo: IS_MAC ? "⌘" : "Ctrl" })}>
-              <Switch
-                checked={filesInTyba}
-                onCheckedChange={(c) => {
-                  setFilesInTyba(c);
-                  setFileLinksEnabled(c);
-                }}
-              />
-            </SettingLine>
             <SettingLine label={t("defaultEditor")} hint={editorPath ?? t("defaultEditorHint")}>
               <Select
                 value={editor}
@@ -1328,6 +1340,15 @@ export function SettingsView({
                   { value: "", label: t("defaultEditorSystem") },
                   ...editors.map((e) => ({ value: e.id, label: e.name })),
                 ]}
+              />
+            </SettingLine>
+            <SettingLine label={t("fileLinksLabel")} hint={t("fileLinksHint", { combo: IS_MAC ? "⌘" : "Ctrl" })}>
+              <Switch
+                checked={filesInTyba}
+                onCheckedChange={(c) => {
+                  setFilesInTyba(c);
+                  setFileLinksEnabled(c);
+                }}
               />
             </SettingLine>
           </section>
@@ -1345,7 +1366,16 @@ export function SettingsView({
                 <div key={category}>
                   <SettingGroup
                     title={t(KEY_CATEGORY_LABEL_KEYS[category])}
-                    note={i === 0 ? t("shortcutsClickToChange") : undefined}
+                    note={
+                      i === 0 ? (
+                        <button
+                          onClick={() => onBindingsChange({ ...DEFAULT_BINDINGS })}
+                          className="text-tyba-blue hover:text-tyba-text"
+                        >
+                          {t("shortcutsRestore")}
+                        </button>
+                      ) : undefined
+                    }
                   />
                   {actions.map((action) => (
                     <ShortcutRow
