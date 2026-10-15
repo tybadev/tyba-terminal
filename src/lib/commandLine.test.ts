@@ -802,6 +802,22 @@ describe("paneLine", () => {
         .visible,
     ).toBe(false);
   });
+
+  it("claude rodando no painel: a faixa some e o painel é todo dele", () => {
+    const running = { ...idle, running: true };
+    expect(shellAt({ command: running, agentRunning: true }).visible).toBe(
+      false,
+    );
+    expect(shellAt({ command: running }).visible).toBe(true);
+  });
+
+  it("agente em segundo plano não esconde o prompt do shell", () => {
+    expect(shellAt({ agentRunning: true })).toEqual({
+      visible: true,
+      state: "own",
+      owns: true,
+    });
+  });
 });
 
 describe("caretLine", () => {

@@ -4208,6 +4208,7 @@ export default function App() {
           broadcastSet.includes(s.id),
         altScreen: altScreens[s.id] ?? false,
         command: sessionCommands[s.id],
+        agentRunning: detectedBySession.has(s.id),
       }),
     );
   }
@@ -6808,21 +6809,42 @@ export default function App() {
                       </div>
                     </div>
                   )}
+                  {activeSession && richInputVisible && !ownsCommandLine && (() => {
+                    // Flutua sobre o rodapé do painel ativo em vez de ocupar
+                    // uma faixa abaixo dele: abrir e fechar a caixa não
+                    // redimensiona o PTY, e o agente segue com o painel todo.
+                    const rect = paneLayout?.panes.find(
+                      (p) => p.session === activeSession.id,
+                    );
+                    return (
+                      <div
+                        className="absolute z-40 px-4 pb-4"
+                        style={
+                          rect
+                            ? {
+                                left: `${rect.x}%`,
+                                width: `${rect.w}%`,
+                                bottom: `${100 - rect.y - rect.h}%`,
+                              }
+                            : { left: 0, right: 0, bottom: 0 }
+                        }
+                      >
+                        <RichInput
+                          key={activeSession.id}
+                          sessionId={activeSession.id}
+                          pref={richInputPref}
+                          focusNonce={richInputFocusNonce}
+                          openedExplicitly={richInputOpened.has(activeSession.id)}
+                          prefill={launchPrefills[activeSession.id] ?? null}
+                          onFocusChange={(focused) => {
+                            richInputFocused.current = focused;
+                          }}
+                          onClose={() => closeRichInput(activeSession.id)}
+                        />
+                      </div>
+                    );
+                  })()}
                 </div>
-                {activeSession && richInputVisible && !ownsCommandLine && (
-                  <RichInput
-                    key={activeSession.id}
-                    sessionId={activeSession.id}
-                    pref={richInputPref}
-                    focusNonce={richInputFocusNonce}
-                    openedExplicitly={richInputOpened.has(activeSession.id)}
-                    prefill={launchPrefills[activeSession.id] ?? null}
-                    onFocusChange={(focused) => {
-                      richInputFocused.current = focused;
-                    }}
-                    onClose={() => closeRichInput(activeSession.id)}
-                  />
-                )}
                 </div>
                 {sideVisible && activeWorkspace && (
                   <>

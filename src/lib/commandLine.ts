@@ -237,6 +237,8 @@ export function paneLine(input: {
   broadcasting: boolean;
   altScreen: boolean;
   command: SessionCommand | undefined;
+  /** Um claude/codex detectado rodando neste painel. */
+  agentRunning?: boolean;
 }): PaneLine {
   const promptMode = input.reported ?? false;
   const owner: OwnerInput = {
@@ -248,15 +250,23 @@ export function paneLine(input: {
     integrated: promptMode,
     broadcasting: input.broadcasting,
   };
+  const state = lineState({ ...owner, reported: input.reported });
+  // Com um agente no controle o painel é todo dele, como no Warp: a faixa
+  // "está no controle" só tomava a altura de uma linha do claude. O prompt
+  // longo vai pela caixa flutuante (⌘⇧G). Só enquanto o shell não é dono da
+  // linha: um `claude &` em segundo plano não esconde o prompt.
+  const agentOwnsPane = (input.agentRunning ?? false) && state !== "own";
   return {
-    visible: lineVisible({
-      kind: input.kind,
-      sessionIntegration: input.sessionIntegration,
-      promptMode,
-      promptModePref: input.promptModePref,
-      hookExpected: input.hookExpected,
-    }),
-    state: lineState({ ...owner, reported: input.reported }),
+    visible:
+      !agentOwnsPane &&
+      lineVisible({
+        kind: input.kind,
+        sessionIntegration: input.sessionIntegration,
+        promptMode,
+        promptModePref: input.promptModePref,
+        hookExpected: input.hookExpected,
+      }),
+    state,
     owns: keyboardOwner(owner) === "tybaLine",
   };
 }
