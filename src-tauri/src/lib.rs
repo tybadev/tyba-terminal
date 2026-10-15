@@ -20,6 +20,7 @@ pub mod repo;
 pub mod repo_config;
 pub mod rich_input;
 pub mod sandbox;
+pub mod services;
 pub mod session;
 pub mod shell_path;
 pub mod snippet;
@@ -74,6 +75,8 @@ struct AppState {
     connect_gate: crate::ssh::connect_gate::SharedConnectGate,
     /// Fecha em `false` e abre quando a thread de boot termina. Ver [`boot`].
     boot: Arc<boot::BootGate>,
+    /// Serviços e portas: TERMs pendentes e o chip de portas por sessão.
+    services: services::SharedServices,
 }
 
 /// Resposta que separa "carregou e está vazio" de "ainda não carregou".
@@ -1612,6 +1615,55 @@ fn list_session_tunnels(
     Ok(tunnels)
 }
 
+/// Abre um túnel na sessão SSH: o caminho de "Novo túnel" e de "Trazer para
+/// cá" da tela de Serviços.
+fn open_tunnel_now(
+    state: &AppState,
+    session_id: SessionId,
+    tunnel: crate::ssh::tunnel::Tunnel,
+    confirmed: bool,
+) -> Result<crate::ssh::tunnel::SessionTunnel, crate::error::AppError> {
+    tunnel.validate()?;
+    if tunnel.kind.needs_confirmation() && !confirmed {
+        return Err(crate::error::AppError::new("ssh.tunnel_needs_confirmation")
+            .with("kind", tunnel.kind.flag())
+            .with("port", tunnel.listen_port.to_string()));
+    }
+    let alias = ssh_target(state, session_id)
+        .map(|(_, alias, _)| alias)
+        .ok_or_else(|| crate::error::AppError::new("ssh.session_not_found"))?;
+
+    let master = crate::ssh::tunnel::control_master_available();
+    if master {
+        crate::ssh::tunnel::open_on_master(&alias, &tunnel)?;
+    } else if !crate::ssh::tunnel::local_port_free(&tunnel) {
+        return Err(crate::error::AppError::new("ssh.tunnel_open_failed")
+            .with("port", tunnel.listen_port.to_string())
+            .with("detail", "a porta local já está em uso"));
+    }
+
+    let entry = crate::ssh::tunnel::SessionTunnel {
+        id: uuid::Uuid::new_v4().to_string(),
+        session_id,
+        tunnel,
+        state: if master {
+            crate::ssh::tunnel::TunnelState::Live
+        } else {
+            crate::ssh::tunnel::TunnelState::Opening
+        },
+        created_at: chrono::Utc::now(),
+    };
+    state.store.add_session_tunnel(&entry).map_err(store_err)?;
+    state.tunnel_states.set(&entry.id, entry.state.clone());
+
+    // Sem master o túnel só entra num Cano novo. `terminate` e não `kill`: o
+    // handle fica, e o Cano religado herda o pane.
+    if !master {
+        let _ = state.pty_pool.terminate(session_id);
+    }
+    Ok(entry)
+}
+
 #[tauri::command]
 async fn open_session_tunnel(
     app: AppHandle,
@@ -1620,45 +1672,7 @@ async fn open_session_tunnel(
     confirmed: bool,
 ) -> Result<crate::ssh::tunnel::SessionTunnel, crate::error::AppError> {
     off_main(app, move |_app, state| {
-        tunnel.validate()?;
-        if tunnel.kind.needs_confirmation() && !confirmed {
-            return Err(crate::error::AppError::new("ssh.tunnel_needs_confirmation")
-                .with("kind", tunnel.kind.flag())
-                .with("port", tunnel.listen_port.to_string()));
-        }
-        let alias = ssh_target(&state, session_id)
-            .map(|(_, alias, _)| alias)
-            .ok_or_else(|| crate::error::AppError::new("ssh.session_not_found"))?;
-
-        let master = crate::ssh::tunnel::control_master_available();
-        if master {
-            crate::ssh::tunnel::open_on_master(&alias, &tunnel)?;
-        } else if !crate::ssh::tunnel::local_port_free(&tunnel) {
-            return Err(crate::error::AppError::new("ssh.tunnel_open_failed")
-                .with("port", tunnel.listen_port.to_string())
-                .with("detail", "a porta local já está em uso"));
-        }
-
-        let entry = crate::ssh::tunnel::SessionTunnel {
-            id: uuid::Uuid::new_v4().to_string(),
-            session_id,
-            tunnel,
-            state: if master {
-                crate::ssh::tunnel::TunnelState::Live
-            } else {
-                crate::ssh::tunnel::TunnelState::Opening
-            },
-            created_at: chrono::Utc::now(),
-        };
-        state.store.add_session_tunnel(&entry).map_err(store_err)?;
-        state.tunnel_states.set(&entry.id, entry.state.clone());
-
-        // Sem master o túnel só entra num Cano novo. `terminate` e não `kill`: o
-        // handle fica, e o Cano religado herda o pane.
-        if !master {
-            let _ = state.pty_pool.terminate(session_id);
-        }
-        Ok(entry)
+        open_tunnel_now(&state, session_id, tunnel, confirmed)
     })
     .await
     .map_err(|e| crate::error::AppError::new("ssh.tunnel_control_failed").with("detail", e))?
@@ -2107,12 +2121,44 @@ fn open_tunnels_panel(
     if !matches!(session.kind, SessionKind::Ssh { .. }) {
         return Err(crate::error::AppError::new("ssh.not_an_ssh_session"));
     }
-    let previous = session_side_view(&state, id);
-    state
+    // Os túneis moram na seção Túneis da tela de Serviços.
+    open_services_screen(&state, id, Some(layout::screens::ServicesSection::Tunnels))
+        .map_err(|e| crate::error::AppError::new("layout.failed").with("detail", e))?;
+    emit_layout(&app, &state);
+    Ok(())
+}
+
+fn open_services_screen(
+    state: &AppState,
+    id: SessionId,
+    section: Option<layout::screens::ServicesSection>,
+) -> Result<(), String> {
+    let previous = session_side_view(state, id);
+    let ws = state
         .layout
-        .open_workspace_side_view(id, &layout::tunnels_view(id))
-        .map_err(|e| crate::error::AppError::new("layout.failed").with("detail", e.to_string()))?;
-    close_orphaned_files_panel(&state, previous, None);
+        .open_workspace_side_view(id, &layout::services_view(id))
+        .map_err(|e| e.to_string())?;
+    if let Some(section) = section {
+        state
+            .layout
+            .with_screens(ws, |s| s.services.section = section)
+            .map_err(|e| e.to_string())?;
+    }
+    close_orphaned_files_panel(state, previous, None);
+    Ok(())
+}
+
+/// Tela de Serviços e portas da sessão (o `side_view` `services:<sessão>`).
+#[tauri::command]
+fn open_services_panel(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: SessionId,
+) -> Result<(), String> {
+    if state.sessions.get(id).is_none() {
+        return Err(format!("sessão não encontrada: {id}"));
+    }
+    open_services_screen(&state, id, None)?;
     emit_layout(&app, &state);
     Ok(())
 }
@@ -5737,6 +5783,251 @@ async fn files_grep(
     .map_err(|e| crate::error::AppError::new("files.grep_failed").with("detail", e))?
 }
 
+/// Shells locais vivos (shell e agente) com o pid do líder: é a âncora da
+/// origem "sessão do TYBA".
+fn services_ctx(state: &AppState) -> services::Ctx {
+    let shells = state
+        .sessions
+        .list()
+        .into_iter()
+        .filter(|s| matches!(s.kind, SessionKind::Shell | SessionKind::Agent { .. }))
+        .filter_map(|s| state.pty_pool.leader_pid(s.id).map(|pid| (s.id, pid)))
+        .collect();
+    services::Ctx::current(shells)
+}
+
+fn emit_session_ports(
+    app: &AppHandle,
+    state: &AppState,
+    scan: &services::Scan,
+    ctx: &services::Ctx,
+) {
+    if state.services.set_chip(services::session_ports(scan, ctx)) {
+        let _ = app.emit(services::EVENT_SESSION_PORTS, state.services.chip());
+    }
+}
+
+/// O poll lento do chip da sidebar. Sem shell aberto, nem varre.
+fn poll_session_ports(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    let ctx = services_ctx(&state);
+    if ctx.shells.is_empty() {
+        if state.services.set_chip(Default::default()) {
+            let _ = app.emit(services::EVENT_SESSION_PORTS, state.services.chip());
+        }
+        return;
+    }
+    if let Ok(scan) = services::scan_local(false) {
+        emit_session_ports(app, &state, &scan, &ctx);
+    }
+}
+
+#[derive(serde::Serialize)]
+#[serde(tag = "target", rename_all = "snake_case")]
+enum ServicesList {
+    Local {
+        ports: Vec<services::PortEntry>,
+    },
+    Remote {
+        alias: String,
+        ports: Vec<services::remote::RemotePort>,
+    },
+}
+
+/// O que escuta na máquina da sessão: a local, ou o servidor numa sessão SSH
+/// (só leitura). Chamado a cada ~3 s com a tela aberta.
+#[tauri::command]
+async fn services_list(app: AppHandle, id: SessionId) -> Result<ServicesList, AppError> {
+    off_main(app, move |app, state| {
+        if let Some((host_id, alias, _)) = ssh_target(&state, id) {
+            let out = state
+                .host_queries
+                .get(&host_id, &alias)
+                .exec_script(&services::remote::script())?;
+            if out.code == 127 {
+                return Err(AppError::new("services.remote_no_ss"));
+            }
+            if out.code == 3 {
+                return Err(AppError::new("services.remote_ss_failed"));
+            }
+            return Ok(ServicesList::Remote {
+                alias,
+                ports: services::remote::parse_ss(&out.stdout),
+            });
+        }
+        let ctx = services_ctx(&state);
+        let scan = services::scan_local(true)?;
+        emit_session_ports(app, &state, &scan, &ctx);
+        Ok(ServicesList::Local {
+            ports: services::build_ports(&scan, &ctx),
+        })
+    })
+    .await
+    .map_err(|e| AppError::new("services.scan_failed").with("detail", e))?
+}
+
+/// Árvore do processo e quem vai junto no encerrar.
+#[tauri::command]
+async fn services_detail(app: AppHandle, pid: u32) -> Result<services::Detail, AppError> {
+    off_main(app, move |_app, state| {
+        let ctx = services_ctx(&state);
+        let scan = services::scan_processes()?;
+        Ok(services::build_detail(&scan, &ctx, pid))
+    })
+    .await
+    .map_err(|e| AppError::new("services.scan_failed").with("detail", e))?
+}
+
+/// Seção Processos: a árvore de cada sessão.
+#[tauri::command]
+async fn services_processes(app: AppHandle) -> Result<Vec<services::SessionProcs>, AppError> {
+    off_main(app, move |_app, state| {
+        let ctx = services_ctx(&state);
+        let scan = services::scan_processes()?;
+        Ok(services::build_processes(&scan, &ctx))
+    })
+    .await
+    .map_err(|e| AppError::new("services.scan_failed").with("detail", e))?
+}
+
+/// SIGTERM no grupo do processo. `start_ms` é a identidade vista na lista: o
+/// core confere de novo antes do sinal. A UI sempre confirmou antes; `group`
+/// é o grupo que a confirmação mostrou (`None` = só o processo).
+#[tauri::command]
+async fn services_kill(
+    app: AppHandle,
+    pid: u32,
+    start_ms: u64,
+    group: Option<u32>,
+) -> Result<services::KillOutcome, AppError> {
+    off_main(app, move |_app, state| {
+        let ctx = services_ctx(&state);
+        state.services.terminate(&ctx, pid, start_ms, group)
+    })
+    .await
+    .map_err(|e| AppError::new("services.kill_failed").with("detail", e))?
+}
+
+/// SIGKILL: segundo comando explícito, só ≥ 5 s depois do TERM.
+#[tauri::command]
+async fn services_force_kill(
+    app: AppHandle,
+    pid: u32,
+    start_ms: u64,
+    group: Option<u32>,
+) -> Result<services::KillOutcome, AppError> {
+    off_main(app, move |_app, state| {
+        let ctx = services_ctx(&state);
+        state.services.force(&ctx, pid, start_ms, group)
+    })
+    .await
+    .map_err(|e| AppError::new("services.kill_failed").with("detail", e))?
+}
+
+/// As portas de cada sessão (o chip da sidebar), do último retrato.
+#[tauri::command]
+fn services_session_ports(
+    state: State<'_, AppState>,
+) -> std::collections::HashMap<SessionId, Vec<u16>> {
+    state.services.chip()
+}
+
+/// "Trazer para cá": túnel local para uma porta do servidor da sessão SSH,
+/// na mesma porta se estiver livre.
+#[tauri::command]
+async fn services_bring_here(
+    app: AppHandle,
+    session_id: SessionId,
+    port: u16,
+) -> Result<crate::ssh::tunnel::SessionTunnel, AppError> {
+    off_main(app, move |_app, state| {
+        if port == 0 {
+            return Err(AppError::new("ssh.tunnel_port_invalid"));
+        }
+        let probe = |p: u16| crate::ssh::tunnel::Tunnel {
+            kind: crate::ssh::tunnel::TunnelKind::Local,
+            listen_port: p,
+            listen_host: None,
+            target_host: Some("localhost".into()),
+            target_port: Some(port),
+        };
+        // O bind de teste não basta: com SO_REUSEADDR, 127.0.0.1:P liga por
+        // cima de quem escuta em *:P. Porta que o lsof vê é ocupada.
+        let busy: std::collections::HashSet<u16> = services::listen::listeners()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|l| l.port)
+            .collect();
+        let local = services::remote::pick_local_port(port, |p| {
+            services::remote::free_locally(p, &busy, |p| {
+                crate::ssh::tunnel::local_port_free(&probe(p))
+            })
+        })
+        .ok_or_else(|| {
+            AppError::new("ssh.tunnel_open_failed")
+                .with("port", port.to_string())
+                .with("detail", "nenhuma porta local livre perto dessa")
+        })?;
+        open_tunnel_now(&state, session_id, probe(local), false)
+    })
+    .await
+    .map_err(|e| AppError::new("ssh.tunnel_control_failed").with("detail", e))?
+}
+
+/// Seção do trilho da tela de Serviços.
+#[tauri::command]
+fn services_screen_section(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    workspace: layout::WorkspaceId,
+    section: layout::screens::ServicesSection,
+) -> Result<(), String> {
+    state
+        .layout
+        .with_screens(workspace, |s| s.services.section = section)
+        .map_err(|e| e.to_string())?;
+    emit_layout(&app, &state);
+    Ok(())
+}
+
+/// "Só das minhas sessões".
+#[tauri::command]
+fn services_screen_only_mine(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    workspace: layout::WorkspaceId,
+    only_mine: bool,
+) -> Result<(), String> {
+    state
+        .layout
+        .with_screens(workspace, |s| s.services.only_mine = only_mine)
+        .map_err(|e| e.to_string())?;
+    emit_layout(&app, &state);
+    Ok(())
+}
+
+/// Porta escolhida (o detalhe).
+#[tauri::command]
+fn services_screen_select(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    workspace: layout::WorkspaceId,
+    port: Option<u16>,
+    pid: Option<u32>,
+) -> Result<(), String> {
+    let selected = match (port, pid) {
+        (Some(port), Some(pid)) => Some(layout::screens::SelectedPort { port, pid }),
+        (None, None) => None,
+        _ => return Err("porta e pid vêm juntos".into()),
+    };
+    state
+        .layout
+        .with_screens(workspace, |s| s.services.selected = selected)
+        .map_err(|e| e.to_string())?;
+    emit_layout(&app, &state);
+    Ok(())
+}
+
 /// Seção do trilho da tela de Docker.
 #[tauri::command]
 fn docker_screen_section(
@@ -8464,6 +8755,7 @@ pub fn run() {
                 host_queries,
                 connect_gate: Arc::default(),
                 boot: Arc::clone(&boot_gate),
+                services: Arc::default(),
             });
 
             // O canal shim↔core (shim v2, passo 2, tech-spec §3/§4): socket por
@@ -8578,6 +8870,15 @@ pub fn run() {
                 })
                 .expect("failed to spawn agent probe thread");
 
+            let ports_handle = app.handle().clone();
+            std::thread::Builder::new()
+                .name("session-ports".into())
+                .spawn(move || loop {
+                    std::thread::sleep(services::CHIP_POLL);
+                    poll_session_ports(&ports_handle);
+                })
+                .expect("failed to spawn session ports thread");
+
             #[cfg(target_os = "macos")]
             if let Some(window) = app.get_webview_window("main") {
                 let hidden = window.clone();
@@ -8672,6 +8973,17 @@ pub fn run() {
             open_pr_tab,
             open_diff_tab,
             open_tunnels_panel,
+            open_services_panel,
+            services_list,
+            services_detail,
+            services_processes,
+            services_kill,
+            services_force_kill,
+            services_session_ports,
+            services_bring_here,
+            services_screen_section,
+            services_screen_only_mine,
+            services_screen_select,
             open_git_panel,
             open_docker_panel,
             open_history_panel,

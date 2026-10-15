@@ -29,7 +29,9 @@ describe("parseSideView", () => {
     expect(parseSideView("diff:s1")).toEqual({ kind: "diff", session: "s1" });
     expect(parseSideView("files:s1")).toEqual({ kind: "files", session: "s1" });
     expect(parseSideView("agents:s1")).toEqual({ kind: "agents", session: "s1" });
-    expect(parseSideView("tunnels:s1")).toEqual({ kind: "tunnels", session: "s1" });
+    expect(parseSideView("services:s1")).toEqual({ kind: "services", session: "s1" });
+    // O painel antigo de túneis não é mais aba (o core o migra para Serviços).
+    expect(parseSideView("tunnels:s1")).toBeNull();
     expect(parseSideView("history:s1")).toEqual({ kind: "history", session: "s1" });
   });
 
@@ -84,7 +86,6 @@ describe("isNarrowPanel", () => {
       "git:s",
       "docker:s",
       "agents:s",
-      "tunnels:s",
       "files:s",
       "history:s",
       "agent-queue",
@@ -125,7 +126,7 @@ describe("panelIndicator", () => {
   });
 
   test("demais abas não mostram indicador", () => {
-    for (const kind of ["history", "files", "diff", "tunnels"] as const) {
+    for (const kind of ["history", "files", "diff", "services"] as const) {
       expect(panelIndicator(kind, { ...base, gitDirty: true, dockerRunning: 2 })).toEqual({
         dot: null,
         count: null,
@@ -170,16 +171,16 @@ describe("visiblePanels", () => {
     expect(visiblePanels(all)).toEqual([
       "history",
       "docker",
-      "tunnels",
+      "services",
       "git",
       "agents",
     ]);
   });
 
-  test("túneis só em SSH; arquivos fora do header (menu, paleta e atalho); git só com repo (Diff é seção da tela de Git); docker pela preferência", () => {
+  test("serviços em toda sessão (local ou SSH); arquivos fora do header (menu, paleta e atalho); git só com repo (Diff é seção da tela de Git); docker pela preferência", () => {
     expect(
       visiblePanels({ ...all, isSsh: false, hasRepo: false, showDocker: false, agentsAvailable: false }),
-    ).toEqual(["history"]);
+    ).toEqual(["history", "services"]);
   });
 
   test("sem sessão, sem abas", () => {
