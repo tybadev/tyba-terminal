@@ -49,6 +49,58 @@ export function findUrlsInLine(line: string): UrlMatch[] {
   return matches;
 }
 
+/** Prefixo do "link" de caminho: não é URL, e por isso nunca vai ao navegador. */
+export const PATH_URI_PREFIX = "tyba-path:";
+
+export interface PathMatch {
+  path: string;
+  line?: number;
+  column?: number;
+  start: number;
+  end: number;
+}
+
+// Um caminho de arquivo como ferramenta imprime: `src/app.tsx`, `./a/b.rs:12`,
+// `/abs/x.py:3:7`. A extensão começa com letra — `1.2.3` é versão, não arquivo.
+const PATH_PATTERN =
+  /(?<![\w/.~-])((?:~|\.{1,2})?\/?(?:[\w@.-]+\/)*[\w@-][\w@.-]*\.[A-Za-z][A-Za-z0-9]{0,7})(?::(\d+)(?::(\d+))?)?(?![\w/])/g;
+
+/**
+ * Caminhos de arquivo numa linha. Para não acender toda palavra com ponto, só
+ * conta quem tem uma barra no caminho ou um `:linha` depois — `e.g.` e
+ * `package.json` soltos no meio de uma frase ficam de fora; `src/x.ts` e
+ * `x.ts:12` entram. O que está dentro de uma URL não é caminho.
+ */
+export function findPathsInLine(line: string): PathMatch[] {
+  const urls = findUrlsInLine(line);
+  const inUrl = (start: number, end: number) => urls.some((u) => start < u.end && end > u.start);
+  const found: PathMatch[] = [];
+  for (const m of line.matchAll(PATH_PATTERN)) {
+    const start = m.index ?? 0;
+    const end = start + m[0].length;
+    const path = m[1];
+    if (!path.includes("/") && !m[2]) continue;
+    if (inUrl(start, end)) continue;
+    found.push({
+      path,
+      line: m[2] ? Number(m[2]) : undefined,
+      column: m[3] ? Number(m[3]) : undefined,
+      start,
+      end,
+    });
+  }
+  return found;
+}
+
+/** `tyba-path:src/a.ts:12` → `{ path, line }`. */
+export function parsePathUri(uri: string): { path: string; line?: number } | null {
+  if (!uri.startsWith(PATH_URI_PREFIX)) return null;
+  const rest = uri.slice(PATH_URI_PREFIX.length);
+  const m = /^(.*?)(?::(\d+))?$/.exec(rest);
+  if (!m || !m[1]) return null;
+  return { path: m[1], line: m[2] ? Number(m[2]) : undefined };
+}
+
 export function logicalLineWindow(
   rows: ReadonlyArray<{ isWrapped: boolean }>,
   index: number,
@@ -80,6 +132,7 @@ interface CellRef {
 export function createTerminalLinkProvider(
   term: Terminal,
   callbacks: TerminalLinkCallbacks,
+  options?: { files?: () => boolean },
 ): ILinkProvider {
   return {
     provideLinks(y, callback) {
@@ -128,7 +181,16 @@ export function createTerminalLinkProvider(
         }
       }
 
-      const matches = findUrlsInLine(text);
+      const matches = findUrlsInLine(text).map((m) => ({ start: m.start, end: m.end, url: m.url }));
+      if (options?.files?.()) {
+        for (const p of findPathsInLine(text)) {
+          matches.push({
+            start: p.start,
+            end: p.end,
+            url: `${PATH_URI_PREFIX}${p.path}${p.line ? `:${p.line}` : ""}`,
+          });
+        }
+      }
       if (matches.length === 0) {
         callback(undefined);
         return;

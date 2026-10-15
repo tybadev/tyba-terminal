@@ -111,6 +111,17 @@ pub const fn default_sound(kind: NotifyKind) -> Option<&'static str> {
     }
 }
 
+/// Os sons do macOS que as Configurações oferecem. O "▶ ouvir" só toca um
+/// destes: o nome vira caminho fixo em `/System/Library/Sounds`, nunca um
+/// caminho vindo de fora.
+pub const MAC_SOUNDS: &[&str] = &["Ping", "Glass", "Submarine", "Hero", "Funk", "Blow"];
+
+pub fn preview_sound_path(name: &str) -> Option<std::path::PathBuf> {
+    MAC_SOUNDS
+        .contains(&name)
+        .then(|| std::path::PathBuf::from(format!("/System/Library/Sounds/{name}.aiff")))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NotifyPolicy {
     /// Falso silencia o aviso do sistema. O toast dentro do app continua: quem
@@ -155,6 +166,16 @@ pub fn resolve(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ouvir_so_toca_som_da_lista() {
+        assert_eq!(
+            preview_sound_path("Ping"),
+            Some(std::path::PathBuf::from("/System/Library/Sounds/Ping.aiff"))
+        );
+        assert_eq!(preview_sound_path("../../etc/passwd"), None);
+        assert_eq!(preview_sound_path(""), None);
+    }
 
     #[test]
     fn sem_preferencia_gravada_o_aviso_sai_com_o_som_de_fabrica() {

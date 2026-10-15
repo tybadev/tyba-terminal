@@ -65,7 +65,10 @@ import {
 import {
   createTerminalLinkProvider,
   hasOpenModifier,
+  parsePathUri,
 } from "../lib/terminalLinks";
+import { fileLinksEnabled } from "../lib/fileLinks";
+import { openEditorTab } from "../lib/contentTabs";
 import { IS_MAC } from "../lib/platform";
 import {
   hiddenFraction,
@@ -584,7 +587,7 @@ export function TerminalView({
 
     const revealLink = (uri: string) => {
       hoveredLinkRef.current = uri;
-      el.title = uri;
+      el.title = parsePathUri(uri)?.path ?? uri;
     };
     const clearLink = () => {
       hoveredLinkRef.current = null;
@@ -592,6 +595,12 @@ export function TerminalView({
     };
     const activateLink = (event: MouseEvent, uri: string) => {
       if (!hasOpenModifier(event, IS_MAC)) return;
+      // Caminho de arquivo abre no editor do TYBA, nunca no navegador.
+      const file = parsePathUri(uri);
+      if (file) {
+        void openEditorTab(file.path, file.line, { session: sessionId }).catch(() => {});
+        return;
+      }
       void openExternalUrl(uri);
     };
 
@@ -627,11 +636,15 @@ export function TerminalView({
     term.loadAddon(search);
 
     const linkProvider = term.registerLinkProvider(
-      createTerminalLinkProvider(term, {
-        activate: activateLink,
-        hover: (_event, uri) => revealLink(uri),
-        leave: () => clearLink(),
-      }),
+      createTerminalLinkProvider(
+        term,
+        {
+          activate: activateLink,
+          hover: (_event, uri) => revealLink(uri),
+          leave: () => clearLink(),
+        },
+        { files: fileLinksEnabled },
+      ),
     );
 
     // Consulta de terminal (DA, DSR, DECRQM, DECRQSS, XTWINOPS de relatório,
