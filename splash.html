@@ -2,14 +2,16 @@
 <!--
   Splash do arranque: janela própria (label `splash`, ver tauri.conf.json e
   src-tauri/src/splash.rs), mostrada enquanto a janela principal e o core
-  sobem. Sem JavaScript e sem rede: tema pelo `prefers-color-scheme` do
-  SISTEMA, movimento pelo `prefers-reduced-motion`, fontes do bundle.
+  sobem. Sem rede. Tema: o salvo no core, que chega por public/splash-boot.js
+  (o único JavaScript daqui); sem ele, o `prefers-color-scheme` do sistema.
+  Movimento pelo `prefers-reduced-motion`, fontes do bundle.
 -->
 <html lang="pt-BR">
   <head>
     <meta charset="UTF-8" />
     <meta name="color-scheme" content="dark light" />
     <title>Tyba</title>
+    <script src="/splash-boot.js"></script>
     <link rel="stylesheet" href="/src/splash.css" />
   </head>
   <body>

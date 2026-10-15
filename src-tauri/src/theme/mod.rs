@@ -187,6 +187,55 @@ fn is_hex_color(s: &str) -> bool {
     matches!(hex.len(), 3 | 6 | 8) && hex.chars().all(|c| c.is_ascii_hexdigit())
 }
 
+/// Cores do splash para um tema: o splash nasce antes do front e não lê o
+/// `styles.css` inteiro, então recebe do core só o essencial.
+///
+/// `None` para o TYBA escuro e claro, que o `splash.css` já desenha com os
+/// valores do mockup. Tema importado usa as cores de interface; esquema
+/// embutido (Solarized, Dracula…) só tem a paleta do terminal no core, e ela é
+/// a cara do esquema: fundo, texto e os ANSI verde, ciano e magenta.
+fn splash_palette(theme: &Theme) -> Option<serde_json::Value> {
+    if theme.id == BUILTIN_DARK || theme.id == BUILTIN_LIGHT {
+        return None;
+    }
+    let term = &theme.terminal;
+    let ansi = |i: usize| term.ansi.get(i).map(String::as_str);
+    let ui = |k: &str| theme.ui.get(k).map(String::as_str);
+    let pick = |ui_key: &str, fallback: Option<&str>| {
+        ui(ui_key)
+            .filter(|c| is_hex_color(c))
+            .or(fallback.filter(|c| is_hex_color(c)))
+            .map(str::to_owned)
+    };
+    let bg = pick("bg", Some(term.background.as_str()))?;
+    let fg = pick("text", Some(term.foreground.as_str()))?;
+    let mut out = serde_json::Map::new();
+    out.insert("bg".into(), bg.into());
+    out.insert("fg".into(), fg.into());
+    for (key, ui_key, fallback) in [
+        ("muted", "textMuted", None),
+        ("green", "green", ansi(2)),
+        ("cyan", "cyan", ansi(6)),
+        ("violet", "violet", ansi(5)),
+    ] {
+        if let Some(c) = pick(ui_key, fallback) {
+            out.insert(key.into(), c.into());
+        }
+    }
+    Some(serde_json::Value::Object(out))
+}
+
+/// O que o splash precisa saber do tema, em JSON: o modo e as cores de cada
+/// slot. Só hex validado entra, e o JSON é o único canal até a página.
+pub fn splash_boot_json(state: &ThemeState) -> String {
+    serde_json::json!({
+        "mode": state.mode.as_str(),
+        "dark": splash_palette(&state.dark),
+        "light": splash_palette(&state.light),
+    })
+    .to_string()
+}
+
 pub fn parse_theme(json: &str) -> Result<ThemeFile, ThemeError> {
     let theme: ThemeFile = serde_json::from_str(json)?;
     validate(&theme)?;
@@ -464,6 +513,53 @@ impl ThemeManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn splash_tyba_builtins_keep_the_css_defaults() {
+        let state = ThemeState {
+            mode: ThemeMode::Light,
+            dark: builtin(ThemeBase::Dark),
+            light: builtin(ThemeBase::Light),
+        };
+        let v: serde_json::Value = serde_json::from_str(&splash_boot_json(&state)).unwrap();
+        assert_eq!(v["mode"], "light");
+        assert!(v["dark"].is_null());
+        assert!(v["light"].is_null());
+    }
+
+    #[test]
+    fn splash_scheme_uses_the_terminal_palette() {
+        let solarized = builtin_by_id("solarized-dark").unwrap();
+        let p = splash_palette(&solarized).unwrap();
+        assert_eq!(p["bg"], solarized.terminal.background.as_str());
+        assert_eq!(p["fg"], solarized.terminal.foreground.as_str());
+        assert_eq!(p["green"], solarized.terminal.ansi[2].as_str());
+        assert!(p.get("muted").is_none());
+    }
+
+    #[test]
+    fn splash_imported_prefers_ui_colors_and_drops_invalid_ones() {
+        let mut theme = builtin_by_id("solarized-dark").unwrap();
+        theme.id = "importado".into();
+        theme.builtin = false;
+        theme.ui.insert("bg".into(), "#101010".into());
+        theme.ui.insert("text".into(), "#eeeeee".into());
+        theme.ui.insert("violet".into(), "red; } body { x".into());
+        let p = splash_palette(&theme).unwrap();
+        assert_eq!(p["bg"], "#101010");
+        assert_eq!(p["fg"], "#eeeeee");
+        // inválido na UI cai para o ANSI do terminal, nunca vai cru
+        assert_eq!(p["violet"], theme.terminal.ansi[5].as_str());
+    }
+
+    #[test]
+    fn splash_without_valid_bg_falls_back_to_css() {
+        let mut theme = builtin_by_id("solarized-dark").unwrap();
+        theme.id = "importado".into();
+        theme.ui.insert("bg".into(), "url(x)".into());
+        theme.terminal.background = "nope".into();
+        assert!(splash_palette(&theme).is_none());
+    }
 
     const VALID: &str = r##"{
         "name": "Dracula",

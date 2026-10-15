@@ -1,9 +1,9 @@
 //! Janela de splash do arranque.
 //!
-//! O `tauri.conf.json` declara duas janelas: `splash` (pequena, sem borda,
-//! centrada, visível) e `main` (escondida). O splash aparece no instante em que
-//! o processo sobe; a `main` só é mostrada quando o front avisa que o app está
-//! pronto — o mesmo sinal que antes tirava o splash de dentro do webview (o
+//! O `tauri.conf.json` declara a `main` (escondida); o splash (pequeno, sem
+//! borda, centrado) nasce em [`open`], no `.setup()`, logo depois de o banco
+//! abrir, porque precisa do tema salvo antes de pintar. A `main` só é mostrada
+//! quando o front avisa que o app está pronto — o mesmo sinal que antes tirava o splash de dentro do webview (o
 //! `SPLASH_DONE_EVENT`, que o `App` dispara quando o core termina de carregar).
 //!
 //! O aviso vem pelo comando [`splash_done`]. A rede é o [`CEILING`], armado no
@@ -14,7 +14,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use tauri::{AppHandle, Manager, Runtime};
+use tauri::{AppHandle, Manager, Runtime, WebviewUrl, WebviewWindowBuilder};
 
 pub const SPLASH_LABEL: &str = "splash";
 const MAIN_LABEL: &str = "main";
@@ -37,6 +37,33 @@ impl SplashLatch {
     /// `true` só para o primeiro chamador.
     pub fn take(&self) -> bool {
         !self.0.swap(true, Ordering::AcqRel)
+    }
+}
+
+/// Script que entrega o tema ao splash antes de qualquer script da página:
+/// o `public/splash-boot.js` lê `window.__TYBA_SPLASH__` no `<head>` e aplica.
+/// `boot_json` vem de [`crate::theme::splash_boot_json`] (só hex validado), e
+/// vai como literal JSON, que já é JavaScript válido e não fecha nada.
+pub fn boot_script(boot_json: &str) -> String {
+    format!("window.__TYBA_SPLASH__ = {boot_json};")
+}
+
+/// Abre o splash com o tema salvo. Falha aqui não derruba o boot: sem splash,
+/// a `main` aparece pelo [`CEILING`] ou pelo aviso do front.
+pub fn open<R: Runtime>(app: &AppHandle<R>, boot_json: &str) {
+    let built = WebviewWindowBuilder::new(app, SPLASH_LABEL, WebviewUrl::App("splash.html".into()))
+        .title("Tyba")
+        .inner_size(360.0, 240.0)
+        .center()
+        .resizable(false)
+        .maximizable(false)
+        .minimizable(false)
+        .decorations(false)
+        .skip_taskbar(true)
+        .initialization_script(boot_script(boot_json))
+        .build();
+    if let Err(e) = built {
+        eprintln!("[tyba] splash não abriu: {e}");
     }
 }
 
@@ -79,6 +106,15 @@ pub fn splash_done(app: AppHandle) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn boot_script_is_a_plain_assignment() {
+        let json = r#"{"mode":"dark","dark":null,"light":null}"#;
+        assert_eq!(
+            boot_script(json),
+            r#"window.__TYBA_SPLASH__ = {"mode":"dark","dark":null,"light":null};"#
+        );
+    }
+
     use super::*;
     use std::sync::Arc;
 

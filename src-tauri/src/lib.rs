@@ -8402,6 +8402,9 @@ pub fn run() {
                 Arc::clone(&store),
                 config_dir.join("themes"),
             ));
+            // O splash nasce aqui, e não no `tauri.conf.json`: precisa do tema
+            // salvo, que só existe depois de o banco abrir.
+            splash::open(app.handle(), &theme::splash_boot_json(&themes.state()));
 
             let agent_prober: agent::process_probe::SharedAgentProber =
                 Arc::new(agent::process_probe::AgentProber::default());
