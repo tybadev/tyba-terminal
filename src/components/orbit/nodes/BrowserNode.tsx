@@ -15,7 +15,7 @@ import {
 } from "@/lib/orbitBrowser";
 import { browserControllers } from "@/lib/orbitTalk";
 import { NodeFrame, useOrbit, type OrbitFlowNode } from "./NodeFrame";
-import { useBrowserState, useNativeOcclusion } from "./useNativeOcclusion";
+import { useBrowserPreview, useBrowserState, useNativeOcclusion } from "./useNativeOcclusion";
 
 type BrowserKind = Extract<NodeKind, { type: "browser" }>;
 
@@ -210,6 +210,7 @@ function NativeBrowserNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
   const current = state?.url ?? "";
   const marker = useRef<HTMLDivElement>(null);
   useNativeOcclusion(graphId, id, marker, graphId !== "", owner);
+  const preview = useBrowserPreview(graphId, id, state?.previewAt);
 
   const go = (url: string) => {
     if (graphId) void browserNavigate(graphId, id, url).catch(() => {});
@@ -292,7 +293,17 @@ function NativeBrowserNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
         ref={marker}
         className="nodrag relative mx-1.5 mb-0.5 min-h-0 flex-1 overflow-hidden rounded-[10px] border border-tyba-border bg-tyba-sunken"
       >
-        {(!state?.live || current === "") && (
+        {!state?.live && current !== "" && preview && (
+          // A prévia no tamanho da view (o print é da página inteira à
+          // vista, sem o zoom do canvas).
+          <img
+            src={preview}
+            alt=""
+            draggable={false}
+            className="absolute inset-0 h-full w-full object-cover object-left-top"
+          />
+        )}
+        {(!state?.live || current === "") && !(preview && current !== "") && (
           <p className="absolute inset-0 flex items-center justify-center px-6 text-center font-mono text-[12px] text-tyba-text-faint">
             {current === ""
               ? state?.refused

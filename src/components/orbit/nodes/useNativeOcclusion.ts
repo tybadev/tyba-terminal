@@ -4,6 +4,7 @@ import { useStoreApi } from "@xyflow/react";
 import {
   OCCLUDER_SELECTOR,
   SETTLE_MS,
+  browserPreview,
   browserState,
   browserView,
   occlusionVerdict,
@@ -46,6 +47,26 @@ export function useBrowserState(
     };
   }, [graphId, nodeId]);
   return { state, ready };
+}
+
+/** O último print (data URL), buscado de novo a cada `previewAt`. */
+export function useBrowserPreview(
+  graphId: string,
+  nodeId: string,
+  previewAt: number | null | undefined,
+): string | null {
+  const [src, setSrc] = useState<string | null>(null);
+  useEffect(() => {
+    if (previewAt == null) return;
+    let alive = true;
+    void browserPreview(graphId, nodeId)
+      .then((b64) => alive && b64 && setSrc(`data:image/jpeg;base64,${b64}`))
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [graphId, nodeId, previewAt]);
+  return src;
 }
 
 /**

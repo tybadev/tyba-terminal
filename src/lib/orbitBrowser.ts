@@ -173,6 +173,10 @@ export const browserReload = (graphId: string, nodeId: string) =>
 export const browserState = (graphId: string, nodeId: string) =>
   invoke<BrowserState | null>("orbit_browser_state", { graphId, nodeId });
 
+/** O último print da página (JPEG em base64), para a prévia do card. */
+export const browserPreview = (graphId: string, nodeId: string) =>
+  invoke<string | null>("orbit_browser_preview", { graphId, nodeId });
+
 /** Só ficam vivos os navegadores que o canvas mostra (vazio: todos saem). */
 export const browserRetain = (graphId: string, nodeIds: string[]) =>
   invoke<void>("orbit_browser_retain", { graphId, nodeIds });

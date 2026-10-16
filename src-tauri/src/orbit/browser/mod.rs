@@ -22,7 +22,7 @@ use std::path::PathBuf;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 use super::{EdgeKind, Graph};
 
@@ -133,6 +133,8 @@ pub enum Op {
     },
     Back(ViewKey),
     Reload(ViewKey),
+    /// Tira o print da página (a prévia do card).
+    Snapshot(ViewKey),
     /// Destrói toda view que não está na lista.
     Retain(Vec<ViewKey>),
 }
@@ -144,12 +146,19 @@ struct Entry {
     zoom: f64,
     /// Raízes canônicas do `orbit-file` (para mostrar a url).
     roots: Vec<PathBuf>,
+    /// O último print (JPEG em base64) para a prévia do card.
+    preview: Option<String>,
+    /// A página mudou desde o último print (título, url, clique ou tecla).
+    dirty: bool,
+    last_shot: u64,
 }
 
 /// O registro dos navegadores nativos (estado no core).
 #[derive(Default)]
 pub struct BrowserViews {
     entries: Mutex<HashMap<ViewKey, Entry>>,
+    /// O relógio dos prints periódicos já roda?
+    ticking: std::sync::atomic::AtomicBool,
     /// Centro da área do canvas (o mais perto dele fica vivo primeiro).
     center: Mutex<(f64, f64)>,
 }
@@ -187,6 +196,38 @@ pub fn pick_live(wanted: &[(ViewRect, bool)], center: (f64, f64), max: usize) ->
     order.truncate(max);
     order.sort_unstable();
     order
+}
+
+/// O que pede um print novo.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShotTrigger {
+    /// A página terminou de carregar.
+    Loaded,
+    /// O dono parou de usar a página.
+    OwnerLeft,
+    /// Um agente agiu (clicou, digitou).
+    AgentAction,
+    /// O relógio: a cada [`SHOT_EVERY_MS`], só view viva e página mudada.
+    Tick,
+}
+
+/// De quanto em quanto tempo, no máximo, a view viva e mudada ganha print.
+pub const SHOT_EVERY_MS: u64 = 5_000;
+/// Teto da prévia em base64 (acima, fica a anterior).
+pub const MAX_PREVIEW_B64: usize = 400 * 1024;
+
+/// Tirar print agora? Esconder nunca espera print: usa o último que existe.
+pub fn should_shoot(
+    trigger: ShotTrigger,
+    live: bool,
+    dirty: bool,
+    last_shot: u64,
+    now: u64,
+) -> bool {
+    match trigger {
+        ShotTrigger::Loaded | ShotTrigger::OwnerLeft | ShotTrigger::AgentAction => true,
+        ShotTrigger::Tick => live && dirty && now.saturating_sub(last_shot) >= SHOT_EVERY_MS,
+    }
 }
 
 /// A recusa a `click`/`type` de agente com o dono usando a página: na hora,
@@ -258,6 +299,12 @@ pub fn clean_page_title(title: &str) -> String {
         .collect::<String>()
         .trim()
         .to_string()
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
 }
 
 /// Entrega a operação à main thread (no macOS); nos outros sistemas não há
@@ -486,15 +533,84 @@ impl BrowserViews {
         self.update(app, key, |e| {
             e.state.url = policy::display_url(url, &e.roots);
             e.state.loading = !finished;
+            e.dirty = true;
             if !finished {
                 e.state.refused = None;
             }
         });
+        if finished {
+            // O WebKit pinta logo depois do `load`: um respiro antes do print.
+            let app = app.clone();
+            let key = key.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(400));
+                app.state::<BrowserViews>()
+                    .shoot(&app, &key, ShotTrigger::Loaded);
+            });
+        }
     }
 
     pub fn on_title(&self, app: &AppHandle, key: &ViewKey, title: &str) {
         let title = clean_page_title(title);
-        self.update(app, key, |e| e.state.title = title);
+        self.update(app, key, |e| {
+            e.dirty = true;
+            e.state.title = title;
+        });
+    }
+
+    /// O dono clicou ou digitou na página: o próximo tique tira print.
+    pub fn mark_dirty(&self, key: &ViewKey) {
+        if let Some(e) = self.entries.lock().get_mut(key) {
+            e.dirty = true;
+        }
+    }
+
+    /// Pede o print, se a regra ([`should_shoot`]) deixa.
+    pub fn shoot(&self, app: &AppHandle, key: &ViewKey, trigger: ShotTrigger) {
+        let go =
+            self.entries.lock().get(key).is_some_and(|e| {
+                should_shoot(trigger, e.state.live, e.dirty, e.last_shot, now_ms())
+            });
+        if go {
+            dispatch(app, Op::Snapshot(key.clone()));
+        }
+    }
+
+    /// O print chegou (JPEG em base64): vira a prévia do card.
+    pub fn on_snapshot(&self, app: &AppHandle, key: &ViewKey, b64: String) {
+        if b64.len() > MAX_PREVIEW_B64 {
+            return;
+        }
+        let at = now_ms();
+        self.update(app, key, |e| {
+            e.preview = Some(b64);
+            e.dirty = false;
+            e.last_shot = at;
+            e.state.preview_at = Some(at);
+        });
+    }
+
+    /// A prévia guardada (o front a busca quando `previewAt` muda).
+    pub fn preview(&self, key: &ViewKey) -> Option<String> {
+        self.entries.lock().get(key).and_then(|e| e.preview.clone())
+    }
+
+    /// O relógio dos prints periódicos (um por app, a cada segundo confere
+    /// [`ShotTrigger::Tick`] em cada navegador).
+    pub fn start_ticking(&self, app: &AppHandle) {
+        use std::sync::atomic::Ordering;
+        if self.ticking.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let app = app.clone();
+        std::thread::spawn(move || loop {
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            let views = app.state::<BrowserViews>();
+            let keys: Vec<ViewKey> = views.entries.lock().keys().cloned().collect();
+            for key in keys {
+                views.shoot(&app, &key, ShotTrigger::Tick);
+            }
+        });
     }
 
     /// A política recusou uma navegação (de qualquer frame).
@@ -525,6 +641,9 @@ impl BrowserViews {
         };
         for (k, s) in &changed {
             Self::emit(app, k, s);
+            if s.focus == Focus::None {
+                self.shoot(app, k, ShotTrigger::OwnerLeft);
+            }
         }
     }
 
@@ -753,5 +872,18 @@ mod tests {
             KeyRoute::Page
         );
         assert_eq!(route_key(0, none, "w"), KeyRoute::Page);
+    }
+
+    #[test]
+    fn snapshot_rule() {
+        use ShotTrigger::*;
+        for t in [Loaded, OwnerLeft, AgentAction] {
+            assert!(should_shoot(t, false, false, 0, 0));
+        }
+        let t0 = 1_000_000;
+        assert!(should_shoot(Tick, true, true, t0, t0 + SHOT_EVERY_MS));
+        assert!(!should_shoot(Tick, true, true, t0, t0 + SHOT_EVERY_MS - 1));
+        assert!(!should_shoot(Tick, false, true, t0, t0 + 60_000));
+        assert!(!should_shoot(Tick, true, false, t0, t0 + 60_000));
     }
 }

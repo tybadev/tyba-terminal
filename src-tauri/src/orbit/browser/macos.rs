@@ -78,6 +78,7 @@ pub(super) fn apply(app: &AppHandle, op: Op) {
                             v.borrow_mut().insert(key.clone(), view);
                         });
                         install_monitors(app);
+                        app.state::<BrowserViews>().start_ticking(app);
                     }
                     Err(e) => {
                         eprintln!("[tyba] navegador do orbit: criar a view: {e}");
@@ -109,6 +110,11 @@ pub(super) fn apply(app: &AppHandle, op: Op) {
         Op::Reload(key) => VIEWS.with(|v| {
             if let Some(view) = v.borrow().get(&key) {
                 let _ = view.webview.reload();
+            }
+        }),
+        Op::Snapshot(key) => VIEWS.with(|v| {
+            if let Some(view) = v.borrow().get(&key) {
+                snapshot(app, &key, view);
             }
         }),
         Op::Retain(keep) => {
@@ -412,9 +418,11 @@ fn install_monitors(app: &AppHandle) {
                 .contentView()
                 .and_then(|c| c.hitTest(ev.locationInWindow()))
                 .and_then(|v| node_of(&v));
-            click_app
-                .state::<BrowserViews>()
-                .set_owner(&click_app, hit.as_ref());
+            let views = click_app.state::<BrowserViews>();
+            views.set_owner(&click_app, hit.as_ref());
+            if let Some(k) = &hit {
+                views.mark_dirty(k);
+            }
         }
         event.as_ptr()
     });
@@ -426,14 +434,13 @@ fn install_monitors(app: &AppHandle) {
         let Some(window) = ev.window(mtm).filter(|w| is_main_window(&key_app, w)) else {
             return event.as_ptr();
         };
-        let in_page = window
+        let Some(node) = window
             .firstResponder()
             .and_then(|r| r.downcast::<NSView>().ok())
             .and_then(|v| node_of(&v))
-            .is_some();
-        if !in_page {
+        else {
             return event.as_ptr();
-        }
+        };
         let flags = ev.modifierFlags();
         let mods = Mods {
             shift: flags.contains(NSEventModifierFlags::Shift),
@@ -446,7 +453,10 @@ fn install_monitors(app: &AppHandle) {
             .map(|c| c.to_string())
             .unwrap_or_default();
         match route_key(ev.keyCode(), mods, &chars) {
-            KeyRoute::Page => event.as_ptr(),
+            KeyRoute::Page => {
+                key_app.state::<BrowserViews>().mark_dirty(&node);
+                event.as_ptr()
+            }
             KeyRoute::GiveBack => {
                 give_back(&window);
                 key_app.state::<BrowserViews>().set_owner(&key_app, None);
@@ -471,4 +481,67 @@ fn install_monitors(app: &AppHandle) {
         ]
     };
     MONITORS.with(|m| m.borrow_mut().extend(monitors.into_iter().flatten()));
+}
+
+// ── print ───────────────────────────────────────────────────────────────────
+
+/// Largura máxima da prévia, em pontos.
+const PREVIEW_MAX_W: f64 = 640.0;
+
+/// `takeSnapshot` → JPEG (fator 0,7) em base64 → [`BrowserViews::on_snapshot`].
+/// Funciona com a view escondida (conferido no protótipo: o print sai com a
+/// página certa, inclusive o que foi digitado).
+fn snapshot(app: &AppHandle, key: &ViewKey, view: &NativeView) {
+    use base64::Engine;
+    use objc2_app_kit::{
+        NSBitmapImageFileType, NSBitmapImageRep, NSImage, NSImageCompressionFactor,
+    };
+    use objc2_foundation::{NSDictionary, NSError, NSNumber};
+    use objc2_web_kit::WKSnapshotConfiguration;
+
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    let width = view.wk.frame().size.width;
+    if width < 10.0 {
+        return;
+    }
+    // SAFETY: main thread; a configuração é nossa.
+    let config = unsafe { WKSnapshotConfiguration::new(mtm) };
+    let number = NSNumber::new_f64(width.min(PREVIEW_MAX_W));
+    // SAFETY: `snapshotWidth` aceita um `NSNumber` em pontos.
+    unsafe { config.setSnapshotWidth(Some(&number)) };
+    let done_app = app.clone();
+    let done_key = key.clone();
+    let block = RcBlock::new(move |image: *mut NSImage, _error: *mut NSError| {
+        // SAFETY: o WebKit entrega imagem válida ou nula.
+        let Some(image) = (unsafe { image.as_ref() }) else {
+            return;
+        };
+        let Some(tiff) = image.TIFFRepresentation() else {
+            return;
+        };
+        let Some(rep) = NSBitmapImageRep::imageRepWithData(&tiff) else {
+            return;
+        };
+        let factor = NSNumber::new_f64(0.7);
+        // SAFETY: a chave é a constante do AppKit e o valor um `NSNumber`.
+        let jpeg = unsafe {
+            let props =
+                NSDictionary::from_slices(&[NSImageCompressionFactor], &[&*factor as &AnyObject]);
+            rep.representationUsingType_properties(NSBitmapImageFileType::JPEG, &props)
+        };
+        let Some(jpeg) = jpeg else {
+            return;
+        };
+        let b64 = base64::engine::general_purpose::STANDARD.encode(jpeg.to_vec());
+        done_app
+            .state::<BrowserViews>()
+            .on_snapshot(&done_app, &done_key, b64);
+    });
+    // SAFETY: main thread; o bloco é copiado pelo WebKit.
+    unsafe {
+        view.wk
+            .takeSnapshotWithConfiguration_completionHandler(Some(&config), &block)
+    };
 }

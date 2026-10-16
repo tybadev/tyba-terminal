@@ -8916,6 +8916,16 @@ fn orbit_browser_state(
     views.state(&browser_key(graph_id, node_id))
 }
 
+/// A prévia do card: o último print da página (JPEG em base64).
+#[tauri::command]
+fn orbit_browser_preview(
+    views: State<'_, orbit::browser::BrowserViews>,
+    graph_id: String,
+    node_id: String,
+) -> Option<String> {
+    views.preview(&browser_key(graph_id, node_id))
+}
+
 /// Só sobrevivem os navegadores que o canvas mostra; o Orbit fechado manda
 /// a lista vazia e toda view nativa é destruída.
 #[tauri::command]
@@ -10019,6 +10029,7 @@ pub fn run() {
             orbit_browser_back,
             orbit_browser_reload,
             orbit_browser_state,
+            orbit_browser_preview,
             orbit_browser_retain,
             orbit_service_logs_retain,
             orbit_export,
