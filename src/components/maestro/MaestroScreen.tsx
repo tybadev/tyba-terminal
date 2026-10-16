@@ -42,7 +42,11 @@ import {
 import {
   EMPTY_RUN_VIEW,
   INTEGRATION_DRAG_TYPE,
+  agentSessions as agentSessionsOf,
   browserFed,
+  findSessionNode,
+  integrationsById,
+  invalidEdges,
   createdDetail,
   createdByOf,
   ephemeralCreated,
@@ -72,6 +76,7 @@ import {
   runGet,
   runNode,
   runNumber,
+  runCreated,
   runReducer,
   runStart,
   runStop,
@@ -91,7 +96,6 @@ import { IntegrationsPanel } from "./IntegrationsPanel";
 import { MaestroCanvas, type MaestroFlowEdge } from "./MaestroCanvas";
 import { RunTimeline } from "./RunTimeline";
 import { MaestroContext, STATUS_TONE, type MaestroFlowNode } from "./nodes/NodeFrame";
-import { nodeSession } from "./nodes/NodeTerminal";
 import { SubagentMark, subagentTone, useSubagentTime } from "./nodes/SubagentNode";
 import { useNodeSubagents } from "./useNodeSubagents";
 import { SubagentTranscript } from "@/components/SubagentViewer";
@@ -114,15 +118,24 @@ const sep = <span aria-hidden className="mx-2 h-5 w-px bg-tyba-border-strong" />
  * quando aberto, o painel de variáveis. O grafo não é preso à pasta da
  * sessão: escolhe-se pelo nome na barra, e cada nó tem a própria pasta.
  */
-export function MaestroScreen() {
+export function MaestroScreen({ focusSession = null }: { focusSession?: FocusSessionRequest | null }) {
   return (
     <ReactFlowProvider>
-      <MaestroInner />
+      <MaestroInner focusSession={focusSession} />
     </ReactFlowProvider>
   );
 }
 
-function MaestroInner() {
+/**
+ * Pedido de fora (Serviços e portas, no Workspace) para ir ao nó de uma
+ * sessão: o `nonce` repete o pedido para a mesma sessão.
+ */
+export interface FocusSessionRequest {
+  sessionId: string;
+  nonce: number;
+}
+
+function MaestroInner({ focusSession }: { focusSession: FocusSessionRequest | null }) {
   const { t, i18n } = useTranslation();
   // Home: onde nasce o nó quando ainda não há pasta usada. `null` = lendo.
   const [home, setHome] = useState<string | null>(null);
@@ -212,11 +225,12 @@ function MaestroInner() {
     return () => clearTimeout(timer);
   }, [snapshot, t]);
 
-  // Escuta cada run rodando; depois de assinar, relê o run para não perder o
-  // que mudou antes (o core já emite na largada). O reducer descarta retrato
-  // velho, então a ordem entre evento e leitura não importa.
-  const runningIds = runView.runs
-    .filter((r) => r.status === "running")
+  // Escuta cada run rodando ou com agente vivo (o run fecha antes do agente,
+  // e a saída dele chega como retrato novo com `liveAgents` sem a sessão);
+  // depois de assinar, relê o run para não perder o que mudou antes (o core
+  // já emite na largada). O reducer descarta retrato velho, então a ordem
+  // entre evento e leitura não importa.
+  const runningIds = stoppableRuns(runView)
     .map((r) => r.id)
     .join(",");
   useEffect(() => {
@@ -245,18 +259,17 @@ function MaestroInner() {
   const running = runView.runs.find((r) => r.status === "running") ?? null;
   const live = run !== null && run.id === latest?.id;
 
-  // Subagentes de cada nó de agente com terminal vivo no run à vista.
-  const agentSessions = useMemo(() => {
-    const out = new Map<string, string>();
-    if (!run) return out;
-    for (const n of nodes) {
-      const kind = n.data.node.kind;
-      if (kind.type !== "agent") continue;
-      const session = nodeSession(kind, run.nodes[n.id], live);
-      if (session) out.set(n.id, session);
-    }
-    return out;
-  }, [nodes, run, live]);
+  // Subagentes de cada nó de agente com terminal vivo no run à vista, os do
+  // grafo e os que o orquestrador criou.
+  const agentSessions = useMemo(
+    () =>
+      agentSessionsOf(
+        nodes.map((n) => n.data.node),
+        run,
+        live,
+      ),
+    [nodes, run, live],
+  );
   const subagents = useNodeSubagents(agentSessions);
   const [openSub, setOpenSub] = useState<string | null>(null);
   const [focusNode, setFocusNode] = useState<string | null>(null);
@@ -448,6 +461,26 @@ function MaestroInner() {
     [graph, createdNow],
   );
 
+  // Ligação que deixou de valer (saída do processo trocada, integração salva
+  // com outro output ou gatilho) sai na hora, com aviso: a porta dela some,
+  // o xyflow não a desenha, e o core recusaria todo salvar seguinte por ela.
+  // Roda antes do debounce do salvar, então o grafo inválido nunca vai.
+  useEffect(() => {
+    const bad = invalidEdges(graph.nodes, graph.edges, integrationsById(integrations));
+    if (bad.length === 0) return;
+    const ids = new Set(bad.map((e) => e.id));
+    setEdges((es) => es.filter((e) => !ids.has(e.id)));
+    const title = (id: string) => graph.nodes.find((n) => n.id === id)?.title || id;
+    setNotice({
+      text: t("maestroEdgesRemoved", {
+        edges: bad
+          .map((e) => `${title(e.from)} → ${title(e.to)} (${t(`maestroEdge_${e.kind}`)})`)
+          .join(", "),
+      }),
+      warn: true,
+    });
+  }, [graph, integrations, t]);
+
   // Log ao vivo dos serviços: só o seguidor de contêiner que um nó mostra fica.
   const containers = serviceContainers(graph.nodes).join(",");
   useEffect(() => {
@@ -565,7 +598,7 @@ function MaestroInner() {
       setError(t("maestroKeepError", { error: String(e) }));
     }
   };
-  const orchestrated = run?.status === "running" ? (run.created ?? []) : [];
+  const orchestrated = runCreated(run);
 
   /** Troca de grafo: o que está no debounce vai antes para o banco. */
   const switchTo = (next: { id: string | null; fresh: boolean }) => {
@@ -573,6 +606,49 @@ function MaestroInner() {
       .catch(() => {})
       .finally(() => setWant(next));
   };
+
+  // "Ir para o terminal" de uma sessão de nó (Serviços e portas, no
+  // Workspace): a sessão de nó não está em layout nenhum, então o caminho é
+  // o nó. Acha em que grafo/execução ela está, abre esse grafo, seleciona a
+  // execução, centraliza o nó e abre o foco dele.
+  const [goTo, setGoTo] = useState<{ graphId: string; runId: string; nodeId: string } | null>(
+    null,
+  );
+  useEffect(() => {
+    if (!focusSession) return;
+    let alive = true;
+    void (async () => {
+      for (const g of await listGraphs()) {
+        const hit = findSessionNode(await runsList(g.id), focusSession.sessionId);
+        if (hit) {
+          if (alive) setGoTo({ graphId: g.id, ...hit });
+          return;
+        }
+      }
+      if (alive) setNotice({ text: t("maestroSessionNotFound"), warn: true });
+    })().catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [focusSession, t]);
+  useEffect(() => {
+    if (!goTo || !meta) return;
+    if (meta.id !== goTo.graphId) {
+      if (want.id !== goTo.graphId) switchTo({ id: goTo.graphId, fresh: false });
+      return;
+    }
+    // O histórico do grafo recém-aberto ainda está chegando.
+    if (!runView.runs.some((r) => r.id === goTo.runId)) return;
+    setGoTo(null);
+    dispatchRun({ type: "select", runId: goTo.runId });
+    setFocusNode(goTo.nodeId);
+    setNodes((ns) => ns.map((n) => ({ ...n, selected: n.id === goTo.nodeId })));
+    // Um quadro depois: o canvas recém-montado mede os nós antes de enquadrar.
+    requestAnimationFrame(() => {
+      void fitView({ nodes: [{ id: goTo.nodeId }], padding: 0.2, maxZoom: 1, duration: 200 });
+    });
+    // `switchTo` é refeito a cada render e fica fora; `want` diz o que já foi pedido.
+  }, [goTo, meta, runView.runs, want.id, fitView]);
 
   return (
     <MaestroContext.Provider value={ctx}>
@@ -918,8 +994,9 @@ function MaestroInner() {
 
 /**
  * "O que o Orquestrador fez" (quadro MaestroOrquestrador): cada nó criado no
- * run (o quê, comando ou url, pasta, hora) e, no fim, "Manter no grafo" ou
- * "Descartar ao parar" (o padrão: os criados somem no ■ Parar ou no fim).
+ * run à vista (o quê, comando ou url, pasta, hora) e "Manter no grafo", que
+ * vale também depois do fim (o orquestrador saiu, ■ Parar) — é ali que o
+ * dono decide. Descartar é o padrão: o que não for mantido não volta.
  */
 function OrchestratorPanel({
   created,
@@ -978,15 +1055,6 @@ function OrchestratorPanel({
             className={`${btn} border-tyba-border-strong text-tyba-text hover:bg-tyba-raised`}
           >
             {t("maestroKeepInGraph")}
-          </button>
-          <button
-            type="button"
-            disabled={!pending}
-            aria-pressed={pending}
-            title={t("maestroDiscardHint")}
-            className={`${btn} border-tyba-border text-tyba-text-muted`}
-          >
-            {t("maestroDiscardOnStop")}
           </button>
         </div>
       </div>

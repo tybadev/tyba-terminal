@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, type Dispatch, type SetStateAction } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type Dispatch,
+  type SetStateAction,
+} from "react";
 import { useTranslation } from "react-i18next";
 import { Plus, Warning } from "@phosphor-icons/react";
 import {
@@ -56,6 +64,9 @@ import {
   inHandle,
   kindOfOutHandle,
   newNode,
+  nodeSession,
+  nodeUnderPointer,
+  routeNodeChanges,
   type FlowEdgeData,
   type Integration,
   type NodeKind,
@@ -65,7 +76,6 @@ import { BrowserNode } from "./nodes/BrowserNode";
 import { IntegrationNode } from "./nodes/IntegrationNode";
 import { EDGE_COLOR, useMaestro, type MaestroFlowNode } from "./nodes/NodeFrame";
 import { NodeFocus } from "./nodes/NodeFocus";
-import { nodeSession } from "./nodes/NodeTerminal";
 import { NoteNode } from "./nodes/NoteNode";
 import { ProcessNode } from "./nodes/ProcessNode";
 import { ServiceNode } from "./nodes/ServiceNode";
@@ -105,6 +115,20 @@ const EPHEMERAL = {
   deletable: false,
   focusable: false,
 } as const;
+
+/**
+ * Nó criado pelo orquestrador: responde como qualquer nó (clicar, digitar no
+ * terminal, arrastar, redimensionar, selecionar) — com o EPHEMERAL o xyflow
+ * punha `pointer-events: none` nele e nada funcionava. Só não se apaga nem
+ * se liga: ele é do run, não do grafo, até "Manter no grafo".
+ */
+const CREATED = { connectable: false, deletable: false } as const;
+
+/** Onde o dono deixou cada criado no canvas (fora do grafo salvo). */
+type CreatedView = Record<
+  string,
+  { position: { x: number; y: number }; width?: number; height?: number; selected?: boolean }
+>;
 
 /** Ligação com a etiqueta do tipo no meio (quadro: a "pílula"). */
 function MaestroEdgeView({
@@ -225,19 +249,61 @@ export function MaestroCanvas({
           .find((n) => n.id === focusNode))
       : undefined;
     if (!flow) return null;
-    const session = nodeSession(flow.data.node.kind, run?.nodes[flow.id], live);
+    const session = nodeSession(flow.data.node.kind, run, flow.id, live);
     return session ? { node: flow.data.node, session } : null;
   }, [focusNode, nodes, run, live]);
   useEffect(() => {
     if (focusNode && !focused) setFocusNode(null);
   }, [focusNode, focused, setFocusNode]);
 
-  // Filhos efêmeros: montados a cada render a partir do nó do agente, fora do
-  // state `nodes`/`edges` — por isso nunca chegam ao modelo salvo.
+  // Nós que o orquestrador criou no run rodando: fora do state (nunca
+  // salvos), com o terminal/página de verdade, a ligação tracejada do criador
+  // e as ligações url deles. Os mantidos já estão em `nodes`; daqui só sai a
+  // tracejada até eles. Onde o dono os arrastou/redimensionou fica em
+  // `createdView`, que vale enquanto esse run está à vista.
+  const [createdView, setCreatedView] = useState<CreatedView>({});
+  const runId = run?.id ?? null;
+  useEffect(() => setCreatedView({}), [runId]);
+  const created = useMemo(() => {
+    const flow = createdFlow(
+      run,
+      nodes.map((n) => n.data.node),
+    );
+    const ns: MaestroFlowNode[] = flow.nodes.map((n) => {
+      const view = createdView[n.id];
+      const width = view?.width ?? n.width;
+      const height = view?.height ?? n.height;
+      return {
+        ...n,
+        position: view?.position ?? n.position,
+        width,
+        height,
+        selected: view?.selected ?? false,
+        // Com `measured`, o xyflow acha as portas já medidas quando o nó é
+        // recriado a cada render.
+        measured: { width, height },
+        ...CREATED,
+      };
+    });
+    const es: Edge[] = [
+      ...flow.byEdges.map((e) => ({ ...e, style: SUB_EDGE_STYLE, ...EPHEMERAL })),
+      ...flow.edges.map((e) => ({ ...e, ...EPHEMERAL })),
+    ];
+    return {
+      nodes: ns,
+      edges: es,
+      nodeIds: new Set(ns.map((n) => n.id)),
+      edgeIds: new Set(es.map((e) => e.id)),
+    };
+  }, [run, nodes, createdView]);
+
+  // Filhos efêmeros: montados a cada render a partir do nó do agente (do
+  // grafo ou criado pelo orquestrador), fora do state `nodes`/`edges` — por
+  // isso nunca chegam ao modelo salvo.
   const ephemeral = useMemo(() => {
     const ns: (SubagentFlowNode | SubagentRoundsFlowNode)[] = [];
     const es: Edge[] = [];
-    for (const parent of nodes) {
+    for (const parent of [...nodes, ...created.nodes]) {
       const rounds = groupRounds(subagents.get(parent.id) ?? []);
       if (!rounds) continue;
       const box = {
@@ -283,28 +349,7 @@ export function MaestroCanvas({
       }
     }
     return { nodes: ns, edges: es };
-  }, [nodes, subagents]);
-
-  // Nós que o orquestrador criou no run rodando: efêmeros como os
-  // subagentes (fora do state, nunca salvos), com o terminal/página de
-  // verdade, a ligação tracejada do criador e as ligações url deles.
-  // Os mantidos já estão em `nodes`; daqui só sai a tracejada até eles.
-  const created = useMemo(() => {
-    const flow = createdFlow(
-      run,
-      nodes.map((n) => n.data.node),
-    );
-    const ns: MaestroFlowNode[] = flow.nodes.map((n) => ({
-      ...n,
-      measured: { width: n.width, height: n.height },
-      ...EPHEMERAL,
-    }));
-    const es: Edge[] = [
-      ...flow.byEdges.map((e) => ({ ...e, style: SUB_EDGE_STYLE, ...EPHEMERAL })),
-      ...flow.edges.map((e) => ({ ...e, ...EPHEMERAL })),
-    ];
-    return { nodes: ns, edges: es, ids: new Set([...ns.map((n) => n.id), ...es.map((e) => e.id)]) };
-  }, [run, nodes]);
+  }, [nodes, created.nodes, subagents]);
 
   const shownNodes = useMemo<CanvasNode[]>(
     () =>
@@ -323,21 +368,38 @@ export function MaestroCanvas({
 
   const onNodesChange = useCallback(
     (changes: NodeChange<CanvasNode>[]) => {
-      const mine = changes.filter(
-        (c) => !("id" in c) || (!isSubagentNodeId(c.id) && !created.ids.has(c.id)),
-      ) as NodeChange<MaestroFlowNode>[];
-      if (mine.length) setNodes((ns) => applyNodeChanges(mine, ns));
+      const routed = routeNodeChanges(changes, created.nodeIds, isSubagentNodeId);
+      const graph = routed.graph as NodeChange<MaestroFlowNode>[];
+      if (graph.length) setNodes((ns) => applyNodeChanges(graph, ns));
+      if (routed.created.length) {
+        const moved = applyNodeChanges(
+          routed.created as NodeChange<MaestroFlowNode>[],
+          created.nodes,
+        );
+        setCreatedView((view) => {
+          const next = { ...view };
+          for (const n of moved) {
+            next[n.id] = {
+              position: n.position,
+              width: n.width,
+              height: n.height,
+              selected: n.selected,
+            };
+          }
+          return next;
+        });
+      }
     },
-    [setNodes, created.ids],
+    [setNodes, created.nodeIds, created.nodes],
   );
   const onEdgesChange = useCallback(
     (changes: EdgeChange<Edge>[]) => {
       const mine = changes.filter(
-        (c) => !("id" in c) || (!isSubagentNodeId(c.id) && !created.ids.has(c.id)),
+        (c) => !("id" in c) || (!isSubagentNodeId(c.id) && !created.edgeIds.has(c.id)),
       ) as EdgeChange<MaestroFlowEdge>[];
       if (mine.length) setEdges((es) => applyEdgeChanges(mine, es));
     },
-    [setEdges, created.ids],
+    [setEdges, created.edgeIds],
   );
 
   const model = useMemo(
@@ -381,20 +443,29 @@ export function MaestroCanvas({
   );
 
   // Soltar a ligação em qualquer ponto do nó liga na entrada dele: acertar a
-  // bolinha de 11px era o único jeito, e soltar no corpo do nó não fazia
-  // nada. Ligação recusada diz por quê, em vez de sumir calada.
+  // bolinha de 14px era o único jeito. O xyflow só informa o nó de destino
+  // com o ponteiro a até `connectionRadius` de uma porta; no corpo do nó o
+  // `toNode` vem nulo, e o nó sai do que está sob o ponteiro. Ligação
+  // recusada diz por quê, em vez de sumir calada.
   const onConnectEnd = useCallback(
-    (_: MouseEvent | TouchEvent, state: FinalConnectionState) => {
-      if (state.isValid || !state.toNode || !state.fromNode || !state.fromHandle) return;
+    (event: MouseEvent | TouchEvent, state: FinalConnectionState) => {
+      if (state.isValid || !state.fromNode || !state.fromHandle) return;
       if (state.fromHandle.type !== "source") return;
       const kind = kindOfOutHandle(state.fromHandle.id);
       if (!kind) return;
+      const point = "changedTouches" in event ? event.changedTouches[0] : event;
+      const to =
+        state.toNode?.id ??
+        (point ? nodeUnderPointer(document.elementFromPoint(point.clientX, point.clientY)) : null);
+      // Canvas vazio, ou nó que não é do grafo (criado pelo orquestrador,
+      // subagente): não liga.
+      if (!to || !model.nodes.some((n) => n.id === to)) return;
       const problem = connectionProblem(
         model.nodes,
         model.edges,
         byId,
         state.fromNode.id,
-        state.toNode.id,
+        to,
         kind,
       );
       if (problem) {
@@ -403,7 +474,7 @@ export function MaestroCanvas({
       }
       onConnect({
         source: state.fromNode.id,
-        target: state.toNode.id,
+        target: to,
         sourceHandle: state.fromHandle.id ?? null,
         targetHandle: NEW_IN_HANDLE,
       });

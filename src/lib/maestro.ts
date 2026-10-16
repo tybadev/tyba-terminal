@@ -599,6 +599,131 @@ export function createdFlow(run: Run | null, graphNodes: readonly MaestroNode[])
   };
 }
 
+/**
+ * Os criados que o painel "O que o Orquestrador fez" lista: os do run à
+ * vista, em qualquer estado. O fim do run (o orquestrador saiu, ■ Parar) é
+ * justamente quando o dono decide manter; antes o painel sumia ali.
+ */
+export const runCreated = (run: Run | null): Created[] => run?.created ?? [];
+
+/**
+ * Sessão do nó que tem terminal para mostrar: rodando, ou o agente que ficou
+ * vivo depois do primeiro turno para o dono conversar. "Vivo" é o que o core
+ * diz em `liveAgents`: agente `done` cuja sessão saiu (`/exit`, app
+ * reiniciado) não tem terminal, e o nó volta a mostrar o prompt.
+ */
+export function nodeSession(
+  kind: NodeKind,
+  run: Pick<Run, "nodes" | "liveAgents"> | null,
+  nodeId: string,
+  live: boolean,
+): string | null {
+  const nodeRun = run?.nodes[nodeId];
+  if (!nodeRun?.sessionId) return null;
+  if (nodeRun.status === "running") return nodeRun.sessionId;
+  if (
+    kind.type === "agent" &&
+    nodeRun.status === "done" &&
+    live &&
+    (run?.liveAgents ?? []).includes(nodeRun.sessionId)
+  ) {
+    return nodeRun.sessionId;
+  }
+  return null;
+}
+
+/**
+ * Sessão de cada nó de agente com terminal no run à vista (nó → sessão): os
+ * do grafo e os que o orquestrador criou. Daqui saem os subagentes que viram
+ * nós-filhos; sem os criados, o agente que o orquestrador cria nunca mostra
+ * os dele.
+ */
+export function agentSessions(
+  graphNodes: readonly MaestroNode[],
+  run: Run | null,
+  live: boolean,
+): Map<string, string> {
+  const out = new Map<string, string>();
+  if (!run) return out;
+  for (const n of [...graphNodes, ...ephemeralCreated(run).map((c) => c.node)]) {
+    if (n.kind.type !== "agent") continue;
+    const session = nodeSession(n.kind, run, n.id, live);
+    if (session) out.set(n.id, session);
+  }
+  return out;
+}
+
+/** Onde achar o nó de uma sessão: em que execução e qual nó (grafo ou criado). */
+export function findSessionNode(
+  runs: readonly Run[],
+  sessionId: string,
+): { runId: string; nodeId: string } | null {
+  for (const run of runs) {
+    for (const [nodeId, n] of Object.entries(run.nodes)) {
+      if (n.sessionId === sessionId) return { runId: run.id, nodeId };
+    }
+  }
+  return null;
+}
+
+/**
+ * Ligações que deixaram de valer porque o nó mudou de tipo de saída ou de
+ * entrada (a saída do processo trocada, a integração salva com outro output
+ * ou gatilho, apagada). A porta delas some e o xyflow não as desenha, mas o
+ * core recusa o grafo inteiro por elas — todo salvar seguinte falharia.
+ */
+export function invalidEdges(
+  nodes: readonly MaestroNode[],
+  edges: readonly MaestroEdge[],
+  integrations: IntegrationsById,
+): MaestroEdge[] {
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  return edges.filter((e) => {
+    const from = byId.get(e.from);
+    const to = byId.get(e.to);
+    if (!from || !to) return false;
+    return (
+      !produces(from.kind, integrations).includes(e.kind) ||
+      !accepts(to.kind, integrations).includes(e.kind)
+    );
+  });
+}
+
+/**
+ * Para onde vai cada mudança que o xyflow manda sobre os nós: as do grafo vão
+ * ao state salvo; as dos criados pelo orquestrador (arrastar, redimensionar,
+ * selecionar) vão à vista deles, menos apagar — criado não se apaga no
+ * canvas; os filhos efêmeros dos subagentes não mudam.
+ */
+export function routeNodeChanges<C extends { type: string }>(
+  changes: readonly C[],
+  createdIds: ReadonlySet<string>,
+  isEphemeral: (id: string) => boolean,
+): { graph: C[]; created: C[] } {
+  const graph: C[] = [];
+  const created: C[] = [];
+  for (const c of changes) {
+    const id = "id" in c && typeof c.id === "string" ? c.id : null;
+    if (id === null) graph.push(c);
+    else if (createdIds.has(id)) {
+      if (c.type !== "remove") created.push(c);
+    } else if (!isEphemeral(id)) graph.push(c);
+  }
+  return { graph, created };
+}
+
+/**
+ * O nó sob o ponteiro (o elemento que `elementFromPoint` devolve), pelo
+ * `data-id` do invólucro do xyflow. O xyflow só informa o nó de destino com o
+ * ponteiro perto de uma porta (`connectionRadius`); soltar no corpo do nó
+ * chega aqui.
+ */
+export function nodeUnderPointer(
+  el: { closest(selector: string): { getAttribute(name: string): string | null } | null } | null,
+): string | null {
+  return el?.closest(".react-flow__node")?.getAttribute("data-id") ?? null;
+}
+
 /** "Manter no grafo": o core grava os criados no grafo e devolve o grafo inteiro. */
 export const keepCreated = (runId: string) =>
   invoke<Graph>("maestro_keep_created", { runId });

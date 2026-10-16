@@ -3,9 +3,9 @@ import { useTranslation } from "react-i18next";
 import { Play, PlugsConnected, Warning } from "@phosphor-icons/react";
 import type { NodeProps } from "@xyflow/react";
 
-import type { NodeKind } from "@/lib/maestro";
+import { nodeSession, type NodeKind } from "@/lib/maestro";
 import { NodeDir, NodeFrame, useMaestro, type MaestroFlowNode } from "./NodeFrame";
-import { NodeTerminal, nodeSession } from "./NodeTerminal";
+import { NodeTerminal } from "./NodeTerminal";
 
 /**
  * Nó de integração: aponta para um script salvo na biblioteca. Aqui só se
@@ -18,7 +18,7 @@ export function IntegrationNode({ id, data, selected }: NodeProps<MaestroFlowNod
   const kind = node.kind as Extract<NodeKind, { type: "integration" }>;
   const integration = integrations.get(kind.integrationId);
   const nodeRun = run?.nodes[id];
-  const session = nodeSession(kind, nodeRun, live);
+  const session = nodeSession(kind, run, id, live);
   // Run em que o dono já deu ▶: o nó segue `waiting` até as entradas chegarem.
   const [released, setReleased] = useState<string | null>(null);
   const canRelease =

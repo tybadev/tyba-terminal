@@ -4,7 +4,7 @@ import { Handle, Position, type NodeProps } from "@xyflow/react";
 
 import { ClaudeIcon } from "@/components/icons/ClaudeIcon";
 import { OpenAIIcon } from "@/components/icons/OpenAIIcon";
-import { ORCHESTRATOR_HANDLE, type NodeKind, type Runner } from "@/lib/maestro";
+import { ORCHESTRATOR_HANDLE, nodeSession, type NodeKind, type Runner } from "@/lib/maestro";
 import { SUBAGENT_HANDLE, groupRounds, roundTally } from "@/lib/maestroSubagents";
 import {
   NodeDir,
@@ -14,7 +14,7 @@ import {
   useMaestro,
   type MaestroFlowNode,
 } from "./NodeFrame";
-import { FocusButton, NodeTerminal, nodeSession } from "./NodeTerminal";
+import { FocusButton, NodeTerminal } from "./NodeTerminal";
 
 type AgentKind = Extract<NodeKind, { type: "agent" }>;
 
@@ -26,7 +26,7 @@ export function AgentNode({ id, data, selected }: NodeProps<MaestroFlowNode>) {
   const { updateNode, run, live, subagents, createdBy } = useMaestro();
   const node = data.node;
   const kind = node.kind as AgentKind;
-  const session = nodeSession(kind, run?.nodes[id], live);
+  const session = nodeSession(kind, run, id, live);
   const rounds = session ? groupRounds(subagents.get(id) ?? []) : null;
   const tally = rounds ? roundTally(rounds.current) : null;
   const set = (patch: Partial<AgentKind>) =>

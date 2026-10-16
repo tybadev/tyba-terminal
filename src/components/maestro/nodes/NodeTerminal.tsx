@@ -4,7 +4,6 @@ import { ArrowsOut } from "@phosphor-icons/react";
 
 import { TerminalView } from "@/components/TerminalView";
 import { sessionScreenLines } from "@/lib/ipc";
-import type { NodeKind, NodeRun } from "@/lib/maestro";
 import { useMaestro } from "./NodeFrame";
 
 /** O terminal ocupa o nó inteiro: o wrapper é quem tem o tamanho. */
@@ -13,21 +12,6 @@ export const FULL = { left: 0, top: 0, width: 100, height: 100 };
 const PREVIEW_LINES = 14;
 /** A prévia não precisa de quadro a quadro: a tela do core é lida a cada tanto. */
 const PREVIEW_POLL_MS = 400;
-
-/**
- * Sessão do nó que tem terminal para mostrar: rodando, ou o agente que ficou
- * vivo depois do primeiro turno (no run mais novo) para o dono conversar.
- */
-export function nodeSession(
-  kind: NodeKind,
-  nodeRun: NodeRun | undefined,
-  live: boolean,
-): string | null {
-  if (!nodeRun?.sessionId) return null;
-  if (nodeRun.status === "running") return nodeRun.sessionId;
-  if (kind.type === "agent" && nodeRun.status === "done" && live) return nodeRun.sessionId;
-  return null;
-}
 
 /**
  * Terminal do nó. Em 100% é o `TerminalView` de verdade (o PTY tem um tamanho

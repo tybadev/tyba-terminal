@@ -3,7 +3,7 @@ import { TerminalWindow } from "@phosphor-icons/react";
 import type { NodeProps } from "@xyflow/react";
 
 import { Select } from "@/components/ui/select";
-import { OUTPUT_KINDS, urlPort, type NodeKind, type OutputKind } from "@/lib/maestro";
+import { OUTPUT_KINDS, nodeSession, urlPort, type NodeKind, type OutputKind } from "@/lib/maestro";
 import {
   NodeDir,
   NodeFrame,
@@ -12,7 +12,7 @@ import {
   useMaestro,
   type MaestroFlowNode,
 } from "./NodeFrame";
-import { FocusButton, NodeTerminal, nodeSession } from "./NodeTerminal";
+import { FocusButton, NodeTerminal } from "./NodeTerminal";
 
 type ProcessKind = Extract<NodeKind, { type: "process" }>;
 
@@ -22,7 +22,7 @@ export function ProcessNode({ id, data, selected }: NodeProps<MaestroFlowNode>) 
   const { updateNode, run, live, openInBrowser } = useMaestro();
   const node = data.node;
   const kind = node.kind as ProcessKind;
-  const session = nodeSession(kind, run?.nodes[id], live);
+  const session = nodeSession(kind, run, id, live);
   // A porta que a sessão do nó abriu (o core detecta; chega com ele rodando).
   const url = run?.nodes[id]?.url ?? null;
   const port = urlPort(url);
