@@ -59,13 +59,14 @@ export function nodeRect(n: {
   position: { x: number; y: number };
   width?: number;
   height?: number;
-  data?: { node?: { size: { w: number; h: number } } };
+  data?: unknown;
 }): Rect {
+  const size = (n.data as { node?: { size?: { w: number; h: number } } } | undefined)?.node?.size;
   return {
     x: n.position.x,
     y: n.position.y,
-    w: n.width ?? n.data?.node?.size.w ?? 0,
-    h: n.height ?? n.data?.node?.size.h ?? 0,
+    w: n.width ?? size?.w ?? 0,
+    h: n.height ?? size?.h ?? 0,
   };
 }
 

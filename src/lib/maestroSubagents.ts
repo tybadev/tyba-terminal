@@ -1,3 +1,4 @@
+import { freeSpot, type Rect } from "./graphLayout";
 import type { SubagentRun } from "./ipc";
 
 /**
@@ -76,24 +77,55 @@ interface Box {
   height: number;
 }
 
-/** Posição da i-ésima pílula: `SUB_COLS` colunas, alinhadas à esquerda do agente. */
-export function gridPosition(parent: Box, i: number): { x: number; y: number } {
+/** Onde o bloco de pílulas começaria sem ninguém no caminho: logo embaixo do pai. */
+const blockStart = (parent: Box) => ({
+  x: parent.position.x,
+  y: parent.position.y + parent.height + SUB_TOP,
+});
+
+/** Posição da i-ésima pílula a partir do canto do bloco. */
+export function pillPosition(origin: { x: number; y: number }, i: number) {
   const col = i % SUB_COLS;
   const row = Math.floor(i / SUB_COLS);
   return {
-    x: parent.position.x + col * (SUB_W + SUB_GAP),
-    y: parent.position.y + parent.height + SUB_TOP + row * (SUB_H + SUB_GAP),
+    x: origin.x + col * (SUB_W + SUB_GAP),
+    y: origin.y + row * (SUB_H + SUB_GAP),
   };
 }
 
-/** Linha "rodada anterior", logo abaixo da última linha da grade. */
-export function roundsPosition(parent: Box, count: number): { x: number; y: number } {
+/** Linha "rodada anterior", logo abaixo da última linha do bloco. */
+export function roundsAt(origin: { x: number; y: number }, count: number) {
+  const rows = Math.max(1, Math.ceil(count / SUB_COLS));
+  return { x: origin.x, y: origin.y + rows * (SUB_H + SUB_GAP) };
+}
+
+/** Tamanho do bloco: as pílulas e, se houver, a linha "rodada anterior". */
+export function blockSize(count: number, withRounds: boolean): { w: number; h: number } {
   const rows = Math.max(1, Math.ceil(count / SUB_COLS));
   return {
-    x: parent.position.x,
-    y: parent.position.y + parent.height + SUB_TOP + rows * (SUB_H + SUB_GAP),
+    w: SUB_COLS * SUB_W + (SUB_COLS - 1) * SUB_GAP,
+    h: rows * (SUB_H + SUB_GAP) + (withRounds ? SUB_ROUNDS_H : 0),
   };
 }
+
+/**
+ * Onde o bloco de subagentes cai (nos-8): embaixo do pai, andando para a
+ * direita de quem estiver no caminho (o Dev server logo abaixo do Claude),
+ * para as pílulas nunca taparem nem roubarem o clique de outro nó.
+ */
+export function blockOrigin(
+  parent: Box,
+  size: { w: number; h: number },
+  occupied: readonly Rect[],
+): { x: number; y: number } {
+  return freeSpot(blockStart(parent), size, occupied, "right", SUB_GAP * 2);
+}
+
+/** Posição da i-ésima pílula sem ninguém no caminho. */
+export const gridPosition = (parent: Box, i: number) => pillPosition(blockStart(parent), i);
+
+/** Linha "rodada anterior" sem ninguém no caminho. */
+export const roundsPosition = (parent: Box, count: number) => roundsAt(blockStart(parent), count);
 
 /**
  * O que o cartão diz embaixo: a ação em curso, o resumo, ou que parou. Pronto

@@ -5,12 +5,18 @@ import {
   SUB_COLS,
   SUB_GAP,
   SUB_H,
+  SUB_ROUNDS_H,
   SUB_TOP,
+  SUB_W,
+  blockOrigin,
+  blockSize,
   formatSubagentTime,
   gridPosition,
   groupRounds,
   isSubagentNodeId,
   roundTally,
+  pillPosition,
+  roundsAt,
   roundsPosition,
   subagentElapsed,
   subagentKey,
@@ -85,6 +91,32 @@ describe("grade", () => {
     const top = 30 + 260 + SUB_TOP;
     expect(roundsPosition(parent, 3).y).toBe(top + 3 * (SUB_H + SUB_GAP));
     expect(roundsPosition(parent, 0).y).toBe(top + SUB_H + SUB_GAP);
+  });
+});
+
+describe("bloco de subagentes sem cobrir outro nó (nos-8)", () => {
+  const parent = { position: { x: 30, y: 40 }, width: 560, height: 300 };
+  const top = 40 + 300 + SUB_TOP;
+
+  test("sem ninguém embaixo: logo abaixo do pai", () => {
+    expect(blockOrigin(parent, blockSize(3, false), [])).toEqual({ x: 30, y: top });
+  });
+
+  test("Dev server logo abaixo do Claude: o bloco vai para o lado dele", () => {
+    const dev = { x: 30, y: 430, w: 380, h: 300 };
+    const at = blockOrigin(parent, blockSize(3, true), [dev]);
+    expect(at.y).toBe(top);
+    expect(at.x).toBeGreaterThanOrEqual(dev.x + dev.w);
+  });
+
+  test("tamanho conta as pílulas e a linha da rodada anterior", () => {
+    expect(blockSize(2, false)).toEqual({ w: SUB_W, h: 2 * (SUB_H + SUB_GAP) });
+    expect(blockSize(2, true).h).toBe(2 * (SUB_H + SUB_GAP) + SUB_ROUNDS_H);
+  });
+
+  test("pílulas e rodada anterior a partir do canto do bloco", () => {
+    expect(pillPosition({ x: 5, y: 10 }, 1)).toEqual({ x: 5, y: 10 + SUB_H + SUB_GAP });
+    expect(roundsAt({ x: 5, y: 10 }, 2)).toEqual({ x: 5, y: 10 + 2 * (SUB_H + SUB_GAP) });
   });
 });
 

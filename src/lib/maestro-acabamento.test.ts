@@ -168,6 +168,18 @@ describe("nos-1: criados respondem (mexer sim, apagar não)", () => {
     expect(graph.map((c) => ("id" in c ? c.id : null))).toEqual(["g"]);
   });
 
+  test("subagente (nos-8): só arrastar vai para a vista dele", () => {
+    const changes = [
+      { type: "position", id: "sub:1", position: { x: 5, y: 5 } },
+      { type: "select", id: "sub:1", selected: true },
+      { type: "remove", id: "sub:1" },
+    ];
+    const { graph, created: mine, ephemeral } = routeNodeChanges(changes, created, isEphemeral);
+    expect(ephemeral.map((c) => c.type)).toEqual(["position"]);
+    expect(graph).toEqual([]);
+    expect(mine).toEqual([]);
+  });
+
   test("mudança sem id (add) é do grafo", () => {
     const add = { type: "add", item: {} };
     expect(routeNodeChanges([add], created, isEphemeral).graph).toEqual([add]);

@@ -775,23 +775,26 @@ export function invalidEdges(
  * Para onde vai cada mudança que o xyflow manda sobre os nós: as do grafo vão
  * ao state salvo; as dos criados pelo orquestrador (arrastar, redimensionar,
  * selecionar) vão à vista deles, menos apagar — criado não se apaga no
- * canvas; os filhos efêmeros dos subagentes não mudam.
+ * canvas; dos filhos efêmeros dos subagentes só vale arrastar (nos-8), que
+ * vai à vista deles.
  */
 export function routeNodeChanges<C extends { type: string }>(
   changes: readonly C[],
   createdIds: ReadonlySet<string>,
   isEphemeral: (id: string) => boolean,
-): { graph: C[]; created: C[] } {
+): { graph: C[]; created: C[]; ephemeral: C[] } {
   const graph: C[] = [];
   const created: C[] = [];
+  const ephemeral: C[] = [];
   for (const c of changes) {
     const id = "id" in c && typeof c.id === "string" ? c.id : null;
     if (id === null) graph.push(c);
     else if (createdIds.has(id)) {
       if (c.type !== "remove") created.push(c);
     } else if (!isEphemeral(id)) graph.push(c);
+    else if (c.type === "position") ephemeral.push(c);
   }
-  return { graph, created };
+  return { graph, created, ephemeral };
 }
 
 /**
