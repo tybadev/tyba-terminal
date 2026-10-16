@@ -48,6 +48,13 @@ pub enum HookAction {
     Ask {
         reason: String,
     },
+    /// Resposta de uma ferramenta do Maestro (`tyba _maestro-mcp`): o nó
+    /// criado, o estado de um nó. Só a sessão de um nó com orquestrar ligado
+    /// chega aqui — nas outras o pedido é recusado (ver
+    /// `agent::session::on_maestro_tool`).
+    Result {
+        value: serde_json::Value,
+    },
 }
 
 /// `tyba _hook --observe`: o hook do claude digitado num pane (agente livre).

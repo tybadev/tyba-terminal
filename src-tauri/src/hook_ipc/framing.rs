@@ -12,26 +12,37 @@ fn build_response(action: HookAction) -> ResponseEnvelope {
             v: PROTOCOL_VERSION,
             action: "allow".into(),
             reason,
+            result: None,
         },
         HookAction::Deny { reason } => ResponseEnvelope {
             v: PROTOCOL_VERSION,
             action: "deny".into(),
             reason: Some(reason),
+            result: None,
         },
         HookAction::Ack => ResponseEnvelope {
             v: PROTOCOL_VERSION,
             action: "ack".into(),
             reason: None,
+            result: None,
         },
         HookAction::Pass => ResponseEnvelope {
             v: PROTOCOL_VERSION,
             action: "pass".into(),
             reason: None,
+            result: None,
         },
         HookAction::Ask { reason } => ResponseEnvelope {
             v: PROTOCOL_VERSION,
             action: "ask".into(),
             reason: Some(reason),
+            result: None,
+        },
+        HookAction::Result { value } => ResponseEnvelope {
+            v: PROTOCOL_VERSION,
+            action: "result".into(),
+            reason: None,
+            result: Some(value),
         },
     }
 }
@@ -73,6 +84,7 @@ pub(crate) fn reject_overloaded<Wr: Write>(writer: Wr) {
             v: PROTOCOL_VERSION,
             action: "deny".into(),
             reason: Some(OVERLOADED_REASON.into()),
+            result: None,
         },
     );
 }
@@ -117,6 +129,12 @@ mod boundary_tests {
     /// agente) e `ask` (força a pergunta nativa) entraram de propósito. Os dois
     /// continuam sendo respostas sobre UMA ação — nenhum carrega dado do core
     /// para o agente além do motivo que o próprio core escreveu.
+    ///
+    /// Orquestrador do Maestro (2026-10-15, quadro `MaestroOrquestrador`):
+    /// `result` entrou de propósito e é a ÚNICA resposta que carrega dado. Ela
+    /// só existe na sessão de um nó com orquestrar ligado, e o dado é o do run
+    /// dele: o id do nó criado ou o estado de um nó do run (com o log
+    /// redigido). Nada de histórico, nada fora do run.
     #[test]
     fn the_agent_channel_only_ever_answers_with_a_decision() {
         let answers = [
@@ -131,7 +149,11 @@ mod boundary_tests {
                 reason: "pergunta".into(),
             })
             .action,
+            build_response(HookAction::Result {
+                value: serde_json::json!({"nodeId": "orq-1"}),
+            })
+            .action,
         ];
-        assert_eq!(answers, ["allow", "deny", "ack", "pass", "ask"]);
+        assert_eq!(answers, ["allow", "deny", "ack", "pass", "ask", "result"]);
     }
 }

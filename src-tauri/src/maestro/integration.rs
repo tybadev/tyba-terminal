@@ -177,6 +177,7 @@ mod tests {
             version: 1,
             test: false,
             live_agents: Vec::new(),
+            created: Vec::new(),
         }
     }
 

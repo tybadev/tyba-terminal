@@ -8710,6 +8710,38 @@ fn maestro_run_stop(
     runs.stop(&run_id)
 }
 
+/// "Manter no grafo": os nós que o orquestrador criou no run ativo entram no
+/// grafo salvo como nós normais. O front grava o que está no debounce antes;
+/// o grafo resultante passa pela mesma validação do salvar e volta para a tela.
+#[tauri::command]
+fn maestro_keep_created(
+    state: State<'_, AppState>,
+    runs: State<'_, maestro::run::SharedRuns>,
+    run_id: String,
+) -> Result<maestro::Graph, String> {
+    let created = runs.created_to_keep(&run_id)?;
+    let graph_id = runs.get(&run_id).ok_or("execução não encontrada")?.graph_id;
+    let mut graph = state
+        .store
+        .get_maestro_graph(&graph_id)
+        .map_err(|e| e.to_string())?
+        .ok_or("grafo não encontrado")?
+        .value;
+    maestro::orchestrator::merge_kept(&mut graph, &created);
+    let integrations = state
+        .store
+        .list_maestro_integrations()
+        .map_err(|e| e.to_string())?;
+    maestro::validate_graph(&graph, &integrations).map_err(|e| e.to_string())?;
+    state
+        .store
+        .save_maestro_graph(&graph, true, None)
+        .map_err(|e| e.to_string())?;
+    let ids: Vec<String> = created.into_iter().map(|c| c.node.id).collect();
+    runs.mark_kept(&run_id, &ids);
+    Ok(graph)
+}
+
 #[tauri::command]
 fn maestro_run_get(
     runs: State<'_, maestro::run::SharedRuns>,
@@ -9826,6 +9858,7 @@ pub fn run() {
             maestro_integration_test,
             maestro_run_stop,
             maestro_run_get,
+            maestro_keep_created,
             maestro_runs_list,
             maestro_service_logs_start,
             maestro_service_logs_retain,

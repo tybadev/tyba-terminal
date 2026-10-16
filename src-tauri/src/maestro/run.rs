@@ -17,8 +17,9 @@ use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
 use super::agent::{AgentTurn, Snapshot};
+use super::orchestrator::{self, Created, ToolCall, ToolHandler, MAX_CREATED};
 use super::service::{self, ServiceReady, ServiceSource};
-use super::{EdgeKind, Graph, Integration, Node, NodeKind, OutputKind, Runner, Stored};
+use super::{Edge, EdgeKind, Graph, Integration, Node, NodeKind, OutputKind, Runner, Stored};
 use crate::session::store::Store;
 
 /// Execuções guardadas por grafo; a poda apaga a pasta das mais antigas.
@@ -71,6 +72,10 @@ pub struct Run {
     /// Calculado na leitura; o que fica gravado no banco não vale.
     #[serde(default)]
     pub live_agents: Vec<String>,
+    /// Nós que um orquestrador criou neste run (efêmeros: não estão no grafo
+    /// salvo, a menos que o dono os mantenha).
+    #[serde(default)]
+    pub created: Vec<Created>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -170,6 +175,7 @@ impl Scheduler {
             version: 0,
             test: false,
             live_agents: Vec::new(),
+            created: Vec::new(),
         };
         if run.nodes.is_empty() {
             run.status = RunStatus::Done;
@@ -307,6 +313,64 @@ impl Scheduler {
         }
         self.settle(now);
         true
+    }
+
+    /// Nó novo num run rodando (o que o orquestrador criou): espera as
+    /// entradas como qualquer outro. Origem que já falhou ou foi pulada pula
+    /// o nó novo na hora — senão ele esperaria para sempre.
+    pub fn add_node(&mut self, id: &str, sources: &[(String, EdgeKind)]) -> Result<(), String> {
+        if self.run.status != RunStatus::Running {
+            return Err("a execução não está rodando".into());
+        }
+        if self.run.nodes.contains_key(id) {
+            return Err(format!("nó repetido: {id}"));
+        }
+        self.run.nodes.insert(id.to_string(), NodeRun::waiting());
+        self.order.push(id.to_string());
+        for (from, kind) in sources {
+            self.sources
+                .entry(id.to_string())
+                .or_default()
+                .push((from.clone(), *kind));
+            self.dependents
+                .entry(from.clone())
+                .or_default()
+                .push(id.to_string());
+        }
+        let dead = sources.iter().any(|(from, _)| {
+            matches!(
+                self.status(from),
+                Some(NodeStatus::Failed | NodeStatus::Skipped | NodeStatus::Stopped)
+            )
+        });
+        if dead {
+            if let Some(n) = self.run.nodes.get_mut(id) {
+                n.status = NodeStatus::Skipped;
+            }
+        }
+        Ok(())
+    }
+
+    /// Para um nó só (o `maestro_stop_node`): rodando vira `stopped`,
+    /// esperando vira `skipped`, e quem depende dele é pulado. Devolve a
+    /// sessão a matar quando ele rodava.
+    pub fn stop_node(&mut self, id: &str, now: u64) -> Option<String> {
+        let n = self.run.nodes.get_mut(id)?;
+        let session = match n.status {
+            NodeStatus::Running => {
+                n.status = NodeStatus::Stopped;
+                n.finished_at = Some(now);
+                n.session_id.clone()
+            }
+            NodeStatus::Waiting => {
+                n.status = NodeStatus::Skipped;
+                None
+            }
+            _ => return None,
+        };
+        self.skip_dependents(id);
+        self.settle(now);
+        session
     }
 
     fn skip_dependents(&mut self, id: &str) {
@@ -578,6 +642,9 @@ pub struct AgentLaunch {
     pub prompt: String,
     pub in_dir: PathBuf,
     pub out_dir: PathBuf,
+    /// Só no nó com orquestrar ligado: as ferramentas do Maestro que o
+    /// servidor MCP da sessão chama pelo socket de hooks.
+    pub tools: Option<ToolHandler>,
 }
 
 /// Efeitos fora do agendador: subir processo, matar, avisar o front.
@@ -1027,9 +1094,12 @@ impl<H: RunHost> Runs<H> {
                 Some(i) => self.launch_script(run_id, &start, &i.script, i.output),
                 None => Launched::Finished(Outcome::failed("integração não encontrada")),
             },
-            NodeKind::Agent { runner, prompt, .. } => {
-                self.launch_agent(run_id, &start, *runner, prompt)
-            }
+            NodeKind::Agent {
+                runner,
+                prompt,
+                orchestrate,
+                ..
+            } => self.launch_agent(run_id, &start, *runner, prompt, *orchestrate),
             NodeKind::Process {
                 command, output, ..
             } => self.launch_script(run_id, &start, command, *output),
@@ -1147,7 +1217,14 @@ impl<H: RunHost> Runs<H> {
 
     /// Entradas em `in/`, snapshot de diff na largada e o agente livre na
     /// pasta do nó.
-    fn launch_agent(&self, run_id: &str, start: &Start, runner: Runner, prompt: &str) -> Launched {
+    fn launch_agent(
+        &self,
+        run_id: &str,
+        start: &Start,
+        runner: Runner,
+        prompt: &str,
+        orchestrate: bool,
+    ) -> Launched {
         let written = match materialize(&start.in_dir, &start.inputs) {
             Ok(w) => w,
             Err(e) => {
@@ -1188,6 +1265,7 @@ impl<H: RunHost> Runs<H> {
                 runs.agent_turn_ended(&run, &node, &out_dir, snapshot.as_ref(), turn);
             }
         });
+        let tools = orchestrate.then(|| self.tool_handler(run_id, &start.node.id));
         let launch = AgentLaunch {
             title: start.node.title.clone(),
             cwd: start.node_dir.clone(),
@@ -1195,11 +1273,229 @@ impl<H: RunHost> Runs<H> {
             prompt,
             in_dir: start.in_dir.clone(),
             out_dir: start.out_dir.clone(),
+            tools,
         };
         match self.host.spawn_agent(launch, on_turn) {
             Ok(session) => Launched::Session(session),
             Err(e) => Launched::Finished(Outcome::failed(format!("subir o agente: {e}"))),
         }
+    }
+
+    /// As ferramentas do orquestrador `node_id` neste run. Fraco: a sessão
+    /// que sobrevive ao app não segura o motor.
+    fn tool_handler(&self, run_id: &str, node_id: &str) -> ToolHandler {
+        let me = self.me.clone();
+        let (run, node) = (run_id.to_string(), node_id.to_string());
+        ToolHandler(Arc::new(move |tool, args| {
+            let runs = me.upgrade().ok_or("o TYBA está fechando")?;
+            runs.orchestrator_call(&run, &node, tool, args)
+        }))
+    }
+
+    /// Uma ferramenta do Maestro pedida pela sessão do orquestrador
+    /// `orchestrator` do run `run_id`.
+    pub fn orchestrator_call(
+        &self,
+        run_id: &str,
+        orchestrator: &str,
+        tool: &str,
+        args: &serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        let call = orchestrator::parse_call(tool, args)?;
+        eprintln!("[maestro] orquestrador {orchestrator}: {tool}");
+        match call {
+            ToolCall::Create {
+                title,
+                kind,
+                from_node,
+            } => {
+                let id = self.create_node(run_id, orchestrator, title, kind, from_node)?;
+                Ok(serde_json::json!({ "node_id": id }))
+            }
+            ToolCall::Status { node_id } => self.node_status(run_id, &node_id),
+            ToolCall::Stop { node_id } => {
+                self.stop_created(run_id, orchestrator, &node_id)?;
+                Ok(serde_json::json!({ "node_id": node_id, "stopped": true }))
+            }
+        }
+    }
+
+    /// Nó novo no run ativo, começando na hora (ou assim que a url do
+    /// `from_node` sair). Teto de [`MAX_CREATED`] por run.
+    pub fn create_node(
+        &self,
+        run_id: &str,
+        orchestrator: &str,
+        title: String,
+        kind: NodeKind,
+        from_node: Option<String>,
+    ) -> Result<String, String> {
+        let root = self.root.clone().ok_or("sem pasta para as execuções")?;
+        let id = format!("orq-{}", &uuid::Uuid::new_v4().simple().to_string()[..12]);
+        {
+            let mut active = self.active.lock();
+            let a = active.get_mut(run_id).ok_or(
+                "esta execução já terminou: ▶ Executar de novo para o orquestrador criar nós",
+            )?;
+            if a.sched.run.created.len() >= MAX_CREATED {
+                return Err(format!(
+                    "teto de {MAX_CREATED} nós criados por execução atingido"
+                ));
+            }
+            let mut edges = Vec::new();
+            if let Some(from) = &from_node {
+                let source = a
+                    .graph
+                    .nodes
+                    .iter()
+                    .find(|n| &n.id == from)
+                    .ok_or_else(|| format!("from_node não existe neste run: {from}"))?;
+                let by_id: HashMap<&str, &Integration> = a
+                    .integrations
+                    .iter()
+                    .map(|(k, v)| (k.as_str(), v))
+                    .collect();
+                if !super::produces(&source.kind, &by_id).contains(&EdgeKind::Url) {
+                    return Err(format!(
+                        "from_node {from} não produz url (use um nó de processo ou serviço)"
+                    ));
+                }
+                edges.push(Edge {
+                    id: format!("{id}-url"),
+                    from: from.clone(),
+                    to: id.clone(),
+                    kind: EdgeKind::Url,
+                });
+            }
+            let node = {
+                let siblings: Vec<&Node> = a
+                    .sched
+                    .run
+                    .created
+                    .iter()
+                    .filter(|c| c.created_by == orchestrator)
+                    .map(|c| &c.node)
+                    .collect();
+                let parent = a.graph.nodes.iter().find(|n| n.id == orchestrator);
+                orchestrator::new_node(id.clone(), title, kind, parent, &siblings)
+            };
+            for sub in ["in", "out"] {
+                create_private_dir(&root.join(run_id).join(&id).join(sub))
+                    .map_err(|e| e.to_string())?;
+            }
+            let sources: Vec<(String, EdgeKind)> =
+                edges.iter().map(|e| (e.from.clone(), e.kind)).collect();
+            a.sched.add_node(&id, &sources)?;
+            a.graph.nodes.push(node.clone());
+            a.graph.edges.extend(edges.iter().cloned());
+            a.sched.run.created.push(Created {
+                node,
+                created_by: orchestrator.to_string(),
+                created_at: now(),
+                edges,
+                kept: false,
+            });
+        }
+        self.publish_current(run_id);
+        self.advance(run_id);
+        Ok(id)
+    }
+
+    /// Estado de um nó do run, url/porta e as últimas linhas do log redigidas.
+    pub fn node_status(&self, run_id: &str, node_id: &str) -> Result<serde_json::Value, String> {
+        let run = self.get(run_id).ok_or("execução não encontrada")?;
+        let n = run
+            .nodes
+            .get(node_id)
+            .ok_or_else(|| format!("nó não existe neste run: {node_id}"))?;
+        let log = self.root.as_ref().and_then(|root| {
+            orchestrator::log_tail(
+                &root.join(run_id).join(node_id).join("out").join("log.txt"),
+                orchestrator::STATUS_LOG_LINES,
+            )
+        });
+        let port = n.url.as_deref().and_then(|u| {
+            let authority = u.split("://").nth(1)?.split(['/', '?', '#']).next()?;
+            authority.rsplit_once(':')?.1.parse::<u16>().ok()
+        });
+        Ok(serde_json::json!({
+            "node_id": node_id,
+            "status": n.status,
+            "url": n.url,
+            "port": port,
+            "exit_code": n.exit_code,
+            "reason": n.reason,
+            "log": log,
+        }))
+    }
+
+    /// `maestro_stop_node`: só nó que este orquestrador criou. Mata o process
+    /// group dele (e o agente criado que segue vivo depois do turno).
+    pub fn stop_created(
+        &self,
+        run_id: &str,
+        orchestrator: &str,
+        node_id: &str,
+    ) -> Result<(), String> {
+        let kill = {
+            let mut active = self.active.lock();
+            let a = active.get_mut(run_id).ok_or("execução não está rodando")?;
+            if !a
+                .sched
+                .run
+                .created
+                .iter()
+                .any(|c| c.node.id == node_id && c.created_by == orchestrator)
+            {
+                return Err(format!(
+                    "só para nó criado por este orquestrador: {node_id} não é um deles"
+                ));
+            }
+            let alive_agent = a
+                .sched
+                .run
+                .nodes
+                .get(node_id)
+                .and_then(|n| n.session_id.clone());
+            a.sched.stop_node(node_id, now()).or(alive_agent)
+        };
+        self.publish_current(run_id);
+        if let Some(session) = kill {
+            self.host.kill(&session);
+        }
+        Ok(())
+    }
+
+    /// Os nós criados ainda não mantidos do run ATIVO (o "Manter no grafo").
+    /// Depois do ■ Parar ou do fim do run eles já foram descartados.
+    pub fn created_to_keep(&self, run_id: &str) -> Result<Vec<Created>, String> {
+        let active = self.active.lock();
+        let a = active
+            .get(run_id)
+            .ok_or("a execução já terminou: os nós criados foram descartados")?;
+        Ok(a.sched
+            .run
+            .created
+            .iter()
+            .filter(|c| !c.kept)
+            .cloned()
+            .collect())
+    }
+
+    /// Marca como mantidos (já gravados no grafo) e avisa o front.
+    pub fn mark_kept(&self, run_id: &str, ids: &[String]) {
+        {
+            let mut active = self.active.lock();
+            let Some(a) = active.get_mut(run_id) else {
+                return;
+            };
+            for c in &mut a.sched.run.created {
+                if ids.contains(&c.node.id) {
+                    c.kept = true;
+                }
+            }
+        }
+        self.publish_current(run_id);
     }
 
     /// Guarda a sessão de agente para o Parar. Chamado com `active` na mão.
@@ -1536,6 +1832,7 @@ impl RunHost for TauriHost {
             ],
             cols: 100,
             rows: 30,
+            maestro_tools: launch.tools,
         };
         let handle = self.app.clone();
         let (session, tail) = crate::agent::session::spawn_free_agent(&ctx, spec, move |id| {
@@ -2132,6 +2429,7 @@ mod tests {
                 role: String::new(),
                 prompt: prompt.into(),
                 dir: String::new(),
+                orchestrate: false,
             },
         )
     }
@@ -2669,6 +2967,280 @@ mod tests {
             Some("nada escuta na porta :3000")
         );
         assert_eq!(run.nodes["b"].status, NodeStatus::Skipped);
+    }
+
+    #[test]
+    fn scheduler_accepts_a_new_node_while_running() {
+        let g = graph(vec![process("p", "x"), process("q", "x")], vec![]);
+        let mut s = Scheduler::new(&g, "r".into(), 0);
+        s.mark_running("p", 1);
+        s.mark_running("q", 1);
+        // Sem entrada: pronto na hora.
+        s.add_node("n", &[]).unwrap();
+        assert_eq!(s.ready(), vec!["n".to_string()]);
+        assert!(s.add_node("n", &[]).is_err(), "id repetido");
+        // Esperando a url de p: começa quando ela sai.
+        s.add_node("b", &[("p".into(), EdgeKind::Url)]).unwrap();
+        assert_eq!(s.ready(), vec!["n".to_string()]);
+        s.publish_url("p", "/u".into(), "http://localhost:1".into());
+        assert_eq!(s.ready(), vec!["n".to_string(), "b".to_string()]);
+        // Origem que já falhou pula o novo na hora.
+        s.finish("q", Outcome::failed("x"), 2);
+        s.add_node("c", &[("q".into(), EdgeKind::Log)]).unwrap();
+        assert_eq!(status(&s, "c"), NodeStatus::Skipped);
+        // Parar um nó só: quem depende dele é pulado; o run segue.
+        s.mark_running("n", 3);
+        s.set_session("n", "sess-n".into());
+        assert_eq!(s.stop_node("n", 4), Some("sess-n".into()));
+        assert_eq!(status(&s, "n"), NodeStatus::Stopped);
+        assert_eq!(s.stop_node("b", 4), None);
+        assert_eq!(status(&s, "b"), NodeStatus::Skipped);
+        assert_eq!(s.run().status, RunStatus::Running);
+        // Run fechado não aceita nó novo.
+        s.stop(5);
+        assert!(s.add_node("d", &[]).is_err());
+    }
+
+    fn orchestrator(id: &str) -> Node {
+        node(
+            id,
+            NodeKind::Agent {
+                runner: Runner::Claude,
+                role: String::new(),
+                prompt: "suba o ambiente".into(),
+                dir: String::new(),
+                orchestrate: true,
+            },
+        )
+    }
+
+    /// As ferramentas que o run entregou à sessão do orquestrador.
+    fn tools_of(host: &PtyHost, title: &str) -> ToolHandler {
+        let launches = host.agents.lock().clone();
+        let launch = launches.iter().find(|l| l.title == title).unwrap();
+        launch.tools.clone().expect("orquestrador sem ferramentas")
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn orchestrator_creates_nodes_in_the_active_run_and_stop_discards_them() {
+        use serde_json::json;
+        let dir = tempfile::tempdir().unwrap();
+        let work = dir.path().join("api");
+        std::fs::create_dir(&work).unwrap();
+        let (runs, host, _app) = pty_runs(dir.path().join("runs"));
+        // O processo longo mantém o run vivo depois do turno do orquestrador.
+        let g = graph(
+            vec![orchestrator("o"), agent("a", "x"), process("p", "sleep 30")],
+            vec![],
+        );
+        runs.store.save_maestro_graph(&g, true, None).unwrap();
+        let run = runs.start(g, vec![]).unwrap();
+        wait_status(&runs, &run.id, "o", NodeStatus::Done);
+        // Só o nó com orquestrar ligado recebe as ferramentas.
+        assert!(host
+            .agents
+            .lock()
+            .iter()
+            .find(|l| l.title == "a")
+            .unwrap()
+            .tools
+            .is_none());
+        let tools = tools_of(&host, "o");
+
+        let created = tools
+            .call(
+                "maestro_create_process",
+                &json!({"title": "api", "command": "echo subiu; sleep 30", "dir": work}),
+            )
+            .unwrap();
+        let api = created["node_id"].as_str().unwrap().to_string();
+        let mid = wait_status(&runs, &run.id, &api, NodeStatus::Running);
+        assert_eq!(mid.nodes[&api].status, NodeStatus::Running, "{mid:?}");
+        assert!(mid.nodes[&api].session_id.is_some());
+        assert_eq!(mid.created.len(), 1);
+        let c = &mid.created[0];
+        assert_eq!(c.created_by, "o");
+        assert_eq!(c.node.id, api);
+        assert!(!c.kept);
+        // O evento leva o nó criado para o front.
+        assert!(host
+            .runs
+            .lock()
+            .iter()
+            .any(|r| r.created.iter().any(|c| c.node.id == api)));
+        // O processo roda na pasta pedida.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let status = loop {
+            let st = tools
+                .call("maestro_node_status", &json!({"node_id": api}))
+                .unwrap();
+            if st["log"].as_str().is_some_and(|l| l.contains("subiu")) || Instant::now() > deadline
+            {
+                break st;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        assert_eq!(status["status"], "running", "{status}");
+        assert!(
+            status["log"].as_str().unwrap().contains("subiu"),
+            "{status}"
+        );
+
+        // Validação do core: pasta inexistente, url não local, nó de outro.
+        let err = tools
+            .call(
+                "maestro_create_process",
+                &json!({"title": "x", "command": "true", "dir": "/nao/existe/tyba-orq"}),
+            )
+            .unwrap_err();
+        assert!(err.contains("não existe"), "{err}");
+        let err = tools
+            .call(
+                "maestro_create_browser",
+                &json!({"title": "x", "url": "https://example.com"}),
+            )
+            .unwrap_err();
+        assert!(err.contains("só local"), "{err}");
+        let err = tools
+            .call(
+                "maestro_create_browser",
+                &json!({"title": "x", "from_node": "a"}),
+            )
+            .unwrap_err();
+        assert!(err.contains("não produz url"), "{err}");
+        let err = tools
+            .call("maestro_stop_node", &json!({"node_id": "p"}))
+            .unwrap_err();
+        assert!(err.contains("só para nó criado"), "{err}");
+        assert_eq!(
+            runs.get(&run.id).unwrap().nodes["p"].status,
+            NodeStatus::Running
+        );
+
+        // Navegador ligado na url do processo criado: ligação url de verdade.
+        *host.ports.lock() = vec![5180];
+        let code = tools
+            .call(
+                "maestro_create_browser",
+                &json!({"title": "code", "from_node": api}),
+            )
+            .unwrap()["node_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let r = wait_status(&runs, &run.id, &code, NodeStatus::Done);
+        assert_eq!(r.nodes[&code].url.as_deref(), Some("http://localhost:5180"));
+        let edges = &r.created.iter().find(|c| c.node.id == code).unwrap().edges;
+        assert_eq!(edges.len(), 1);
+        assert_eq!(
+            (edges[0].from.as_str(), edges[0].kind),
+            (api.as_str(), EdgeKind::Url)
+        );
+
+        // Teto de 30 por execução (já são 2).
+        for i in 2..MAX_CREATED {
+            tools
+                .call(
+                    "maestro_create_browser",
+                    &json!({"title": format!("b{i}"), "url": "http://localhost:1"}),
+                )
+                .unwrap();
+        }
+        let err = tools
+            .call(
+                "maestro_create_browser",
+                &json!({"title": "demais", "url": "http://localhost:1"}),
+            )
+            .unwrap_err();
+        assert!(err.contains("teto"), "{err}");
+
+        // Parar o nó criado: só ele morre.
+        let session = runs.get(&run.id).unwrap().nodes[&api]
+            .session_id
+            .clone()
+            .unwrap();
+        tools
+            .call("maestro_stop_node", &json!({"node_id": api}))
+            .unwrap();
+        assert!(host.killed.lock().contains(&session));
+        let r = runs.get(&run.id).unwrap();
+        assert_eq!(r.nodes[&api].status, NodeStatus::Stopped);
+        assert_eq!(r.status, RunStatus::Running);
+
+        // ■ Parar: o run fecha e os criados ficam fora do grafo.
+        runs.stop(&run.id).unwrap();
+        assert!(runs.created_to_keep(&run.id).is_err());
+        let err = tools
+            .call(
+                "maestro_create_process",
+                &json!({"title": "tarde", "command": "true", "dir": work}),
+            )
+            .unwrap_err();
+        assert!(err.contains("já terminou"), "{err}");
+        // O grafo salvo nunca recebeu os criados.
+        let saved = runs.store.get_maestro_graph("g-1").unwrap().unwrap().value;
+        assert_eq!(saved.nodes.len(), 3);
+        assert_eq!(runs.get(&run.id).unwrap().status, RunStatus::Stopped);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn keep_writes_created_nodes_into_the_graph_as_normal_nodes() {
+        use serde_json::json;
+        let dir = tempfile::tempdir().unwrap();
+        let (runs, host, _app) = pty_runs(dir.path().join("runs"));
+        let g = graph(vec![orchestrator("o"), process("p", "sleep 30")], vec![]);
+        runs.store.save_maestro_graph(&g, true, None).unwrap();
+        let run = runs.start(g.clone(), vec![]).unwrap();
+        wait_status(&runs, &run.id, "o", NodeStatus::Done);
+        let tools = tools_of(&host, "o");
+        let web = tools
+            .call(
+                "maestro_create_process",
+                &json!({"title": "web", "command": "sleep 30", "dir": dir.path()}),
+            )
+            .unwrap()["node_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let page = tools
+            .call(
+                "maestro_create_browser",
+                &json!({"title": "page", "from_node": web}),
+            )
+            .unwrap()["node_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        // O que o comando "Manter no grafo" faz.
+        let keep = runs.created_to_keep(&run.id).unwrap();
+        assert_eq!(keep.len(), 2);
+        let mut graph = runs.store.get_maestro_graph(&g.id).unwrap().unwrap().value;
+        orchestrator::merge_kept(&mut graph, &keep);
+        crate::maestro::validate_graph(&graph, &[]).unwrap();
+        runs.store.save_maestro_graph(&graph, true, None).unwrap();
+        runs.mark_kept(
+            &run.id,
+            &keep.iter().map(|c| c.node.id.clone()).collect::<Vec<_>>(),
+        );
+
+        let saved = runs.store.get_maestro_graph(&g.id).unwrap().unwrap().value;
+        let ids: Vec<&str> = saved.nodes.iter().map(|n| n.id.as_str()).collect();
+        assert_eq!(ids, vec!["o", "p", web.as_str(), page.as_str()]);
+        // Nó normal: sem marca de criado no grafo; a ligação url vai junto.
+        let body = serde_json::to_value(&saved).unwrap().to_string();
+        assert!(!body.contains("createdBy"), "{body}");
+        assert!(saved
+            .edges
+            .iter()
+            .any(|e| e.from == web && e.to == page && e.kind == EdgeKind::Url));
+        let r = runs.get(&run.id).unwrap();
+        assert!(r.created.iter().all(|c| c.kept));
+        // Já mantidos: nada mais a manter.
+        assert!(runs.created_to_keep(&run.id).unwrap().is_empty());
+        runs.stop(&run.id).unwrap();
     }
 
     #[test]

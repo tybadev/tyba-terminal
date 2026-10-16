@@ -6784,6 +6784,7 @@ mod tests {
                         role: "autor".into(),
                         prompt: "corrija {{alvo}}".into(),
                         dir: String::new(),
+                        orchestrate: false,
                     },
                     position: Position { x: 10.0, y: 20.5 },
                     size: Size { w: 480.0, h: 320.0 },
@@ -6849,6 +6850,7 @@ mod tests {
             version: 1,
             test: false,
             live_agents: Vec::new(),
+            created: Vec::new(),
         };
         for i in 0..5u64 {
             store
@@ -6893,6 +6895,7 @@ mod tests {
             version,
             test: false,
             live_agents: Vec::new(),
+            created: Vec::new(),
         };
         store
             .save_maestro_run(&snap(1, RunStatus::Running))
@@ -6921,6 +6924,7 @@ mod tests {
             version: 1,
             test,
             live_agents: Vec::new(),
+            created: Vec::new(),
         };
         // r0 é o mais velho e está ativo; depois dele, 3 testes e 2 runs.
         store.save_maestro_run(&run("r0", 0, false)).unwrap();

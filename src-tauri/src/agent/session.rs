@@ -152,6 +152,9 @@ struct HandlerCtx {
     observe_only: bool,
     /// Agente de nó do Maestro: onde o fim do turno fica para ele ler.
     turn_tail: Option<SharedTurnTail>,
+    /// Nó do Maestro com orquestrar ligado: quem atende o `MaestroTool` que o
+    /// `tyba _maestro-mcp` da sessão manda. `None` em toda outra sessão.
+    maestro_tools: Option<crate::maestro::orchestrator::ToolHandler>,
 }
 
 fn main_window_focused(app: &AppHandle) -> bool {
@@ -920,7 +923,36 @@ fn record_inferred_notification(
     }
 }
 
+/// Ferramenta do Maestro pedida pelo `tyba _maestro-mcp` da sessão. Não é
+/// hook do agente: não passa pelo registro de eventos nem pelo gate. Só a
+/// sessão de nó com orquestrar ligado tem quem atenda.
+fn on_maestro_tool(ctx: &HandlerCtx, event: &HookEvent) -> HookAction {
+    let Some(tools) = &ctx.maestro_tools else {
+        return HookAction::Deny {
+            reason: "as ferramentas do Maestro só existem na sessão de um nó com orquestrar ligado"
+                .into(),
+        };
+    };
+    let tool = event
+        .raw
+        .get("tool")
+        .and_then(|t| t.as_str())
+        .unwrap_or_default();
+    let args = event
+        .raw
+        .get("arguments")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    match tools.call(tool, &args) {
+        Ok(value) => HookAction::Result { value },
+        Err(reason) => HookAction::Deny { reason },
+    }
+}
+
 fn handle_event(ctx: &HandlerCtx, event: HookEvent) -> HookAction {
+    if event.hook_event_name == crate::maestro::mcp::TOOL_EVENT {
+        return on_maestro_tool(ctx, &event);
+    }
     capture_conversation_id(ctx, &event);
     if let Some(tail) = &ctx.turn_tail {
         note_turn_tail(&mut tail.lock().expect("turn tail lock"), &event);
@@ -1574,6 +1606,7 @@ pub fn prepare_hosted_agent(
         seen_transcript: Arc::new(Mutex::new(None)),
         observe_only: true,
         turn_tail: None,
+        maestro_tools: None,
     };
     // Review round 1, achado BLOQUEANTE: derruba o HookServer ANTIGO desta
     // sessão ANTES de religar em `socket_path` — nunca depois. `runtime_dir(id)`
@@ -1617,6 +1650,9 @@ pub struct FreeAgentSpec {
     pub extra_env: Vec<(String, String)>,
     pub cols: u16,
     pub rows: u16,
+    /// Nó com orquestrar ligado: a sessão ganha o servidor MCP do Maestro
+    /// (`tyba _maestro-mcp`) e o socket dela atende as ferramentas.
+    pub maestro_tools: Option<crate::maestro::orchestrator::ToolHandler>,
 }
 
 /// O fim de turno como o hook do fio principal o viu. O status da sessão
@@ -1720,6 +1756,7 @@ fn build_free_command(
     runtime: &Path,
     exe: &Path,
     prompt: &str,
+    mcp_args: &[String],
 ) -> Result<FreeCommand, String> {
     use crate::sandbox::Sandbox;
 
@@ -1727,6 +1764,10 @@ fn build_free_command(
         .map(|top| crate::repo::canonicalize_or(&top))
         .unwrap_or_else(|| cwd.to_path_buf());
     let mut cmd = runner.build_command(cwd, env, hook_setup, None, None);
+    // O servidor MCP do Maestro (só no orquestrador) antes do prompt.
+    for arg in mcp_args {
+        cmd.arg(arg);
+    }
     if !prompt.is_empty() {
         cmd.arg(prompt_arg(prompt));
     }
@@ -1782,6 +1823,26 @@ pub fn spawn_free_agent(
         settings_path: runtime.join(HOOK_SETTINGS_FILE),
         hook_command: hook_cmd,
     };
+    // Orquestrador: o servidor MCP é este binário, falando pelo socket desta
+    // sessão. O `--mcp-config` do Claude vai num arquivo 0600 no runtime dir.
+    let mcp_args = match &spec.maestro_tools {
+        Some(_) => {
+            use crate::maestro::mcp;
+            if matches!(runner.kind(), AgentRunnerKind::ClaudeCode) {
+                let body = serde_json::to_string_pretty(&mcp::claude_config(&exe, &socket_path))
+                    .map_err(|e| format!("config do MCP do Maestro: {e}"))?;
+                crate::session::write_private(&runtime, mcp::CLAUDE_CONFIG_FILE, &body)
+                    .map_err(|e| format!("escrita da config do MCP do Maestro: {e}"))?;
+            }
+            mcp::agent_args(
+                &runner.kind(),
+                &exe,
+                &socket_path,
+                &runtime.join(mcp::CLAUDE_CONFIG_FILE),
+            )
+        }
+        None => Vec::new(),
+    };
 
     let FreeCommand {
         cmd,
@@ -1796,6 +1857,7 @@ pub fn spawn_free_agent(
         &runtime,
         &exe,
         &spec.prompt,
+        &mcp_args,
     )?;
 
     ctx.subagents.register_session(id);
@@ -1815,6 +1877,7 @@ pub fn spawn_free_agent(
         seen_transcript: Arc::new(Mutex::new(None)),
         observe_only,
         turn_tail: Some(tail.clone()),
+        maestro_tools: spec.maestro_tools.clone(),
     };
     let server = HookServer::bind(
         &socket_path,
@@ -2259,6 +2322,7 @@ fn spawn_prepared(
         seen_transcript: Arc::new(Mutex::new(None)),
         observe_only: false,
         turn_tail: None,
+        maestro_tools: None,
     };
     let server = HookServer::bind(
         &socket_path,
@@ -2613,6 +2677,7 @@ mod build_hosted_command_tests {
             runtime,
             &std::env::current_exe().unwrap(),
             prompt,
+            &[],
         )
         .expect("o agente do nó sempre monta")
     }
@@ -2662,6 +2727,44 @@ mod build_hosted_command_tests {
             codex.iter().any(|a| a.contains("_hook --observe")),
             "{codex:?}"
         );
+    }
+
+    /// Orquestrador: o servidor MCP do Maestro entra antes do prompt, e o
+    /// `--mcp-config=<arquivo>` numa peça só (separado, a opção variádica do
+    /// Claude comeria o prompt).
+    #[test]
+    fn orchestrator_gets_the_maestro_mcp_before_the_prompt() {
+        let cwd = tempfile::tempdir().unwrap();
+        let runtime = tempfile::tempdir().unwrap();
+        let exe = std::env::current_exe().unwrap();
+        let socket = runtime.path().join(HOOK_SOCKET_FILE);
+        let config = runtime.path().join(crate::maestro::mcp::CLAUDE_CONFIG_FILE);
+        for runner in [
+            &ClaudeCodeRunner as &dyn AgentRunner,
+            &CodexRunner as &dyn AgentRunner,
+        ] {
+            let mcp = crate::maestro::mcp::agent_args(&runner.kind(), &exe, &socket, &config);
+            let env = HashMap::from([("PATH".to_string(), "/usr/bin".to_string())]);
+            let built = build_free_command(
+                runner,
+                cwd.path(),
+                &env,
+                &hook_setup(runtime.path()),
+                &socket,
+                runtime.path(),
+                &exe,
+                "suba o ambiente",
+                &mcp,
+            )
+            .unwrap();
+            let argv = argv(&built.cmd);
+            assert_eq!(argv.last().map(String::as_str), Some("suba o ambiente"));
+            let before_prompt = &argv[..argv.len() - 1];
+            assert!(before_prompt.ends_with(&mcp), "{argv:?}");
+        }
+        // Sem orquestrar, nada de MCP do Maestro.
+        let plain = argv(&free(&ClaudeCodeRunner, cwd.path(), runtime.path(), "x").cmd);
+        assert!(!plain.iter().any(|a| a.contains("mcp")), "{plain:?}");
     }
 
     #[test]

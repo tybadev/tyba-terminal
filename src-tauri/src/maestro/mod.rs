@@ -11,6 +11,8 @@
 pub mod agent;
 pub mod export;
 pub mod integration;
+pub mod mcp;
+pub mod orchestrator;
 pub mod run;
 pub mod service;
 
@@ -80,6 +82,11 @@ pub enum NodeKind {
         /// Pasta onde o agente roda. Vazio: `Graph::dir`.
         #[serde(default)]
         dir: String,
+        /// Orquestrador: a sessão recebe as ferramentas do Maestro (servidor
+        /// MCP `tyba _maestro-mcp`) e cria nós no run em vez de rodar tudo
+        /// dentro dela. Ver [`orchestrator`].
+        #[serde(default)]
+        orchestrate: bool,
     },
     Process {
         command: String,
@@ -287,7 +294,7 @@ pub enum MaestroError {
 
 /// Mesma regra de `snippet::validate`: `\n` e `\t` passam, o resto dos
 /// caracteres de controle não. Texto daqui vira linha de comando ou prompt.
-fn has_control_chars(text: &str) -> bool {
+pub(crate) fn has_control_chars(text: &str) -> bool {
     text.chars()
         .any(|c| c != '\n' && c != '\t' && c.is_control())
 }
@@ -335,7 +342,10 @@ pub fn validate_integration(integration: &Integration) -> Result<(), MaestroErro
 }
 
 /// O que o nó produz (tabela de rules).
-fn produces(kind: &NodeKind, integrations: &HashMap<&str, &Integration>) -> Vec<EdgeKind> {
+pub(crate) fn produces(
+    kind: &NodeKind,
+    integrations: &HashMap<&str, &Integration>,
+) -> Vec<EdgeKind> {
     match kind {
         NodeKind::Agent { .. } => vec![EdgeKind::Context, EdgeKind::Diff],
         // A url só fica disponível quando a sessão do processo abre porta.
@@ -569,6 +579,7 @@ mod tests {
                 role: "revisor".into(),
                 prompt: "revise o diff".into(),
                 dir: String::new(),
+                orchestrate: false,
             },
         )
     }
@@ -791,6 +802,7 @@ mod tests {
             role: String::new(),
             prompt: "oi\u{1b}[2J".into(),
             dir: String::new(),
+            orchestrate: false,
         };
         assert!(matches!(
             validate_graph(&graph(vec![a], vec![]), &[]),

@@ -15,6 +15,10 @@ pub struct ResponseEnvelope {
     pub v: u32,
     pub action: String,
     pub reason: Option<String>,
+    /// Só na resposta `result` de uma ferramenta do Maestro (sessão de nó com
+    /// orquestrar ligado). Ausente em todo o resto.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<serde_json::Value>,
 }
 
 pub fn hook_event_from_value(event: serde_json::Value) -> HookEvent {
