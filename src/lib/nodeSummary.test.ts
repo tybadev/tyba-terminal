@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 
-import { DEFAULT_SIZE, newNode } from "./maestro";
+import { DEFAULT_SIZE, newNode } from "./orbit";
 import { firstLine } from "./nodeSummary";
 
 test("nos-9: a linha recolhida é a primeira com texto", () => {

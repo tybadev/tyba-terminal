@@ -3669,7 +3669,7 @@ export interface KillOutcome {
   force_after_ms: number;
 }
 
-/** `null` = a máquina local, sem sessão (a tela aberta pelo Workspace). */
+/** `null` = a máquina local, sem sessão (a tela aberta pelo Orbit). */
 export const servicesList = (id: SessionId | null) => invoke<ServicesList>("services_list", { id });
 
 export const servicesDetail = (pid: number) => invoke<ServiceDetail>("services_detail", { pid });

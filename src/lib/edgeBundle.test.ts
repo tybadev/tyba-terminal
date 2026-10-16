@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import { bundleEdges, unbundleEdgeChanges } from "./edgeBundle";
-import { fromFlow, newNode, toFlow, type EdgeKind } from "./maestro";
+import { fromFlow, newNode, toFlow, type EdgeKind } from "./orbit";
 
 // Fixtures sintéticas: nada aqui veio de sessão real.
 const agent = (id: string) =>

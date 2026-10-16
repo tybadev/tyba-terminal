@@ -2,7 +2,7 @@
 // Puro: recebe os retângulos ocupados e devolve a posição. O core faz o
 // mesmo para os nós que o orquestrador cria (`orchestrator::free_spot`).
 
-import type { RingState } from "./maestroCard";
+import type { RingState } from "./orbitCard";
 
 export interface Rect {
   x: number;

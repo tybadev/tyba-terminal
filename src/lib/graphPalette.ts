@@ -1,10 +1,10 @@
 // A paleta que cria nós no canvas (no lugar do "+ Nó"; quadro
-// MaestroCanvasLiso): duplo clique, ⌘K ou "/" abrem uma busca ali, e soltar
+// OrbitCanvasLiso): duplo clique, ⌘K ou "/" abrem uma busca ali, e soltar
 // uma ligação no vazio abre a mesma busca filtrada pelos que aceitam o que a
 // origem produz. Puro: as entradas e o filtro; quem desenha é o componente.
 
 import type { Snippet } from "./ipc";
-import { connectionKinds, shortDir, type Integration, type NodeKind } from "./maestro";
+import { connectionKinds, shortDir, type Integration, type NodeKind } from "./orbit";
 
 export type PaletteIcon =
   | "claude"

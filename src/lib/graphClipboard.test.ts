@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import { clipBounds, copyNodes, pasteClip } from "./graphClipboard";
-import { newNode, type MaestroEdge } from "./maestro";
+import { newNode, type OrbitEdge } from "./orbit";
 
 // Fixtures sintéticas: nada aqui veio de sessão real.
 const proc = (id: string, x: number, y: number) =>
@@ -13,7 +13,7 @@ const proc = (id: string, x: number, y: number) =>
   );
 
 const nodes = [proc("a", 0, 0), proc("b", 700, 100), proc("c", 0, 600)];
-const edges: MaestroEdge[] = [
+const edges: OrbitEdge[] = [
   { id: "ab", from: "a", to: "b", kind: "log" },
   { id: "cb", from: "c", to: "b", kind: "log" },
 ];

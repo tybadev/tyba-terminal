@@ -144,7 +144,7 @@ export function ServicesScreen({
   onFocusSession,
   onClose,
 }: {
-  /** `null` = aberta pelo Workspace (Maestro): a máquina local, sem sessão. */
+  /** `null` = aberta pelo Orbit: a máquina local, sem sessão. */
   session: Session | null;
   /** `null` junto com `session`: sem workspace de terminal para guardar o estado. */
   workspaceId: WorkspaceId | null;
@@ -161,7 +161,7 @@ export function ServicesScreen({
 }) {
   const { t, i18n } = useTranslation();
   const remote = hostAlias !== null && session !== null;
-  // Aberta pelo Workspace não há workspace de terminal onde o core guarde
+  // Aberta pelo Orbit não há workspace de terminal onde o core guarde
   // seção, filtro e linha escolhida: ficam aqui, enquanto a tela está aberta.
   const [own, setOwn] = useState(saved);
   const state = workspaceId ? saved : own;

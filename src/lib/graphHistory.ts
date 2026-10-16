@@ -3,7 +3,7 @@
 // o mesmo `fromFlow` que vai ao core — voltar a um retrato é trocar o canvas
 // por ele, e o salvar com debounce leva a volta ao banco como qualquer edição.
 
-import { fromFlow, toFlow, type FlowEdgeLike, type FlowNode, type Graph } from "./maestro";
+import { fromFlow, toFlow, type FlowEdgeLike, type FlowNode, type Graph } from "./orbit";
 
 /** Quantos passos o ⌘Z alcança. */
 export const HISTORY_LIMIT = 100;

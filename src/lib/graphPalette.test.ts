@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import { filterPalette, paletteEntries, recentDirs, type PaletteInput } from "./graphPalette";
-import type { Integration, NodeKind } from "./maestro";
+import type { Integration, NodeKind } from "./orbit";
 
 // Fixtures sintéticas: nada aqui veio de sessão real.
 const labels = {

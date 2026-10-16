@@ -11,7 +11,7 @@ import {
   restoreShot,
   undo,
 } from "./graphHistory";
-import { newNode, toFlow } from "./maestro";
+import { newNode, toFlow } from "./orbit";
 
 // Fixtures sintéticas: nada aqui veio de sessão real.
 const note = (id: string, x = 0) => newNode(id, id, { type: "note", markdown: "" }, { x, y: 0 });

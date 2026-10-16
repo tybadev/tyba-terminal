@@ -1,17 +1,17 @@
 // ⌘D, ⌘C e ⌘V do canvas (canvas-9): copiar nós do grafo com id novo. Puro.
 
-import type { MaestroEdge, MaestroNode } from "./maestro";
+import type { OrbitEdge, OrbitNode } from "./orbit";
 
 export interface Clip {
-  nodes: MaestroNode[];
+  nodes: OrbitNode[];
   /** Só as ligações entre os copiados: a cópia não pega entrada de fora. */
-  edges: MaestroEdge[];
+  edges: OrbitEdge[];
 }
 
 /** O que ⌘C guarda: os nós escolhidos e as ligações entre eles. */
 export function copyNodes(
-  nodes: readonly MaestroNode[],
-  edges: readonly MaestroEdge[],
+  nodes: readonly OrbitNode[],
+  edges: readonly OrbitEdge[],
   ids: ReadonlySet<string>,
 ): Clip {
   return {

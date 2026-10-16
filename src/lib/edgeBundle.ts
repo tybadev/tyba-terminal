@@ -7,7 +7,7 @@
 // única pode ter isso. No canvas elas viram UMA ligação com a etiqueta
 // "contexto + diff"; no modelo continuam todas, cada uma com o seu id.
 
-import type { EdgeKind, FlowEdgeData } from "./maestro";
+import type { EdgeKind, FlowEdgeData } from "./orbit";
 
 /** Uma ligação do modelo dentro da desenhada. */
 export interface BundleMember {

@@ -69,7 +69,7 @@ export function keyOwnedElsewhere(target: ElementLike | null): boolean {
   const tag = target.tagName;
   if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
   if (target.isContentEditable) return true;
-  return Boolean(target.closest('.nokey, [role="dialog"], [role="menu"], [data-maestro-sheet]'));
+  return Boolean(target.closest('.nokey, [role="dialog"], [role="menu"], [data-orbit-sheet]'));
 }
 
 /**

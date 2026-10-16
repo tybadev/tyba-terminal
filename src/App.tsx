@@ -114,7 +114,7 @@ import {
   LaunchConfigScreen,
   type LaunchConfigDraftState,
 } from "./components/LaunchConfigScreen";
-import { MaestroScreen, type FocusSessionRequest } from "./components/maestro/MaestroScreen";
+import { OrbitScreen, type FocusSessionRequest } from "./components/orbit/OrbitScreen";
 import { ShortcutsPanel } from "./components/ShortcutsPanel";
 import { ConnectionsView } from "./components/ConnectionsView";
 import {
@@ -500,7 +500,7 @@ import {
   parseBindings,
   bindingOverrides,
   BINDINGS_PREF_KEY,
-  allowedUnderMaestro,
+  allowedUnderOrbit,
   isTerminalAction,
   isPaneResizeChord,
   isTabDigitChord,
@@ -4286,33 +4286,33 @@ export default function App() {
     filesScreenSession !== null ||
     dockerScreenSession !== null ||
     servicesScreenSession !== null;
-  // O Maestro cobre a área inteira: o teclado é dele enquanto estiver aberto.
-  const [maestroOpen, setMaestroOpen] = useState(false);
-  // Serviços e portas / Túneis abertos pelo Workspace: a tela da máquina,
-  // sem sessão, por cima do Maestro (lá não há sessão à vista).
+  // O Orbit cobre a área inteira: o teclado é dele enquanto estiver aberto.
+  const [orbitOpen, setOrbitOpen] = useState(false);
+  // Serviços e portas / Túneis abertos pelo Orbit: a tela da máquina,
+  // sem sessão, por cima do Orbit (lá não há sessão à vista).
   const [machineScreen, setMachineScreen] = useState<ServicesSection | null>(null);
-  // "Ir para o terminal" de uma sessão de nó, pedido ao Maestro.
-  const [maestroFocus, setMaestroFocus] = useState<FocusSessionRequest | null>(null);
+  // "Ir para o terminal" de uma sessão de nó, pedido ao Orbit.
+  const [orbitFocus, setOrbitFocus] = useState<FocusSessionRequest | null>(null);
   // "Ir para o terminal" de Serviços e portas, no Terminal ou no Workspace.
-  // Sessão da grade: vai ao Terminal, na aba dela. Sessão de nó do Maestro
+  // Sessão da grade: vai ao Terminal, na aba dela. Sessão de nó do Orbit
   // não está em layout nenhum: abre o Workspace e vai ao nó.
   const focusSessionOrNode = useCallback(
     (id: SessionId) => {
       if (findSessionLocation(layout.workspaces, id)) {
-        setMaestroOpen(false);
+        setOrbitOpen(false);
         goToSession(id);
         return;
       }
       // O terminal de baixo não fica com o foco (ver o botão Workspace).
       (document.activeElement as HTMLElement | null)?.blur();
-      setMaestroOpen(true);
-      setMaestroFocus((f) => ({ sessionId: id, nonce: (f?.nonce ?? 0) + 1 }));
+      setOrbitOpen(true);
+      setOrbitFocus((f) => ({ sessionId: id, nonce: (f?.nonce ?? 0) + 1 }));
     },
     [layout.workspaces, goToSession],
   );
   const machineTunnels = useMemo(() => sshTunnelTargets(sessions, sshHosts), [sessions, sshHosts]);
   useEffect(() => {
-    if (!activeId || gitScreenOpen || maestroOpen) return;
+    if (!activeId || gitScreenOpen || orbitOpen) return;
     if (ownsCommandLine) {
       focusLine(activeId);
       return;
@@ -4321,7 +4321,7 @@ export default function App() {
     // desligado): o foco vai junto, senão as teclas caem numa caixa que já não
     // é dona da linha.
     getTerm(activeId)?.term.focus();
-  }, [ownsCommandLine, activeId, focusLine, gitScreenOpen, maestroOpen]);
+  }, [ownsCommandLine, activeId, focusLine, gitScreenOpen, orbitOpen]);
 
   // Quem responde se o PS1 saiu da tela é o SHELL, não o app: o hook relata por
   // `633;P` a cada prompt. Assumir pela preferência mentiria quando o hook não
@@ -4715,8 +4715,8 @@ export default function App() {
       }
       if (!(KEY_ACTIONS as string[]).includes(id)) return;
       // No macOS o acelerador do menu (⌘W, ⌘T…) chega por aqui, não pelo
-      // keydown: com o Maestro aberto vale a mesma regra do teclado.
-      if (maestroOpen && !allowedUnderMaestro(id as KeyAction)) return;
+      // keydown: com o Orbit aberto vale a mesma regra do teclado.
+      if (orbitOpen && !allowedUnderOrbit(id as KeyAction)) return;
       runAction(id as KeyAction);
     }).then((un) => {
       if (disposed) un();
@@ -4726,20 +4726,20 @@ export default function App() {
       disposed = true;
       unlisten?.();
     };
-  }, [runAction, runMenuExtra, maestroOpen]);
+  }, [runAction, runMenuExtra, orbitOpen]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (captureState.active) return;
-      // Maestro aberto: o teclado é dele (o xterm do nó, os campos, o canvas).
+      // Orbit aberto: o teclado é dele (o xterm do nó, os campos, o canvas).
       // Atalho do app que mexeria na grade escondida embaixo não age nem
       // consome a tecla.
-      if (maestroOpen) {
+      if (orbitOpen) {
         const combo = comboOf(e);
         const action = combo
           ? (Object.keys(bindings) as KeyAction[]).find((a) => bindings[a] === combo)
           : undefined;
-        if (!action || !allowedUnderMaestro(action)) return;
+        if (!action || !allowedUnderOrbit(action)) return;
         e.preventDefault();
         e.stopPropagation();
         if (!e.repeat) runAction(action);
@@ -4879,7 +4879,7 @@ export default function App() {
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
   }, [
-    maestroOpen,
+    orbitOpen,
     activeId,
     searchOpen,
     pasteFromClipboard,
@@ -5593,13 +5593,13 @@ export default function App() {
                 <TooltipTrigger asChild>
                   <button
                     aria-label={t("terminalView")}
-                    aria-pressed={!maestroOpen}
+                    aria-pressed={!orbitOpen}
                     onClick={() => {
-                      setMaestroOpen(false);
+                      setOrbitOpen(false);
                       setMachineScreen(null);
                     }}
                     className={`flex h-6 items-center gap-1.5 rounded-[6px] px-3 text-[13px] ${
-                      maestroOpen
+                      orbitOpen
                         ? "text-tyba-text-faint hover:text-tyba-text-muted"
                         : "bg-tyba-raised text-tyba-text shadow-[var(--tyba-row-raised)]"
                     }`}
@@ -5615,26 +5615,26 @@ export default function App() {
               <Tooltip>
                 <TooltipTrigger asChild>
                   <button
-                    aria-label={t("workspaceView")}
-                    aria-pressed={maestroOpen}
+                    aria-label={t("orbitView")}
+                    aria-pressed={orbitOpen}
                     onClick={() => {
                       // O terminal de baixo não fica com o foco: as teclas
                       // cairiam num xterm escondido.
                       (document.activeElement as HTMLElement | null)?.blur();
-                      setMaestroOpen(true);
+                      setOrbitOpen(true);
                     }}
                     className={`flex h-6 items-center gap-1.5 rounded-[6px] px-3 text-[13px] ${
-                      maestroOpen
+                      orbitOpen
                         ? "bg-tyba-raised text-tyba-text shadow-[var(--tyba-row-raised)]"
                         : "text-tyba-text-faint hover:text-tyba-text-muted"
                     }`}
                   >
                     <Stack size={14} aria-hidden />
-                    {t("workspaceView")}
+                    {t("orbitView")}
                   </button>
                 </TooltipTrigger>
                 <TooltipContent side="bottom">
-                  {t("workspaceView")}
+                  {t("orbitView")}
                 </TooltipContent>
               </Tooltip>
             </div>
@@ -5642,9 +5642,9 @@ export default function App() {
 
           <div className="h-full flex-1" data-tauri-drag-region />
 
-          {maestroOpen ? (
+          {orbitOpen ? (
             // No Workspace não há sessão à vista: Serviços e Túneis abrem a
-            // tela da máquina por cima do Maestro; o que depende de sessão
+            // tela da máquina por cima do Orbit; o que depende de sessão
             // fica desabilitado dizendo onde funciona, em vez de não fazer nada.
             <>
               <IconAction label={t("servicesTitle")} onClick={() => setMachineScreen("ports")}>
@@ -5777,13 +5777,13 @@ export default function App() {
         </header>
 
         <div className="relative flex min-h-0 flex-1">
-          {/* Maestro em tela cheia, sem a barra de sessões. Fica por cima em
+          {/* Orbit em tela cheia, sem a barra de sessões. Fica por cima em
               vez de desmontar a área: os terminais seguem vivos embaixo. */}
-          {maestroOpen && (
+          {orbitOpen && (
             <div className="absolute inset-0 z-40 flex">
-              <ErrorBoundary region="maestro">
-                <MaestroScreen
-                  focusSession={maestroFocus}
+              <ErrorBoundary region="orbit">
+                <OrbitScreen
+                  focusSession={orbitFocus}
                   approvals={approvals}
                   onCardApprovals={setNodeCardIds}
                   covered={machineScreen !== null}

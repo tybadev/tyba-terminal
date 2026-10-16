@@ -162,7 +162,7 @@ describe("aba compose só leitura", () => {
   });
 });
 
-describe("sshTunnelTargets (Túneis aberto pelo Workspace)", () => {
+describe("sshTunnelTargets (Túneis aberto pelo Orbit)", () => {
   // Fixtures sintéticas.
   const session = (id: string, kind: Session["kind"], status: Session["status"] = { state: "running" }): Session => ({
     id,

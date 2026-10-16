@@ -179,12 +179,12 @@ export function isTerminalAction(action: KeyAction): boolean {
 }
 
 /**
- * Com o Maestro aberto, o teclado é dele: das ações do app (atalho ou menu
+ * Com o Orbit aberto, o teclado é dele: das ações do app (atalho ou menu
  * nativo) só valem as que não mexem na grade de terminais escondida embaixo.
  * ⌘W fecharia um pane que nem está à vista, ⌘L mandaria `clear` a outro
  * shell; o resto (copiar, colar, selecionar) fica com o xterm do nó.
  */
-export function allowedUnderMaestro(action: KeyAction): boolean {
+export function allowedUnderOrbit(action: KeyAction): boolean {
   return action === "newWindow";
 }
 

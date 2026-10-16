@@ -170,7 +170,7 @@ export function closeTarget(
 }
 
 /**
- * Túneis da tela de Serviços aberta pelo Workspace (Maestro), sem sessão à
+ * Túneis da tela de Serviços aberta pelo Orbit, sem sessão à
  * vista: os de cada sessão SSH viva, com o alias do Host dela. Sessão SSH de
  * Host que sumiu da lista fica de fora (o túnel precisa do alias).
  */
