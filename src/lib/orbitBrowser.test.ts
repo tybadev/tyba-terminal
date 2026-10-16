@@ -9,6 +9,7 @@ import {
   NATIVE_ZOOM_MIN,
   SETTLE_MS,
   occlusionVerdict,
+  ownerFooter,
   previewTime,
   rectInside,
   rectsIntersect,
@@ -27,7 +28,6 @@ const base: OcclusionInput = {
   moving: false,
   occluders: [],
   covered: false,
-  owner: false,
 };
 
 describe("occlusionVerdict", () => {
@@ -58,16 +58,9 @@ describe("occlusionVerdict", () => {
     expect(occlusionVerdict({ ...base, moving: true })).toBe(false);
   });
 
-  test("com o dono usando, só algo por cima derruba", () => {
-    const owner = { ...base, owner: true, moving: true, zoom: 0.3, marker: { ...marker, y: 0 } };
-    expect(occlusionVerdict(owner)).toBe(true);
-    expect(occlusionVerdict({ ...owner, covered: true })).toBe(false);
-    expect(occlusionVerdict({ ...owner, occluders: [marker] })).toBe(false);
-  });
 
   test("marcador sem tamanho nunca fica vivo", () => {
     expect(occlusionVerdict({ ...base, marker: { ...marker, w: 0 } })).toBe(false);
-    expect(occlusionVerdict({ ...base, owner: true, marker: { ...marker, h: 0 } })).toBe(false);
   });
 });
 
@@ -152,5 +145,15 @@ describe("agente usando", () => {
     expect(agentStepKey({ ...step, action: "type", target: null })).toBe("orbitBrowserStep_typeBare");
     expect(agentStepKey({ ...step, action: "snapshot", target: null })).toBe("orbitBrowserStep_snapshot");
     expect(agentStepKey({ ...step, action: "outra" })).toBe("orbitBrowserStep_snapshot");
+  });
+});
+
+describe("ownerFooter", () => {
+  test("com agente ligado, diz quem espera; sem, só o Esc", () => {
+    expect(ownerFooter(["Revisor", "Outro"])).toEqual({
+      key: "orbitBrowserInUseNativeWaiting",
+      name: "Revisor",
+    });
+    expect(ownerFooter([])).toEqual({ key: "orbitBrowserInUseNative" });
   });
 });

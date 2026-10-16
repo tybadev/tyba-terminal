@@ -37,7 +37,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter, Manager};
 
-use super::{EdgeKind, Graph};
+use super::{EdgeKind, Graph, NodeKind};
 
 /// O evento com o estado de um navegador (`{graph, node, state}`).
 pub const EVENT: &str = "orbit-browser";
@@ -268,6 +268,9 @@ pub struct Place {
     pub rect: Option<ViewRect>,
     pub zoom: f64,
     pub visible: bool,
+    /// A view some com o dono usando: o teclado volta ao app (o core já
+    /// tirou o "você").
+    pub give_back: bool,
 }
 
 /// Operação na view nativa, executada na main thread.
@@ -303,6 +306,20 @@ pub enum Op {
     },
     /// Destrói toda view que não está na lista.
     Retain(Vec<ViewKey>),
+    /// Destrói a view do nó (o armazenamento vai ser apagado); com
+    /// `give_back`, o dono estava nela e o teclado volta ao app antes.
+    Destroy {
+        key: ViewKey,
+        give_back: bool,
+    },
+    /// Apaga o armazenamento do nó (a view já foi destruída por um
+    /// [`Op::Destroy`] anterior, noutra volta da main thread) e avisa
+    /// [`BrowserViews::on_cleared`]; `reload` carrega a página de novo.
+    RemoveStore {
+        key: ViewKey,
+        reload: bool,
+        attempt: u32,
+    },
 }
 
 #[derive(Debug, Default)]
@@ -323,6 +340,29 @@ struct Entry {
     nav_seq: u64,
     /// Até quando o foco "agente" vale (ms).
     agent_until: u64,
+}
+
+impl Entry {
+    /// Navegador novo: zoom 1 (o `Default` dá 0).
+    fn fresh() -> Self {
+        Entry {
+            zoom: 1.0,
+            ..Entry::default()
+        }
+    }
+}
+
+/// Aplica `f` à entrada de `key`, **se existir**; devolve o estado novo
+/// quando ele mudou (o que se emite).
+fn change(
+    entries: &mut HashMap<ViewKey, Entry>,
+    key: &ViewKey,
+    f: impl FnOnce(&mut Entry),
+) -> Option<BrowserState> {
+    let entry = entries.get_mut(key)?;
+    let before = entry.state.clone();
+    f(entry);
+    (entry.state != before).then(|| entry.state.clone())
 }
 
 /// A vez de cada navegador: uma ação de agente em voo por nó, e até
@@ -468,6 +508,74 @@ pub fn pick_live(wanted: &[(ViewRect, bool)], center: (f64, f64), max: usize) ->
     order.truncate(max);
     order.sort_unstable();
     order
+}
+
+/// A intenção de geometria de `key` aplicada ao registro: recalcula quem
+/// fica vivo no grafo (teto [`MAX_LIVE`], o mais perto de `center` primeiro)
+/// e devolve cada view que muda de lugar ou de estado. A view que some com o
+/// dono usando perde o "você" (o teclado volta ao app). `rect = None` de nó
+/// que nem existe não cria nada (card saindo depois do `retain`).
+fn place_all(
+    entries: &mut HashMap<ViewKey, Entry>,
+    key: &ViewKey,
+    rect: Option<ViewRect>,
+    zoom: f64,
+    center: (f64, f64),
+) -> Vec<(ViewKey, Place, BrowserState)> {
+    if rect.is_none() && !entries.contains_key(key) {
+        return Vec::new();
+    }
+    let entry = entries.entry(key.clone()).or_insert_with(Entry::fresh);
+    let moved = entry.rect != rect || entry.zoom != zoom;
+    entry.rect = rect;
+    entry.zoom = zoom;
+    // Só as do mesmo grafo disputam o teto (o Orbit mostra um).
+    let keys: Vec<ViewKey> = entries
+        .iter()
+        .filter(|(k, e)| k.graph == key.graph && e.rect.is_some())
+        .map(|(k, _)| k.clone())
+        .collect();
+    let wanted: Vec<(ViewRect, bool)> = keys
+        .iter()
+        .map(|k| {
+            let e = &entries[k];
+            (
+                e.rect.unwrap_or(ViewRect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 0.0,
+                    h: 0.0,
+                }),
+                e.state.focus == Focus::Owner,
+            )
+        })
+        .collect();
+    let live: Vec<ViewKey> = pick_live(&wanted, center, MAX_LIVE)
+        .into_iter()
+        .map(|i| keys[i].clone())
+        .collect();
+    let mut out = Vec::new();
+    for (k, e) in entries.iter_mut().filter(|(k, _)| k.graph == key.graph) {
+        let now_live = live.contains(k);
+        if now_live != e.state.live || (k == key && moved) {
+            e.state.live = now_live;
+            let give_back = !now_live && e.state.focus == Focus::Owner;
+            if give_back {
+                e.state.focus = Focus::None;
+            }
+            out.push((
+                k.clone(),
+                Place {
+                    rect: e.rect,
+                    zoom: e.zoom,
+                    visible: now_live,
+                    give_back,
+                },
+                e.state.clone(),
+            ));
+        }
+    }
+    out
 }
 
 /// O que pede um print novo.
@@ -630,22 +738,26 @@ impl BrowserViews {
         );
     }
 
-    /// Muda o estado de um navegador e emite, se mudou.
+    /// Muda o estado de um navegador que existe e emite, se mudou. Entrada
+    /// que o `retain` já tirou não volta: o aviso atrasado da view (título,
+    /// load, foco do agente) vira nada.
     fn update(&self, app: &AppHandle, key: &ViewKey, f: impl FnOnce(&mut Entry)) {
+        if let Some(state) = change(&mut self.entries.lock(), key, f) {
+            Self::emit(app, key, &state);
+        }
+    }
+
+    /// Como [`Self::update`], mas cria a entrada: só a intenção do front
+    /// (navegar) faz nascer um navegador.
+    fn upsert(&self, app: &AppHandle, key: &ViewKey, f: impl FnOnce(&mut Entry)) {
         let state = {
             let mut entries = self.entries.lock();
-            let entry = entries.entry(key.clone()).or_insert_with(|| Entry {
-                zoom: 1.0,
-                ..Entry::default()
-            });
-            let before = entry.state.clone();
-            f(entry);
-            if entry.state == before {
-                return;
-            }
-            entry.state.clone()
+            entries.entry(key.clone()).or_insert_with(Entry::fresh);
+            change(&mut entries, key, f)
         };
-        Self::emit(app, key, &state);
+        if let Some(state) = state {
+            Self::emit(app, key, &state);
+        }
     }
 
     pub fn state(&self, key: &ViewKey) -> Option<BrowserState> {
@@ -678,12 +790,12 @@ impl BrowserViews {
         let target = match target {
             Ok(t) => t,
             Err(why) => {
-                self.update(app, key, |e| e.state.refused = Some(why.clone()));
+                self.upsert(app, key, |e| e.state.refused = Some(why.clone()));
                 return Err(why);
             }
         };
         let mut place = None;
-        self.update(app, key, |e| {
+        self.upsert(app, key, |e| {
             e.roots = roots.clone();
             e.state.refused = None;
             e.state.url = policy::display_url(&target, &roots);
@@ -692,12 +804,14 @@ impl BrowserViews {
                 rect: e.rect,
                 zoom: e.zoom,
                 visible: e.state.live,
+                give_back: false,
             });
         });
         let place = place.unwrap_or(Place {
             rect: None,
             zoom: 1.0,
             visible: false,
+            give_back: false,
         });
         dispatch(
             app,
@@ -732,67 +846,16 @@ impl BrowserViews {
             *self.center.lock() = c;
         }
         let center = *self.center.lock();
-        let mut ops = Vec::new();
-        let mut changed = Vec::new();
-        {
-            let mut entries = self.entries.lock();
-            // Esconder o que nem existe (card saindo depois do `retain`).
-            if rect.is_none() && !entries.contains_key(key) {
-                return;
-            }
-            let entry = entries.entry(key.clone()).or_insert_with(|| Entry {
-                zoom: 1.0,
-                ..Entry::default()
-            });
-            let moved = entry.rect != rect || entry.zoom != zoom;
-            entry.rect = rect;
-            entry.zoom = zoom;
-            // Só as do mesmo grafo disputam o teto (o Orbit mostra um).
-            let keys: Vec<ViewKey> = entries
-                .iter()
-                .filter(|(k, e)| k.graph == key.graph && e.rect.is_some())
-                .map(|(k, _)| k.clone())
-                .collect();
-            let wanted: Vec<(ViewRect, bool)> = keys
-                .iter()
-                .map(|k| {
-                    let e = &entries[k];
-                    (
-                        e.rect.unwrap_or(ViewRect {
-                            x: 0.0,
-                            y: 0.0,
-                            w: 0.0,
-                            h: 0.0,
-                        }),
-                        e.state.focus == Focus::Owner,
-                    )
-                })
-                .collect();
-            let live: Vec<ViewKey> = pick_live(&wanted, center, MAX_LIVE)
-                .into_iter()
-                .map(|i| keys[i].clone())
-                .collect();
-            for (k, e) in entries.iter_mut().filter(|(k, _)| k.graph == key.graph) {
-                let now_live = live.contains(k);
-                if now_live != e.state.live || (k == key && moved) {
-                    e.state.live = now_live;
-                    ops.push(Op::Place {
-                        key: k.clone(),
-                        place: Place {
-                            rect: e.rect,
-                            zoom: e.zoom,
-                            visible: now_live,
-                        },
-                    });
-                    changed.push((k.clone(), e.state.clone()));
-                }
-            }
-        }
-        for (k, s) in &changed {
+        let placed = place_all(&mut self.entries.lock(), key, rect, zoom, center);
+        for (k, _, s) in &placed {
             Self::emit(app, k, s);
         }
-        for op in ops {
-            dispatch(app, op);
+        for (k, place, _) in placed {
+            // O dono saiu porque a view sumiu: print antes de esconder.
+            if place.give_back {
+                self.shoot(app, &k, ShotTrigger::OwnerLeft);
+            }
+            dispatch(app, Op::Place { key: k, place });
         }
     }
 
@@ -816,6 +879,89 @@ impl BrowserViews {
             .collect();
         self.entries.lock().retain(|k, _| keep.contains(k));
         dispatch(app, Op::Retain(keep));
+    }
+
+    /// "Apagar dados do navegador" (o ⋯ do nó): destrói a view, apaga
+    /// cookies, login e armazenamento do nó e carrega a mesma página de novo,
+    /// já sem eles. Não espera: o apagar é da main thread (macOS) ou de uma
+    /// thread própria (Windows e Linux).
+    pub fn clear_data(&self, app: &AppHandle, key: &ViewKey) {
+        let (state, give_back) = {
+            let mut entries = self.entries.lock();
+            match entries.get_mut(key) {
+                Some(e) => {
+                    let give_back = e.state.focus == Focus::Owner;
+                    e.created = false;
+                    e.preview = None;
+                    e.state.preview_at = None;
+                    e.state.loading = false;
+                    e.state.focus = Focus::None;
+                    (Some(e.state.clone()), give_back)
+                }
+                None => (None, false),
+            }
+        };
+        if let Some(s) = &state {
+            Self::emit(app, key, s);
+        }
+        self.wipe(app, key, give_back, state.is_some());
+    }
+
+    /// O nó saiu do grafo: o armazenamento dele vai junto (cookies e login
+    /// não sobram para um nó que não existe).
+    pub fn forget(&self, app: &AppHandle, key: &ViewKey) {
+        let give_back = self
+            .entries
+            .lock()
+            .remove(key)
+            .is_some_and(|e| e.state.focus == Focus::Owner);
+        self.wipe(app, key, give_back, false);
+    }
+
+    /// Destrói a view e, numa volta seguinte da main thread (a view já
+    /// solta), apaga o armazenamento.
+    fn wipe(&self, app: &AppHandle, key: &ViewKey, give_back: bool, reload: bool) {
+        dispatch(
+            app,
+            Op::Destroy {
+                key: key.clone(),
+                give_back,
+            },
+        );
+        dispatch(
+            app,
+            Op::RemoveStore {
+                key: key.clone(),
+                reload,
+                attempt: 0,
+            },
+        );
+    }
+
+    /// O armazenamento do nó foi apagado: com `reload`, a página volta (o
+    /// `navigate` confere o disco, então fora da main thread).
+    pub fn on_cleared(&self, app: &AppHandle, key: &ViewKey, reload: bool) {
+        if !reload {
+            return;
+        }
+        let Some((url, roots)) = self
+            .entries
+            .lock()
+            .get(key)
+            .map(|e| (e.state.url.clone(), e.roots.clone()))
+        else {
+            return;
+        };
+        if url.is_empty() {
+            return;
+        }
+        let app = app.clone();
+        let key = key.clone();
+        std::thread::spawn(move || {
+            let _ = app
+                .state::<BrowserViews>()
+                .navigate(&app, &key, &url, &roots);
+        });
     }
 
     // ── chamados pela view nativa (main thread) ──────────────────────────
@@ -1249,6 +1395,73 @@ impl BrowserViews {
     }
 }
 
+/// Os navegadores que saíram do grafo ao salvar (`old` → `new`): o core
+/// apaga o armazenamento deles ([`BrowserViews::forget`]).
+pub fn removed_browsers(old: &Graph, new: &Graph) -> Vec<String> {
+    old.nodes
+        .iter()
+        .filter(|n| matches!(n.kind, NodeKind::Browser { .. }))
+        .filter(|n| !new.nodes.iter().any(|m| m.id == n.id))
+        .map(|n| n.id.clone())
+        .collect()
+}
+
+/// Os navegadores de um grafo (apagar o grafo apaga o armazenamento deles).
+pub fn browsers(graph: &Graph) -> Vec<String> {
+    graph
+        .nodes
+        .iter()
+        .filter(|n| matches!(n.kind, NodeKind::Browser { .. }))
+        .map(|n| n.id.clone())
+        .collect()
+}
+
+/// Apaga a pasta do armazenamento de um nó (Windows e Linux). O processo do
+/// navegador pode segurar arquivo por um instante depois de a view fechar:
+/// tenta `tries` vezes, `wait` entre elas. Pasta que não existe já está
+/// apagada.
+pub fn remove_store_dir(dir: &std::path::Path, tries: u32, wait: Duration) -> std::io::Result<()> {
+    let mut last = Ok(());
+    for i in 0..tries.max(1) {
+        match std::fs::remove_dir_all(dir) {
+            Ok(()) => return Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => last = Err(e),
+        }
+        if i + 1 < tries {
+            std::thread::sleep(wait);
+        }
+    }
+    last
+}
+
+/// Windows e Linux: apaga a pasta do nó numa thread própria (a main thread
+/// não espera o disco) e avisa [`BrowserViews::on_cleared`].
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn remove_store_later(app: &AppHandle, key: ViewKey, reload: bool) {
+    let app = app.clone();
+    std::thread::spawn(move || {
+        if let Some(home) = crate::session::cwd::home() {
+            let dir = store_dir(&home, &key);
+            if let Err(e) = remove_store_dir(&dir, 20, Duration::from_millis(250)) {
+                eprintln!("[tyba] navegador do orbit: apagar os dados: {e}");
+            }
+        }
+        app.state::<BrowserViews>().on_cleared(&app, &key, reload);
+    });
+}
+
+/// `window.open()` sem url, ou com `about:blank`: nada a abrir. A página do
+/// nó fica onde está (navegar o nó para `about:blank` apagaria a página).
+pub fn new_window_ignored(url: &str) -> bool {
+    let url = url.trim();
+    url.is_empty()
+        || url
+            .get(..11)
+            .is_some_and(|s| s.eq_ignore_ascii_case("about:blank"))
+            && matches!(url.as_bytes().get(11), None | Some(b'?' | b'#'))
+}
+
 /// As pastas de onde o `orbit-file` deste navegador pode servir: a pasta do
 /// workspace (`Graph::dir`) e a de cada nó ligado a ele (quem manda a url,
 /// quem o controla). Sem duplicata, na ordem: o índice vira o host `r<i>`.
@@ -1583,6 +1796,121 @@ mod tests {
         ensure_store_dir(&dir).unwrap();
         let mode = std::fs::metadata(&dir).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o700);
+    }
+
+    /// Depois do `retain`, o aviso atrasado da view (título, load, foco do
+    /// agente) não recria a entrada órfã.
+    #[test]
+    fn late_updates_do_not_recreate_a_removed_entry() {
+        let mut entries: HashMap<ViewKey, Entry> = HashMap::new();
+        let k = key("g", "b");
+        assert_eq!(
+            change(&mut entries, &k, |e| e.state.title = "x".into()),
+            None
+        );
+        assert!(entries.is_empty());
+        entries.insert(k.clone(), Entry::fresh());
+        let s = change(&mut entries, &k, |e| e.state.title = "x".into()).unwrap();
+        assert_eq!(s.title, "x");
+        // Sem mudança, nada a emitir.
+        assert_eq!(change(&mut entries, &k, |e| e.dirty = true), None);
+        entries.clear();
+        assert_eq!(
+            change(&mut entries, &k, |e| e.state.focus = Focus::Agent),
+            None
+        );
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn removed_and_all_browsers_of_a_graph() {
+        let browser = |id: &str| node(id, NodeKind::Browser { url: String::new() });
+        let note = |id: &str| {
+            node(
+                id,
+                NodeKind::Note {
+                    markdown: String::new(),
+                    locked: false,
+                },
+            )
+        };
+        let graph = |nodes: Vec<Node>| Graph {
+            id: "g".into(),
+            name: "g".into(),
+            dir: "/ws".into(),
+            nodes,
+            edges: vec![],
+            variables: Default::default(),
+        };
+        let old = graph(vec![browser("a"), browser("b"), note("n")]);
+        let new = graph(vec![browser("b")]);
+        // Só navegador apaga dados; o que ficou não.
+        assert_eq!(removed_browsers(&old, &new), vec!["a".to_string()]);
+        assert!(removed_browsers(&new, &old).is_empty());
+        assert_eq!(browsers(&old), vec!["a".to_string(), "b".to_string()]);
+    }
+
+    #[test]
+    fn store_dir_removal_is_idempotent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = store_dir(tmp.path(), &key("g", "b"));
+        ensure_store_dir(&dir.join("data/Cookies")).unwrap();
+        std::fs::write(dir.join("data/Cookies/x"), "sessão").unwrap();
+        let other = store_dir(tmp.path(), &key("g", "c"));
+        ensure_store_dir(&other).unwrap();
+        remove_store_dir(&dir, 3, Duration::from_millis(1)).unwrap();
+        assert!(!dir.exists());
+        // O de outro nó fica.
+        assert!(other.exists());
+        // Já apagada: nada a fazer.
+        remove_store_dir(&dir, 3, Duration::from_millis(1)).unwrap();
+    }
+
+    #[test]
+    fn empty_or_blank_new_window_is_ignored() {
+        for url in [
+            "",
+            "  ",
+            "about:blank",
+            "ABOUT:BLANK",
+            "about:blank#x",
+            "about:blank?y",
+        ] {
+            assert!(new_window_ignored(url), "{url:?}");
+        }
+        for url in [
+            "http://localhost:3000/",
+            "about:blankx",
+            "about:srcdoc",
+            "/x",
+        ] {
+            assert!(!new_window_ignored(url), "{url:?}");
+        }
+    }
+
+    /// A view que some (oclusão) com o dono usando perde o "você" e manda o
+    /// teclado de volta; a que segue viva com ele, não.
+    #[test]
+    fn hiding_the_owner_view_releases_the_owner() {
+        let mut entries: HashMap<ViewKey, Entry> = HashMap::new();
+        let k = key("g", "b");
+        let center = (0.0, 0.0);
+        let placed = place_all(&mut entries, &k, Some(rect(0.0, 0.0)), 1.0, center);
+        assert_eq!(placed.len(), 1);
+        assert!(placed[0].1.visible && !placed[0].1.give_back);
+        entries.get_mut(&k).unwrap().state.focus = Focus::Owner;
+        // Mexeu, segue viva: o dono continua.
+        let placed = place_all(&mut entries, &k, Some(rect(5.0, 0.0)), 1.0, center);
+        assert!(!placed[0].1.give_back);
+        assert_eq!(entries[&k].state.focus, Focus::Owner);
+        // Some: o "você" sai e o estado emitido já diz isso.
+        let placed = place_all(&mut entries, &k, None, 1.0, center);
+        assert!(!placed[0].1.visible && placed[0].1.give_back);
+        assert_eq!(placed[0].2.focus, Focus::None);
+        assert_eq!(entries[&k].state.focus, Focus::None);
+        // Esconder o que nem existe não cria nada.
+        assert!(place_all(&mut entries, &key("g", "x"), None, 1.0, center).is_empty());
+        assert!(!entries.contains_key(&key("g", "x")));
     }
 
     #[test]

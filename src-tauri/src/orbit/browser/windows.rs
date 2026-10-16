@@ -95,7 +95,7 @@ pub(super) fn apply(app: &AppHandle, op: Op) {
             VIEWS.with(|v| {
                 if let Some(view) = v.borrow().get(&key) {
                     *view.roots.lock() = roots;
-                    set_place(app, &key, view, &place);
+                    set_place(view, &place);
                     // O WebView2 só carrega esquema próprio como
                     // `http://orbit-file.<host>/…` (o wry traduz de volta).
                     if let Err(e) = view.webview.load_url(&policy::to_windows(&url)) {
@@ -106,7 +106,7 @@ pub(super) fn apply(app: &AppHandle, op: Op) {
         }
         Op::Place { key, place } => VIEWS.with(|v| {
             if let Some(view) = v.borrow().get(&key) {
-                set_place(app, &key, view, &place);
+                set_place(view, &place);
             }
         }),
         Op::Back(key) => VIEWS.with(|v| {
@@ -142,21 +142,33 @@ pub(super) fn apply(app: &AppHandle, op: Op) {
                 let _ = reply.send(Err(super::NOT_OPEN.to_string()));
             }
         }),
-        Op::Retain(keep) => {
-            // Tira do registro antes de soltar: o `Drop` do wry destrói a
-            // janela filha e pode disparar eventos.
-            let gone: Vec<NativeView> = VIEWS.with(|v| {
-                let mut v = v.borrow_mut();
-                let dead: Vec<ViewKey> = v.keys().filter(|k| !keep.contains(k)).cloned().collect();
-                dead.iter().filter_map(|k| v.remove(k)).collect()
-            });
-            drop(gone);
-        }
+        Op::Retain(keep) => destroy(|k| !keep.contains(k), false),
+        Op::Destroy { key, give_back } => destroy(|k| *k == key, give_back),
+        // A view já fechou (o `Destroy` veio antes): a pasta sai numa thread
+        // própria, que espera o processo do WebView2 soltar os arquivos.
+        Op::RemoveStore { key, reload, .. } => super::remove_store_later(app, key, reload),
     }
 }
 
+/// Destrói as views de `dead`; com `give_back`, o teclado volta ao app antes
+/// (o dono estava na página). Tira do registro antes de soltar: o `Drop` do
+/// wry destrói a janela filha e pode disparar eventos.
+fn destroy(dead: impl Fn(&ViewKey) -> bool, give_back: bool) {
+    let gone: Vec<NativeView> = VIEWS.with(|v| {
+        let mut v = v.borrow_mut();
+        let keys: Vec<ViewKey> = v.keys().filter(|k| dead(k)).cloned().collect();
+        keys.iter().filter_map(|k| v.remove(k)).collect()
+    });
+    if give_back {
+        for view in &gone {
+            let _ = view.webview.focus_parent();
+        }
+    }
+    drop(gone);
+}
+
 /// Posição, zoom e visibilidade. Mostra só depois de posicionar.
-fn set_place(app: &AppHandle, key: &ViewKey, view: &NativeView, place: &Place) {
+fn set_place(view: &NativeView, place: &Place) {
     let visible = place.visible && place.rect.is_some();
     if let Some(r) = place.rect {
         let _ = view.webview.set_bounds(Rect {
@@ -166,7 +178,7 @@ fn set_place(app: &AppHandle, key: &ViewKey, view: &NativeView, place: &Place) {
         // `SetZoomFactor`: reescala o layout como o `transform` do canvas.
         let _ = view.webview.zoom(place.zoom.clamp(0.25, 5.0));
     }
-    if !visible && app.state::<BrowserViews>().focus(key) == Focus::Owner {
+    if !visible && place.give_back {
         // A view vai sumir com o teclado nela: o foco volta ao app antes.
         let _ = view.webview.focus_parent();
     }
@@ -221,14 +233,19 @@ fn create(app: &AppHandle, key: &ViewKey) -> Result<NativeView, String> {
         .with_navigation_handler(move |url| refuse_or_allow(&nav_app, &nav_key, &url))
         // `target=_blank` / `window.open`: nada de janela nova; o endereço
         // abre no mesmo nó, pela mesma regra.
+        // Sem url ou `about:blank`, nada: a página do nó fica. O `navigate`
+        // confere o disco (`file://`), então fora da main thread.
         .with_new_window_req_handler(move |url, _| {
-            let roots = open_roots.lock().clone();
-            let _ = open_app.state::<BrowserViews>().navigate(
-                &open_app,
-                &open_key,
-                &policy::from_windows(&url),
-                &roots,
-            );
+            let url = policy::from_windows(&url);
+            if !super::new_window_ignored(&url) {
+                let roots = open_roots.lock().clone();
+                let (app, key) = (open_app.clone(), open_key.clone());
+                std::thread::spawn(move || {
+                    let _ = app
+                        .state::<BrowserViews>()
+                        .navigate(&app, &key, &url, &roots);
+                });
+            }
             NewWindowResponse::Deny
         })
         .with_download_started_handler(|_, _| false)

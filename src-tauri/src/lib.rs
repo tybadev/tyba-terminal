@@ -8622,26 +8622,58 @@ fn orbit_get_graph(state: State<'_, AppState>, id: String) -> Result<Option<orbi
 }
 
 /// Valida no core antes de gravar: o front oferece só ligação válida, mas não
-/// é quem decide. Grafo salvo pelo dono é dele — fica consentido.
+/// é quem decide. Grafo salvo pelo dono é dele — fica consentido. Navegador
+/// que saiu do grafo leva junto cookies, login e armazenamento.
 #[tauri::command]
-fn orbit_save_graph(state: State<'_, AppState>, graph: orbit::Graph) -> Result<(), String> {
+fn orbit_save_graph(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    views: State<'_, orbit::browser::BrowserViews>,
+    graph: orbit::Graph,
+) -> Result<(), String> {
     let integrations = state
         .store
         .list_orbit_integrations()
         .map_err(|e| e.to_string())?;
     orbit::validate_graph(&graph, &integrations).map_err(|e| e.to_string())?;
+    let before = state
+        .store
+        .get_orbit_graph(&graph.id)
+        .map_err(|e| e.to_string())?;
     state
         .store
         .save_orbit_graph(&graph, true, None)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    if let Some(before) = before {
+        for node in orbit::browser::removed_browsers(&before.value, &graph) {
+            views.forget(&app, &browser_key(graph.id.clone(), node));
+        }
+    }
+    Ok(())
 }
 
 #[tauri::command]
-fn orbit_delete_graph(state: State<'_, AppState>, id: String) -> Result<(), String> {
+fn orbit_delete_graph(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    views: State<'_, orbit::browser::BrowserViews>,
+    id: String,
+) -> Result<(), String> {
+    let before = state
+        .store
+        .get_orbit_graph(&id)
+        .map_err(|e| e.to_string())?;
     state
         .store
         .delete_orbit_graph(&id)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    for node in before
+        .map(|g| orbit::browser::browsers(&g.value))
+        .unwrap_or_default()
+    {
+        views.forget(&app, &browser_key(id.clone(), node));
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -8851,23 +8883,43 @@ fn browser_key(graph_id: String, node_id: String) -> orbit::browser::ViewKey {
 
 /// Abre `url` no navegador nativo do nó. A regra é a do core
 /// (`orbit::browser::policy`): só local; `file://` só `.html` dentro da
-/// pasta do workspace ou de um nó ligado ao navegador.
+/// pasta do workspace ou de um nó ligado ao navegador. `async`: a regra
+/// confere o disco (`canonicalize`); a view nativa vai para a main thread
+/// pelo `run_on_main_thread`.
 #[tauri::command]
-fn orbit_browser_navigate(
+async fn orbit_browser_navigate(
     app: AppHandle,
-    state: State<'_, AppState>,
-    views: State<'_, orbit::browser::BrowserViews>,
     graph_id: String,
     node_id: String,
     url: String,
 ) -> Result<(), String> {
-    let roots = state
-        .store
-        .get_orbit_graph(&graph_id)
-        .map_err(|e| e.to_string())?
-        .map(|g| orbit::browser::file_roots(&g.value, &node_id))
-        .unwrap_or_default();
-    views.navigate(&app, &browser_key(graph_id, node_id), &url, &roots)
+    off_main(app, move |app, state| {
+        let roots = state
+            .store
+            .get_orbit_graph(&graph_id)
+            .map_err(|e| e.to_string())?
+            .map(|g| orbit::browser::file_roots(&g.value, &node_id))
+            .unwrap_or_default();
+        app.state::<orbit::browser::BrowserViews>().navigate(
+            app,
+            &browser_key(graph_id, node_id),
+            &url,
+            &roots,
+        )
+    })
+    .await?
+}
+
+/// "Apagar dados do navegador" no ⋯ do nó: cookies, login e armazenamento
+/// do nó saem, e a página carrega de novo sem eles. `async`: o apagar mexe
+/// em disco (Windows e Linux) e o navegar de volta também.
+#[tauri::command]
+async fn orbit_browser_clear_data(app: AppHandle, graph_id: String, node_id: String) {
+    let _ = off_main(app, move |app, _| {
+        app.state::<orbit::browser::BrowserViews>()
+            .clear_data(app, &browser_key(graph_id, node_id));
+    })
+    .await;
 }
 
 /// A intenção de geometria do card: `rect` com o marcador inteiro à vista
@@ -10031,6 +10083,7 @@ pub fn run() {
             orbit_browser_state,
             orbit_browser_preview,
             orbit_browser_retain,
+            orbit_browser_clear_data,
             orbit_service_logs_retain,
             orbit_export,
             orbit_import_preview,

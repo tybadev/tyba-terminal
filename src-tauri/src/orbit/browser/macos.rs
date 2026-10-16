@@ -132,17 +132,73 @@ pub(super) fn apply(app: &AppHandle, op: Op) {
                 let _ = reply.send(Err(super::NOT_OPEN.to_string()));
             }
         }),
-        Op::Retain(keep) => {
-            // Tira do registro antes de soltar: o `Drop` do wry tira a view
-            // da janela e pode chamar delegates.
-            let gone: Vec<NativeView> = VIEWS.with(|v| {
-                let mut v = v.borrow_mut();
-                let dead: Vec<ViewKey> = v.keys().filter(|k| !keep.contains(k)).cloned().collect();
-                dead.iter().filter_map(|k| v.remove(k)).collect()
-            });
-            drop(gone);
-        }
+        Op::Retain(keep) => destroy(|k| !keep.contains(k)),
+        Op::Destroy { key, .. } => destroy(|k| *k == key),
+        Op::RemoveStore {
+            key,
+            reload,
+            attempt,
+        } => remove_store(app, key, reload, attempt),
     }
+}
+
+/// Destrói as views de `dead`. O teclado volta ao app antes, com a view
+/// ainda no registro (senão o [`app_view`] a tomaria pela do app); depois
+/// sai do registro e só então é solta: o `Drop` do wry tira a view da janela
+/// e pode chamar delegates.
+fn destroy(dead: impl Fn(&ViewKey) -> bool) {
+    VIEWS.with(|v| {
+        for (_, view) in v.borrow().iter().filter(|(k, _)| dead(k)) {
+            give_back_if_inside(view);
+        }
+    });
+    let gone: Vec<NativeView> = VIEWS.with(|v| {
+        let mut v = v.borrow_mut();
+        let keys: Vec<ViewKey> = v.keys().filter(|k| dead(k)).cloned().collect();
+        keys.iter().filter_map(|k| v.remove(k)).collect()
+    });
+    drop(gone);
+}
+
+/// Quantas vezes tentar apagar o armazenamento (o WebKit recusa enquanto
+/// ainda solta a view).
+const REMOVE_TRIES: u32 = 5;
+
+/// macOS 14+: `WKWebsiteDataStore.removeDataStoreForIdentifier`, assíncrono
+/// e na main thread. Antes do 14 o armazenamento é incógnito e morreu com a
+/// view. Em uso ainda (a view acabou de sair), tenta de novo em 500 ms.
+fn remove_store(app: &AppHandle, key: ViewKey, reload: bool, attempt: u32) {
+    if !per_node_store_available() {
+        app.state::<BrowserViews>().on_cleared(app, &key, reload);
+        return;
+    }
+    let done_app = app.clone();
+    let id = store_identity(&key);
+    <wry::WebView as wry::WebViewExtDarwin>::remove_data_store(&id, move |result| match result {
+        Ok(()) => done_app
+            .state::<BrowserViews>()
+            .on_cleared(&done_app, &key, reload),
+        Err(_) if attempt + 1 < REMOVE_TRIES => {
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                super::dispatch(
+                    &done_app,
+                    Op::RemoveStore {
+                        key,
+                        reload,
+                        attempt: attempt + 1,
+                    },
+                );
+            });
+        }
+        Err(e) => {
+            // Nunca criado (nó que não abriu) também cai aqui: nada a apagar.
+            eprintln!("[tyba] navegador do orbit: apagar os dados: {e}");
+            done_app
+                .state::<BrowserViews>()
+                .on_cleared(&done_app, &key, reload);
+        }
+    });
 }
 
 /// Posição, zoom e visibilidade. Mostra só depois de posicionar.
@@ -308,6 +364,7 @@ define_class!(
 
         /// `target=_blank` / `window.open`: nada de janela nova; a página
         /// abre no mesmo nó, e a política de navegação decide se carrega.
+        /// Sem url ou `about:blank`, nada: a página do nó fica.
         #[unsafe(method_id(webView:createWebViewWithConfiguration:forNavigationAction:windowFeatures:))]
         fn create_web_view(
             &self,
@@ -319,7 +376,14 @@ define_class!(
             // SAFETY: main thread; o pedido vem do próprio WebKit.
             unsafe {
                 let request = action.request();
-                let _ = webview.loadRequest(&request);
+                let url = request
+                    .URL()
+                    .and_then(|u| u.absoluteString())
+                    .map(|s| s.to_string())
+                    .unwrap_or_default();
+                if !super::new_window_ignored(&url) {
+                    let _ = webview.loadRequest(&request);
+                }
             }
             None
         }

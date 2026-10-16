@@ -105,7 +105,7 @@ pub(super) fn apply(app: &AppHandle, op: Op) {
             VIEWS.with(|v| {
                 if let Some(view) = v.borrow().get(&key) {
                     *view.roots.lock() = roots;
-                    set_place(app, &key, view, &place);
+                    set_place(view, &place);
                     if let Err(e) = view.webview.load_url(&url) {
                         eprintln!("[tyba] navegador do orbit: carregar: {e}");
                     }
@@ -114,7 +114,7 @@ pub(super) fn apply(app: &AppHandle, op: Op) {
         }
         Op::Place { key, place } => VIEWS.with(|v| {
             if let Some(view) = v.borrow().get(&key) {
-                set_place(app, &key, view, &place);
+                set_place(view, &place);
             }
         }),
         Op::Back(key) => VIEWS.with(|v| {
@@ -163,17 +163,27 @@ pub(super) fn apply(app: &AppHandle, op: Op) {
                 let _ = reply.send(Err(super::NOT_OPEN.to_string()));
             }
         }),
-        Op::Retain(keep) => {
-            // Tira do registro antes de soltar: o `Drop` do wry destrói o
-            // widget e pode disparar sinais.
-            let gone: Vec<NativeView> = VIEWS.with(|v| {
-                let mut v = v.borrow_mut();
-                let dead: Vec<ViewKey> = v.keys().filter(|k| !keep.contains(k)).cloned().collect();
-                dead.iter().filter_map(|k| v.remove(k)).collect()
-            });
-            drop(gone);
-        }
+        Op::Retain(keep) => destroy(|k| !keep.contains(k)),
+        Op::Destroy { key, .. } => destroy(|k| *k == key),
+        // A view e o contexto já saíram (o `Destroy` veio antes): a pasta
+        // do `WebsiteDataManager` sai numa thread própria.
+        Op::RemoveStore { key, reload, .. } => super::remove_store_later(app, key, reload),
     }
+}
+
+/// Destrói as views de `dead`. Com o teclado numa delas, ele volta ao app
+/// antes. Tira do registro antes de soltar: o `Drop` do wry destrói o widget
+/// e pode disparar sinais.
+fn destroy(dead: impl Fn(&ViewKey) -> bool) {
+    let gone: Vec<NativeView> = VIEWS.with(|v| {
+        let mut v = v.borrow_mut();
+        let keys: Vec<ViewKey> = v.keys().filter(|k| dead(k)).cloned().collect();
+        keys.iter().filter_map(|k| v.remove(k)).collect()
+    });
+    if gone.iter().any(|view| view.wk.has_focus()) {
+        give_back();
+    }
+    drop(gone);
 }
 
 /// O `Fixed` dos nós, montando o encaixe na primeira vez: a webview do app
@@ -233,7 +243,7 @@ fn give_back() {
 
 /// Posição, tamanho e zoom. Escondida = fora da área visível, com o mesmo
 /// tamanho (a página continua lida pelo agente e o print sai).
-fn set_place(app: &AppHandle, key: &ViewKey, view: &NativeView, place: &Place) {
+fn set_place(view: &NativeView, place: &Place) {
     let Some(fixed) = view
         .wk
         .parent()
@@ -248,11 +258,9 @@ fn set_place(app: &AppHandle, key: &ViewKey, view: &NativeView, place: &Place) {
         // `set_zoom_level`: reescala o layout como o `transform` do canvas.
         let _ = view.webview.zoom(place.zoom.clamp(0.25, 5.0));
     }
-    if !visible && view.wk.has_focus() {
+    // O core já tirou o "você" (`place.give_back`); o teclado volta aqui.
+    if !visible && (place.give_back || view.wk.has_focus()) {
         give_back();
-        if app.state::<BrowserViews>().focus(key) == Focus::Owner {
-            app.state::<BrowserViews>().set_owner(app, None);
-        }
     }
     match place.rect.filter(|_| visible) {
         Some(r) => fixed.move_(&view.wk, r.x.round() as i32, r.y.round() as i32),
@@ -312,11 +320,18 @@ fn create(app: &AppHandle, key: &ViewKey) -> Result<NativeView, String> {
         })
         // `target=_blank` / `window.open`: nada de janela nova; o endereço
         // abre no mesmo nó, pela mesma regra.
+        // Sem url ou `about:blank`, nada: a página do nó fica. O `navigate`
+        // confere o disco (`file://`), então fora da main thread.
         .with_new_window_req_handler(move |url, _| {
-            let roots = open_roots.lock().clone();
-            let _ = open_app
-                .state::<BrowserViews>()
-                .navigate(&open_app, &open_key, &url, &roots);
+            if !super::new_window_ignored(&url) {
+                let roots = open_roots.lock().clone();
+                let (app, key) = (open_app.clone(), open_key.clone());
+                std::thread::spawn(move || {
+                    let _ = app
+                        .state::<BrowserViews>()
+                        .navigate(&app, &key, &url, &roots);
+                });
+            }
             NewWindowResponse::Deny
         })
         .with_download_started_handler(|_, _| false)

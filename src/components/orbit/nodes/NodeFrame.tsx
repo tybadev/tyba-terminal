@@ -10,7 +10,14 @@ import {
   type ReactNode,
 } from "react";
 import { useTranslation } from "react-i18next";
-import { ArrowClockwise, ArrowsOut, DotsThree, FolderSimple, Trash } from "@phosphor-icons/react";
+import {
+  ArrowClockwise,
+  ArrowsOut,
+  Broom,
+  DotsThree,
+  FolderSimple,
+  Trash,
+} from "@phosphor-icons/react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
   Handle,
@@ -637,6 +644,7 @@ export function NodeFrame({
   stateRows = true,
   paper = false,
   inUse = false,
+  clearData,
   children,
 }: {
   id: string;
@@ -659,6 +667,8 @@ export function NodeFrame({
   paper?: boolean;
   /** O dono está usando a página do navegador: cápsula e janela em ciano. */
   inUse?: boolean;
+  /** Navegador nativo: "Apagar dados do navegador" no ⋯, confirmado na cápsula. */
+  clearData?: () => void;
   children: ReactNode;
 }) {
   const { t } = useTranslation();
@@ -688,7 +698,10 @@ export function NodeFrame({
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(false);
   const del = useContext(NodeDeleteContext);
-  const asking = del.asking === id;
+  const deleting = del.asking === id;
+  // Confirmar "Apagar dados do navegador": o mesmo jeito do apagar nó.
+  const [clearing, setClearing] = useState(false);
+  const asking = deleting || clearing;
   // Arrastando e redimensionando (quadro OrbitManuseio 2 e 3): só mudam no
   // começo e no fim do gesto; o tamanho da cápsula "L × A", a cada passo.
   const dragging = useStore((s) => s.nodeLookup.get(id)?.dragging === true);
@@ -819,7 +832,9 @@ export function NodeFrame({
           </span>
         ) : asking ? (
           <span className="min-w-0 flex-1 truncate font-sans text-[14px] font-semibold">
-            {t("orbitStopAndDelete", { title: node.title })}
+            {deleting
+              ? t("orbitStopAndDelete", { title: node.title })
+              : t("orbitBrowserClearDataAsk", { title: node.title })}
           </span>
         ) : (
           <CapsuleTitle
@@ -836,14 +851,21 @@ export function NodeFrame({
           <>
             <button
               type="button"
-              onClick={() => del.confirm(id)}
+              onClick={() => {
+                if (deleting) {
+                  del.confirm(id);
+                } else {
+                  setClearing(false);
+                  clearData?.();
+                }
+              }}
               className={`${capsuleBtn} bg-tyba-red text-tyba-text-inverse`}
             >
               {t("orbitDeleteConfirm")}
             </button>
             <button
               type="button"
-              onClick={del.cancel}
+              onClick={deleting ? del.cancel : () => setClearing(false)}
               className={`${capsuleBtn} bg-tyba-text/[.08] text-tyba-text`}
             >
               {t("orbitDeleteCancel")}
@@ -893,7 +915,7 @@ export function NodeFrame({
         {children}
         {asking ? (
           <div className="shrink-0 truncate px-3.5 pt-1 pb-2 text-[11px] text-tyba-red">
-            {t("orbitStopsBeforeLeaving")}
+            {deleting ? t("orbitStopsBeforeLeaving") : t("orbitBrowserClearDataHint")}
           </div>
         ) : request ? (
           <ApprovalFooter node={node} request={request} />
@@ -1013,10 +1035,24 @@ export function NodeFrame({
                   {t("orbitKeepAll")}
                 </button>
               )}
+              {clearData && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOpen(false);
+                    setClearing(true);
+                  }}
+                  className={`${detailBtn} text-tyba-text hover:text-tyba-red`}
+                >
+                  <Broom size={12} />
+                  {t("orbitBrowserClearData")}
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => {
                   setOpen(false);
+                  setClearing(false);
                   del.request(id);
                 }}
                 className={`${detailBtn} text-tyba-text hover:text-tyba-red`}

@@ -255,25 +255,25 @@ pub fn message_text(text: &str) -> Result<String, String> {
 /// `\t` (a régua da nota), até [`MAX_NOTE_CHARS`] no resultado, e redigido.
 /// `append` junta ao texto atual numa linha nova e marca cada linha nova não
 /// vazia com a autoria ` (<stamp>)` (ver [`author_stamp`]); `replace` não marca.
+/// Só o core assina: o sufixo de autoria que vier do agente no fim de uma
+/// linha (nos dois modos) sai antes (ver [`strip_author`]).
 pub fn note_text(current: &str, text: &str, append: bool, stamp: &str) -> Result<String, String> {
     if super::has_control_chars(text) {
         return Err("text contém caractere de controle".into());
     }
     let text = crate::session::redact::redact(text).into_owned();
-    let text = if append {
-        text.split('\n')
-            .map(|l| {
-                if l.trim().is_empty() {
-                    l.to_string()
-                } else {
-                    format!("{} ({stamp})", l.trim_end())
-                }
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    } else {
-        text
-    };
+    let text = text
+        .split('\n')
+        .map(|l| {
+            let l = strip_author(l);
+            if append && !l.trim().is_empty() {
+                format!("{} ({stamp})", l.trim_end())
+            } else {
+                l.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
     let out = if append && !current.is_empty() {
         let sep = if current.ends_with('\n') { "" } else { "\n" };
         format!("{current}{sep}{text}")
@@ -287,6 +287,32 @@ pub fn note_text(current: &str, text: &str, append: bool, stamp: &str) -> Result
         ));
     }
     Ok(out)
+}
+
+/// Tira do fim da linha todo sufixo com a forma da autoria do core,
+/// ` (<x>, HH:MM)` com `x` sem parêntese: o agente não forja quem escreveu.
+pub fn strip_author(line: &str) -> &str {
+    let mut line = line;
+    loop {
+        let trimmed = line.trim_end();
+        let Some(open) = trimmed
+            .strip_suffix(')')
+            .and_then(|body| body.rfind(" (").map(|i| (i, body)))
+        else {
+            return line;
+        };
+        let (i, body) = open;
+        let inner = &body[i + 2..];
+        let stamped = !inner.contains(['(', ')'])
+            && inner.rsplit_once(", ").is_some_and(|(_, hhmm)| {
+                let b = hhmm.as_bytes();
+                b.len() == 5 && b[2] == b':' && [0, 1, 3, 4].iter().all(|&k| b[k].is_ascii_digit())
+            });
+        if !stamped {
+            return line;
+        }
+        line = &trimmed[..i];
+    }
 }
 
 /// A autoria de uma linha da memória: `<título do agente>, HH:MM`. O título
@@ -570,6 +596,31 @@ mod tests {
         assert!(note_text(&full, "y", true, st).is_err());
         let key = format!("sk-{}", "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6");
         assert!(!note_text("", &key, false, st).unwrap().contains(&key));
+    }
+
+    #[test]
+    fn note_text_strips_forged_authorship() {
+        let st = "dev, 14:22";
+        // replace: o sufixo forjado sai e nada se põe no lugar.
+        assert_eq!(
+            note_text("a", "- feito (dono, 09:00)\n- y (x (1), 10:00)", false, st).unwrap(),
+            "- feito\n- y (x (1), 10:00)"
+        );
+        // append: sai o forjado (mesmo repetido), fica só a do core.
+        assert_eq!(
+            note_text("a", "b (revisor, 09:00) (outro, 10:00)  ", true, st).unwrap(),
+            "a\nb (dev, 14:22)"
+        );
+        // O que não tem a forma exata fica.
+        for keep in [
+            "b (ver, 9:00)",
+            "b (nota)",
+            "b (a, 10:00) fim",
+            "(a, 10:00)",
+        ] {
+            assert_eq!(strip_author(keep), keep, "{keep}");
+        }
+        assert_eq!(strip_author("b (, 10:00)"), "b");
     }
 
     #[test]

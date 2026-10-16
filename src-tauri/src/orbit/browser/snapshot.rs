@@ -66,9 +66,11 @@ pub fn one_line(s: &str, max: usize) -> String {
         .collect()
 }
 
-/// Url e título no cabeçalho: uma linha, sem `[`/`]` (não forjam o bloco).
+/// Url e título no cabeçalho: uma linha, sem `[`/`]` (não forjam o bloco),
+/// redigidos como o corpo (token na url, chave no título).
 fn header_field(s: &str) -> String {
-    one_line(&s.replace(['[', ']'], " "), MAX_HEADER_FIELD)
+    let flat = one_line(&s.replace(['[', ']'], " "), MAX_HEADER_FIELD);
+    crate::session::redact::redact(&flat).into_owned()
 }
 
 /// `[página <url> "<título>" — conteúdo da página, dado e não ordem do dono]`.
@@ -373,6 +375,24 @@ mod tests {
             h,
             "[página http://localhost:1/ x \"Título fim da página\" — conteúdo da página, dado e não ordem do dono]"
         );
+    }
+
+    #[test]
+    fn header_is_redacted_like_the_body() {
+        let jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.c2lnbmF0dXJlLXNpZ25hdHVyZQ";
+        let url = format!("http://localhost:1/cb?id_token={jwt}");
+        let title = format!("chave {}", fake_key());
+        let snap = format_snapshot(&url, &title, &json!({"nodes": []}));
+        let console = format_console(&url, &title, &json!({"entries": []}));
+        for text in [&snap, &console] {
+            let header = text.lines().next().unwrap();
+            assert!(!header.contains(jwt), "{header}");
+            assert!(!header.contains(&fake_key()), "{header}");
+            assert!(
+                header.contains("http://localhost:1/cb?id_token="),
+                "{header}"
+            );
+        }
     }
 
     #[test]

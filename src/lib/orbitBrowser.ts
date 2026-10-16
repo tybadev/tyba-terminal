@@ -65,6 +65,19 @@ export function agentStepKey(step: AgentStep): string {
   return `orbitBrowserStep_${action}${bare ? "Bare" : ""}`;
 }
 
+/**
+ * O rodapé com o dono usando a página: com agente ligado por `controla`, diz
+ * quem espera (o primeiro); sem, só como devolver.
+ */
+export function ownerFooter(controllers: readonly string[]): {
+  key: string;
+  name?: string;
+} {
+  return controllers.length > 0
+    ? { key: "orbitBrowserInUseNativeWaiting", name: controllers[0] }
+    : { key: "orbitBrowserInUseNative" };
+}
+
 /** Faixa de zoom do canvas em que a view fica viva (fora: só o print). */
 export const NATIVE_ZOOM_MIN = 0.5;
 export const NATIVE_ZOOM_MAX = 2;
@@ -136,19 +149,17 @@ export interface OcclusionInput {
   occluders: BrowserRect[];
   /** Algum ponto de amostra caiu em outro elemento (algo por cima). */
   covered: boolean;
-  /** O dono está usando a página. */
-  owner: boolean;
 }
 
 /**
  * A view pode ficar viva? Só com o marcador inteiro na área útil, zoom na
- * faixa, canvas parado e nada do DOM por cima. Com o dono usando, só algo
- * por cima a derruba (o canvas não recebe pan com o teclado na página).
+ * faixa, canvas parado e nada do DOM por cima. Vale também com o dono usando
+ * a página: a roda e o trackpad fora dela ainda movem o canvas, e a view
+ * nativa não segue o pan a cada frame.
  */
 export function occlusionVerdict(i: OcclusionInput): boolean {
   const over = i.covered || i.occluders.some((o) => rectsIntersect(o, i.marker));
   if (i.marker.w < 1 || i.marker.h < 1) return false;
-  if (i.owner) return !over;
   return (
     !over &&
     !i.moving &&
@@ -206,6 +217,10 @@ export const browserBack = (graphId: string, nodeId: string) =>
 
 export const browserReload = (graphId: string, nodeId: string) =>
   invoke<void>("orbit_browser_reload", { graphId, nodeId });
+
+/** Apaga cookies, login e armazenamento do nó; a página recarrega. */
+export const browserClearData = (graphId: string, nodeId: string) =>
+  invoke<void>("orbit_browser_clear_data", { graphId, nodeId });
 
 export const browserState = (graphId: string, nodeId: string) =>
   invoke<BrowserState | null>("orbit_browser_state", { graphId, nodeId });

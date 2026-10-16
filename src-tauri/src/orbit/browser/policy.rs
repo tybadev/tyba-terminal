@@ -246,9 +246,26 @@ pub fn resolve_file(url: &str, roots: &[PathBuf]) -> Result<String, FileRefusal>
     Err(FileRefusal::OutsideRoots)
 }
 
+/// As extensões que o `orbit-file` serve: só arquivo estático de site. O
+/// resto da pasta (`.env`, chave, banco, código) não sai, nem para um HTML
+/// da própria pasta que o leia por `fetch`.
+const WEB_EXTENSIONS: &[&str] = &[
+    "html", "htm", "css", "js", "mjs", "json", "map", "png", "jpg", "jpeg", "gif", "svg", "webp",
+    "ico", "woff", "woff2", "ttf", "txt", "md",
+];
+
+/// O arquivo tem extensão de site estático ([`WEB_EXTENSIONS`])?
+fn web_static(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| WEB_EXTENSIONS.iter().any(|w| e.eq_ignore_ascii_case(w)))
+}
+
 /// O arquivo que o `orbit-file` serve: `host` = `r<i>` (a raiz), `path` o
-/// caminho da url. Sem `..`, sem NUL, e o caminho canônico (symlink
-/// resolvido) tem de continuar dentro da raiz. `None` = 404.
+/// caminho da url. Sem NUL, sem segmento que comece com `.` (`..`,
+/// dotfile e dotdir: `.env`, `.git/`), só extensão de site estático
+/// ([`WEB_EXTENSIONS`]), e o caminho canônico (symlink resolvido) tem de
+/// continuar dentro da raiz e obedecer às mesmas regras. `None` = 404.
 pub fn serve_path(host: &str, path: &str, roots: &[PathBuf]) -> Option<PathBuf> {
     let index: usize = host.strip_prefix('r')?.parse().ok()?;
     let root = roots.get(index)?;
@@ -259,13 +276,21 @@ pub fn serve_path(host: &str, path: &str, roots: &[PathBuf]) -> Option<PathBuf> 
     let mut full = root.clone();
     for part in decoded.split('/') {
         match part {
-            "" | "." => continue,
-            ".." => return None,
+            "" => continue,
+            p if p.starts_with('.') => return None,
             p => full.push(p),
         }
     }
+    if !web_static(&full) {
+        return None;
+    }
     let canon = std::fs::canonicalize(&full).ok()?;
-    (canon.starts_with(root) && canon.is_file()).then_some(canon)
+    let rel = canon.strip_prefix(root).ok()?;
+    let hidden = rel.components().any(|c| match c {
+        Component::Normal(s) => s.to_string_lossy().starts_with('.'),
+        _ => true,
+    });
+    (!hidden && web_static(&canon) && canon.is_file()).then_some(canon)
 }
 
 /// O `orbit-file://r<i>/<rel>` de volta ao `file://` que o dono reconhece
@@ -314,7 +339,6 @@ pub fn content_type(path: &Path) -> &'static str {
         "woff2" => "font/woff2",
         "ttf" => "font/ttf",
         "txt" | "md" => "text/plain; charset=utf-8",
-        "wasm" => "application/wasm",
         _ => "application/octet-stream",
     }
 }
@@ -470,6 +494,53 @@ mod tests {
         {
             std::os::unix::fs::symlink(&other, root.join("fora")).unwrap();
             assert_eq!(serve_path("r0", "/fora/secret.html", &roots), None);
+        }
+    }
+
+    /// Um HTML da pasta lê por `fetch` o que o `orbit-file` servir: só sai
+    /// arquivo de site, nunca dotfile, dotdir nem outro tipo.
+    #[test]
+    fn serve_path_serves_only_static_web_files() {
+        let (_tmp, root, _other) = tree();
+        let roots = canonical_roots(&[root.clone()]);
+        let canon_root = &roots[0];
+        std::fs::write(root.join(".env"), "SEGREDO=1").unwrap();
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::write(root.join(".git/config.json"), "{}").unwrap();
+        std::fs::create_dir_all(root.join("site/.cache")).unwrap();
+        std::fs::write(root.join("site/.cache/app.js"), "x").unwrap();
+        std::fs::write(root.join("site/.hidden.html"), "x").unwrap();
+        std::fs::write(root.join("dados.db"), "x").unwrap();
+        std::fs::write(root.join("id_ed25519"), "x").unwrap();
+        std::fs::write(root.join("app.wasm"), "x").unwrap();
+        for ext in ["png", "woff2", "md", "json", "SVG"] {
+            std::fs::write(root.join(format!("site/f.{ext}")), "x").unwrap();
+            assert_eq!(
+                serve_path("r0", &format!("/site/f.{ext}"), &roots),
+                Some(canon_root.join(format!("site/f.{ext}"))),
+                "{ext}"
+            );
+        }
+        for path in [
+            "/.env",
+            "/%2eenv",
+            "/.git/config.json",
+            "/site/.cache/app.js",
+            "/site/.hidden.html",
+            "/site/./index.html",
+            "/dados.db",
+            "/id_ed25519",
+            "/app.wasm",
+        ] {
+            assert_eq!(serve_path("r0", path, &roots), None, "{path}");
+        }
+        #[cfg(unix)]
+        {
+            // Nome de site apontando para o que não é site: o alvo conta.
+            std::os::unix::fs::symlink(root.join(".env"), root.join("site/env.txt")).unwrap();
+            std::os::unix::fs::symlink(root.join("dados.db"), root.join("site/db.css")).unwrap();
+            assert_eq!(serve_path("r0", "/site/env.txt", &roots), None);
+            assert_eq!(serve_path("r0", "/site/db.css", &roots), None);
         }
     }
 

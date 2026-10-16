@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type RefObject } from "react";
+import { useEffect, useState, type RefObject } from "react";
 import { useStoreApi } from "@xyflow/react";
 
 import {
@@ -85,13 +85,8 @@ export function useNativeOcclusion(
   nodeId: string,
   markerRef: RefObject<HTMLElement | null>,
   enabled: boolean,
-  owner: boolean,
 ): void {
   const store = useStoreApi();
-  // O foco do dono muda a regra, não a assinatura: um ref, para não
-  // desmontar (e piscar a view) a cada clique.
-  const ownerRef = useRef(owner);
-  ownerRef.current = owner;
   useEffect(() => {
     if (!enabled || !graphId) return;
     let raf = 0;
@@ -141,7 +136,6 @@ export function useNativeOcclusion(
         moving: busy || tracked.moving,
         occluders,
         covered,
-        owner: ownerRef.current,
       });
       send(live ? marker : null, zoom, [area.x + area.w / 2, area.y + area.h / 2]);
       // Ainda mexendo: confere de novo quando assentar.

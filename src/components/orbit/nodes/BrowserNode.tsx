@@ -10,9 +10,11 @@ import {
   agentActiveLeft,
   agentStepKey,
   browserBack,
+  browserClearData,
   browserNative,
   browserNavigate,
   browserReload,
+  ownerFooter,
   previewTime,
   type BrowserState,
 } from "@/lib/orbitBrowser";
@@ -249,7 +251,7 @@ function NativeBrowserNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
   const owner = state?.focus === "owner";
   const current = state?.url ?? "";
   const marker = useRef<HTMLDivElement>(null);
-  useNativeOcclusion(graphId, id, marker, graphId !== "", owner);
+  useNativeOcclusion(graphId, id, marker, graphId !== "");
   const preview = useBrowserPreview(graphId, id, state?.previewAt);
 
   const go = (url: string) => {
@@ -298,7 +300,11 @@ function NativeBrowserNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
   const meta = state?.refused
     ? t("orbitBrowserNavRefused", { why: t(`orbitBrowserRefused_${state.refused}`) })
     : owner
-      ? t("orbitBrowserInUseNative")
+      ? (
+          <span title={t("orbitBrowserInUseNativeHint")}>
+            {(({ key, name }) => t(key, name ? { name } : undefined))(ownerFooter(controllers))}
+          </span>
+        )
       : step
         ? step
         : state?.ephemeral
@@ -315,6 +321,7 @@ function NativeBrowserNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
       meta={meta}
       status={statusChip(t, owner, openedBy, controllers, agentUsing)}
       inUse={owner}
+      clearData={() => graphId && void browserClearData(graphId, id).catch(() => {})}
       details={[
         { label: t("orbitDetailUrl"), value: current },
         ...(state?.title ? [{ label: t("orbitDetailTitle"), value: state.title }] : []),
