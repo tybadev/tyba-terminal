@@ -20,6 +20,8 @@ import {
   freshPlans,
   isPlanNote,
   parseChecklist,
+  planAfterEdit,
+  splitEditing,
 } from "./orbitPlan";
 
 // Fixtures sintéticas: nada aqui veio de sessão real.
@@ -106,6 +108,20 @@ describe("plano do run na tela", () => {
 
     // Orquestrador apagado da tela: a nota vem, a ligação não.
     expect(applyPlans([], [], [plan(3)]).edges).toEqual([]);
+  });
+
+  test("nota em edição: o plano espera a edição acabar", () => {
+    const other = { ...plan(5), note: { ...note, id: "plano-2" } };
+    const split = splitEditing([plan(5), other], "plano-1");
+    expect(split.later.map((p) => p.note.id)).toEqual(["plano-1"]);
+    expect(split.now.map((p) => p.note.id)).toEqual(["plano-2"]);
+    expect(splitEditing([plan(5)], null).now).toHaveLength(1);
+  });
+
+  test("fim da edição: sem mudança o plano entra; com texto do dono, o dele vale", () => {
+    expect(planAfterEdit(plan(5), "- [ ] a\n", "- [ ] a\n")).toEqual(plan(5));
+    expect(planAfterEdit(plan(5), "- [ ] a\n", "- [ ] a com admin\n")).toBeNull();
+    expect(planAfterEdit(undefined, "x", "x")).toBeNull();
   });
 });
 

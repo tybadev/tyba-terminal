@@ -840,11 +840,14 @@ export function nodeUnderPointer(
 
 /**
  * "Manter": o core grava no grafo o criado `nodeId` (o "Manter" do nó) ou,
- * sem ele, todos os do run (o "Manter tudo" do ⋯ do orquestrador) e devolve
- * o grafo inteiro.
+ * sem ele, todos os que `orchestrator` criou no run (o "Manter tudo" do ⋯
+ * dele) e devolve o grafo inteiro.
  */
-export const keepCreated = (runId: string, nodeId: string | null = null) =>
-  invoke<Graph>("orbit_keep_created", { runId, nodeId });
+export const keepCreated = (
+  runId: string,
+  nodeId: string | null,
+  orchestrator: string | null = null,
+) => invoke<Graph>("orbit_keep_created", { runId, nodeId, orchestrator });
 
 /** ▶ Executar: o core recusa grafo não consentido ou inválido. Antes de
  * começar, o core mata os agentes vivos dos runs anteriores do grafo. */

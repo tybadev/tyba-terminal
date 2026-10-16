@@ -72,10 +72,12 @@ export interface CanvasActions {
   /** "Abrir no navegador" do processo: o navegador ligado nele, ou um novo. */
   openInBrowser: (fromId: string, url: string) => void;
   /**
-   * "Manter": o criado `nodeId` vai para o grafo (rodapé do criado), ou todos
-   * os do run com `null` ("Manter tudo" no ⋯ do orquestrador).
+   * "Manter": o criado `nodeId` vai para o grafo (rodapé do criado), ou, com
+   * `null`, todos os que `orchestrator` criou ("Manter tudo" no ⋯ dele).
    */
-  keepCreated: (nodeId: string | null) => void;
+  keepCreated: (nodeId: string | null, orchestrator?: string) => void;
+  /** A nota ganhou (`true`) ou perdeu o foco do texto: o plano espera o fim. */
+  editNote: (nodeId: string, editing: boolean) => void;
   /** Permitir/Negar da cápsula âmbar: resolve o pedido no core. */
   answerApproval: (requestId: number, decision: ApprovalDecision) => void;
 }
@@ -112,6 +114,7 @@ export const CanvasActionsContext = createContext<CanvasActions>({
   setFocusNode: () => {},
   openInBrowser: () => {},
   keepCreated: () => {},
+  editNote: () => {},
   answerApproval: () => {},
 });
 
@@ -753,7 +756,7 @@ export function NodeFrame({
                 <button
                   type="button"
                   title={t("orbitKeepAllHint")}
-                  onClick={() => keepCreated(null)}
+                  onClick={() => keepCreated(null, id)}
                   className={`${detailBtn} text-tyba-text hover:bg-tyba-text/[.12]`}
                 >
                   {t("orbitKeepAll")}

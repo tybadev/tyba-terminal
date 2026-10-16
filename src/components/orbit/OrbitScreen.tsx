@@ -86,6 +86,7 @@ import {
   type ImportPreview,
   type Integration,
   type OrbitNode,
+  type Plan,
 } from "@/lib/orbit";
 import { ImportDialog } from "./ImportDialog";
 import { IntegrationsPanel } from "./IntegrationsPanel";
@@ -108,13 +109,14 @@ import {
   EMPTY_HISTORY,
   graphShot,
   keepInHistory,
+  plansInHistory,
   record,
   redo as redoShot,
   restoreShot,
   undo as undoShot,
 } from "@/lib/graphHistory";
 import { freeSpot, nodeRect, rightOf } from "@/lib/graphLayout";
-import { applyPlans, freshPlans } from "@/lib/orbitPlan";
+import { applyPlans, freshPlans, planAfterEdit, splitEditing } from "@/lib/orbitPlan";
 import { IS_MAC } from "@/lib/platform";
 import {
   subagentKey,
@@ -406,13 +408,49 @@ function OrbitInner({
         : [],
     [runView.runs, meta],
   );
+  // O plano vem do core e não é passo do ⌘Z (ver `plansInHistory`): o que
+  // estava pendente assenta antes, e a nota entra em todo retrato da pilha.
+  const putPlans = (list: Plan[]) => {
+    if (list.length === 0) return;
+    settle();
+    const next = applyPlans(nodesRef.current, edgesRef.current, list);
+    const shot = graphShot(next.nodes, next.edges);
+    historyRef.current = plansInHistory(
+      historyRef.current,
+      shot,
+      new Set(list.map((p) => p.note.id)),
+    );
+    settledRef.current = shot;
+    setNodes(next.nodes);
+    setEdges(next.edges);
+  };
+  const putPlansRef = useRef(putPlans);
+  putPlansRef.current = putPlans;
+  // A nota em edição (textarea com foco) e o texto dela quando a edição
+  // começou; o plano que chega nela espera o fim da edição.
+  const editingNote = useRef<{ id: string; text: string } | null>(null);
+  const pendingPlans = useRef(new Map<string, Plan>());
   useEffect(() => {
     if (plans.length === 0) return;
     for (const p of plans) appliedPlans.current.set(p.note.id, p.updatedAt);
-    const next = applyPlans(nodesRef.current, edgesRef.current, plans);
-    setNodes(next.nodes);
-    setEdges(next.edges);
+    const split = splitEditing(plans, editingNote.current?.id ?? null);
+    for (const p of split.later) pendingPlans.current.set(p.note.id, p);
+    putPlansRef.current(split.now);
   }, [plans]);
+  const editNote = useCallback((nodeId: string, editing: boolean) => {
+    const kind = nodesRef.current.find((n) => n.id === nodeId)?.data.node.kind;
+    const text = kind?.type === "note" ? kind.markdown : "";
+    if (editing) {
+      editingNote.current = { id: nodeId, text };
+      return;
+    }
+    const start = editingNote.current?.id === nodeId ? editingNote.current.text : text;
+    editingNote.current = null;
+    const pending = pendingPlans.current.get(nodeId);
+    pendingPlans.current.delete(nodeId);
+    const plan = planAfterEdit(pending, start, text);
+    if (plan) putPlansRef.current([plan]);
+  }, []);
   // Onde o dono deixou cada nó criado pelo orquestrador (vale enquanto esse
   // run está à vista, e o "Manter no grafo" leva a posição junto).
   const [createdView, setCreatedView] = useState<CreatedView>({});
@@ -758,13 +796,15 @@ function OrbitInner({
       setOpenSubagent: setOpenSub,
       setFocusNode,
       openInBrowser,
-      keepCreated: (nodeId: string | null) => void keepRef.current(nodeId),
+      editNote,
+      keepCreated: (nodeId: string | null, orchestrator?: string) =>
+        void keepRef.current(nodeId, orchestrator ?? null),
       answerApproval: (id: number, decision: ApprovalDecision) =>
         void resolveApproval(id, decision).catch((e) =>
           setError(t("orbitApprovalError", { error: String(e) })),
         ),
     }),
-    [integrations, updateNode, graphDir, releaseNode, openInBrowser, t],
+    [integrations, updateNode, graphDir, releaseNode, openInBrowser, editNote, t],
   );
   const ctx = useMemo(
     () => ({
@@ -794,14 +834,14 @@ function OrbitInner({
     ],
   );
 
-  // "Manter" (o criado `nodeId`, ou todos no "Manter tudo"): o core grava no
-  // grafo e devolve o grafo inteiro, que passa a ser o da tela (o que estava
-  // no debounce vai antes).
-  const keep = async (nodeId: string | null) => {
+  // "Manter" (o criado `nodeId`, ou todos os de `orchestrator` no "Manter
+  // tudo"): o core grava no grafo e devolve o grafo inteiro, que passa a ser
+  // o da tela (o que estava no debounce vai antes).
+  const keep = async (nodeId: string | null, orchestrator: string | null) => {
     if (!run) return;
     try {
       await flush();
-      const kept = await keepCreated(run.id, nodeId);
+      const kept = await keepCreated(run.id, nodeId, orchestrator);
       const flow = toFlow(kept);
       lastSaved.current = JSON.stringify(fromFlow(kept, flow.nodes, flow.edges));
       // Onde o dono arrastou/redimensionou o criado vale no grafo: a posição

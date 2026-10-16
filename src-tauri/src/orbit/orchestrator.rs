@@ -287,14 +287,18 @@ pub fn parse_call(tool: &str, value: &Value) -> Result<ToolCall, String> {
 }
 
 /// Texto de uma linha do plano: não vazio, sem nenhum caractere de controle
-/// (nem quebra de linha: cada passo é uma linha do checklist), até
+/// nem separador de linha (cada passo é uma linha do checklist), até
 /// [`MAX_PLAN_TEXT_CHARS`], e redigido.
 fn plan_line(what: &str, value: &str) -> Result<String, String> {
     let value = value.trim();
     if value.is_empty() {
         return Err(format!("{what} vazio"));
     }
-    if value.chars().any(char::is_control) {
+    // Separador de linha/parágrafo (U+2028/U+2029) também quebra a linha.
+    if value
+        .chars()
+        .any(|c| c.is_control() || matches!(c, '\u{2028}' | '\u{2029}'))
+    {
         return Err(format!("{what} contém caractere de controle"));
     }
     if value.chars().count() > MAX_PLAN_TEXT_CHARS {
@@ -353,6 +357,37 @@ pub fn plan_markdown(steps: &[PlanStep]) -> String {
         }
     }
     out
+}
+
+/// O texto pode virar plano sem apagar nada do dono: vazio, ou só o
+/// checklist que [`plan_markdown`] escreve (o mesmo que o `parseChecklist`
+/// da tela lê).
+pub fn is_plan_text(markdown: &str) -> bool {
+    let mut step = false;
+    for line in markdown.lines().map(str::trim_end) {
+        if line.is_empty() {
+            continue;
+        }
+        let checked = line
+            .strip_prefix("- [")
+            .and_then(|r| r.split_at_checked(1))
+            .filter(|(mark, _)| matches!(*mark, " " | "~" | "x" | "X" | "!"))
+            .and_then(|(_, r)| r.strip_prefix("] "))
+            .is_some_and(|text| !text.trim().is_empty());
+        if checked {
+            step = true;
+            continue;
+        }
+        let made = line.len() - line.trim_start_matches(' ').len() >= 2
+            && line
+                .trim_start_matches(' ')
+                .strip_prefix("criou ")
+                .is_some_and(|m| !m.trim().is_empty());
+        if !(made && step) {
+            return false;
+        }
+    }
+    true
 }
 
 /// A nota de plano nova: logo abaixo do orquestrador, num espaço livre.
@@ -560,6 +595,25 @@ pub fn diff_summary(patch: &str) -> Value {
         "removed": removed,
         "files": files,
     })
+}
+
+/// Os criados que o "Manter" leva: o `node_id` (o "Manter" do nó) ou, sem
+/// ele, os do `orchestrator` (o "Manter tudo" do ⋯ dele) — nunca os que outro
+/// orquestrador do mesmo run criou.
+pub fn pick_to_keep(
+    created: Vec<Created>,
+    node_id: Option<&str>,
+    orchestrator: Option<&str>,
+) -> Result<Vec<Created>, String> {
+    let picked: Vec<Created> = match (node_id, orchestrator) {
+        (Some(id), _) => created.into_iter().filter(|c| c.node.id == id).collect(),
+        (None, Some(o)) => created.into_iter().filter(|c| c.created_by == o).collect(),
+        (None, None) => return Err("informe node_id ou orchestrator".into()),
+    };
+    if node_id.is_some() && picked.is_empty() {
+        return Err("nó criado não encontrado ou já mantido".into());
+    }
+    Ok(picked)
 }
 
 /// "Manter no grafo": os nós de `keep` entram no grafo como nós normais (sem
@@ -928,6 +982,11 @@ Binary files a/logo.png and b/logo.png differ
             json!({"steps": [step("tab\tno meio", "todo")]}),
             json!({"steps": [step("esc \u{1b}[31m", "todo")]}),
             json!({"steps": [{"text": "a", "state": "todo", "made": "x\u{7}"}]}),
+            // Separadores de linha e parágrafo, e o NEL, também quebram a linha.
+            json!({"steps": [step("linha\u{2028}nova", "todo")]}),
+            json!({"steps": [step("parágrafo\u{2029}novo", "todo")]}),
+            json!({"steps": [{"text": "a", "state": "todo", "made": "x\u{2028}y"}]}),
+            json!({"steps": [step("nel\u{85}aqui", "todo")]}),
             json!({"steps": [step("", "todo")]}),
             json!({"steps": []}),
             json!({"steps": [{"text": "a", "state": "todo", "extra": 1}]}),
@@ -989,6 +1048,60 @@ Binary files a/logo.png and b/logo.png differ
         merge_kept(&mut graph, std::slice::from_ref(&web), &all);
         assert_eq!(ids(&graph), vec!["c", "u"]);
         assert_eq!(graph.nodes.len(), 3);
+    }
+
+    #[test]
+    fn plan_text_is_empty_or_the_checklist_plan_markdown_writes() {
+        let steps = [
+            PlanStep {
+                text: "Subir a api".into(),
+                state: StepState::Done,
+                made: Some("api (:3000)".into()),
+            },
+            PlanStep {
+                text: "Abrir".into(),
+                state: StepState::Todo,
+                made: None,
+            },
+        ];
+        assert!(is_plan_text(&plan_markdown(&steps)));
+        assert!(is_plan_text(""));
+        assert!(is_plan_text("  \n\n"));
+        assert!(is_plan_text("- [~] fazendo\n- [!] falhou\n- [X] pronto"));
+        // Texto do dono não é plano.
+        assert!(!is_plan_text("lembrar de testar o login"));
+        assert!(!is_plan_text("- [ ] passo\nnota solta"));
+        assert!(!is_plan_text("  criou api"));
+        assert!(!is_plan_text("- [?] passo"));
+        assert!(!is_plan_text("- [ ]  "));
+    }
+
+    #[test]
+    fn keep_all_of_one_orchestrator_leaves_the_other_ones_out() {
+        let made = |id: &str, by: &str| Created {
+            node: note(id, 0.0, 0.0, 10.0, 10.0),
+            created_by: by.into(),
+            created_at: 0,
+            edges: vec![],
+            kept: false,
+        };
+        let all = vec![made("a1", "a"), made("b1", "b"), made("a2", "a")];
+        let ids = |v: Vec<Created>| v.into_iter().map(|c| c.node.id).collect::<Vec<_>>();
+        assert_eq!(
+            ids(pick_to_keep(all.clone(), None, Some("a")).unwrap()),
+            vec!["a1", "a2"]
+        );
+        assert_eq!(
+            ids(pick_to_keep(all.clone(), None, Some("b")).unwrap()),
+            vec!["b1"]
+        );
+        assert_eq!(
+            ids(pick_to_keep(all.clone(), Some("b1"), None).unwrap()),
+            vec!["b1"]
+        );
+        assert!(pick_to_keep(all.clone(), Some("x"), None).is_err());
+        // Sem nó nem orquestrador não leva tudo.
+        assert!(pick_to_keep(all, None, None).is_err());
     }
 
     #[test]

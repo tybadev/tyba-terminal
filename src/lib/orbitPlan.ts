@@ -124,3 +124,27 @@ export function applyPlans<
   }
   return { nodes: outNodes, edges: outEdges };
 }
+
+/**
+ * Plano que chega com a nota `editing` em edição (textarea com foco) espera:
+ * trocar o texto ali apagaria o que o dono está digitando. Os outros entram.
+ */
+export function splitEditing(
+  plans: readonly Plan[],
+  editing: string | null,
+): { now: Plan[]; later: Plan[] } {
+  return {
+    now: plans.filter((p) => p.note.id !== editing),
+    later: plans.filter((p) => p.note.id === editing),
+  };
+}
+
+/**
+ * A edição acabou: o plano que esperou entra se o dono não mudou o texto
+ * (`start` → `end`). Se mudou, o texto dele vale até o próximo `orbit_plan` —
+ * o core devolve a edição ao agente para ele incorporar.
+ */
+export function planAfterEdit(pending: Plan | undefined, start: string, end: string): Plan | null {
+  if (!pending || start !== end) return null;
+  return pending;
+}

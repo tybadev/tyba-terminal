@@ -1448,26 +1448,39 @@ impl<H: RunHost> Runs<H> {
                 Ok(serde_json::json!({ "node_id": node_id, "stopped": true }))
             }
             ToolCall::Plan { steps } => {
-                let id = self.write_plan(run_id, orchestrator, steps)?;
-                Ok(serde_json::json!({ "note_id": id }))
+                let (id, owner_edit) = self.write_plan(run_id, orchestrator, steps)?;
+                let mut out = serde_json::json!({ "note_id": id });
+                if let Some(text) = owner_edit {
+                    out["owner_edit"] = text.into();
+                }
+                Ok(out)
             }
         }
     }
 
     /// `orbit_plan`: a nota de plano do orquestrador, no grafo salvo (não é
     /// nó criado do run). A primeira chamada cria a nota "Plano" logo abaixo
-    /// dele e a ligação `plan`; as seguintes só reescrevem o texto. A nota de
-    /// um run anterior (a ligação `plan` que já sai dele) é reaproveitada.
-    /// O grafo passa pela validação do salvar; o run guarda uma cópia e o
-    /// evento do run leva a nota ao front.
+    /// dele e a ligação `plan`; as seguintes só reescrevem o texto da mesma
+    /// nota (a do id guardado em `run.plans`: se um salvar da tela em voo a
+    /// tirou do grafo, ela volta com o mesmo id). Nota já ligada por `plan`
+    /// (um run anterior, ou o dono ligou à mão) só é reaproveitada se o texto
+    /// dela está vazio ou é checklist; senão o texto é do dono e nasce outra.
+    /// Devolve o id e, se o dono editou a nota depois do último plano, o
+    /// texto dele (o agente incorpora no próximo). O grafo passa pela
+    /// validação do salvar; o run guarda uma cópia e o evento do run leva a
+    /// nota ao front.
     pub fn write_plan(
         &self,
         run_id: &str,
         orchestrator: &str,
         steps: Vec<PlanStep>,
-    ) -> Result<String, String> {
+    ) -> Result<(String, Option<String>), String> {
         let markdown = orchestrator::plan_markdown(&steps);
-        let note_id = {
+        let note_markdown = |n: &Node| match &n.kind {
+            NodeKind::Note { markdown } => Some(markdown.clone()),
+            _ => None,
+        };
+        let (note_id, owner_edit) = {
             let mut active = self.active.lock();
             let a = active.get_mut(run_id).ok_or(
                 "esta execução já terminou: ▶ Executar de novo para o orquestrador escrever o plano",
@@ -1478,17 +1491,47 @@ impl<H: RunHost> Runs<H> {
                 .map_err(|e| e.to_string())?
                 .ok_or("grafo não encontrado")?;
             let mut graph = stored.value;
-            let existing = graph
-                .edges
+            let own = a
+                .sched
+                .run
+                .plans
                 .iter()
-                .filter(|e| e.kind == EdgeKind::Plan && e.from == orchestrator)
-                .find_map(|e| {
-                    graph
-                        .nodes
-                        .iter()
-                        .find(|n| n.id == e.to && matches!(n.kind, NodeKind::Note { .. }))
-                        .map(|n| (n.id.clone(), e.clone()))
-                });
+                .find(|p| p.orchestrator == orchestrator)
+                .cloned();
+            let mut owner_edit = None;
+            let existing = match &own {
+                Some(p) => {
+                    match graph.nodes.iter().find(|n| n.id == p.note.id) {
+                        Some(n) => {
+                            let before = note_markdown(n).unwrap_or_default();
+                            let last = note_markdown(&p.note).unwrap_or_default();
+                            if before.trim() != last.trim() {
+                                owner_edit =
+                                    Some(crate::session::redact::redact(&before).into_owned());
+                            }
+                        }
+                        // Um salvar da tela em voo a tirou: volta com o mesmo id.
+                        None => graph.nodes.push(p.note.clone()),
+                    }
+                    if !graph.edges.iter().any(|e| e.id == p.edge.id) {
+                        graph.edges.push(p.edge.clone());
+                    }
+                    Some((p.note.id.clone(), p.edge.clone()))
+                }
+                None => graph
+                    .edges
+                    .iter()
+                    .filter(|e| e.kind == EdgeKind::Plan && e.from == orchestrator)
+                    .find_map(|e| {
+                        graph
+                            .nodes
+                            .iter()
+                            .find(|n| n.id == e.to)
+                            .and_then(note_markdown)
+                            .filter(|m| orchestrator::is_plan_text(m))
+                            .map(|_| (e.to.clone(), e.clone()))
+                    }),
+            };
             let (note, edge) = match existing {
                 Some((id, edge)) => {
                     let note = graph
@@ -1565,10 +1608,10 @@ impl<H: RunHost> Runs<H> {
                 Some(p) => *p = plan,
                 None => plans.push(plan),
             }
-            note.id
+            (note.id, owner_edit)
         };
         self.publish_current(run_id);
-        Ok(note_id)
+        Ok((note_id, owner_edit))
     }
 
     /// Nó novo no run ativo, começando na hora (ou assim que a url do
@@ -1934,18 +1977,26 @@ impl<H: RunHost> Runs<H> {
 /// portas é o do poll de serviços (`services::CHIP_POLL`); isto só lê dele.
 const PORT_POLL: std::time::Duration = std::time::Duration::from_millis(500);
 
-/// Navegador: a url que chegou pela ligação, ou a dele. Só local passa — de
-/// novo aqui, porque a que chega por ligação nunca passou pelo salvar.
+/// Navegador: a url dele, quando tem uma; sem ela, a que chegou pela
+/// ligação. A ligação ainda serve para esperar o nó ficar pronto: o Caddy
+/// abre várias portas e a menor não é o host virtual que ele serve. Só local
+/// passa — de novo aqui, porque a que chega por ligação nunca passou pelo
+/// salvar.
 fn browser_outcome(start: &Start, own: &str) -> Outcome {
-    let received = start
-        .inputs
-        .iter()
-        .filter(|i| i.kind == EdgeKind::Url)
-        .filter_map(|i| i.source.as_deref())
-        .filter_map(|p| std::fs::read_to_string(p).ok())
-        .map(|t| t.trim().to_string())
-        .find(|t| !t.is_empty());
-    let url = received.unwrap_or_else(|| own.trim().to_string());
+    let own = own.trim();
+    let url = if own.is_empty() {
+        start
+            .inputs
+            .iter()
+            .filter(|i| i.kind == EdgeKind::Url)
+            .filter_map(|i| i.source.as_deref())
+            .filter_map(|p| std::fs::read_to_string(p).ok())
+            .map(|t| t.trim().to_string())
+            .find(|t| !t.is_empty())
+            .unwrap_or_default()
+    } else {
+        own.to_string()
+    };
     if url.is_empty() {
         return Outcome::failed("sem endereço: ligue uma url ou digite uma no nó");
     }
@@ -2417,7 +2468,7 @@ mod tests {
     }
 
     #[test]
-    fn browser_takes_the_received_url_or_its_own_and_only_local() {
+    fn browser_takes_its_own_url_or_the_received_and_only_local() {
         let dir = tempfile::tempdir().unwrap();
         let received = dir.path().join("url.txt");
         let start = |own: &str, source: Option<PathBuf>| {
@@ -2440,9 +2491,13 @@ mod tests {
             )
         };
         std::fs::write(&received, "http://localhost:5173/\n").unwrap();
-        let o = start("http://127.0.0.1:9", Some(received.clone()));
+        // Sem url própria, vale a que chegou pela ligação.
+        let o = start("", Some(received.clone()));
         assert!(o.ok);
         assert_eq!(o.url.as_deref(), Some("http://localhost:5173/"));
+        // Com url própria, ela vale: a ligação só fez esperar.
+        let o = start("https://code.muriki.test", Some(received.clone()));
+        assert_eq!(o.url.as_deref(), Some("https://code.muriki.test"));
         // Sem valor na ligação, vale a do nó.
         let o = start("http://127.0.0.1:9", None);
         assert_eq!(o.url.as_deref(), Some("http://127.0.0.1:9"));
@@ -3713,6 +3768,32 @@ mod tests {
             (edges[1].from.as_str(), edges[1].to.as_str(), edges[1].kind),
             ("o", code.as_str(), EdgeKind::Control)
         );
+        // Caddy: várias portas, e a url que sai do nó (a menor) não é o host
+        // virtual. Com url própria, o navegador espera o nó (ligação url) e
+        // abre a dele.
+        let caddy = tools
+            .call(
+                "orbit_create_browser",
+                &json!({
+                    "title": "muriki",
+                    "from_node": api,
+                    "url": "https://code.muriki.test"
+                }),
+            )
+            .unwrap()["node_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let r = wait_status(&runs, &run.id, &caddy, NodeStatus::Done);
+        assert_eq!(
+            r.nodes[&caddy].url.as_deref(),
+            Some("https://code.muriki.test")
+        );
+        let edges = &r.created.iter().find(|c| c.node.id == caddy).unwrap().edges;
+        assert_eq!(
+            (edges[0].from.as_str(), edges[0].kind),
+            (api.as_str(), EdgeKind::Url)
+        );
         let typed = tools
             .call(
                 "orbit_create_browser",
@@ -3729,8 +3810,8 @@ mod tests {
         // O controle não segura o navegador: ele roda sem esperar o orquestrador.
         wait_status(&runs, &run.id, &typed, NodeStatus::Done);
 
-        // Teto de 30 por execução (já são 3).
-        for i in 3..MAX_CREATED {
+        // Teto de 30 por execução (já são 4).
+        for i in 4..MAX_CREATED {
             tools
                 .call(
                     "orbit_create_browser",
@@ -4074,6 +4155,8 @@ mod tests {
             )
             .unwrap();
         assert_eq!(second["note_id"], note_id.as_str());
+        // Ninguém mexeu na nota: nada de edição do dono no resultado.
+        assert!(second.get("owner_edit").is_none(), "{second}");
         let saved = runs.store.get_orbit_graph("g-1").unwrap().unwrap().value;
         assert_eq!(saved.nodes.len(), 3);
         assert_eq!(saved.edges.len(), 1);
@@ -4087,6 +4170,55 @@ mod tests {
         let r = runs.get(&run.id).unwrap();
         assert_eq!(r.plans.len(), 1);
         assert_eq!(r.plans[0].steps[1].state, orchestrator::StepState::Failed);
+
+        // O dono editou a nota (o salvar da tela): o próximo plano reescreve
+        // e devolve ao agente o texto dele, para incorporar.
+        let mut edited = runs.store.get_orbit_graph("g-1").unwrap().unwrap().value;
+        edited
+            .nodes
+            .iter_mut()
+            .find(|n| n.id == note_id)
+            .unwrap()
+            .kind = NodeKind::Note {
+            markdown: "- [x] Subir a api\n- [ ] Abrir o login com o usuário admin\n".into(),
+        };
+        runs.store.save_orbit_graph(&edited, true, None).unwrap();
+        let third = tools
+            .call(
+                "orbit_plan",
+                &json!({"steps": [{"text": "Abrir o login", "state": "doing"}]}),
+            )
+            .unwrap();
+        assert_eq!(third["note_id"], note_id.as_str());
+        assert_eq!(
+            third["owner_edit"],
+            "- [x] Subir a api\n- [ ] Abrir o login com o usuário admin\n"
+        );
+
+        // Um salvar da tela em voo tirou a nota (e a ligação) do grafo: ela
+        // volta com o mesmo id, sem nascer outra.
+        let mut lost = runs.store.get_orbit_graph("g-1").unwrap().unwrap().value;
+        lost.nodes.retain(|n| n.id != note_id);
+        lost.edges.clear();
+        runs.store.save_orbit_graph(&lost, true, None).unwrap();
+        let fourth = tools
+            .call(
+                "orbit_plan",
+                &json!({"steps": [{"text": "Abrir o login", "state": "done"}]}),
+            )
+            .unwrap();
+        assert_eq!(fourth["note_id"], note_id.as_str());
+        assert!(fourth.get("owner_edit").is_none(), "{fourth}");
+        let saved = runs.store.get_orbit_graph("g-1").unwrap().unwrap().value;
+        assert_eq!(saved.nodes.len(), 3);
+        assert_eq!(saved.edges.len(), 1);
+        assert_eq!(saved.edges[0].kind, EdgeKind::Plan);
+        assert_eq!(
+            saved.nodes.iter().find(|n| n.id == note_id).unwrap().kind,
+            NodeKind::Note {
+                markdown: "- [x] Abrir o login\n".into()
+            }
+        );
 
         // Plano inválido não mexe no grafo.
         assert!(tools
@@ -4106,5 +4238,69 @@ mod tests {
             )
             .unwrap_err();
         assert!(err.contains("já terminou"), "{err}");
+    }
+
+    /// Ligar o orquestrador a uma nota do dono não faz dela o plano: com texto
+    /// próprio nasce uma nota "Plano" nova; vazia (ou checklist) é reaproveitada.
+    #[cfg(unix)]
+    #[test]
+    fn plan_never_overwrites_an_owners_note_linked_by_plan() {
+        use serde_json::json;
+        let dir = tempfile::tempdir().unwrap();
+        let (runs, host, _app) = pty_runs(dir.path().join("runs"));
+        let empty = node(
+            "e",
+            NodeKind::Note {
+                markdown: String::new(),
+            },
+        );
+        let g = graph(
+            vec![orchestrator("o"), orchestrator("o2"), note("n"), empty],
+            vec![
+                edge("p1", "o", "n", EdgeKind::Plan),
+                edge("p2", "o2", "e", EdgeKind::Plan),
+            ],
+        );
+        runs.store.save_orbit_graph(&g, true, None).unwrap();
+        let run = runs.start(g, vec![]).unwrap();
+        wait_orchestrating(&runs, &run.id, "o");
+        wait_orchestrating(&runs, &run.id, "o2");
+        let step = json!({"steps": [{"text": "Subir a api", "state": "todo"}]});
+
+        let id = tools_of(&host, "o").call("orbit_plan", &step).unwrap()["note_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_ne!(id, "n");
+        let saved = runs.store.get_orbit_graph("g-1").unwrap().unwrap().value;
+        // O texto do dono fica.
+        assert_eq!(
+            saved.nodes.iter().find(|n| n.id == "n").unwrap().kind,
+            NodeKind::Note {
+                markdown: "# plano".into()
+            }
+        );
+        let fresh = saved.nodes.iter().find(|n| n.id == id).unwrap();
+        assert_eq!(fresh.title, "Plano");
+        assert!(saved
+            .edges
+            .iter()
+            .any(|e| e.kind == EdgeKind::Plan && e.from == "o" && e.to == id));
+
+        // A vazia vira o plano do o2.
+        let id2 = tools_of(&host, "o2").call("orbit_plan", &step).unwrap()["note_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(id2, "e");
+        let saved = runs.store.get_orbit_graph("g-1").unwrap().unwrap().value;
+        assert_eq!(
+            saved.nodes.iter().find(|n| n.id == "e").unwrap().kind,
+            NodeKind::Note {
+                markdown: "- [ ] Subir a api\n".into()
+            }
+        );
+        assert_eq!(saved.nodes.len(), 5);
+        runs.stop(&run.id).unwrap();
     }
 }

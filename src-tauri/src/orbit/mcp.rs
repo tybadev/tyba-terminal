@@ -223,7 +223,9 @@ pub fn tool_list() -> Vec<Value> {
                  call it again when a step starts (doing) and when it ends (done or failed), \
                  always with the whole list. In made, name the node you created in that \
                  step (e.g. \"caddy (:443)\"). Up to {} steps, {} characters per text, one \
-                 line each.",
+                 line each. If the result has owner_edit, the owner edited the note since \
+                 your last plan: that is their text, so incorporate their edit in your \
+                 next plan.",
                 super::orchestrator::MAX_PLAN_STEPS,
                 super::orchestrator::MAX_PLAN_TEXT_CHARS
             ),
@@ -296,11 +298,13 @@ pub fn tool_list() -> Vec<Value> {
             "name": "orbit_create_browser",
             "description": format!(
                 "Create a Browser node that shows a local page on the canvas; you get the \
-                 control link to it. Always prefer from_node: the node_id of the Process or \
-                 Service node that serves the address (e.g. the Caddy that serves *.test, or \
-                 the front-end dev server), so the address comes from it. Give url \
-                 (http/https on {} only) only when no node of the graph serves that address. \
-                 Returns the node_id.",
+                 control link to it. Link it to the node that serves the address with \
+                 from_node: the node_id of the Process or Service node (e.g. the Caddy, or \
+                 the front-end dev server); the browser waits for it to be ready. If the \
+                 address is a virtual host (e.g. https://code.muriki.test served by the \
+                 Caddy), also pass url: the browser opens it instead of the node's first \
+                 port. Without from_node, give url (http/https on {} only). Returns the \
+                 node_id.",
                 super::service::LOCAL_HOSTS
             ),
             "inputSchema": {
@@ -420,9 +424,9 @@ sempre com a lista inteira, dizendo em made o nó que criou no passo. \
 Para subir ou rodar um serviço, servidor de dev ou processo longo, use orbit_create_process \
 (um nó por serviço, na pasta do projeto) em vez de rodar no seu próprio shell; \
 para abrir ou mostrar uma página (inclusive domínios .test e .localhost), use orbit_create_browser \
-em vez de um navegador externo, SEMPRE com from_node apontando o nó de processo ou serviço que \
-serve o endereço (ex.: o Caddy que serve *.test, ou o front) em vez de digitar url; \
-use url só quando nenhum nó do grafo serve aquele endereço; \
+em vez de um navegador externo; para navegador, ligue ao nó que serve o endereço com from_node; \
+se o endereço é um host virtual (ex.: https://code.muriki.test servido pelo Caddy), passe também a url; \
+use só url quando nenhum nó do grafo serve aquele endereço; \
 para trabalho de agente em outro repositório, use orbit_create_agent. \
 Use orbit_node_status para ler o estado e o log dos nós antes de concluir \
 (de um agente criado, ele traz a resposta final e o que mudou). \
@@ -500,6 +504,10 @@ mod tests {
             json!(["todo", "doing", "done", "failed"])
         );
         assert_eq!(plan["required"], json!(["text", "state"]));
+        let plan_description = by_name("orbit_plan")["description"].as_str().unwrap();
+        assert!(
+            plan_description.contains("owner_edit") && plan_description.contains("incorporate")
+        );
         // A regra de URL do navegador é a do core, domínios de dev inclusive.
         let browser = tools
             .iter()
@@ -508,6 +516,7 @@ mod tests {
         let description = browser["description"].as_str().unwrap();
         assert!(description.contains(crate::orbit::service::LOCAL_HOSTS));
         assert!(description.contains("*.test") && description.contains("*.localhost"));
+        assert!(description.contains("virtual host") && description.contains("also pass url"));
     }
 
     #[test]
@@ -679,6 +688,8 @@ mod tests {
         assert!(claude[1].contains("orbit_create_browser"));
         // Plano antes de começar e navegador pelo nó que serve o endereço.
         assert!(claude[1].contains("orbit_plan") && claude[1].contains("from_node"));
+        // Host virtual do Caddy: from_node para esperar, url para abrir.
+        assert!(claude[1].contains("host virtual") && claude[1].contains("passe também a url"));
         assert_eq!(claude.len(), 2);
         let config = claude_config(exe, socket);
         assert_eq!(config["mcpServers"]["orbit"]["args"], json!([MODE]));

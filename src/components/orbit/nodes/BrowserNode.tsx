@@ -31,7 +31,7 @@ function frameable(url: string): boolean {
  * Nó de navegador (quadro OrbitNavegador): voltar, recarregar, endereço e
  * "Abrir fora"; a página num iframe com `sandbox`. Só endereço local carrega —
  * o resto mostra o aviso e nada vai para o frame (a CSP `frame-src` também
- * recusa). A url que chega pela ligação, na execução, toma o lugar da do nó.
+ * recusa). Na execução vale a url do nó; sem ela, a que chega pela ligação.
  *
  * Clicar na página passa o teclado para ela ("você" na cápsula); clicar fora
  * devolve. O Esc dentro da página é dela e não chega ao app, por isso o

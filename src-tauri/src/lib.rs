@@ -8708,7 +8708,8 @@ fn orbit_run_stop(runs: State<'_, orbit::run::SharedRuns>, run_id: String) -> Re
 
 /// "Manter no grafo": os nós que o orquestrador criou no run (ativo,
 /// terminado, parado ou do histórico) entram no grafo salvo como nós normais —
-/// só `node_id` (o "Manter" do nó) ou todos (o "Manter tudo"). O front grava o
+/// só `node_id` (o "Manter" do nó) ou todos os do `orchestrator` (o "Manter
+/// tudo" do ⋯ dele). O front grava o
 /// que está no debounce antes; o grafo resultante passa pela mesma validação
 /// do salvar e volta para a tela.
 #[tauri::command]
@@ -8717,16 +8718,14 @@ fn orbit_keep_created(
     runs: State<'_, orbit::run::SharedRuns>,
     run_id: String,
     node_id: Option<String>,
+    orchestrator: Option<String>,
 ) -> Result<orbit::Graph, String> {
     let run = runs.get(&run_id).ok_or("execução não encontrada")?;
-    let created: Vec<_> = runs
-        .created_to_keep(&run_id)?
-        .into_iter()
-        .filter(|c| node_id.as_ref().is_none_or(|id| &c.node.id == id))
-        .collect();
-    if node_id.is_some() && created.is_empty() {
-        return Err("nó criado não encontrado ou já mantido".into());
-    }
+    let created = orbit::orchestrator::pick_to_keep(
+        runs.created_to_keep(&run_id)?,
+        node_id.as_deref(),
+        orchestrator.as_deref(),
+    )?;
     let graph_id = run.graph_id;
     let mut graph = state
         .store

@@ -5,6 +5,7 @@ import {
   HISTORY_LIMIT,
   graphShot,
   keepInHistory,
+  plansInHistory,
   record,
   redo,
   removedNodes,
@@ -133,5 +134,42 @@ describe("Manter no grafo fora do ⌘Z", () => {
     const next = keepInHistory(h, shot, new Set(["k"]));
     expect(ids(next.future[0])).toEqual(["b", "k"]);
     expect(restoreShot(next.future[0]).edges).toEqual([]);
+  });
+});
+
+describe("nota de plano fora do ⌘Z", () => {
+  const graphOf = (notes: [string, string][], edges: { id: string; from: string; to: string }[] = []) => {
+    const flow = toFlow({
+      id: "g",
+      name: "g",
+      dir: "",
+      variables: {},
+      nodes: notes.map(([id, markdown]) => newNode(id, id, { type: "note", markdown }, { x: 0, y: 0 })),
+      edges: edges.map((e) => ({ ...e, kind: "plan" as const })),
+    });
+    return graphShot(flow.nodes, flow.edges);
+  };
+  const text = (shot: string, id: string) => {
+    const kind = restoreShot(shot).nodes.find((n) => n.id === id)?.data.node.kind;
+    return kind?.type === "note" ? kind.markdown : undefined;
+  };
+
+  test("desfazer não tira a nota nem a ligação que o core pôs, nem volta o texto", () => {
+    // O dono pôs "b"; o core escreveu o plano "p" ligado a "o"; depois reescreveu.
+    let h = record(EMPTY_HISTORY, graphOf([["o", ""]]));
+    const first = graphOf([["o", ""], ["b", ""], ["p", "- [ ] a\n"]], [{ id: "pe", from: "o", to: "p" }]);
+    h = plansInHistory(h, first, new Set(["p"]));
+    const second = graphOf([["o", ""], ["b", ""], ["p", "- [x] a\n"]], [{ id: "pe", from: "o", to: "p" }]);
+    h = plansInHistory(h, second, new Set(["p"]));
+    // O plano não virou passo: um ⌘Z desfaz o "b" do dono, e acabou.
+    const back = undo(h, second)!;
+    expect(restoreShot(back.shot).nodes.map((n) => n.id)).toEqual(["o", "p"]);
+    expect(restoreShot(back.shot).edges.map((e) => e.id)).toEqual(["pe"]);
+    expect(text(back.shot, "p")).toBe("- [x] a\n");
+    expect(undo(back.history, back.shot)).toBeNull();
+    // O refazer volta o "b" com o plano novo.
+    const again = redo(back.history, back.shot)!;
+    expect(restoreShot(again.shot).nodes.map((n) => n.id)).toEqual(["o", "b", "p"]);
+    expect(text(again.shot, "p")).toBe("- [x] a\n");
   });
 });

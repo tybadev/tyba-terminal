@@ -22,7 +22,7 @@ const STEP_MARK: Record<StepState, { mark: string; tone: string }> = {
  */
 export function NoteNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
   const { t } = useTranslation();
-  const { updateNode } = useCanvasActions();
+  const { updateNode, editNote } = useCanvasActions();
   const { graph } = useOrbit();
   const node = data.node;
   const kind = node.kind as Extract<NodeKind, { type: "note" }>;
@@ -102,7 +102,11 @@ export function NoteNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
             const markdown = e.target.value;
             updateNode(id, (n) => ({ ...n, kind: { type: "note", markdown } }));
           }}
-          onBlur={() => setEditing(false)}
+          onFocus={() => editNote(id, true)}
+          onBlur={() => {
+            setEditing(false);
+            editNote(id, false);
+          }}
           className="nodrag nowheel min-h-0 w-full flex-1 resize-none bg-transparent px-4 pt-1 pb-3 font-sans text-[13px] leading-[1.6] text-tyba-text outline-none placeholder:text-tyba-text-ghost"
         />
       )}

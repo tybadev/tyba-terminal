@@ -90,3 +90,30 @@ export function keepInHistory(h: History, shot: string, ids: ReadonlySet<string>
   };
   return { past: h.past.map(adopt), future: h.future.map(adopt) };
 }
+
+/**
+ * A nota de plano que o core escreve (`orbit_plan`) também não é passo do
+ * ⌘Z: um retrato de antes dela, posto de volta, apagaria a nota (ou voltaria
+ * o texto velho) e o salvar levaria isso ao core. Como no `keepInHistory`, as
+ * notas `ids` e as ligações delas, como estão em `shot`, entram em todo
+ * retrato da pilha; nos que já têm a nota, só o texto troca (a posição é a
+ * que o dono deixou naquele passo).
+ */
+export function plansInHistory(h: History, shot: string, ids: ReadonlySet<string>): History {
+  if (ids.size === 0) return h;
+  const plans = JSON.parse(shot) as Pick<Graph, "nodes" | "edges">;
+  const kinds = new Map(plans.nodes.filter((n) => ids.has(n.id)).map((n) => [n.id, n.kind]));
+  const withText = (s: string): string => {
+    const g = JSON.parse(s) as Pick<Graph, "nodes" | "edges">;
+    let changed = false;
+    const nodes = g.nodes.map((n) => {
+      const kind = kinds.get(n.id);
+      if (!kind || JSON.stringify(kind) === JSON.stringify(n.kind)) return n;
+      changed = true;
+      return { ...n, kind };
+    });
+    return changed ? JSON.stringify({ nodes, edges: g.edges }) : s;
+  };
+  const adopted = keepInHistory(h, shot, ids);
+  return { past: adopted.past.map(withText), future: adopted.future.map(withText) };
+}
