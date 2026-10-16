@@ -4,6 +4,7 @@ import { Handle, Position, type NodeProps } from "@xyflow/react";
 
 import { ClaudeIcon } from "@/components/icons/ClaudeIcon";
 import { OpenAIIcon } from "@/components/icons/OpenAIIcon";
+import { Switch } from "@/components/ui/switch";
 import {
   ORCHESTRATOR_HANDLE,
   nodeDir,
@@ -15,6 +16,7 @@ import {
 import { SUBAGENT_HANDLE, groupRounds, roundTally } from "@/lib/orbitSubagents";
 import { agentDetailRows, diffSummary } from "@/lib/orbitCard";
 import { firstLine } from "@/lib/nodeSummary";
+import { inboxSenders, lastNoteWritten, undeliveredReason } from "@/lib/orbitTalk";
 import {
   Elapsed,
   NodeDir,
@@ -33,7 +35,7 @@ const RUNNERS: Runner[] = ["claude", "codex"];
 /** Nó de agente: Claude (âmbar) ou Codex (ciano), papel, pasta e a tarefa. */
 export function AgentNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
   const { t } = useTranslation();
-  const { updateNode, run, live, subagents, createdBy, graphDir, telemetry } = useOrbit();
+  const { updateNode, run, live, subagents, createdBy, graphDir, telemetry, graph } = useOrbit();
   const node = data.node;
   const kind = node.kind as AgentKind;
   const session = nodeSession(kind, run, id, live);
@@ -61,16 +63,37 @@ export function AgentNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
   // Quadro: "muriki-web · 2 subagentes · +42 −7".
   const meta = [dir ? shortDir(dir) : "", subTally, diffSummary(usage)].filter(Boolean).join(" · ");
   const nodeRun = run?.nodes[id];
-  // Conversa (quadro MaestroConversa): a fila esperando ele fechar o turno e
-  // a última mensagem que ele mandou.
+  // Conversa e memória (quadro MaestroConversa): a fila esperando ele fechar
+  // o turno (ou a entrega que falhou), a última mensagem que ele mandou e a
+  // última nota em que escreveu.
   const inbox = nodeRun?.inbox ?? 0;
   const sent = nodeRun?.sent ?? null;
+  const wroteIn = lastNoteWritten(id, graph.nodes, graph.edges, run);
+  const senders = inboxSenders(nodeRun, graph.nodes);
+  const undelivered = nodeRun?.undelivered ?? null;
   const footer = [
     sent && (
       <div key="sent" className="truncate">
         <span className="text-tyba-amber">{t("orbitSentTo", { name: sent.to })}</span>{" "}
         <span className="text-tyba-text-muted">“{sent.text}”</span>
       </div>
+    ),
+    wroteIn && (
+      <div key="wrote" className="truncate text-tyba-violet">
+        {t("orbitWroteIn", { name: wroteIn })}
+      </div>
+    ),
+    undelivered ? (
+      <div key="undelivered" className="truncate text-tyba-red" title={undelivered}>
+        {t("orbitUndelivered", { reason: undeliveredReason(undelivered) })}
+      </div>
+    ) : (
+      inbox > 0 &&
+      senders.length > 0 && (
+        <div key="inbox" className="truncate">
+          {t("orbitInboxNext", { count: inbox, names: senders.join(", ") })}
+        </div>
+      )
     ),
     session && meta && (
       <div key="meta" className="truncate">
@@ -96,16 +119,35 @@ export function AgentNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
       }
       // Grade do quadro OrbitCardsD (o tempo entra na ordem dela).
       stateRows={false}
-      details={agentDetailRows({
-        runner: kind.runner,
-        role: kind.role,
-        dir: dir ? shortDir(dir) : "",
-        task: firstLine(kind.prompt),
-        telemetry: usage,
-      }).map((row) => ({
-        label: t(row.key),
-        value: row.value === null ? nodeRun && <Elapsed nodeRun={nodeRun} /> : row.value,
-      }))}
+      details={[
+        ...agentDetailRows({
+          runner: kind.runner,
+          role: kind.role,
+          dir: dir ? shortDir(dir) : "",
+          task: firstLine(kind.prompt),
+          telemetry: usage,
+        }).map((row) => ({
+          label: t(row.key),
+          value: row.value === null ? nodeRun && <Elapsed nodeRun={nodeRun} /> : row.value,
+        })),
+        // O criado por outro agente já nasce sem criar (sem cascata).
+        ...(created
+          ? []
+          : [
+              {
+                label: t("orbitNoCreate"),
+                value: (
+                  <Switch
+                    aria-label={t("orbitNoCreate")}
+                    title={t("orbitNoCreateHint")}
+                    checked={kind.noCreate === true}
+                    onCheckedChange={(on) => set({ noCreate: on })}
+                    className="nodrag"
+                  />
+                ),
+              },
+            ]),
+      ]}
       status={
         rounds && tally && tally.running > 0 ? (
           <span className="flex shrink-0 items-center gap-1.5 text-[11.5px] whitespace-nowrap text-tyba-blue">

@@ -1,11 +1,11 @@
-import { useEffect, useState, type KeyboardEvent } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { List, LockSimple, LockSimpleOpen, NotePencil } from "@phosphor-icons/react";
 import type { NodeProps } from "@xyflow/react";
 
 import type { NodeKind, StepState } from "@/lib/orbit";
 import { checklistCount, isPlanNote, noteEditable, parseChecklist } from "@/lib/orbitPlan";
-import { clockTime, freshWrite, memoryAgents, noteMemoryLabel } from "@/lib/orbitTalk";
+import { clockTime, freshWrite, memoryAgents, noteMemoryLabel, writeOnBlur } from "@/lib/orbitTalk";
 import { NodeFrame, useCanvasActions, useOrbit, type OrbitFlowNode } from "./NodeFrame";
 
 /** Ícone e cor de cada estado do passo (quadro OrbitPlano). */
@@ -29,8 +29,8 @@ const OPENED_AT = Date.now();
  * checklist aparece como lista de passos; clicar volta ao markdown cru para
  * editar, e sair renderiza de novo. A nota de plano é do agente: só
  * leitura, mostra o checklist e nada mais. Ligada por memória, é nota viva:
- * os agentes escrevem, a cápsula diz quantos e tem o cadeado (só leitura),
- * e o rodapé diz quem escreveu por último.
+ * os agentes escrevem, a cápsula diz quantos e tem o cadeado (agentes só
+ * leem; o dono segue editando), e o rodapé diz quem escreveu por último.
  */
 export function NoteNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
   const { t } = useTranslation();
@@ -42,23 +42,31 @@ export function NoteNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
   const [editing, setEditing] = useState(false);
   const steps = parseChecklist(kind.markdown);
   const plan = isPlanNote(id, graph.edges);
-  const editable = noteEditable(id, graph.edges, locked);
+  const editable = noteEditable(id, graph.edges);
   const count = steps ? checklistCount(steps) : null;
   // Nota viva (quadro MaestroConversa): agentes ligados por memória leem e
-  // escrevem; o cadeado deixa só leitura (o core recusa a escrita).
+  // escrevem; o cadeado os deixa só lendo (o core recusa a escrita deles).
   const agents = memoryAgents(id, graph.edges);
   const memory = noteMemoryLabel(agents, locked, run?.status === "running");
   const written = run?.nodes[id]?.written ?? null;
+  const setMarkdown = (markdown: string) =>
+    updateNode(id, (n) =>
+      n.kind.type === "note" ? { ...n, kind: { ...n.kind, markdown } } : n,
+    );
+  // O dono digitando: o texto de quando ele entrou no campo e a escrita de
+  // agente que chegou nesse meio-tempo (entra ao sair, se ele não mudou nada).
+  const atFocus = useRef<string | null>(null);
+  const pending = useRef<string | null>(null);
   // Agente escreveu: o core já gravou o texto no grafo salvo; o canvas
   // acompanha, para o próximo salvar não o desfazer.
   useEffect(() => {
     if (!written || !freshWrite(id, written.at, appliedWrites, OPENED_AT)) return;
     appliedWrites.set(id, written.at);
-    if (written.markdown === kind.markdown) return;
-    const markdown = written.markdown;
-    updateNode(id, (n) =>
-      n.kind.type === "note" ? { ...n, kind: { ...n.kind, markdown } } : n,
-    );
+    if (atFocus.current !== null) {
+      pending.current = written.markdown;
+      return;
+    }
+    if (written.markdown !== kind.markdown) setMarkdown(written.markdown);
     // Só quando um agente escreve de novo.
   }, [written?.at]);
   const setLocked = (on: boolean) =>
@@ -162,13 +170,18 @@ export function NoteNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
           autoCapitalize="off"
           autoFocus={editing}
           value={kind.markdown}
-          onChange={(e) => {
-            const markdown = e.target.value;
-            updateNode(id, (n) =>
-              n.kind.type === "note" ? { ...n, kind: { ...n.kind, markdown } } : n,
-            );
+          onChange={(e) => setMarkdown(e.target.value)}
+          onFocus={() => {
+            atFocus.current = kind.markdown;
+            pending.current = null;
           }}
-          onBlur={() => setEditing(false)}
+          onBlur={() => {
+            const apply = writeOnBlur(atFocus.current ?? kind.markdown, kind.markdown, pending.current);
+            atFocus.current = null;
+            pending.current = null;
+            if (apply !== null) setMarkdown(apply);
+            setEditing(false);
+          }}
           className="nodrag nowheel min-h-0 w-full flex-1 resize-none bg-transparent px-4 pt-1 pb-3 font-sans text-[13px] leading-[1.6] text-tyba-text outline-none placeholder:text-tyba-text-ghost"
         />
       )}

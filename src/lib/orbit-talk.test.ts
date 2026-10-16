@@ -10,7 +10,19 @@ import {
   type Run,
 } from "./orbit";
 import { noteEditable } from "./orbitPlan";
-import { clockTime, freshWrite, memoryAgents, noteMemoryLabel, talkQueued } from "./orbitTalk";
+import {
+  browserControllers,
+  clockTime,
+  freshWrite,
+  inboxSenders,
+  lastNoteWritten,
+  memoryAgents,
+  noteMemoryLabel,
+  roomAgents,
+  talkQueued,
+  undeliveredReason,
+  writeOnBlur,
+} from "./orbitTalk";
 
 // Fixtures sintéticas: nada aqui veio de sessão real.
 
@@ -106,9 +118,20 @@ describe("fila da conversa e nota viva", () => {
     expect(noteMemoryLabel(1, true, false)?.key).toBe("orbitNoteAgentsRead");
   });
 
-  test("cadeado deixa a nota só leitura na tela também", () => {
-    expect(noteEditable("n", [], false)).toBe(true);
-    expect(noteEditable("n", [], true)).toBe(false);
+  test("cadeado tranca só os agentes: o dono segue editando; plano não", () => {
+    expect(noteEditable("n", [])).toBe(true);
+    expect(noteEditable("n", [{ to: "n", kind: "memory" }])).toBe(true);
+    expect(noteEditable("n", [{ to: "n", kind: "plan" }])).toBe(false);
+  });
+
+  test("escrita de agente com o dono digitando: entra ao sair só se ele não mudou nada", () => {
+    // Ele não mexeu: o texto do agente entra.
+    expect(writeOnBlur("a", "a", "a\n- do agente")).toBe("a\n- do agente");
+    // Ele mexeu: o dele vence (o salvar dele vai ao core).
+    expect(writeOnBlur("a", "a e mais", "a\n- do agente")).toBeNull();
+    // Nada chegou, ou chegou o mesmo texto: nada a fazer.
+    expect(writeOnBlur("a", "a", null)).toBeNull();
+    expect(writeOnBlur("a", "a", "a")).toBeNull();
   });
 
   test("escrita de agente entra na tela uma vez, e só a de depois da abertura", () => {
@@ -121,5 +144,74 @@ describe("fila da conversa e nota viva", () => {
   test("hora de quem escreveu: HH:MM local", () => {
     expect(clockTime(new Date(2026, 9, 16, 14, 22, 59).getTime())).toBe("14:22");
     expect(clockTime(new Date(2026, 9, 16, 9, 5).getTime())).toBe("09:05");
+  });
+});
+
+describe("conversa e memória nos cards e na barra", () => {
+  const nodes = [
+    { id: "dev", title: "Claude · dev" },
+    { id: "rev", title: "Codex · revisor" },
+    { id: "nav", title: "Navegador · code" },
+    { id: "dec", title: "decisoes.md" },
+    { id: "out", title: "outra.md" },
+  ];
+  const edges: OrbitEdge[] = [
+    { id: "c", from: "dev", to: "nav", kind: "control" },
+    { id: "t", from: "dev", to: "rev", kind: "talk" },
+    { id: "m1", from: "dev", to: "dec", kind: "memory" },
+    { id: "m2", from: "dev", to: "out", kind: "memory" },
+    { id: "m3", from: "rev", to: "dec", kind: "memory" },
+  ];
+  const nr = (extra: Partial<NodeRun>): NodeRun => ({
+    status: "running",
+    sessionId: null,
+    startedAt: 1,
+    finishedAt: null,
+    exitCode: null,
+    outputs: {},
+    reason: null,
+    ...extra,
+  });
+
+  test("navegador: controlado pelo agente ligado por control, só enquanto a ligação existe", () => {
+    expect(browserControllers("nav", nodes, edges)).toEqual(["Claude · dev"]);
+    expect(browserControllers("nav", nodes, edges.filter((e) => e.kind !== "control"))).toEqual([]);
+    // Ligação de outro tipo não controla.
+    expect(browserControllers("rev", nodes, edges)).toEqual([]);
+  });
+
+  test("agente: a nota mais recente em que ele escreveu, nunca a de outro", () => {
+    const run = {
+      nodes: {
+        dec: nr({ written: { by: "Claude · dev", at: 10, markdown: "" } }),
+        out: nr({ written: { by: "Claude · dev", at: 20, markdown: "" } }),
+      },
+    };
+    expect(lastNoteWritten("dev", nodes, edges, run)).toBe("outra.md");
+    // A última escrita de decisoes.md é do dev, não do revisor.
+    expect(lastNoteWritten("rev", nodes, edges, run)).toBeNull();
+    expect(lastNoteWritten("dev", nodes, edges, null)).toBeNull();
+    // Sem a ligação de memória, não conta.
+    expect(lastNoteWritten("dev", nodes, [], run)).toBeNull();
+  });
+
+  test("destino: quem tem mensagem na fila, pelo título", () => {
+    expect(inboxSenders(nr({ inboxFrom: { dev: 1, rev: 0 } }), nodes)).toEqual(["Claude · dev"]);
+    expect(inboxSenders(nr({}), nodes)).toEqual([]);
+    expect(inboxSenders(undefined, nodes)).toEqual([]);
+  });
+
+  test("não entregue: o motivo curto, sem o prefixo do core", () => {
+    expect(undeliveredReason("não entregue: sessão fechou")).toBe("sessão fechou");
+    expect(undeliveredReason("não entregue: a\nb")).toBe("a");
+    const long = undeliveredReason(`não entregue: ${"x".repeat(100)}`);
+    expect(long.length).toBe(60);
+    expect(long.endsWith("…")).toBe(true);
+  });
+
+  test("sala: agentes com alguma ligação de conversa", () => {
+    expect(roomAgents(edges)).toBe(2);
+    expect(roomAgents([...edges, { id: "t2", from: "rev", to: "x", kind: "talk" }])).toBe(3);
+    expect(roomAgents(edges.filter((e) => e.kind !== "talk"))).toBe(0);
   });
 });

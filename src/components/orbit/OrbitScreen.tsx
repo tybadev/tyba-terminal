@@ -88,6 +88,7 @@ import {
   type OrbitNode,
   type Plan,
 } from "@/lib/orbit";
+import { roomAgents } from "@/lib/orbitTalk";
 import { ImportDialog } from "./ImportDialog";
 import { IntegrationsPanel } from "./IntegrationsPanel";
 import { OrbitCanvas, type CreatedView, type OrbitFlowEdge } from "./OrbitCanvas";
@@ -784,6 +785,7 @@ function OrbitInner({
     }),
     [integrations, updateNode, graphDir, releaseNode, openInBrowser, t],
   );
+  const room = roomAgents(viewGraph.edges);
   const ctx = useMemo(
     () => ({
       graph: viewGraph,
@@ -994,6 +996,12 @@ function OrbitInner({
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
+          {/* Quadro MaestroConversa: run vivo com agentes em conversa. */}
+          {running !== null && room >= 2 && (
+            <span className="shrink-0 px-1 text-[12px] whitespace-nowrap text-tyba-green">
+              {t("orbitRoomActive", { count: room })}
+            </span>
+          )}
           {sep}
           <button
             type="button"

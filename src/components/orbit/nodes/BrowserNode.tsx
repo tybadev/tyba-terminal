@@ -6,6 +6,7 @@ import type { NodeProps } from "@xyflow/react";
 import { openExternalUrl } from "@/lib/clipboard";
 import { frameInUse } from "@/lib/graphKeys";
 import { browserRefusal, isLocalUrl, openedChipLeft, type NodeKind } from "@/lib/orbit";
+import { browserControllers } from "@/lib/orbitTalk";
 import { NodeFrame, useOrbit, type OrbitFlowNode } from "./NodeFrame";
 
 type BrowserKind = Extract<NodeKind, { type: "browser" }>;
@@ -41,11 +42,14 @@ function frameable(url: string): boolean {
  */
 export function BrowserNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
   const { t } = useTranslation();
-  const { updateNode, run } = useOrbit();
+  const { updateNode, run, graph } = useOrbit();
   const node = data.node;
   const kind = node.kind as BrowserKind;
   const runUrl = run?.nodes[id]?.url ?? null;
   const opened = run?.nodes[id]?.opened ?? null;
+  // Agente ligado por `control` (quadro MaestroConversa): "controlado por X"
+  // enquanto a ligação existir.
+  const controllers = browserControllers(id, graph.nodes, graph.edges);
 
   // Endereços visitados por aqui (a navegação dentro do frame é de outra
   // origem e não se lê): o ← volta para o anterior.
@@ -135,6 +139,10 @@ export function BrowserNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
         ) : openedBy ? (
           <span className="max-w-[160px] shrink-0 truncate rounded-full bg-tyba-cyan/[.18] px-[9px] py-[2px] text-[11.5px] text-tyba-text">
             {t("orbitBrowserOpenedBy", { name: openedBy })}
+          </span>
+        ) : controllers.length > 0 ? (
+          <span className="max-w-[200px] shrink-0 truncate text-[11.5px] text-tyba-cyan">
+            {t("orbitBrowserControlledBy", { name: controllers.join(", ") })}
           </span>
         ) : undefined
       }
