@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { freeSpot, nodeRect, outsideView, rightOf, type Rect } from "./graphLayout";
+import { freeSpot, minimapTone, nodeRect, outsideView, rightOf, type Rect } from "./graphLayout";
 
 const size = { w: 200, h: 100 };
 
@@ -75,5 +75,21 @@ describe("outsideView (minimapa liga sozinho)", () => {
 
   test("área ainda sem medida: não", () => {
     expect(outsideView([{ x: 5000, y: 0, w: 1, h: 1 }], view, { w: 0, h: 0 })).toBe(false);
+  });
+});
+
+describe("minimapTone (canvas-10)", () => {
+  test("estado manda: dono âmbar, rodando verde, falhou vermelho", () => {
+    expect(minimapTone("owner", true)).toBe("var(--tyba-amber)");
+    expect(minimapTone("working", false)).toBe("var(--tyba-green)");
+    expect(minimapTone("live", true)).toBe("var(--tyba-green)");
+    expect(minimapTone("failed", true)).toBe("var(--tyba-red)");
+  });
+
+  test("criado parado ou na fila fica violeta; o resto, a borda", () => {
+    expect(minimapTone("idle", true)).toBe("var(--tyba-violet)");
+    expect(minimapTone("done", true)).toBe("var(--tyba-violet)");
+    expect(minimapTone("idle", false)).toBe("var(--tyba-border-strong)");
+    expect(minimapTone("waiting", false)).toBe("var(--tyba-text-faint)");
   });
 });

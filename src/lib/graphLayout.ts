@@ -2,6 +2,8 @@
 // Puro: recebe os retângulos ocupados e devolve a posição. O core faz o
 // mesmo para os nós que o orquestrador cria (`orchestrator::free_spot`).
 
+import type { RingState } from "./maestroCard";
+
 export interface Rect {
   x: number;
   y: number;
@@ -88,4 +90,27 @@ export function outsideView(
   const right = left + size.w / view.zoom;
   const bottom = top + size.h / view.zoom;
   return rects.some((r) => r.x < left || r.y < top || r.x + r.w > right || r.y + r.h > bottom);
+}
+
+/**
+ * Cor do nó no minimapa (canvas-10), pelo estado do anel: esperando o dono
+ * âmbar, rodando verde, falhou vermelho; criado pelo orquestrador violeta;
+ * na fila apagado; pronto verde mais fraco; fora de execução a borda.
+ */
+export function minimapTone(ring: RingState, created: boolean): string {
+  switch (ring) {
+    case "owner":
+      return "var(--tyba-amber)";
+    case "working":
+    case "live":
+      return "var(--tyba-green)";
+    case "failed":
+      return "var(--tyba-red)";
+    default:
+      break;
+  }
+  if (created) return "var(--tyba-violet)";
+  if (ring === "done") return "color-mix(in srgb, var(--tyba-green) 45%, transparent)";
+  if (ring === "waiting") return "var(--tyba-text-faint)";
+  return "var(--tyba-border-strong)";
 }
