@@ -2198,6 +2198,11 @@ export default function App() {
       ),
     );
   }, [sideView, subagentsBySession, approvals]);
+  // Cápsulas dos nós do grafo na tela (Permitir/Negar no próprio nó): o que
+  // elas mostram sai do toast. A tela do grafo avisa e zera ao fechar.
+  const [nodeCardIds, setNodeCardIds] = useState<ReadonlySet<number>>(
+    () => new Set(),
+  );
   const approvalHiddenIds = useMemo(
     () =>
       computeHiddenApprovalIds({
@@ -2207,6 +2212,7 @@ export default function App() {
         agentQueueVisibleIds,
         sessionPanelIds,
         agentsPanelIds,
+        nodeCardIds,
       }),
     [
       approvals,
@@ -2215,6 +2221,7 @@ export default function App() {
       agentQueueVisibleIds,
       sessionPanelIds,
       agentsPanelIds,
+      nodeCardIds,
     ],
   );
 
@@ -5775,7 +5782,11 @@ export default function App() {
           {maestroOpen && (
             <div className="absolute inset-0 z-40 flex">
               <ErrorBoundary region="maestro">
-                <MaestroScreen focusSession={maestroFocus} />
+                <MaestroScreen
+                  focusSession={maestroFocus}
+                  approvals={approvals}
+                  onCardApprovals={setNodeCardIds}
+                />
               </ErrorBoundary>
               {machineScreen && (
                 <ServicesScreen

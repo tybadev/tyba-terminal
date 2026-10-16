@@ -52,9 +52,9 @@ import {
   ephemeralCreated,
   keepCreated,
   shortDir,
-  inHandle,
+  NEW_IN_HANDLE,
+  OUT_HANDLE,
   isLocalUrl,
-  outHandle,
   serviceContainers,
   serviceLogsRetain,
   emptyGraph,
@@ -99,7 +99,13 @@ import { CanvasProvider, STATUS_TONE, type MaestroFlowNode } from "./nodes/NodeF
 import { SubagentMark, subagentTone, useSubagentTime } from "./nodes/SubagentNode";
 import { useNodeSubagents } from "./useNodeSubagents";
 import { SubagentTranscript } from "@/components/SubagentViewer";
-import type { SubagentRun } from "@/lib/ipc";
+import {
+  resolveApproval,
+  type ApprovalDecision,
+  type ApprovalRequest,
+  type SubagentRun,
+} from "@/lib/ipc";
+import { nodeApproval, nodeApprovalIds } from "@/lib/maestroCard";
 import { nodeTerminalWebgl } from "@/lib/nodeTerminal";
 import { keepIfSame } from "@/lib/stableItems";
 import {
@@ -120,10 +126,24 @@ const sep = <span aria-hidden className="mx-2 h-5 w-px bg-tyba-border-strong" />
  * quando aberto, o painel de variáveis. O grafo não é preso à pasta da
  * sessão: escolhe-se pelo nome na barra, e cada nó tem a própria pasta.
  */
-export function MaestroScreen({ focusSession = null }: { focusSession?: FocusSessionRequest | null }) {
+export function MaestroScreen({
+  focusSession = null,
+  approvals = [],
+  onCardApprovals,
+}: {
+  focusSession?: FocusSessionRequest | null;
+  /** Pedidos de aprovação pendentes (do core, via App). */
+  approvals?: readonly ApprovalRequest[];
+  /** Os ids que as cápsulas dos nós mostram agora: saem do toast. */
+  onCardApprovals?: (ids: ReadonlySet<number>) => void;
+}) {
   return (
     <ReactFlowProvider>
-      <MaestroInner focusSession={focusSession} />
+      <MaestroInner
+        focusSession={focusSession}
+        approvals={approvals}
+        onCardApprovals={onCardApprovals}
+      />
     </ReactFlowProvider>
   );
 }
@@ -137,7 +157,15 @@ export interface FocusSessionRequest {
   nonce: number;
 }
 
-function MaestroInner({ focusSession }: { focusSession: FocusSessionRequest | null }) {
+function MaestroInner({
+  focusSession,
+  approvals,
+  onCardApprovals,
+}: {
+  focusSession: FocusSessionRequest | null;
+  approvals: readonly ApprovalRequest[];
+  onCardApprovals?: (ids: ReadonlySet<number>) => void;
+}) {
   const { t, i18n } = useTranslation();
   // Home: onde nasce o nó quando ainda não há pasta usada. `null` = lendo.
   const [home, setHome] = useState<string | null>(null);
@@ -278,6 +306,21 @@ function MaestroInner({ focusSession }: { focusSession: FocusSessionRequest | nu
     [nodeModels, run, live],
   );
   const subagents = useNodeSubagents(agentSessions);
+  // Pedido de aprovação de cada nó de agente com sessão viva: a cápsula fica
+  // âmbar com Permitir/Negar. Os que ela mostra saem do toast do canto.
+  const nodeApprovals = useMemo(() => {
+    const out = new Map<string, ApprovalRequest>();
+    for (const [nodeId, sessionId] of agentSessions) {
+      const request = nodeApproval(sessionId, approvals);
+      if (request) out.set(nodeId, request);
+    }
+    return out;
+  }, [agentSessions, approvals]);
+  const cardIdsKey = [...nodeApprovalIds(agentSessions.values(), approvals)].sort().join(",");
+  useEffect(() => {
+    onCardApprovals?.(new Set(cardIdsKey ? cardIdsKey.split(",").map(Number) : []));
+  }, [cardIdsKey, onCardApprovals]);
+  useEffect(() => () => onCardApprovals?.(new Set()), [onCardApprovals]);
   const [openSub, setOpenSub] = useState<string | null>(null);
   const [focusNode, setFocusNode] = useState<string | null>(null);
   const opened = useMemo(() => {
@@ -542,8 +585,8 @@ function MaestroInner({ focusSession }: { focusSession: FocusSessionRequest | nu
           type: "maestro",
           source: fromId,
           target: node.id,
-          sourceHandle: outHandle("url"),
-          targetHandle: inHandle(edgeId),
+          sourceHandle: OUT_HANDLE,
+          targetHandle: NEW_IN_HANDLE,
           data: { kind: "url" },
         },
       ]);
@@ -565,8 +608,13 @@ function MaestroInner({ focusSession }: { focusSession: FocusSessionRequest | nu
       setOpenSubagent: setOpenSub,
       setFocusNode,
       openInBrowser,
+      keepCreated: () => void keepRef.current(),
+      answerApproval: (id: number, decision: ApprovalDecision) =>
+        void resolveApproval(id, decision).catch((e) =>
+          setError(t("maestroApprovalError", { error: String(e) })),
+        ),
     }),
-    [integrations, updateNode, graphDir, releaseNode, openInBrowser],
+    [integrations, updateNode, graphDir, releaseNode, openInBrowser, t],
   );
   const ctx = useMemo(
     () => ({
@@ -579,8 +627,21 @@ function MaestroInner({ focusSession }: { focusSession: FocusSessionRequest | nu
       focusNode,
       createdIds,
       createdBy,
+      approvals: nodeApprovals,
     }),
-    [viewGraph, run, live, actualSize, subagents, opened, openSub, focusNode, createdIds, createdBy],
+    [
+      viewGraph,
+      run,
+      live,
+      actualSize,
+      subagents,
+      opened,
+      openSub,
+      focusNode,
+      createdIds,
+      createdBy,
+      nodeApprovals,
+    ],
   );
 
   // "Manter no grafo": o core grava os criados no grafo e devolve o grafo
@@ -600,6 +661,9 @@ function MaestroInner({ focusSession }: { focusSession: FocusSessionRequest | nu
       setError(t("maestroKeepError", { error: String(e) }));
     }
   };
+  // A cápsula do criado chama o "Manter" pela ação estável do contexto.
+  const keepRef = useRef(keep);
+  keepRef.current = keep;
   const orchestrated = runCreated(run);
 
   /** Troca de grafo: o que está no debounce vai antes para o banco. */

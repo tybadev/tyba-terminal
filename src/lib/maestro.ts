@@ -287,25 +287,98 @@ export function connectionProblem(
   return null;
 }
 
+/**
+ * O tipo de uma ligação nova de `source` para `target` (achado canvas-3): o
+ * que um produz e o outro aceita, com o padrão do par na frente. Vazio = não
+ * ligam. Sem padrão para o par, vale a ordem do que a origem produz (a
+ * primeira saída é a principal: o contexto do agente e da nota, a saída
+ * declarada do processo, o log do serviço). O dono troca depois pela
+ * etiqueta da ligação.
+ */
+export function connectionKinds(
+  source: NodeKind,
+  target: NodeKind,
+  integrations: IntegrationsById,
+): EdgeKind[] {
+  const accepted = accepts(target, integrations);
+  const both = produces(source, integrations).filter((k) => accepted.includes(k));
+  const preferred = PAIR_DEFAULT[`${source.type}>${target.type}`];
+  return preferred && both.includes(preferred)
+    ? [preferred, ...both.filter((k) => k !== preferred)]
+    : both;
+}
+
+/**
+ * Padrão por par quando a primeira saída da origem não é o que o par quer:
+ * agente → processo/integração leva o que mudou (o processo testa, a
+ * integração abre o PR). Nota → agente, agente → agente (contexto) e
+ * processo/serviço → navegador (url) já saem da ordem do `produces`.
+ */
+const PAIR_DEFAULT: Partial<Record<string, EdgeKind>> = {
+  "agent>process": "diff",
+  "agent>integration": "diff",
+};
+
+/**
+ * A ligação que soltar `from` em `to` cria: o tipo calculado, ou por que não
+ * liga. Uma ligação por par: se já existe uma de `from` para `to`, troca-se
+ * o tipo dela pela etiqueta em vez de criar outra.
+ */
+export function pickConnection(
+  nodes: readonly MaestroNode[],
+  edges: readonly MaestroEdge[],
+  integrations: IntegrationsById,
+  from: string,
+  to: string,
+): { kind: EdgeKind } | { problem: ConnectionProblem } {
+  const source = nodes.find((n) => n.id === from);
+  const target = nodes.find((n) => n.id === to);
+  if (!source || !target) return { problem: "unknownNode" };
+  if (from === to) return { problem: "self" };
+  const kinds = connectionKinds(source.kind, target.kind, integrations);
+  if (kinds.length === 0) return { problem: "notAccepted" };
+  if (edges.some((e) => e.from === from && e.to === to)) return { problem: "duplicate" };
+  const problem = connectionProblem(nodes, edges, integrations, from, to, kinds[0]);
+  return problem ? { problem } : { kind: kinds[0] };
+}
+
+/**
+ * Os tipos para os quais a ligação `edgeId` pode ser trocada (a etiqueta
+ * "contexto ▾"): o que o par aceita, menos um tipo que outra ligação do
+ * mesmo par já leva. O tipo atual vem junto, para o menu marcá-lo.
+ */
+export function edgeKindChoices(
+  nodes: readonly MaestroNode[],
+  edges: readonly MaestroEdge[],
+  integrations: IntegrationsById,
+  edgeId: string,
+): EdgeKind[] {
+  const edge = edges.find((e) => e.id === edgeId);
+  if (!edge) return [];
+  const source = nodes.find((n) => n.id === edge.from);
+  const target = nodes.find((n) => n.id === edge.to);
+  if (!source || !target) return [];
+  const taken = new Set(
+    edges
+      .filter((e) => e.id !== edgeId && e.from === edge.from && e.to === edge.to)
+      .map((e) => e.kind),
+  );
+  return connectionKinds(source.kind, target.kind, integrations).filter((k) => !taken.has(k));
+}
+
 // ------------------------------------------- modelo ↔ canvas (xyflow)
 
-/** Porta de saída: uma por tipo que o nó produz. */
-export const outHandle = (kind: EdgeKind) => `out:${kind}`;
+/**
+ * A porta de saída do nó: uma só, na borda direita (achado canvas-3). O tipo
+ * da ligação não depende mais de qual bolinha se agarra — sai do par.
+ */
+export const OUT_HANDLE = "out";
 
 /** Saída invisível do orquestrador: a ligação tracejada até o que ele criou (só desenho). */
 export const ORCHESTRATOR_HANDLE = "orchestrator";
 
-/** Porta de entrada livre, onde nasce uma ligação nova. */
+/** A entrada do nó: todas as ligações chegam nela; o nó inteiro é alvo. */
 export const NEW_IN_HANDLE = "in";
-
-/** Porta de entrada de uma ligação que já existe: uma linha por entrada. */
-export const inHandle = (edgeId: string) => `in:${edgeId}`;
-
-export function kindOfOutHandle(handle: string | null | undefined): EdgeKind | null {
-  if (!handle?.startsWith("out:")) return null;
-  const kind = handle.slice(4) as EdgeKind;
-  return EDGE_KINDS.includes(kind) ? kind : null;
-}
 
 /** O que o canvas guarda em cada nó: o nó do modelo, inteiro. */
 export type FlowNodeData = { node: MaestroNode };
@@ -331,6 +404,11 @@ export interface FlowEdge {
   data: FlowEdgeData;
 }
 
+/**
+ * Grafo do core → canvas. Grafos salvos antes da porta única abrem iguais:
+ * a ligação guarda só o tipo, e as portas (uma saída, uma entrada) saem
+ * daqui — nenhuma ligação se perde na troca.
+ */
 export function toFlow(graph: Graph): { nodes: FlowNode[]; edges: FlowEdge[] } {
   return {
     nodes: graph.nodes.map((node) => ({
@@ -346,8 +424,8 @@ export function toFlow(graph: Graph): { nodes: FlowNode[]; edges: FlowEdge[] } {
       type: "maestro",
       source: edge.from,
       target: edge.to,
-      sourceHandle: outHandle(edge.kind),
-      targetHandle: inHandle(edge.id),
+      sourceHandle: OUT_HANDLE,
+      targetHandle: NEW_IN_HANDLE,
       data: { kind: edge.kind },
     })),
   };
@@ -387,7 +465,7 @@ export function fromFlow(
       },
     })),
     edges: edges.flatMap((e) => {
-      const kind = e.data?.kind ?? kindOfOutHandle(e.sourceHandle);
+      const kind = e.data?.kind;
       return kind ? [{ id: e.id, from: e.source, to: e.target, kind }] : [];
     }),
   };
@@ -595,8 +673,8 @@ export function createdFlow(run: Run | null, graphNodes: readonly MaestroNode[])
           type: "maestro" as const,
           source: e.from,
           target: e.to,
-          sourceHandle: outHandle(e.kind),
-          targetHandle: inHandle(e.id),
+          sourceHandle: OUT_HANDLE,
+          targetHandle: NEW_IN_HANDLE,
           data: { kind: e.kind },
         })),
     ),

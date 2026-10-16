@@ -3,13 +3,14 @@ import type { SubagentRun } from "./ipc";
 /**
  * Subagentes ao vivo no canvas do Maestro (quadro MaestroSubagentes): cada
  * subagente da rodada mais nova do claude de um nó vira um nó-filho efêmero,
- * em grade embaixo dele. Nada daqui entra no grafo salvo.
+ * em pílula (quadro MaestroCardsD), numa coluna embaixo dele. Nada daqui
+ * entra no grafo salvo.
  */
 
 export const SUB_W = 240;
-export const SUB_H = 150;
-export const SUB_GAP = 30;
-export const SUB_COLS = 3;
+export const SUB_H = 34;
+export const SUB_GAP = 10;
+export const SUB_COLS = 1;
 /** Distância entre o fundo do nó do agente e a primeira linha da grade. */
 export const SUB_TOP = 80;
 export const SUB_ROUNDS_H = 24;
@@ -75,7 +76,7 @@ interface Box {
   height: number;
 }
 
-/** Posição do i-ésimo cartão: 3 colunas, alinhadas à esquerda do agente. */
+/** Posição da i-ésima pílula: `SUB_COLS` colunas, alinhadas à esquerda do agente. */
 export function gridPosition(parent: Box, i: number): { x: number; y: number } {
   const col = i % SUB_COLS;
   const row = Math.floor(i / SUB_COLS);

@@ -1,12 +1,20 @@
-import { createContext, useContext, useEffect, type ReactNode } from "react";
+import {
+  Fragment,
+  createContext,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from "react";
 import { useTranslation } from "react-i18next";
-import { FolderSimple, Trash } from "@phosphor-icons/react";
+import { ArrowsOut, DotsThree, FolderSimple, Trash } from "@phosphor-icons/react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
   Handle,
   NodeResizer,
   Position,
-  useNodeConnections,
+  useConnection,
   useReactFlow,
   useUpdateNodeInternals,
   type Node,
@@ -14,13 +22,13 @@ import {
 
 import {
   NEW_IN_HANDLE,
+  OUT_HANDLE,
   accepts,
-  inHandle,
-  kindOfOutHandle,
-  outHandle,
   formatDuration,
   nodeElapsed,
+  nodeSession,
   nodeStatusLabel,
+  pickConnection,
   produces,
   nodeDir,
   rememberDir,
@@ -34,7 +42,9 @@ import {
   type NodeStatus,
   type Run,
 } from "@/lib/maestro";
-import type { SubagentRun } from "@/lib/ipc";
+import type { ApprovalDecision, ApprovalRequest, SubagentRun } from "@/lib/ipc";
+import { ringState, type RingState } from "@/lib/maestroCard";
+import { decideApproval } from "@/lib/notifications";
 
 export type MaestroFlowNode = Node<FlowNodeData>;
 
@@ -54,6 +64,10 @@ export interface CanvasActions {
   setFocusNode: (nodeId: string | null) => void;
   /** "Abrir no navegador" do processo: o navegador ligado nele, ou um novo. */
   openInBrowser: (fromId: string, url: string) => void;
+  /** "Manter" na cápsula do criado: os criados do run vão para o grafo. */
+  keepCreated: () => void;
+  /** Permitir/Negar da cápsula âmbar: resolve o pedido no core. */
+  answerApproval: (requestId: number, decision: ApprovalDecision) => void;
 }
 
 export interface CanvasState {
@@ -73,6 +87,8 @@ export interface CanvasState {
   createdIds: ReadonlySet<string>;
   /** Quem o orquestrador criou no run à vista (efêmero ou mantido) → criador. */
   createdBy: ReadonlyMap<string, string>;
+  /** Pedido de aprovação pendente de cada nó (o mais antigo da sessão dele). */
+  approvals: ReadonlyMap<string, ApprovalRequest>;
 }
 
 export type MaestroCtx = CanvasActions & CanvasState;
@@ -85,6 +101,8 @@ export const CanvasActionsContext = createContext<CanvasActions>({
   setOpenSubagent: () => {},
   setFocusNode: () => {},
   openInBrowser: () => {},
+  keepCreated: () => {},
+  answerApproval: () => {},
 });
 
 export const CanvasStateContext = createContext<CanvasState>({
@@ -97,6 +115,7 @@ export const CanvasStateContext = createContext<CanvasState>({
   focusNode: null,
   createdIds: new Set(),
   createdBy: new Map(),
+  approvals: new Map(),
 });
 
 /** Relógio dos tempos (ms); só anda enquanto algo roda. */
@@ -151,7 +170,7 @@ export const STATUS_TONE: Record<NodeStatus, { text: string; dot: string }> = {
   stopped: { text: "text-tyba-text-faint", dot: "bg-tyba-text-faint" },
 };
 
-/** Estado e tempo do nó na execução à vista. */
+/** Estado e tempo do nó na execução à vista (cabeçalho do modo foco). */
 export function NodeStatusBadge({ nodeId, nodeRun }: { nodeId: string; nodeRun: NodeRun }) {
   const { t } = useTranslation();
   const { graph, run } = useMaestro();
@@ -175,85 +194,307 @@ export function NodeStatusBadge({ nodeId, nodeRun }: { nodeId: string; nodeRun: 
   );
 }
 
-const handleStyle = (color: string, filled: boolean) => ({
-  width: 14,
-  height: 14,
+/** Cor da porta de saída: a do que o nó produz primeiro (a saída principal). */
+const portStyle = (color: string) => ({
+  width: 16,
+  height: 16,
+  right: -8,
+  top: 12,
   borderRadius: "50%",
-  border: `2px solid ${color}`,
-  background: filled ? color : "var(--tyba-bg)",
+  border: "3px solid var(--tyba-bg)",
+  background: color,
+  transform: "none",
 });
 
+/** A entrada não aparece: o nó inteiro é alvo, e ela só ancora a ligação. */
+const inStyle = {
+  width: 16,
+  height: 16,
+  left: -8,
+  top: 12,
+  opacity: 0,
+  border: 0,
+  transform: "none",
+};
+
+/** Estado do anel → traço (quadro MaestroCardsD). */
+const RING_STROKE: Record<RingState, { stroke: string; dash?: string }> = {
+  idle: { stroke: "color-mix(in srgb, var(--tyba-text) 10%, transparent)" },
+  working: { stroke: "color-mix(in srgb, var(--tyba-text) 8%, transparent)" },
+  live: { stroke: "var(--tyba-green)" },
+  done: { stroke: "var(--tyba-green)" },
+  waiting: { stroke: "color-mix(in srgb, var(--tyba-text) 18%, transparent)", dash: "3 3" },
+  owner: { stroke: "var(--tyba-text-inverse)", dash: "4 3" },
+  failed: { stroke: "var(--tyba-red)" },
+};
+
 /**
- * Moldura comum dos nós: cabeçalho (marca, nome, papel), portas tipadas e o
- * corpo. Portas de saída: uma por tipo que o nó produz. Portas de entrada:
- * uma linha por ligação que chega, mais a entrada livre onde nasce a próxima.
+ * O anel da marca em volta do ícone do nó: gira nas cores da marca enquanto
+ * trabalha, tracejado esperando, vermelho se falhou, verde cheio no ar.
+ */
+export function NodeRing({
+  state,
+  tone,
+  children,
+}: {
+  state: RingState;
+  /** Classe de cor do ícone (o `currentColor` do miolo). */
+  tone: string;
+  children: ReactNode;
+}) {
+  const ring = RING_STROKE[state];
+  const owner = state === "owner";
+  return (
+    <span
+      className={`relative flex size-[30px] shrink-0 items-center justify-center ${
+        owner ? "text-tyba-amber" : tone
+      }`}
+    >
+      <svg width="30" height="30" viewBox="0 0 30 30" aria-hidden className="absolute inset-0">
+        <circle
+          cx="15"
+          cy="15"
+          r="12"
+          style={{
+            fill: owner
+              ? "var(--tyba-text-inverse)"
+              : "color-mix(in srgb, currentColor 12%, var(--tyba-sunken))",
+          }}
+          stroke={ring.stroke}
+          strokeWidth="2.5"
+          strokeDasharray={ring.dash}
+        />
+      </svg>
+      {state === "working" && (
+        <svg
+          width="30"
+          height="30"
+          viewBox="0 0 30 30"
+          aria-hidden
+          className="absolute inset-0 animate-[spin_1.6s_linear_infinite] motion-reduce:animate-none"
+        >
+          <path
+            d="M15 3 A12 12 0 0 1 27 15"
+            fill="none"
+            stroke="var(--tyba-green)"
+            strokeWidth="2.5"
+            strokeLinecap="round"
+          />
+          <path
+            d="M27 15 A12 12 0 0 1 19 26.3"
+            fill="none"
+            stroke="var(--tyba-cyan)"
+            strokeWidth="2.5"
+            strokeLinecap="round"
+          />
+        </svg>
+      )}
+      <span className="relative flex">{children}</span>
+    </span>
+  );
+}
+
+/** O tempo do nó (só ele lê o relógio). */
+function Elapsed({ nodeRun, className }: { nodeRun: NodeRun; className?: string }) {
+  const now = useClock();
+  const elapsed = nodeElapsed(nodeRun, now);
+  return elapsed === null ? null : <span className={className}>{formatDuration(elapsed)}</span>;
+}
+
+/**
+ * O estado na cápsula: rodando, só o tempo (o anel já diz que trabalha);
+ * nos outros estados, a palavra (aguardando contexto de X, falhou, pronto).
+ */
+function CapsuleStatus({ nodeId, nodeRun }: { nodeId: string; nodeRun: NodeRun }) {
+  const { t } = useTranslation();
+  const { graph, run } = useMaestro();
+  if (nodeRun.status === "running" && !nodeRun.orchestrating) {
+    // No ar, quem fala é a porta (a ação do nó) e o anel verde.
+    if (nodeRun.url) return null;
+    return <Elapsed nodeRun={nodeRun} className="shrink-0 text-[11.5px] text-tyba-green" />;
+  }
+  const label = run ? nodeStatusLabel(graph, run, nodeId) : null;
+  if (!label) return null;
+  return (
+    <span
+      className={`min-w-0 shrink truncate text-[11.5px] ${STATUS_TONE[nodeRun.status].text}`}
+      title={nodeRun.reason ?? undefined}
+    >
+      {t(label.key, {
+        ...label.params,
+        ...(label.params?.kind ? { kind: t(`maestroEdge_${label.params.kind}`) } : {}),
+      })}
+    </span>
+  );
+}
+
+/** Uma linha da grade de detalhes do ⋯. */
+export interface NodeDetail {
+  label: string;
+  value: ReactNode;
+}
+
+const capsuleBtn = "nodrag shrink-0 rounded-full px-3 py-[3px] text-[11.5px] leading-[18px]";
+
+/**
+ * Pedido do agente na cápsula âmbar: Permitir/Negar ali mesmo. Vermelho pede
+ * dois cliques para permitir (a regra de `decideApproval`, a mesma do toast e
+ * do painel da sessão); negar é sempre direto.
+ */
+function ApprovalButtons({ request }: { request: ApprovalRequest }) {
+  const { t } = useTranslation();
+  const { answerApproval } = useCanvasActions();
+  const [armed, setArmed] = useState<number | null>(null);
+  const decide = (decision: "approved" | "denied") => {
+    const effect = decideApproval({ request, decision, confirmingId: armed });
+    if (effect.type === "armRedConfirm") setArmed(request.id);
+    else if (effect.type === "resolve") answerApproval(effect.requestId, effect.decision);
+  };
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => decide("approved")}
+        className={`${capsuleBtn} bg-tyba-text-inverse text-tyba-amber`}
+      >
+        {armed === request.id ? t("maestroApproveConfirm") : t("maestroApprove")}
+      </button>
+      <button
+        type="button"
+        onClick={() => decide("denied")}
+        className={`${capsuleBtn} bg-[color-mix(in_srgb,var(--tyba-text-inverse)_18%,transparent)] text-tyba-text-inverse`}
+      >
+        {t("maestroDeny")}
+      </button>
+    </>
+  );
+}
+
+/**
+ * Moldura comum dos nós (quadro MaestroCardsD, "ilha"): a cápsula do
+ * cabeçalho flutua sobre a janela sem moldura. Na cápsula, o anel da marca
+ * com o estado, o nome, o estado curto, a ação do nó e o ⋯ (a grade de
+ * detalhes). Cápsula inteira âmbar quando o agente pede permissão, com
+ * Permitir/Negar nela. Uma porta de saída na borda direita, na cor do que o
+ * nó produz; o nó inteiro é alvo — ao arrastar uma ligação, o nó que aceita
+ * acende e diz o tipo que ela vai ter.
  */
 export function NodeFrame({
   id,
   node,
   selected,
   mark,
-  markClass,
-  label,
+  markTone,
   extra,
   status,
+  meta,
+  details = [],
+  paper = false,
   children,
 }: {
   id: string;
   node: MaestroNode;
   selected: boolean;
   mark: ReactNode;
-  markClass: string;
-  label: string;
-  /** Ação do nó no cabeçalho (o ▶ da integração manual). */
+  /** Cor do ícone (classe `text-*`). */
+  markTone: string;
+  /** Ação do nó na cápsula (▶ Rodar, a porta no ar). */
   extra?: ReactNode;
-  /** Toma o lugar do estado do nó no cabeçalho (subagentes trabalhando). */
+  /** Toma o lugar do estado do nó na cápsula (subagentes trabalhando). */
   status?: ReactNode;
+  /** Rodapé discreto: pasta, porta, comando. */
+  meta?: ReactNode;
+  /** Grade do ⋯, além do estado e do tempo. */
+  details?: NodeDetail[];
+  /** Nota: tom de papel. */
+  paper?: boolean;
   children: ReactNode;
 }) {
   const { t } = useTranslation();
-  const { integrations, updateNode, run, createdIds, createdBy } = useMaestro();
+  const {
+    integrations,
+    updateNode,
+    setFocusNode,
+    keepCreated,
+    graph,
+    run,
+    live,
+    createdIds,
+    createdBy,
+    approvals,
+  } = useMaestro();
   const nodeRun = run?.nodes[id];
-  // Criado pelo orquestrador no run à vista: tracejado violeta e "criado pelo
-  // Orquestrador". Enquanto efêmero, também sem editar nem apagar; mantido no
-  // grafo, edita como qualquer nó.
-  const created = createdBy.has(id);
+  // Criado por outro agente no run à vista: contorno tracejado violeta e
+  // "criado pelo X". Enquanto efêmero, sem editar nem apagar, e "Manter".
+  const creator = createdBy.get(id);
+  const created = creator !== undefined;
   const locked = createdIds.has(id);
   const orchestrates = !created && node.kind.type === "agent" && node.kind.orchestrate === true;
+  const session = nodeSession(node.kind, run, id, live);
+  const request = approvals.get(id) ?? null;
+  const ring = ringState(nodeRun, request !== null);
+  const failed = ring === "failed";
+  const [open, setOpen] = useState(false);
   const { deleteElements } = useReactFlow();
   const updateInternals = useUpdateNodeInternals();
 
   const outputs = produces(node.kind, integrations);
-  const takesInput = accepts(node.kind, integrations).length > 0;
-  const incoming = useNodeConnections({ handleType: "target" }).flatMap((c) => {
-    const kind = kindOfOutHandle(c.sourceHandle);
-    return kind && c.edgeId ? [{ edgeId: c.edgeId, kind }] : [];
-  });
-  const inputRows = incoming.length + (takesInput ? 1 : 0);
-  const rows = Math.max(outputs.length, inputRows);
+  const takesInput = !locked && accepts(node.kind, integrations).length > 0;
 
-  // Porta nova (ligação criada, tipo de saída trocado) só existe para o
-  // xyflow depois de medida de novo.
-  // `orchestrates` entra porque ligar o toggle cria a porta do orquestrador sem
-  // mudar o tamanho do nó: sem medir de novo, o xyflow não acha a porta e
-  // descarta a ligação tracejada até os criados.
-  const handleKey = `${incoming.map((i) => i.edgeId).join(",")}|${outputs.join(",")}|${takesInput}|${orchestrates}`;
+  // Arrastando uma ligação: este nó aceita? Então acende com o tipo que ela
+  // vai ter (o mesmo cálculo do soltar).
+  const from = useConnection((c) => (c.inProgress ? c.fromNode.id : null));
+  const dropKind = useMemo(() => {
+    if (!from || from === id || !takesInput || createdIds.has(from)) return null;
+    const pick = pickConnection(graph.nodes, graph.edges, integrations, from, id);
+    return "kind" in pick ? pick.kind : null;
+  }, [from, id, takesInput, createdIds, graph, integrations]);
+
+  // Porta nova (o nó passou a produzir/aceitar, o toggle do orquestrador)
+  // só existe para o xyflow depois de medida de novo.
+  const handleKey = `${outputs[0] ?? ""}|${takesInput}|${orchestrates}`;
   useEffect(() => {
     updateInternals(id);
   }, [id, handleKey, updateInternals]);
 
-  return (
-    <div
-      className={`group flex h-full w-full flex-col rounded-[10px] border bg-tyba-surface font-mono text-tyba-text ${
+  const creatorTitle = creator ? graph.nodes.find((n) => n.id === creator)?.title : undefined;
+  const failure =
+    nodeRun?.status === "failed"
+      ? [
+          nodeRun.exitCode !== null ? t("maestroExitCode", { code: nodeRun.exitCode }) : "",
+          nodeRun.reason ?? "",
+        ]
+          .filter(Boolean)
+          .join(" · ")
+      : "";
+
+  const capsule = request
+    ? "border-tyba-amber bg-tyba-amber text-tyba-text-inverse"
+    : `${
         created
-          ? "border-dashed border-tyba-violet/70 shadow-[var(--tyba-shadow-md)]"
-          : selected
-            ? "border-tyba-violet shadow-[0_0_0_1px_var(--tyba-violet),0_0_0_5px_color-mix(in_srgb,var(--tyba-violet)_18%,transparent)]"
-            : orchestrates
-              ? "border-tyba-violet shadow-[var(--tyba-shadow-md)]"
-              : "border-tyba-border-strong shadow-[var(--tyba-shadow-md)]"
-      }`}
-    >
+          ? "border-dashed border-tyba-violet/80"
+          : failed
+            ? "border-tyba-red/60"
+            : "border-[color-mix(in_srgb,var(--tyba-text)_10%,transparent)]"
+      } ${
+        paper
+          ? "bg-[color-mix(in_srgb,var(--tyba-violet)_7%,var(--tyba-surface))]"
+          : "bg-[color-mix(in_srgb,var(--tyba-text)_5%,var(--tyba-surface))]"
+      }`;
+  const win = dropKind
+    ? "border-tyba-violet shadow-[0_0_0_4px_color-mix(in_srgb,var(--tyba-violet)_22%,transparent)]"
+    : selected
+      ? "border-tyba-violet shadow-[0_0_0_1px_var(--tyba-violet)]"
+      : request
+        ? "border-tyba-amber/40"
+        : created
+          ? "border-dashed border-tyba-violet/50"
+          : failed
+            ? "border-tyba-red/35"
+            : "border-tyba-border";
+
+  return (
+    <div className="group relative flex h-full w-full flex-col pt-5 font-mono text-tyba-text">
       <NodeResizer
         isVisible={selected}
         minWidth={260}
@@ -267,101 +508,164 @@ export function NodeFrame({
           background: "var(--tyba-bg)",
         }}
       />
-      <div className="flex h-[46px] shrink-0 items-center gap-2.5 border-b border-tyba-border px-3.5">
-        <span
-          className={`flex size-6 shrink-0 items-center justify-center rounded-[6px] ${markClass}`}
-        >
-          {mark}
-        </span>
-        <input
-          aria-label={t("maestroNodeTitle")}
-          spellCheck={false}
-          autoCorrect="off"
-          autoCapitalize="off"
-          value={node.title}
-          readOnly={locked}
-          onChange={(e) => {
-            const title = e.target.value;
-            updateNode(id, (n) => ({ ...n, title }));
-          }}
-          className="nodrag min-w-0 flex-1 bg-transparent text-[14.5px] font-medium text-tyba-text outline-none"
+      {/* A entrada existe sempre: as ligações dos criados (url, a tracejada
+          do orquestrador) chegam nela mesmo onde o dono não liga nada. */}
+      <Handle
+        type="target"
+        id={NEW_IN_HANDLE}
+        position={Position.Left}
+        isConnectable={takesInput}
+        isConnectableStart={false}
+        style={inStyle}
+      />
+      {outputs.length > 0 && (
+        <Handle
+          type="source"
+          id={OUT_HANDLE}
+          position={Position.Right}
+          isConnectable={!locked}
+          title={t("maestroOutPort", {
+            kinds: outputs.map((k) => t(`maestroEdge_${k}`)).join(", "),
+          })}
+          style={portStyle(EDGE_COLOR[outputs[0]])}
         />
-        <span className="min-w-0 shrink truncate text-[11.5px] text-tyba-text-faint">
-          {label}
-        </span>
-        {status ?? (nodeRun && <NodeStatusBadge nodeId={id} nodeRun={nodeRun} />)}
-        {extra}
-        {!locked && (
-          <button
-            type="button"
-            aria-label={t("maestroDeleteNode")}
-            title={t("maestroDeleteNode")}
-            onClick={() => void deleteElements({ nodes: [{ id }] })}
-            className="nodrag shrink-0 rounded-[4px] p-1 text-tyba-text-faint opacity-0 transition-opacity hover:text-tyba-red focus-visible:opacity-100 group-hover:opacity-100"
-          >
-            <Trash size={13} />
-          </button>
+      )}
+      <div
+        className={`absolute top-0 right-3.5 left-3.5 z-[1] flex h-10 items-center gap-2.5 rounded-full border pr-2.5 pl-1.5 shadow-[var(--tyba-shadow-md)] ${capsule}`}
+        title={request ? request.command : undefined}
+      >
+        <NodeRing state={ring} tone={markTone}>
+          {mark}
+        </NodeRing>
+        {request ? (
+          <span className="min-w-0 flex-1 truncate font-sans text-[14px] font-semibold">
+            {t("maestroNeedsYou", { title: node.title })}
+          </span>
+        ) : (
+          <input
+            aria-label={t("maestroNodeTitle")}
+            spellCheck={false}
+            autoCorrect="off"
+            autoCapitalize="off"
+            value={node.title}
+            readOnly={locked}
+            onChange={(e) => {
+              const title = e.target.value;
+              updateNode(id, (n) => ({ ...n, title }));
+            }}
+            className="nodrag min-w-0 flex-1 truncate bg-transparent font-sans text-[14px] font-semibold text-tyba-text outline-none"
+          />
+        )}
+        {request ? (
+          <ApprovalButtons request={request} />
+        ) : (
+          <>
+            {status ?? (nodeRun && <CapsuleStatus nodeId={id} nodeRun={nodeRun} />)}
+            {extra}
+            {locked && (
+              <button
+                type="button"
+                title={t("maestroKeepHint")}
+                onClick={keepCreated}
+                className="nodrag shrink-0 text-[11.5px] text-tyba-violet hover:underline"
+              >
+                {t("maestroKeep")}
+              </button>
+            )}
+            <button
+              type="button"
+              aria-label={t("maestroNodeDetails")}
+              aria-pressed={open}
+              title={t("maestroNodeDetails")}
+              onClick={() => setOpen((v) => !v)}
+              className={`nodrag flex shrink-0 items-center rounded-full px-1.5 py-0.5 ${
+                open
+                  ? "bg-tyba-text/[.08] text-tyba-text"
+                  : "text-tyba-text-faint hover:text-tyba-text"
+              }`}
+            >
+              <DotsThree size={16} weight="bold" />
+            </button>
+          </>
         )}
       </div>
-      {rows > 0 && (
-        <div className="shrink-0 border-b border-tyba-border py-1.5">
-          {Array.from({ length: rows }, (_, i) => {
-            const input = incoming[i];
-            const isNewInput = !input && takesInput && i === incoming.length;
-            const output = outputs[i];
-            return (
-              <div
-                key={i}
-                className="relative flex h-6 items-center justify-between gap-2 px-3.5 text-[11px] text-tyba-text-faint"
-              >
-                <span className="truncate">
-                  {input && (
-                    <>
-                      <Handle
-                        type="target"
-                        id={inHandle(input.edgeId)}
-                        position={Position.Left}
-                        isConnectable={false}
-                        style={handleStyle(EDGE_COLOR[input.kind], false)}
-                      />
-                      <b className="font-medium text-tyba-text-muted">{t("maestroInput")}:</b>{" "}
-                      {t(`maestroEdge_${input.kind}`)}
-                    </>
-                  )}
-                  {isNewInput && (
-                    <>
-                      <Handle
-                        type="target"
-                        id={NEW_IN_HANDLE}
-                        position={Position.Left}
-                        style={handleStyle("var(--tyba-border-strong)", false)}
-                      />
-                      <span className="text-tyba-text-ghost">{t("maestroInput")}</span>
-                    </>
-                  )}
-                </span>
-                {output && (
-                  <span className="truncate">
-                    <b className="font-medium text-tyba-text-muted">{t("maestroOutput")}:</b>{" "}
-                    {t(`maestroEdge_${output}`)}
-                    <Handle
-                      type="source"
-                      id={outHandle(output)}
-                      position={Position.Right}
-                      style={handleStyle(EDGE_COLOR[output], true)}
-                    />
-                  </span>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      )}
-      <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-b-[9px]">
+      <div
+        className={`relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-[16px] border pt-6 ${
+          paper
+            ? "bg-[color-mix(in_srgb,var(--tyba-violet)_4%,var(--tyba-surface))]"
+            : "bg-tyba-sunken"
+        } ${win}`}
+      >
+        {request && (
+          <div className="shrink-0 truncate px-3.5 pb-1.5 text-[11.5px] text-tyba-text">
+            {request.command}
+          </div>
+        )}
         {children}
-        {created && (
-          <div className="shrink-0 border-t border-tyba-border px-3.5 py-1.5 text-[11.5px] text-tyba-violet">
-            {t("maestroCreatedBy")}
+        {(failure || created || meta) && (
+          <div
+            className={`shrink-0 truncate px-3.5 pt-1 pb-2 text-[11px] ${
+              failure ? "text-tyba-red" : created ? "text-tyba-violet" : "text-tyba-text-faint"
+            }`}
+          >
+            {failure ||
+              (created
+                ? t("maestroCreatedByNode", { node: creatorTitle ?? t("maestroAnotherAgent") })
+                : meta)}
+          </div>
+        )}
+        {open && (
+          <div className="nodrag nowheel absolute inset-0 overflow-y-auto bg-tyba-sunken px-4 pt-7 pb-3.5 text-[11px]">
+            <div className="grid grid-cols-[auto_1fr_auto_1fr] gap-x-3 gap-y-1.5">
+              {[
+                ...details,
+                ...(nodeRun
+                  ? [
+                      {
+                        label: t("maestroDetailState"),
+                        value: t(`maestroStatus_${nodeRun.status}`),
+                      },
+                      ...(nodeRun.startedAt !== null
+                        ? [{ label: t("maestroDetailTime"), value: <Elapsed nodeRun={nodeRun} /> }]
+                        : []),
+                    ]
+                  : []),
+              ].map((d) => (
+                <Fragment key={d.label}>
+                  <span className="text-tyba-text-faint">{d.label}</span>
+                  <span className="min-w-0 truncate text-tyba-text">{d.value || "—"}</span>
+                </Fragment>
+              ))}
+            </div>
+            <div className="flex gap-2 pt-3">
+              {session && (
+                <button
+                  type="button"
+                  onClick={() => setFocusNode(id)}
+                  className="inline-flex items-center gap-1.5 rounded-full bg-tyba-text/[.08] px-3 py-[3px] text-[11.5px] text-tyba-text hover:bg-tyba-text/[.12]"
+                >
+                  <ArrowsOut size={12} />
+                  {t("maestroOpen")}
+                </button>
+              )}
+              {!locked && (
+                <button
+                  type="button"
+                  onClick={() => void deleteElements({ nodes: [{ id }] })}
+                  className="inline-flex items-center gap-1.5 rounded-full bg-tyba-text/[.08] px-3 py-[3px] text-[11.5px] text-tyba-text hover:text-tyba-red"
+                >
+                  <Trash size={12} />
+                  {t("maestroDeleteNode")}
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+        {dropKind && (
+          <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-[color-mix(in_srgb,var(--tyba-violet)_10%,transparent)]">
+            <span className="rounded-full border border-tyba-violet/60 bg-tyba-surface px-3 py-1 text-[12px] text-tyba-text shadow-[var(--tyba-shadow-md)]">
+              {t("maestroDropHere", { kind: t(`maestroEdge_${dropKind}`) })}
+            </span>
           </div>
         )}
       </div>
@@ -375,25 +679,6 @@ export const termClass =
 
 export const fieldClass =
   "nodrag h-6 min-w-0 rounded-[4px] border border-tyba-border bg-tyba-text/[.02] px-1.5 font-mono text-[11px] text-tyba-text outline-none focus:border-tyba-border-strong";
-
-/**
- * O que fica da barra de configuração enquanto o nó roda (nos-9, quadro:
- * "tarefa: subir ambiente · ~/pasta"): uma linha só, o resto é terminal.
- */
-export function RunningLine({ text, kind }: { text: string; kind: MaestroNode["kind"] }) {
-  const { graphDir } = useCanvasActions();
-  const dir = nodeDir(kind, graphDir);
-  const parts = [text, dir ? shortDir(dir) : ""].filter(Boolean);
-  if (parts.length === 0) return null;
-  return (
-    <div
-      title={parts.join(" · ")}
-      className="shrink-0 truncate border-b border-tyba-border px-3.5 py-1.5 text-[11.5px] text-tyba-text-faint"
-    >
-      {parts.join(" · ")}
-    </div>
-  );
-}
 
 /**
  * A pasta onde o nó roda, encurtada. Clicar abre o seletor de pasta; a

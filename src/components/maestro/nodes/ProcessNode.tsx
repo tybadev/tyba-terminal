@@ -3,25 +3,25 @@ import { TerminalWindow } from "@phosphor-icons/react";
 import type { NodeProps } from "@xyflow/react";
 
 import { Select } from "@/components/ui/select";
-import { OUTPUT_KINDS, nodeSession, urlPort, type NodeKind, type OutputKind } from "@/lib/maestro";
-import { firstLine } from "@/lib/nodeSummary";
 import {
-  NodeDir,
-  NodeFrame,
-  RunningLine,
-  fieldClass,
-  termClass,
-  useMaestro,
-  type MaestroFlowNode,
-} from "./NodeFrame";
-import { FocusButton, NodeTerminal } from "./NodeTerminal";
+  OUTPUT_KINDS,
+  nodeDir,
+  nodeSession,
+  shortDir,
+  urlPort,
+  type NodeKind,
+  type OutputKind,
+} from "@/lib/maestro";
+import { firstLine } from "@/lib/nodeSummary";
+import { NodeDir, NodeFrame, fieldClass, termClass, useMaestro, type MaestroFlowNode } from "./NodeFrame";
+import { NodeTerminal } from "./NodeTerminal";
 
 type ProcessKind = Extract<NodeKind, { type: "process" }>;
 
 /** Nó de processo: um comando na pasta do nó e o tipo da saída. */
 export function ProcessNode({ id, data, selected }: NodeProps<MaestroFlowNode>) {
   const { t } = useTranslation();
-  const { updateNode, run, live, openInBrowser } = useMaestro();
+  const { updateNode, run, live, openInBrowser, graphDir } = useMaestro();
   const node = data.node;
   const kind = node.kind as ProcessKind;
   const session = nodeSession(kind, run, id, live);
@@ -30,21 +30,38 @@ export function ProcessNode({ id, data, selected }: NodeProps<MaestroFlowNode>) 
   const port = urlPort(url);
   const set = (patch: Partial<ProcessKind>) =>
     updateNode(id, (n) => ({ ...n, kind: { ...(n.kind as ProcessKind), ...patch } }));
+  const dir = nodeDir(kind, graphDir);
+  const command = firstLine(kind.command);
 
   return (
     <NodeFrame
       id={id}
       node={node}
       selected={selected}
-      mark={<TerminalWindow size={14} weight="bold" />}
-      markClass="bg-tyba-raised text-tyba-text-muted"
-      label={t("maestroKindProcess").toLowerCase()}
-      extra={session ? <FocusButton nodeId={id} /> : undefined}
+      mark={<TerminalWindow size={13} weight="bold" />}
+      markTone="text-tyba-text-muted"
+      extra={
+        url && port !== null ? (
+          <button
+            type="button"
+            title={t("maestroOpenInBrowser")}
+            onClick={() => openInBrowser(id, url)}
+            className="nodrag shrink-0 rounded-full bg-tyba-cyan/[.12] px-2.5 text-[11.5px] leading-[20px] text-tyba-cyan hover:bg-tyba-cyan/[.2]"
+          >
+            :{port}
+          </button>
+        ) : undefined
+      }
+      meta={session ? [command, dir ? shortDir(dir) : ""].filter(Boolean).join(" · ") : undefined}
+      details={[
+        { label: t("maestroCommand"), value: command },
+        { label: t("maestroOutput"), value: t(`maestroEdge_${kind.output}`) },
+        { label: t("maestroDetailDir"), value: dir ? shortDir(dir) : "" },
+        { label: t("maestroDetailPort"), value: port !== null ? `:${port}` : "" },
+      ]}
     >
-      {session ? (
-        <RunningLine text={firstLine(kind.command) && `$ ${firstLine(kind.command)}`} kind={kind} />
-      ) : (
-        <div className="flex shrink-0 items-center gap-1.5 border-b border-tyba-border px-3.5 py-1.5 text-[11px] text-tyba-text-faint">
+      {!session && (
+        <div className="flex shrink-0 items-center gap-1.5 border-b border-tyba-border px-3.5 pb-1.5 text-[11px] text-tyba-text-faint">
           <span>{t("maestroOutput")}</span>
           <div className="nodrag">
             <Select
@@ -68,20 +85,6 @@ export function ProcessNode({ id, data, selected }: NodeProps<MaestroFlowNode>) 
           )}
           <span className="flex-1" />
           <NodeDir id={id} kind={kind} />
-        </div>
-      )}
-      {url && port !== null && (
-        <div className="flex shrink-0 items-center gap-2 border-b border-tyba-border px-3.5 py-1.5 text-[11px]">
-          <span className="rounded-[4px] border border-tyba-cyan/50 px-2 leading-[18px] text-tyba-cyan">
-            {t("maestroPort", { port })}
-          </span>
-          <button
-            type="button"
-            onClick={() => openInBrowser(id, url)}
-            className="nodrag rounded-[4px] border border-tyba-border-strong px-2 leading-[18px] text-tyba-text-muted hover:text-tyba-text"
-          >
-            {t("maestroOpenInBrowser")}
-          </button>
         </div>
       )}
       {session ? (

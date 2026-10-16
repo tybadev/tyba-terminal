@@ -1,11 +1,9 @@
 import { useEffect, useState } from "react";
-import { useTranslation } from "react-i18next";
-import { ArrowsOut } from "@phosphor-icons/react";
 
 import { TerminalView } from "@/components/TerminalView";
 import { sessionScreenLines } from "@/lib/ipc";
 import { nodeTerminalClass } from "@/lib/nodeTerminal";
-import { useCanvasActions, useMaestro } from "./NodeFrame";
+import { useMaestro } from "./NodeFrame";
 
 /** O terminal ocupa o nó inteiro: o wrapper é quem tem o tamanho. */
 export const FULL = { left: 0, top: 0, width: 100, height: 100 };
@@ -21,7 +19,7 @@ const PREVIEW_POLL_MS = 400;
  * e não muda com o zoom. Selecionar o nó (clicar nele) foca o xterm.
  *
  * Com o nó aberto no modo foco (`NodeFocus`) vai a prévia em texto: a sessão
- * só monta o xterm em UM lugar. O ⤢ do cabeçalho abre o foco.
+ * só monta o xterm em UM lugar. O "Abrir" do ⋯ do nó abre o foco.
  */
 export function NodeTerminal({
   nodeId,
@@ -48,23 +46,6 @@ export function NodeTerminal({
         />
       )}
     </div>
-  );
-}
-
-/** ⤢ do cabeçalho: abre o terminal do nó em tamanho real. */
-export function FocusButton({ nodeId }: { nodeId: string }) {
-  const { t } = useTranslation();
-  const { setFocusNode } = useCanvasActions();
-  return (
-    <button
-      type="button"
-      aria-label={t("maestroFocusOpen")}
-      title={t("maestroFocusOpen")}
-      onClick={() => setFocusNode(nodeId)}
-      className="nodrag shrink-0 rounded-[4px] p-1 text-tyba-text-faint hover:bg-tyba-raised hover:text-tyba-text"
-    >
-      <ArrowsOut size={13} />
-    </button>
   );
 }
 

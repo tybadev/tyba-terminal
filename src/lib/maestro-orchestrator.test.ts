@@ -158,6 +158,6 @@ describe("orquestrador: marca e ligação dos criados no canvas", () => {
     });
     expect(createdFlow(run("running", [browser]), [orchestrator]).edges).toEqual([]);
     const both = createdFlow(run("running", [created("orq-1"), browser]), [orchestrator]);
-    expect(both.edges.map((e) => [e.source, e.target, e.sourceHandle])).toEqual([["orq-1", "orq-2", "out:url"]]);
+    expect(both.edges.map((e) => [e.source, e.target, e.sourceHandle])).toEqual([["orq-1", "orq-2", "out"]]);
   });
 });

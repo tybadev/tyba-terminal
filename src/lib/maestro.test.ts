@@ -1,15 +1,17 @@
 import { describe, expect, test } from "bun:test";
 
 import {
+  NEW_IN_HANDLE,
+  OUT_HANDLE,
   accepts,
+  connectionKinds,
   connectionProblem,
+  edgeKindChoices,
   emptyGraph,
   fromFlow,
-  inHandle,
   integrationsById,
-  kindOfOutHandle,
   newNode,
-  outHandle,
+  pickConnection,
   produces,
   toFlow,
   type Graph,
@@ -139,7 +141,7 @@ describe("toFlow / fromFlow", () => {
     expect(fromFlow(graph, flow.nodes, flow.edges)).toEqual(graph);
   });
 
-  test("portas: saída por tipo, entrada por ligação", () => {
+  test("portas: uma saída e uma entrada por nó, o tipo vai na ligação", () => {
     const { nodes: fn, edges: fe } = toFlow(graph);
     expect(fn[0]).toMatchObject({
       id: "a",
@@ -151,8 +153,8 @@ describe("toFlow / fromFlow", () => {
     expect(fe[0]).toMatchObject({
       source: "a",
       target: "t",
-      sourceHandle: outHandle("diff"),
-      targetHandle: inHandle("e1"),
+      sourceHandle: OUT_HANDLE,
+      targetHandle: NEW_IN_HANDLE,
       data: { kind: "diff" },
     });
   });
@@ -167,19 +169,100 @@ describe("toFlow / fromFlow", () => {
     expect(back.nodes[0].size).toEqual({ w: 500, h: 420 });
   });
 
-  test("ligação sem data tira o tipo da porta de saída", () => {
+  test("grafo de antes da porta única abre com todas as ligações e os tipos", () => {
+    // Antes: uma porta por tipo (`out:diff`, `in:<id>`). O core nunca guardou
+    // porta, só o tipo — a migração é o próprio `toFlow`.
+    const old: Graph = {
+      ...graph,
+      edges: [
+        { id: "e1", from: "a", to: "t", kind: "diff" },
+        { id: "e2", from: "n", to: "a", kind: "file" },
+        { id: "e3", from: "a", to: "m", kind: "context" },
+        { id: "e4", from: "t", to: "m", kind: "url" },
+      ],
+    };
+    const flow = toFlow(old);
+    expect(flow.edges.map((e) => [e.id, e.sourceHandle, e.targetHandle, e.data.kind])).toEqual([
+      ["e1", OUT_HANDLE, NEW_IN_HANDLE, "diff"],
+      ["e2", OUT_HANDLE, NEW_IN_HANDLE, "file"],
+      ["e3", OUT_HANDLE, NEW_IN_HANDLE, "context"],
+      ["e4", OUT_HANDLE, NEW_IN_HANDLE, "url"],
+    ]);
+    expect(fromFlow(old, flow.nodes, flow.edges)).toEqual(old);
+  });
+
+  test("ligação sem tipo não vai para o core", () => {
     const back = fromFlow(graph, toFlow(graph).nodes, [
-      { id: "e9", source: "a", target: "i", sourceHandle: outHandle("diff") },
-      { id: "e10", source: "a", target: "i", sourceHandle: "lixo" },
+      { id: "e9", source: "a", target: "i", data: { kind: "diff" } },
+      { id: "e10", source: "a", target: "i", sourceHandle: "out:diff" },
     ]);
     expect(back.edges).toEqual([{ id: "e9", from: "a", to: "i", kind: "diff" }]);
   });
+});
 
-  test("kindOfOutHandle", () => {
-    expect(kindOfOutHandle("out:json")).toBe("json");
-    expect(kindOfOutHandle("out:nada")).toBeNull();
-    expect(kindOfOutHandle(inHandle("e1"))).toBeNull();
-    expect(kindOfOutHandle(null)).toBeNull();
+describe("tipo da ligação calculado (canvas-3)", () => {
+  const browser = newNode("b", "Página", { type: "browser", url: "" }, { x: 0, y: 0 });
+  const service = newNode(
+    "s",
+    "API",
+    { type: "service", source: { type: "port", sessionId: null, port: 3000 } },
+    { x: 0, y: 0 },
+  );
+  const reviewer = newNode(
+    "r",
+    "Revisor",
+    { type: "agent", runner: "codex", role: "", prompt: "", dir: "" },
+    { x: 0, y: 0 },
+  );
+  const logProc = newNode(
+    "p",
+    "API",
+    { type: "process", command: "bun dev", output: "log", file: null, dir: "" },
+    { x: 0, y: 0 },
+  );
+  const kinds = (from: MaestroNode, to: MaestroNode) =>
+    connectionKinds(from.kind, to.kind, integrations);
+
+  test("padrão por par vem primeiro", () => {
+    expect(kinds(note, claude)[0]).toBe("context");
+    expect(kinds(claude, reviewer)[0]).toBe("context");
+    expect(kinds(claude, tests)).toEqual(["diff", "context"]);
+    expect(kinds(claude, manualHook)[0]).toBe("diff");
+    expect(kinds(logProc, browser)).toEqual(["url"]);
+    expect(kinds(service, browser)).toEqual(["url"]);
+    expect(kinds(logProc, claude)[0]).toBe("log");
+  });
+
+  test("par sem tipo em comum não liga", () => {
+    expect(kinds(claude, note)).toEqual([]);
+    expect(kinds(claude, browser)).toEqual([]);
+    // Integração por gatilho de diff: só o diff do agente.
+    expect(kinds(claude, lint)).toEqual(["diff"]);
+    expect(kinds(note, lint)).toEqual([]);
+  });
+
+  test("pickConnection: tipo calculado ou o motivo", () => {
+    const all = [...nodes, browser, reviewer, logProc];
+    const pick = (from: string, to: string) =>
+      pickConnection(all, graph.edges, integrations, from, to);
+    expect(pick("a", "r")).toEqual({ kind: "context" });
+    expect(pick("p", "b")).toEqual({ kind: "url" });
+    expect(pick("a", "i")).toEqual({ kind: "diff" });
+    expect(pick("a", "n")).toEqual({ problem: "notAccepted" });
+    expect(pick("a", "a")).toEqual({ problem: "self" });
+    expect(pick("x", "a")).toEqual({ problem: "unknownNode" });
+    // Uma ligação por par: a → t já existe (diff); troca-se pela etiqueta.
+    expect(pick("a", "t")).toEqual({ problem: "duplicate" });
+    // t → a fecharia a → t → a.
+    expect(pick("t", "a")).toEqual({ problem: "cycle" });
+  });
+
+  test("edgeKindChoices: troca só entre os compatíveis do par", () => {
+    expect(edgeKindChoices(nodes, graph.edges, integrations, "e1")).toEqual(["diff", "context"]);
+    expect(edgeKindChoices(nodes, graph.edges, integrations, "e2")).toEqual(["context", "file"]);
+    const twin = [...graph.edges, { id: "e5", from: "a", to: "t", kind: "context" as const }];
+    expect(edgeKindChoices(nodes, twin, integrations, "e1")).toEqual(["diff"]);
+    expect(edgeKindChoices(nodes, graph.edges, integrations, "sumiu")).toEqual([]);
   });
 });
 

@@ -3,7 +3,7 @@ import { NotePencil } from "@phosphor-icons/react";
 import type { NodeProps } from "@xyflow/react";
 
 import type { NodeKind } from "@/lib/maestro";
-import { NodeFrame, termClass, useCanvasActions, type MaestroFlowNode } from "./NodeFrame";
+import { NodeFrame, useCanvasActions, type MaestroFlowNode } from "./NodeFrame";
 
 /** Nota em Markdown: vira arquivo para quem estiver ligado nela. */
 export function NoteNode({ id, data, selected }: NodeProps<MaestroFlowNode>) {
@@ -17,9 +17,13 @@ export function NoteNode({ id, data, selected }: NodeProps<MaestroFlowNode>) {
       id={id}
       node={node}
       selected={selected}
-      mark={<NotePencil size={14} weight="bold" />}
-      markClass="bg-tyba-violet-tint text-tyba-violet"
-      label={t("maestroKindNote").toLowerCase()}
+      mark={<NotePencil size={13} weight="bold" />}
+      markTone="text-tyba-violet"
+      paper
+      details={[
+        { label: t("maestroDetailKind"), value: t("maestroKindNote") },
+        { label: t("maestroOutput"), value: `${t("maestroEdge_context")}, ${t("maestroEdge_file")}` },
+      ]}
     >
       <textarea
         aria-label={t("maestroNoteBody")}
@@ -32,7 +36,7 @@ export function NoteNode({ id, data, selected }: NodeProps<MaestroFlowNode>) {
           const markdown = e.target.value;
           updateNode(id, (n) => ({ ...n, kind: { type: "note", markdown } }));
         }}
-        className={`${termClass} bg-transparent leading-[19px]`}
+        className="nodrag nowheel min-h-0 w-full flex-1 resize-none bg-transparent px-4 pt-1 pb-3 font-sans text-[13px] leading-[1.6] text-tyba-text outline-none placeholder:text-tyba-text-ghost"
       />
     </NodeFrame>
   );

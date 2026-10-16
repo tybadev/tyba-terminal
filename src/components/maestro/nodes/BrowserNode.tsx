@@ -80,11 +80,12 @@ export function BrowserNode({ id, data, selected }: NodeProps<MaestroFlowNode>) 
       id={id}
       node={node}
       selected={selected}
-      mark={<Browser size={14} weight="bold" />}
-      markClass="bg-tyba-cyan-tint text-tyba-cyan"
-      label={t("maestroKindBrowser").toLowerCase()}
+      mark={<Browser size={13} weight="bold" />}
+      markTone="text-tyba-cyan"
+      meta={t("maestroBrowserLocalOnly")}
+      details={[{ label: t("maestroDetailUrl"), value: current }]}
     >
-      <div className="flex shrink-0 items-center gap-1.5 border-b border-tyba-border px-3.5 py-1.5">
+      <div className="flex shrink-0 items-center gap-1.5 px-2.5 pb-1">
         <button
           type="button"
           aria-label={t("maestroBrowserBack")}
@@ -129,7 +130,7 @@ export function BrowserNode({ id, data, selected }: NodeProps<MaestroFlowNode>) 
           {t("maestroBrowserOpenOutside")}
         </button>
       </div>
-      <div className="nodrag nowheel nopan relative m-2.5 min-h-0 flex-1 overflow-hidden rounded-[6px] border border-tyba-border bg-tyba-sunken">
+      <div className="nodrag nowheel nopan relative mx-1.5 mb-0.5 min-h-0 flex-1 overflow-hidden rounded-[10px] border border-tyba-border bg-tyba-sunken">
         {ok ? (
           <iframe
             key={`${current}#${reload}`}
@@ -144,9 +145,6 @@ export function BrowserNode({ id, data, selected }: NodeProps<MaestroFlowNode>) 
             {current === "" ? t("maestroBrowserEmpty") : t("maestroBrowserRefused")}
           </p>
         )}
-      </div>
-      <div className="shrink-0 border-t border-tyba-border px-3.5 py-1.5 font-mono text-[11px] text-tyba-text-faint">
-        {t("maestroBrowserLocalOnly")}
       </div>
     </NodeFrame>
   );

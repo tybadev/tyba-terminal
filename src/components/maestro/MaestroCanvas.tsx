@@ -1,5 +1,7 @@
 import {
+  createContext,
   useCallback,
+  useContext,
   useEffect,
   useMemo,
   useRef,
@@ -8,7 +10,7 @@ import {
   type SetStateAction,
 } from "react";
 import { useTranslation } from "react-i18next";
-import { Plus, Warning } from "@phosphor-icons/react";
+import { CaretDown, Check, Plus, Trash, Warning } from "@phosphor-icons/react";
 import {
   Background,
   BackgroundVariant,
@@ -56,17 +58,18 @@ import {
 } from "@/components/ui/dropdown-menu";
 import {
   NEW_IN_HANDLE,
-  connectionProblem,
+  OUT_HANDLE,
   edgeDetail,
   edgeHasValue,
+  edgeKindChoices,
   createdFlow,
   ephemeralCreated,
-  inHandle,
-  kindOfOutHandle,
   newNode,
+  pickConnection,
   nodeSession,
   nodeUnderPointer,
   routeNodeChanges,
+  type EdgeKind,
   type FlowEdgeData,
   type Integration,
   type MaestroNode,
@@ -132,7 +135,25 @@ type CreatedView = Record<
   { position: { x: number; y: number }; width?: number; height?: number; selected?: boolean }
 >;
 
-/** Ligação com a etiqueta do tipo no meio (quadro: a "pílula"). */
+/** O que a etiqueta da ligação faz: trocar o tipo e remover (só ligação do grafo). */
+interface EdgeActions {
+  /** Tipos para os quais a ligação pode ir; vazio = não é do grafo (sem menu). */
+  choices: (edgeId: string) => EdgeKind[];
+  retype: (edgeId: string, kind: EdgeKind) => void;
+  remove: (edgeId: string) => void;
+}
+
+const EdgeActionsContext = createContext<EdgeActions>({
+  choices: () => [],
+  retype: () => {},
+  remove: () => {},
+});
+
+/**
+ * Ligação com a etiqueta do tipo no meio (quadro MaestroCanvasLiso:
+ * "contexto ▾"). A etiqueta é menu: troca o tipo entre os que o par aceita e
+ * remove a ligação — o tipo calculado ao ligar nunca fica preso.
+ */
 function MaestroEdgeView({
   id,
   source,
@@ -182,22 +203,12 @@ function MaestroEdgeView({
       {kind && (
         <EdgeLabelRenderer>
           <div
-            className={`nodrag nopan pointer-events-auto absolute flex flex-col items-start gap-0.5 rounded-[7px] border bg-tyba-surface px-2 py-1 font-mono whitespace-nowrap shadow-[var(--tyba-shadow-md)] ${
-              sourceRun?.status === "running" ? "border-tyba-cyan/60" : "border-tyba-border-strong"
-            }`}
+            className="nodrag nopan pointer-events-auto absolute flex flex-col items-start gap-0.5 font-mono whitespace-nowrap"
             style={{ transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)` }}
           >
-            <span className="flex items-center gap-1.5 text-[11px] font-medium text-tyba-text">
-              <i className="size-1.5 rounded-[2px]" style={{ background: color }} />
-              {t(`maestroEdge_${kind}`)}
-              {kind === "context" && (
-                <span className="rounded-[4px] border border-tyba-cyan/35 px-1 text-[10px] leading-[15px] font-normal text-tyba-cyan">
-                  {t("maestroRedacted")}
-                </span>
-              )}
-            </span>
+            <EdgeLabel id={id} kind={kind} color={color} />
             {detail && (
-              <span className="text-[10.5px] text-tyba-text-faint">
+              <span className="rounded-[4px] bg-tyba-bg/80 px-1 text-[10.5px] text-tyba-text-faint">
                 {t(detail.key, detail.params)}
               </span>
             )}
@@ -205,6 +216,70 @@ function MaestroEdgeView({
         </EdgeLabelRenderer>
       )}
     </>
+  );
+}
+
+/** "contexto ▾": o tipo da ligação e o menu para trocar ou remover. */
+function EdgeLabel({ id, kind, color }: { id: string; kind: EdgeKind; color: string }) {
+  const { t } = useTranslation();
+  const { choices, retype, remove } = useContext(EdgeActionsContext);
+  const options = choices(id);
+  const pill = (
+    <>
+      <i className="size-1.5 rounded-full" style={{ background: color }} />
+      {t(`maestroEdge_${kind}`)}
+      {kind === "context" && (
+        <span className="rounded-[4px] border border-tyba-cyan/35 px-1 text-[10px] leading-[14px] text-tyba-cyan">
+          {t("maestroRedacted")}
+        </span>
+      )}
+    </>
+  );
+  const pillClass =
+    "flex items-center gap-1.5 rounded-[4px] border bg-tyba-raised px-1.5 text-[11px] leading-[18px] text-tyba-text shadow-[var(--tyba-shadow-md)]";
+  const border = { borderColor: `color-mix(in srgb, ${color} 60%, transparent)` };
+  if (options.length === 0) {
+    return (
+      <span className={pillClass} style={border}>
+        {pill}
+      </span>
+    );
+  }
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          aria-label={t("maestroEdgeMenu", { kind: t(`maestroEdge_${kind}`) })}
+          className={`${pillClass} hover:bg-tyba-overlay`}
+          style={border}
+        >
+          {pill}
+          <CaretDown size={9} weight="bold" className="text-tyba-text-faint" />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="center" className="w-48">
+        <DropdownMenuLabel className="text-[11px] font-normal text-tyba-text-faint">
+          {t("maestroEdgeKind")}
+        </DropdownMenuLabel>
+        {options.map((k) => (
+          <DropdownMenuItem
+            key={k}
+            className="text-xs"
+            onSelect={() => k !== kind && retype(id, k)}
+          >
+            <i className="size-1.5 rounded-full" style={{ background: EDGE_COLOR[k] }} />
+            <span className="flex-1">{t(`maestroEdge_${k}`)}</span>
+            {k === kind && <Check size={12} />}
+          </DropdownMenuItem>
+        ))}
+        <DropdownMenuSeparator />
+        <DropdownMenuItem className="text-xs text-tyba-red" onSelect={() => remove(id)}>
+          <Trash size={12} />
+          {t("maestroEdgeRemove")}
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
@@ -419,47 +494,48 @@ export function MaestroCanvas({
     [nodes, edges],
   );
 
+  // Uma porta de saída por nó e o nó inteiro como alvo (canvas-3): o tipo da
+  // ligação sai do par (`pickConnection`), não de qual bolinha se agarrou.
   const isValidConnection = useCallback(
     (c: Connection | Edge) => {
-      const kind = kindOfOutHandle(c.sourceHandle);
-      if (!kind || c.targetHandle !== NEW_IN_HANDLE) return false;
-      return connectionProblem(model.nodes, model.edges, byId, c.source, c.target, kind) === null;
+      if (c.sourceHandle !== OUT_HANDLE || c.targetHandle !== NEW_IN_HANDLE) return false;
+      return "kind" in pickConnection(model.nodes, model.edges, byId, c.source, c.target);
     },
     [model, byId],
   );
 
-  const onConnect = useCallback(
-    (c: Connection) => {
-      const kind = kindOfOutHandle(c.sourceHandle);
-      if (!kind || !c.sourceHandle) return;
-      const id = crypto.randomUUID();
+  const link = useCallback(
+    (source: string, target: string, kind: EdgeKind) =>
       setEdges((es) => [
         ...es,
         {
-          id,
+          id: crypto.randomUUID(),
           type: "maestro",
-          source: c.source,
-          target: c.target,
-          sourceHandle: c.sourceHandle,
-          targetHandle: inHandle(id),
+          source,
+          target,
+          sourceHandle: OUT_HANDLE,
+          targetHandle: NEW_IN_HANDLE,
           data: { kind },
         },
-      ]);
-    },
+      ]),
     [setEdges],
   );
 
-  // Soltar a ligação em qualquer ponto do nó liga na entrada dele: acertar a
-  // bolinha de 14px era o único jeito. O xyflow só informa o nó de destino
-  // com o ponteiro a até `connectionRadius` de uma porta; no corpo do nó o
-  // `toNode` vem nulo, e o nó sai do que está sob o ponteiro. Ligação
-  // recusada diz por quê, em vez de sumir calada.
+  const onConnect = useCallback(
+    (c: Connection) => {
+      const pick = pickConnection(model.nodes, model.edges, byId, c.source, c.target);
+      if ("kind" in pick) link(c.source, c.target, pick.kind);
+    },
+    [model, byId, link],
+  );
+
+  // Soltar a ligação em qualquer ponto do nó liga nele: o xyflow só informa
+  // o nó de destino com o ponteiro a até `connectionRadius` da entrada; no
+  // corpo do nó o `toNode` vem nulo, e o nó sai do que está sob o ponteiro.
+  // Ligação recusada diz por quê, em vez de sumir calada.
   const onConnectEnd = useCallback(
     (event: MouseEvent | TouchEvent, state: FinalConnectionState) => {
-      if (state.isValid || !state.fromNode || !state.fromHandle) return;
-      if (state.fromHandle.type !== "source") return;
-      const kind = kindOfOutHandle(state.fromHandle.id);
-      if (!kind) return;
+      if (state.isValid || !state.fromNode || state.fromHandle?.id !== OUT_HANDLE) return;
       const point = "changedTouches" in event ? event.changedTouches[0] : event;
       const to =
         state.toNode?.id ??
@@ -467,26 +543,24 @@ export function MaestroCanvas({
       // Canvas vazio, ou nó que não é do grafo (criado pelo orquestrador,
       // subagente): não liga.
       if (!to || !model.nodes.some((n) => n.id === to)) return;
-      const problem = connectionProblem(
-        model.nodes,
-        model.edges,
-        byId,
-        state.fromNode.id,
-        to,
-        kind,
-      );
-      if (problem) {
-        if (problem !== "self") toastError(t(`maestroConnection_${problem}`));
+      const pick = pickConnection(model.nodes, model.edges, byId, state.fromNode.id, to);
+      if ("problem" in pick) {
+        if (pick.problem !== "self") toastError(t(`maestroConnection_${pick.problem}`));
         return;
       }
-      onConnect({
-        source: state.fromNode.id,
-        target: to,
-        sourceHandle: state.fromHandle.id ?? null,
-        targetHandle: NEW_IN_HANDLE,
-      });
+      link(state.fromNode.id, to, pick.kind);
     },
-    [model, byId, onConnect, t],
+    [model, byId, link, t],
+  );
+
+  const edgeActions = useMemo<EdgeActions>(
+    () => ({
+      choices: (edgeId) => edgeKindChoices(model.nodes, model.edges, byId, edgeId),
+      retype: (edgeId, kind) =>
+        setEdges((es) => es.map((e) => (e.id === edgeId ? { ...e, data: { kind } } : e))),
+      remove: (edgeId) => setEdges((es) => es.filter((e) => e.id !== edgeId)),
+    }),
+    [model, byId, setEdges],
   );
 
   const addNode = (title: string, kind: NodeKind) => {
@@ -517,161 +591,163 @@ export function MaestroCanvas({
 
   return (
     <div ref={wrapper} className="relative min-h-0 flex-1 bg-tyba-bg">
-      <ReactFlow<CanvasNode, Edge>
-        nodes={shownNodes}
-        edges={shownEdges}
-        nodeTypes={nodeTypes}
-        edgeTypes={edgeTypes}
-        onNodesChange={onNodesChange}
-        onEdgesChange={onEdgesChange}
-        onConnect={onConnect}
-        onConnectEnd={onConnectEnd}
-        isValidConnection={isValidConnection}
-        connectionRadius={36}
-        deleteKeyCode={["Backspace", "Delete"]}
-        minZoom={0.2}
-        maxZoom={2}
-        fitView
-        fitViewOptions={{ padding: 0.15, maxZoom: 1 }}
-        proOptions={{ hideAttribution: true }}
-        connectionLineStyle={{ stroke: "var(--tyba-violet)", strokeWidth: 1.6 }}
-        aria-label={t("maestroCanvas")}
-      >
-        <Background
-          variant={BackgroundVariant.Dots}
-          gap={24}
-          size={1.3}
-          color="var(--tyba-border-strong)"
-        />
-        {showMinimap && (
-          <MiniMap
-            pannable
-            zoomable
-            bgColor="var(--tyba-surface)"
-            maskColor="color-mix(in srgb, var(--tyba-bg) 70%, transparent)"
-            nodeColor="var(--tyba-border-strong)"
+      <EdgeActionsContext.Provider value={edgeActions}>
+        <ReactFlow<CanvasNode, Edge>
+          nodes={shownNodes}
+          edges={shownEdges}
+          nodeTypes={nodeTypes}
+          edgeTypes={edgeTypes}
+          onNodesChange={onNodesChange}
+          onEdgesChange={onEdgesChange}
+          onConnect={onConnect}
+          onConnectEnd={onConnectEnd}
+          isValidConnection={isValidConnection}
+          connectionRadius={36}
+          deleteKeyCode={["Backspace", "Delete"]}
+          minZoom={0.2}
+          maxZoom={2}
+          fitView
+          fitViewOptions={{ padding: 0.15, maxZoom: 1 }}
+          proOptions={{ hideAttribution: true }}
+          connectionLineStyle={{ stroke: "var(--tyba-violet)", strokeWidth: 1.6 }}
+          aria-label={t("maestroCanvas")}
+        >
+          <Background
+            variant={BackgroundVariant.Dots}
+            gap={24}
+            size={1.3}
+            color="var(--tyba-border-strong)"
           />
-        )}
-        <Panel position="top-left">
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <button
-                type="button"
-                aria-label={t("maestroAddNode")}
-                className="flex h-7 items-center gap-1.5 rounded-[6px] border border-tyba-border-strong bg-tyba-surface px-2.5 font-mono text-[12px] text-tyba-text-muted shadow-[var(--tyba-shadow-md)] hover:text-tyba-text"
-              >
-                <Plus size={13} weight="bold" />
-                {t("maestroNode")}
-              </button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="start" className="w-56">
-              <DropdownMenuItem
-                className="text-xs"
-                onSelect={() =>
-                  addNode("Claude", {
-                    type: "agent",
-                    runner: "claude",
-                    role: "",
-                    prompt: "",
-                    dir: newDir,
-                    orchestrate: false,
-                  })
-                }
-              >
-                Claude
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                className="text-xs"
-                onSelect={() =>
-                  addNode("Codex", {
-                    type: "agent",
-                    runner: "codex",
-                    role: "",
-                    prompt: "",
-                    dir: newDir,
-                    orchestrate: false,
-                  })
-                }
-              >
-                Codex
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                className="text-xs"
-                onSelect={() =>
-                  addNode(t("maestroKindProcess"), {
-                    type: "process",
-                    command: "",
-                    output: "log",
-                    file: null,
-                    dir: newDir,
-                  })
-                }
-              >
-                {t("maestroKindProcess")}
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                className="text-xs"
-                onSelect={() => addNode(t("maestroKindNote"), { type: "note", markdown: "" })}
-              >
-                {t("maestroKindNote")}
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                className="text-xs"
-                onSelect={() => addNode(t("maestroKindBrowser"), { type: "browser", url: "" })}
-              >
-                {t("maestroKindBrowser")}
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                className="text-xs"
-                onSelect={() =>
-                  addNode(t("maestroKindService"), {
-                    type: "service",
-                    source: { type: "container", containerId: "", name: "" },
-                  })
-                }
-              >
-                {t("maestroKindService")}
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuLabel className="text-[11px] font-normal text-tyba-text-faint">
-                {t("maestroIntegrations")}
-              </DropdownMenuLabel>
-              {integrations.length === 0 && (
-                <DropdownMenuItem disabled className="text-xs">
-                  {t("maestroNoIntegrations")}
-                </DropdownMenuItem>
-              )}
-              {integrations.map((i) => (
+          {showMinimap && (
+            <MiniMap
+              pannable
+              zoomable
+              bgColor="var(--tyba-surface)"
+              maskColor="color-mix(in srgb, var(--tyba-bg) 70%, transparent)"
+              nodeColor="var(--tyba-border-strong)"
+            />
+          )}
+          <Panel position="top-left">
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  type="button"
+                  aria-label={t("maestroAddNode")}
+                  className="flex h-7 items-center gap-1.5 rounded-[6px] border border-tyba-border-strong bg-tyba-surface px-2.5 font-mono text-[12px] text-tyba-text-muted shadow-[var(--tyba-shadow-md)] hover:text-tyba-text"
+                >
+                  <Plus size={13} weight="bold" />
+                  {t("maestroNode")}
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start" className="w-56">
                 <DropdownMenuItem
-                  key={i.id}
                   className="text-xs"
                   onSelect={() =>
-                    addNode(i.name, { type: "integration", integrationId: i.id, dir: newDir })
+                    addNode("Claude", {
+                      type: "agent",
+                      runner: "claude",
+                      role: "",
+                      prompt: "",
+                      dir: newDir,
+                      orchestrate: false,
+                    })
                   }
                 >
-                  {i.name}
+                  Claude
                 </DropdownMenuItem>
-              ))}
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </Panel>
-        {error && (
-          <Panel position="top-center">
-            <div
-              role="alert"
-              className="flex max-w-[560px] items-start gap-2 rounded-[6px] border border-tyba-red/50 bg-tyba-red-tint px-3 py-2 font-mono text-[12px] text-tyba-red"
-            >
-              <Warning size={14} className="mt-px shrink-0" />
-              <span>{error}</span>
-            </div>
+                <DropdownMenuItem
+                  className="text-xs"
+                  onSelect={() =>
+                    addNode("Codex", {
+                      type: "agent",
+                      runner: "codex",
+                      role: "",
+                      prompt: "",
+                      dir: newDir,
+                      orchestrate: false,
+                    })
+                  }
+                >
+                  Codex
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  className="text-xs"
+                  onSelect={() =>
+                    addNode(t("maestroKindProcess"), {
+                      type: "process",
+                      command: "",
+                      output: "log",
+                      file: null,
+                      dir: newDir,
+                    })
+                  }
+                >
+                  {t("maestroKindProcess")}
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  className="text-xs"
+                  onSelect={() => addNode(t("maestroKindNote"), { type: "note", markdown: "" })}
+                >
+                  {t("maestroKindNote")}
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  className="text-xs"
+                  onSelect={() => addNode(t("maestroKindBrowser"), { type: "browser", url: "" })}
+                >
+                  {t("maestroKindBrowser")}
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  className="text-xs"
+                  onSelect={() =>
+                    addNode(t("maestroKindService"), {
+                      type: "service",
+                      source: { type: "container", containerId: "", name: "" },
+                    })
+                  }
+                >
+                  {t("maestroKindService")}
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuLabel className="text-[11px] font-normal text-tyba-text-faint">
+                  {t("maestroIntegrations")}
+                </DropdownMenuLabel>
+                {integrations.length === 0 && (
+                  <DropdownMenuItem disabled className="text-xs">
+                    {t("maestroNoIntegrations")}
+                  </DropdownMenuItem>
+                )}
+                {integrations.map((i) => (
+                  <DropdownMenuItem
+                    key={i.id}
+                    className="text-xs"
+                    onSelect={() =>
+                      addNode(i.name, { type: "integration", integrationId: i.id, dir: newDir })
+                    }
+                  >
+                    {i.name}
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
           </Panel>
-        )}
-        {nodes.length === 0 && (
-          <Panel position="top-center" className="!top-1/3">
-            <p className="font-mono text-[12.5px] text-tyba-text-faint">{t("maestroEmpty")}</p>
-          </Panel>
-        )}
-      </ReactFlow>
+          {error && (
+            <Panel position="top-center">
+              <div
+                role="alert"
+                className="flex max-w-[560px] items-start gap-2 rounded-[6px] border border-tyba-red/50 bg-tyba-red-tint px-3 py-2 font-mono text-[12px] text-tyba-red"
+              >
+                <Warning size={14} className="mt-px shrink-0" />
+                <span>{error}</span>
+              </div>
+            </Panel>
+          )}
+          {nodes.length === 0 && (
+            <Panel position="top-center" className="!top-1/3">
+              <p className="font-mono text-[12.5px] text-tyba-text-faint">{t("maestroEmpty")}</p>
+            </Panel>
+          )}
+        </ReactFlow>
+      </EdgeActionsContext.Provider>
       {focused && <NodeFocus node={focused.node} sessionId={focused.session} />}
     </div>
   );

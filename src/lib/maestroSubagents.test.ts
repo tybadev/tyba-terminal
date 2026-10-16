@@ -2,10 +2,10 @@ import { describe, expect, test } from "bun:test";
 
 import type { SubagentRun } from "./ipc";
 import {
+  SUB_COLS,
   SUB_GAP,
   SUB_H,
   SUB_TOP,
-  SUB_W,
   formatSubagentTime,
   gridPosition,
   groupRounds,
@@ -75,16 +75,15 @@ test("roundTally conta rodando, prontos e parados", () => {
 
 describe("grade", () => {
   const parent = { position: { x: 30, y: 30 }, width: 600, height: 260 };
-  test("três colunas abaixo do agente", () => {
+  test("pílulas numa coluna abaixo do agente", () => {
     const top = 30 + 260 + SUB_TOP;
+    expect(SUB_COLS).toBe(1);
     expect(gridPosition(parent, 0)).toEqual({ x: 30, y: top });
-    expect(gridPosition(parent, 2)).toEqual({ x: 30 + 2 * (SUB_W + SUB_GAP), y: top });
-    expect(gridPosition(parent, 3)).toEqual({ x: 30, y: top + SUB_H + SUB_GAP });
+    expect(gridPosition(parent, 2)).toEqual({ x: 30, y: top + 2 * (SUB_H + SUB_GAP) });
   });
-  test("a linha da rodada anterior fica depois da última linha", () => {
+  test("a linha da rodada anterior fica depois da última pílula", () => {
     const top = 30 + 260 + SUB_TOP;
-    expect(roundsPosition(parent, 6).y).toBe(top + 2 * (SUB_H + SUB_GAP));
-    expect(roundsPosition(parent, 4).y).toBe(top + 2 * (SUB_H + SUB_GAP));
+    expect(roundsPosition(parent, 3).y).toBe(top + 3 * (SUB_H + SUB_GAP));
     expect(roundsPosition(parent, 0).y).toBe(top + SUB_H + SUB_GAP);
   });
 });

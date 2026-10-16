@@ -4,19 +4,18 @@ import { Handle, Position, type NodeProps } from "@xyflow/react";
 
 import { ClaudeIcon } from "@/components/icons/ClaudeIcon";
 import { OpenAIIcon } from "@/components/icons/OpenAIIcon";
-import { ORCHESTRATOR_HANDLE, nodeSession, type NodeKind, type Runner } from "@/lib/maestro";
+import {
+  ORCHESTRATOR_HANDLE,
+  nodeDir,
+  nodeSession,
+  shortDir,
+  type NodeKind,
+  type Runner,
+} from "@/lib/maestro";
 import { SUBAGENT_HANDLE, groupRounds, roundTally } from "@/lib/maestroSubagents";
 import { firstLine } from "@/lib/nodeSummary";
-import {
-  NodeDir,
-  NodeFrame,
-  RunningLine,
-  fieldClass,
-  termClass,
-  useMaestro,
-  type MaestroFlowNode,
-} from "./NodeFrame";
-import { FocusButton, NodeTerminal } from "./NodeTerminal";
+import { NodeDir, NodeFrame, fieldClass, termClass, useMaestro, type MaestroFlowNode } from "./NodeFrame";
+import { NodeTerminal } from "./NodeTerminal";
 
 type AgentKind = Extract<NodeKind, { type: "agent" }>;
 
@@ -25,7 +24,7 @@ const RUNNERS: Runner[] = ["claude", "codex"];
 /** Nó de agente: Claude (âmbar) ou Codex (ciano), papel, pasta e a tarefa. */
 export function AgentNode({ id, data, selected }: NodeProps<MaestroFlowNode>) {
   const { t } = useTranslation();
-  const { updateNode, run, live, subagents, createdBy } = useMaestro();
+  const { updateNode, run, live, subagents, createdBy, graphDir } = useMaestro();
   const node = data.node;
   const kind = node.kind as AgentKind;
   const session = nodeSession(kind, run, id, live);
@@ -38,27 +37,42 @@ export function AgentNode({ id, data, selected }: NodeProps<MaestroFlowNode>) {
   const created = createdBy.has(id);
   const orchestrates = !created && kind.orchestrate === true;
   const hidden = { opacity: 0, width: 1, height: 1, minWidth: 0, minHeight: 0, border: 0 };
+  const dir = nodeDir(kind, graphDir);
+  const runnerName = claude ? "Claude" : "Codex";
+  const subTally =
+    rounds && tally
+      ? [
+          tally.running > 0 && t("maestroSubTallyRunning", { count: tally.running }),
+          tally.done > 0 && t("maestroSubTallyDone", { count: tally.done }),
+          tally.stopped > 0 && t("maestroSubTallyStopped", { count: tally.stopped }),
+        ]
+          .filter(Boolean)
+          .join(", ")
+      : "";
+  const meta = [dir ? shortDir(dir) : "", subTally].filter(Boolean).join(" · ");
 
   return (
     <NodeFrame
       id={id}
       node={node}
       selected={selected}
-      mark={claude ? <ClaudeIcon size={14} /> : <OpenAIIcon size={14} />}
-      markClass={claude ? "bg-tyba-amber-tint text-tyba-amber" : "bg-tyba-cyan-tint text-tyba-cyan"}
-      label={kind.role || t("maestroKindAgent")}
-      extra={
-        orchestrates || session ? (
-          <>
-            {orchestrates && (
-              <span className="shrink-0 rounded-[4px] border border-tyba-violet/50 px-1.5 text-[11px] leading-[18px] text-tyba-violet">
-                {t("maestroOrchestrates")}
-              </span>
-            )}
-            {session && <FocusButton nodeId={id} />}
-          </>
-        ) : undefined
-      }
+      mark={claude ? <ClaudeIcon size={13} /> : <OpenAIIcon size={13} />}
+      markTone={claude ? "text-tyba-amber" : "text-tyba-cyan"}
+      meta={session ? meta : undefined}
+      details={[
+        { label: t("maestroDetailAgent"), value: runnerName },
+        { label: t("maestroRole"), value: kind.role },
+        { label: t("maestroDetailDir"), value: dir ? shortDir(dir) : "" },
+        ...(created
+          ? []
+          : [
+              {
+                label: t("maestroOrchestrate"),
+                value: orchestrates ? t("maestroYes") : t("maestroNo"),
+              },
+            ]),
+        { label: t("maestroDetailTask"), value: firstLine(kind.prompt) },
+      ]}
       status={
         rounds && tally && tally.running > 0 ? (
           <span className="flex shrink-0 items-center gap-1.5 text-[11.5px] whitespace-nowrap text-tyba-blue">
@@ -86,13 +100,8 @@ export function AgentNode({ id, data, selected }: NodeProps<MaestroFlowNode>) {
           style={hidden}
         />
       )}
-      {session ? (
-        <RunningLine
-          text={firstLine(kind.prompt) && t("nodeTaskLine", { task: firstLine(kind.prompt) })}
-          kind={kind}
-        />
-      ) : (
-        <div className="flex shrink-0 items-center gap-1.5 border-b border-tyba-border px-3.5 py-1.5">
+      {!session && (
+        <div className="flex shrink-0 items-center gap-1.5 border-b border-tyba-border px-3.5 pb-1.5">
           <div className="nodrag flex rounded-[5px] border border-tyba-border p-px" role="group">
             {RUNNERS.map((r) => (
               <button
@@ -149,19 +158,6 @@ export function AgentNode({ id, data, selected }: NodeProps<MaestroFlowNode>) {
           onChange={(e) => set({ prompt: e.target.value })}
           className={termClass}
         />
-      )}
-      {rounds && tally && (
-        <div className="shrink-0 truncate border-t border-tyba-border px-3.5 py-1.5 text-[11.5px] text-tyba-text-faint">
-          {t("maestroSubRound", { round: rounds.round, count: rounds.current.length })}
-          {" — "}
-          {[
-            tally.running > 0 && t("maestroSubTallyRunning", { count: tally.running }),
-            tally.done > 0 && t("maestroSubTallyDone", { count: tally.done }),
-            tally.stopped > 0 && t("maestroSubTallyStopped", { count: tally.stopped }),
-          ]
-            .filter(Boolean)
-            .join(", ")}
-        </div>
       )}
     </NodeFrame>
   );

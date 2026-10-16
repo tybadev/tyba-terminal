@@ -129,7 +129,8 @@ export function ServiceNode({ id, data, selected }: NodeProps<MaestroFlowNode>) 
   const { updateNode, run } = useMaestro();
   const node = data.node;
   const { source } = node.kind as ServiceKind;
-  const runUrl = run?.nodes[id]?.url ?? null;
+  const nodeRun = run?.nodes[id];
+  const runUrl = nodeRun?.url ?? null;
 
   const [targets, setTargets] = useState<Target[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -175,11 +176,22 @@ export function ServiceNode({ id, data, selected }: NodeProps<MaestroFlowNode>) 
       id={id}
       node={node}
       selected={selected}
-      mark={<Cube size={14} weight="bold" />}
-      markClass="bg-tyba-blue-tint text-tyba-blue"
-      label={t("maestroKindService").toLowerCase()}
+      mark={<Cube size={13} weight="bold" />}
+      markTone="text-tyba-blue"
+      status={
+        nodeRun?.status === "running" && runUrl ? (
+          <span className="shrink-0 text-[11.5px] text-tyba-green">{t("maestroLive")}</span>
+        ) : undefined
+      }
+      meta={detail}
+      details={[
+        { label: t("maestroServiceSource"), value: t(`maestroSource_${source.type}`) },
+        { label: t("maestroDetailTarget"), value: sourceDetail(source) },
+        { label: t("maestroDetailPort"), value: port !== null ? `:${port}` : "" },
+        { label: t("maestroDetailUrl"), value: runUrl ?? "" },
+      ]}
     >
-      <div className="flex shrink-0 items-center gap-1.5 px-3.5 pt-2 pb-1.5 text-[11px]">
+      <div className="flex shrink-0 items-center gap-1.5 px-3.5 pb-1.5 text-[11px]">
         <div role="radiogroup" aria-label={t("maestroServiceSource")} className="flex gap-1.5">
           {SERVICE_SOURCES.map((type) => (
             <button
