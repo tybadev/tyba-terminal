@@ -48,6 +48,29 @@ pub fn local_url(port: u16) -> String {
 /// (1–65535). Recusa usuário na URL (`http://localhost@outro`), contrabarra
 /// (o navegador a lê como `/`), espaço e caractere de controle: o que passa
 /// aqui é exatamente o host que o webview vai abrir.
+/// Domínio de desenvolvimento: `*.test` e `*.localhost` (RFC 6761: TLDs
+/// reservados, nunca resolvem na internet). O dono usa `https://code.muriki.test`
+/// pelo Caddy, e entrar por `localhost:5180` quebra o login. `.local` fica de
+/// fora de propósito: é mDNS e alcança outras máquinas da rede.
+fn is_dev_domain(host: &str) -> bool {
+    let Some(name) = host
+        .strip_suffix(".test")
+        .or_else(|| host.strip_suffix(".localhost"))
+    else {
+        return false;
+    };
+    !name.is_empty()
+        && name.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        })
+}
+
 pub fn is_local_url(url: &str) -> bool {
     if url
         .chars()
@@ -74,7 +97,7 @@ pub fn is_local_url(url: &str) -> bool {
             None => (authority, ""),
         },
     };
-    if !matches!(host, "localhost" | "127.0.0.1" | "[::1]") {
+    if !matches!(host, "localhost" | "127.0.0.1" | "[::1]") && !is_dev_domain(host) {
         return false;
     }
     match port.strip_prefix(':') {
@@ -292,6 +315,21 @@ pub fn resolve(app: &tauri::AppHandle, source: &ServiceSource) -> Result<Service
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dev_domains_test_and_localhost_are_local() {
+        assert!(is_local_url("https://code.muriki.test"));
+        assert!(is_local_url("https://api.muriki.test:8443/health"));
+        assert!(is_local_url("http://app.localhost:5173/"));
+        assert!(!is_local_url("https://test"));
+        assert!(!is_local_url("https://.test"));
+        assert!(!is_local_url("https://a..test"));
+        assert!(!is_local_url("https://-a.test"));
+        assert!(!is_local_url("https://printer.local"));
+        assert!(!is_local_url("https://evil.test.example.com"));
+        assert!(!is_local_url("https://user@code.muriki.test"));
+        assert!(!is_local_url("https://muriki.test_x"));
+    }
     use crate::ssh::tunnel::{Tunnel, TunnelKind};
 
     #[test]

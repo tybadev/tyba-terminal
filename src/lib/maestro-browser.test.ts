@@ -54,6 +54,9 @@ describe("isLocalUrl (espelha o core)", () => {
       "http://127.0.0.1:3000",
       "http://[::1]:8080/",
       "HTTP://LOCALHOST:5173",
+      "https://code.muriki.test",
+      "https://api.muriki.test:8443/health",
+      "http://app.localhost:5173/",
     ]) {
       expect(isLocalUrl(ok)).toBe(true);
     }
@@ -62,6 +65,10 @@ describe("isLocalUrl (espelha o core)", () => {
   test("o resto é recusado", () => {
     for (const bad of [
       "http://192.168.0.10:5173",
+      "https://test",
+      "https://a..test",
+      "https://printer.local",
+      "https://evil.test.example.com",
       "http://example.com",
       "https://example.com/localhost",
       "javascript:alert(1)",

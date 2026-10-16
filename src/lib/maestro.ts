@@ -74,6 +74,15 @@ export function emptySource(type: ServiceSourceType): ServiceSource {
  * (1–65535). Espelha `service::is_local_url` do core, que é quem decide (no
  * salvar e na execução); aqui serve para não montar o iframe de URL de fora.
  */
+/** `*.test` e `*.localhost`: TLDs reservados (RFC 6761), espelho do core. */
+function isDevDomain(host: string): boolean {
+  const m = /^(.+)\.(test|localhost)$/.exec(host);
+  if (!m) return false;
+  return m[1]
+    .split(".")
+    .every((l) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(l));
+}
+
 export function isLocalUrl(url: string): boolean {
   if (/[\s\\\u0000-\u001f\u007f-\u009f]/.test(url)) return false;
   const lower = url.toLowerCase();
@@ -93,7 +102,9 @@ export function isLocalUrl(url: string): boolean {
     host = i < 0 ? authority : authority.slice(0, i);
     port = i < 0 ? "" : authority.slice(i);
   }
-  if (host !== "localhost" && host !== "127.0.0.1" && host !== "[::1]") return false;
+  if (host !== "localhost" && host !== "127.0.0.1" && host !== "[::1]" && !isDevDomain(host)) {
+    return false;
+  }
   if (port === "") return true;
   const digits = port.slice(1);
   if (!port.startsWith(":") || !/^[0-9]{1,5}$/.test(digits)) return false;
