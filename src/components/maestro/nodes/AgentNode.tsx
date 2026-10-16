@@ -1,7 +1,9 @@
 import { useTranslation } from "react-i18next";
-import { CircleHalf, Robot } from "@phosphor-icons/react";
+import { CircleHalf } from "@phosphor-icons/react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 
+import { ClaudeIcon } from "@/components/icons/ClaudeIcon";
+import { OpenAIIcon } from "@/components/icons/OpenAIIcon";
 import type { NodeKind, Runner } from "@/lib/maestro";
 import { SUBAGENT_HANDLE, groupRounds, roundTally } from "@/lib/maestroSubagents";
 import {
@@ -12,7 +14,7 @@ import {
   useMaestro,
   type MaestroFlowNode,
 } from "./NodeFrame";
-import { NodeTerminal, nodeSession } from "./NodeTerminal";
+import { FocusButton, NodeTerminal, nodeSession } from "./NodeTerminal";
 
 type AgentKind = Extract<NodeKind, { type: "agent" }>;
 
@@ -36,9 +38,10 @@ export function AgentNode({ id, data, selected }: NodeProps<MaestroFlowNode>) {
       id={id}
       node={node}
       selected={selected}
-      mark={<Robot size={14} weight="bold" />}
+      mark={claude ? <ClaudeIcon size={14} /> : <OpenAIIcon size={14} />}
       markClass={claude ? "bg-tyba-amber-tint text-tyba-amber" : "bg-tyba-cyan-tint text-tyba-cyan"}
       label={kind.role || t("maestroKindAgent")}
+      extra={session ? <FocusButton nodeId={id} /> : undefined}
       status={
         rounds && tally && tally.running > 0 ? (
           <span className="flex shrink-0 items-center gap-1.5 text-[11.5px] whitespace-nowrap text-tyba-blue">
@@ -85,7 +88,7 @@ export function AgentNode({ id, data, selected }: NodeProps<MaestroFlowNode>) {
         <NodeDir id={id} kind={kind} />
       </div>
       {session ? (
-        <NodeTerminal sessionId={session} focused={selected} />
+        <NodeTerminal nodeId={id} sessionId={session} focused={selected} />
       ) : (
         <textarea
           aria-label={t("maestroPrompt")}

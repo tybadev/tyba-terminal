@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, type Dispatch, type SetStateAction } from "react";
+import { useCallback, useEffect, useMemo, useRef, type Dispatch, type SetStateAction } from "react";
 import { useTranslation } from "react-i18next";
 import { Plus, Warning } from "@phosphor-icons/react";
 import {
@@ -60,6 +60,8 @@ import {
 import { AgentNode } from "./nodes/AgentNode";
 import { IntegrationNode } from "./nodes/IntegrationNode";
 import { EDGE_COLOR, useMaestro, type MaestroFlowNode } from "./nodes/NodeFrame";
+import { NodeFocus } from "./nodes/NodeFocus";
+import { nodeSession } from "./nodes/NodeTerminal";
 import { NoteNode } from "./nodes/NoteNode";
 import { ProcessNode } from "./nodes/ProcessNode";
 import {
@@ -201,7 +203,19 @@ export function MaestroCanvas({
   const { screenToFlowPosition } = useReactFlow();
   const wrapper = useRef<HTMLDivElement>(null);
   const byId = useMemo(() => new Map(integrations.map((i) => [i.id, i])), [integrations]);
-  const { subagents } = useMaestro();
+  const { subagents, focusNode, setFocusNode, run, live } = useMaestro();
+
+  // Nó no modo foco: só enquanto tem sessão viva. Sem ela (o processo acabou,
+  // o nó sumiu, trocou o grafo) o foco fecha, para não reabrir sozinho depois.
+  const focused = useMemo(() => {
+    const flow = focusNode ? nodes.find((n) => n.id === focusNode) : undefined;
+    if (!flow) return null;
+    const session = nodeSession(flow.data.node.kind, run?.nodes[flow.id], live);
+    return session ? { node: flow.data.node, session } : null;
+  }, [focusNode, nodes, run, live]);
+  useEffect(() => {
+    if (focusNode && !focused) setFocusNode(null);
+  }, [focusNode, focused, setFocusNode]);
 
   // Filhos efêmeros: montados a cada render a partir do nó do agente, fora do
   // state `nodes`/`edges` — por isso nunca chegam ao modelo salvo.
@@ -518,6 +532,7 @@ export function MaestroCanvas({
           </Panel>
         )}
       </ReactFlow>
+      {focused && <NodeFocus node={focused.node} sessionId={focused.session} />}
     </div>
   );
 }

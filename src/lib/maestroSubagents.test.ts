@@ -109,7 +109,28 @@ describe("subagentLine", () => {
     expect(subagentLine(sub({ status: "done", interrupted: true }))).toEqual({
       kind: "interrupted",
     });
-    expect(subagentLine(sub({ status: "done" }))).toBeNull();
+  });
+  test("pronto sem resumo mostra a última ação, ou que terminou", () => {
+    const at_ms = 2000;
+    expect(
+      subagentLine(
+        sub({
+          status: "done",
+          summary: "  ",
+          recent_activity: [
+            { tool: "Grep", detail: "TODO", at_ms },
+            { tool: "Read", detail: "a.ts", at_ms: 1500 },
+          ],
+        }),
+      ),
+    ).toEqual({ kind: "activity", text: "Grep · TODO" });
+    expect(
+      subagentLine(sub({ status: "done", activity_tool: "Bash", activity_detail: "ls" })),
+    ).toEqual({ kind: "activity", text: "Bash · ls" });
+    expect(subagentLine(sub({ status: "done", recent_activity: [] }))).toEqual({
+      kind: "finished",
+    });
+    expect(subagentLine(sub({ status: "done" }))).toEqual({ kind: "finished" });
   });
 });
 

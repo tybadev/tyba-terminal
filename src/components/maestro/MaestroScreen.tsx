@@ -247,6 +247,7 @@ function MaestroInner() {
   }, [nodes, run, live]);
   const subagents = useNodeSubagents(agentSessions);
   const [openSub, setOpenSub] = useState<string | null>(null);
+  const [focusNode, setFocusNode] = useState<string | null>(null);
   const opened = useMemo(() => {
     if (!openSub) return null;
     for (const [nodeId, runs] of subagents) {
@@ -436,6 +437,8 @@ function MaestroInner() {
       subagents,
       openSubagent: opened ? openSub : null,
       setOpenSubagent: setOpenSub,
+      focusNode,
+      setFocusNode,
     }),
     [
       integrations,
@@ -450,6 +453,7 @@ function MaestroInner() {
       subagents,
       opened,
       openSub,
+      focusNode,
     ],
   );
 

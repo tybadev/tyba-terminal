@@ -53,12 +53,15 @@ export function SubagentNode({ id, data }: NodeProps<SubagentFlowNode>) {
   const time = useSubagentTime(run);
   const open = openSubagent === id;
 
+  // O nó efêmero não é selecionável nem arrastável, e o xyflow põe
+  // `pointer-events: none` nele: o clique só chega com o cartão pedindo de
+  // volta (`pointer-events-auto`), fora do arrastar/mover do canvas.
   return (
     <button
       type="button"
       onClick={() => setOpenSubagent(open ? null : id)}
       aria-pressed={open}
-      className={`flex h-full w-full cursor-pointer flex-col gap-1.5 rounded-[8px] border px-3 py-2.5 text-left font-mono text-[12px] ${
+      className={`nodrag nopan pointer-events-auto flex h-full w-full cursor-pointer flex-col gap-1.5 rounded-[8px] border px-3 py-2.5 text-left font-mono text-[12px] ${
         open
           ? "border-tyba-violet bg-tyba-raised shadow-[0_0_0_4px_color-mix(in_srgb,var(--tyba-violet)_15%,transparent)]"
           : "border-tyba-border-strong bg-tyba-surface hover:border-tyba-text-faint"
@@ -89,6 +92,9 @@ export function SubagentNode({ id, data }: NodeProps<SubagentFlowNode>) {
       )}
       {line?.kind === "interrupted" && (
         <span className="w-full text-tyba-text-muted">{t("maestroSubInterrupted")}</span>
+      )}
+      {line?.kind === "finished" && (
+        <span className="w-full text-tyba-text-muted">{t("maestroSubFinished")}</span>
       )}
     </button>
   );

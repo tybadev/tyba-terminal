@@ -94,23 +94,38 @@ export function roundsPosition(parent: Box, count: number): { x: number; y: numb
   };
 }
 
-/** O que o cartão diz embaixo: a ação em curso, o resumo, ou que parou. */
+/**
+ * O que o cartão diz embaixo: a ação em curso, o resumo, ou que parou. Pronto
+ * sem resumo (o core nem sempre recebe o texto final) cai na última ação que
+ * se viu e, sem nenhuma, em "terminou" — nunca um cartão mudo.
+ */
 export type SubagentLine =
   | { kind: "activity"; text: string }
   | { kind: "summary"; text: string }
   | { kind: "interrupted" }
+  | { kind: "finished" }
   | null;
+
+const actionText = (tool: string, detail: string | null | undefined) => {
+  const d = detail?.trim();
+  return d ? `${tool} · ${d}` : tool;
+};
 
 export function subagentLine(run: SubagentRun): SubagentLine {
   const state = subagentState(run);
   if (state === "running") {
     if (!run.activity_tool) return null;
-    const detail = run.activity_detail?.trim();
-    return { kind: "activity", text: detail ? `${run.activity_tool} · ${detail}` : run.activity_tool };
+    return { kind: "activity", text: actionText(run.activity_tool, run.activity_detail) };
   }
   const summary = run.summary?.trim();
   if (summary) return { kind: "summary", text: summary };
-  return state === "stopped" ? { kind: "interrupted" } : null;
+  if (state === "stopped") return { kind: "interrupted" };
+  if (run.activity_tool) {
+    return { kind: "activity", text: actionText(run.activity_tool, run.activity_detail) };
+  }
+  const last = run.recent_activity?.[0];
+  if (last) return { kind: "activity", text: actionText(last.tool, last.detail) };
+  return { kind: "finished" };
 }
 
 /** Tempo do subagente: até agora se roda, até o fim se acabou. */

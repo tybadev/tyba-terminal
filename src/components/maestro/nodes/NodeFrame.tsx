@@ -60,6 +60,9 @@ export interface MaestroCtx {
   /** Id do nó-filho aberto no painel, ou `null`. */
   openSubagent: string | null;
   setOpenSubagent: (nodeId: string | null) => void;
+  /** Nó aberto no modo foco (terminal em tamanho real por cima do canvas), ou `null`. */
+  focusNode: string | null;
+  setFocusNode: (nodeId: string | null) => void;
 }
 
 export const MaestroContext = createContext<MaestroCtx>({
@@ -75,6 +78,8 @@ export const MaestroContext = createContext<MaestroCtx>({
   subagents: new Map(),
   openSubagent: null,
   setOpenSubagent: () => {},
+  focusNode: null,
+  setFocusNode: () => {},
 });
 
 export const useMaestro = () => useContext(MaestroContext);

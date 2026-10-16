@@ -12,7 +12,7 @@ import {
   useMaestro,
   type MaestroFlowNode,
 } from "./NodeFrame";
-import { NodeTerminal, nodeSession } from "./NodeTerminal";
+import { FocusButton, NodeTerminal, nodeSession } from "./NodeTerminal";
 
 type ProcessKind = Extract<NodeKind, { type: "process" }>;
 
@@ -34,6 +34,7 @@ export function ProcessNode({ id, data, selected }: NodeProps<MaestroFlowNode>) 
       mark={<TerminalWindow size={14} weight="bold" />}
       markClass="bg-tyba-raised text-tyba-text-muted"
       label={t("maestroKindProcess").toLowerCase()}
+      extra={session ? <FocusButton nodeId={id} /> : undefined}
     >
       <div className="flex shrink-0 items-center gap-1.5 border-b border-tyba-border px-3.5 py-1.5 text-[11px] text-tyba-text-faint">
         <span>{t("maestroOutput")}</span>
@@ -61,7 +62,7 @@ export function ProcessNode({ id, data, selected }: NodeProps<MaestroFlowNode>) 
         <NodeDir id={id} kind={kind} />
       </div>
       {session ? (
-        <NodeTerminal sessionId={session} focused={selected} />
+        <NodeTerminal nodeId={id} sessionId={session} focused={selected} />
       ) : (
         <div className="flex min-h-0 flex-1 bg-tyba-sunken">
           <span className="select-none pt-2.5 pl-3.5 font-mono text-[11.5px] leading-[17px] text-tyba-green">
