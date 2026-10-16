@@ -114,7 +114,8 @@ export function AgentNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
           id={ORCHESTRATOR_HANDLE}
           position={Position.Right}
           isConnectable={false}
-          style={hidden}
+          // Na ponta direita da cápsula, junto da porta de saída.
+          style={{ ...hidden, top: 20, right: 14 }}
         />
       )}
       {!session && (

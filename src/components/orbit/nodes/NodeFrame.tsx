@@ -209,23 +209,32 @@ export function NodeStatusBadge({ nodeId, nodeRun }: { nodeId: string; nodeRun: 
   );
 }
 
-/** Cor da porta de saída: a do que o nó produz primeiro (a saída principal). */
+/**
+ * Cor da porta de saída: a do que o nó produz primeiro (a saída principal).
+ * Centro na ponta direita da cápsula (inset de 14px, `right-3.5`), para a
+ * ligação sair dela e não do vazio ao lado.
+ */
 const portStyle = (color: string) => ({
   width: 16,
   height: 16,
-  right: -8,
+  right: 6,
   top: 12,
   borderRadius: "50%",
   border: "3px solid var(--tyba-bg)",
   background: color,
   transform: "none",
+  // Acima da cápsula (`z-[1]`), que agora fica embaixo da bolinha.
+  zIndex: 2,
 });
 
-/** A entrada não aparece: o nó inteiro é alvo, e ela só ancora a ligação. */
+/**
+ * A entrada não aparece: o nó inteiro é alvo, e ela só ancora a ligação —
+ * na ponta esquerda da cápsula (`left-3.5`), onde a linha encosta.
+ */
 const inStyle = {
   width: 16,
   height: 16,
-  left: -8,
+  left: 6,
   top: 12,
   opacity: 0,
   border: 0,
