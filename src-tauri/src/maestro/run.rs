@@ -1793,9 +1793,10 @@ fn browser_outcome(start: &Start, own: &str) -> Outcome {
         return Outcome::failed("sem endereço: ligue uma url ou digite uma no nó");
     }
     if !service::is_local_url(&url) {
-        return Outcome::failed(
-            "endereço recusado: só local (http/https em localhost, 127.0.0.1 ou [::1])",
-        );
+        return Outcome::failed(format!(
+            "endereço recusado: só local (http/https em {})",
+            service::LOCAL_HOSTS
+        ));
     }
     Outcome {
         ok: true,

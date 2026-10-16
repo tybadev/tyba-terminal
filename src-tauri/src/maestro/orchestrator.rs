@@ -199,9 +199,10 @@ pub fn parse_call(tool: &str, value: &Value) -> Result<ToolCall, String> {
             }
             text("url", &url)?;
             if !url.is_empty() && !service::is_local_url(&url) {
-                return Err(
-                    "url recusada: só local (http/https em localhost, 127.0.0.1 ou [::1])".into(),
-                );
+                return Err(format!(
+                    "url recusada: só local (http/https em {})",
+                    service::LOCAL_HOSTS
+                ));
             }
             if let Some(f) = &from_node {
                 text("from_node", f)?;
@@ -434,6 +435,11 @@ mod tests {
         ] {
             let err = ok(json!({"title": "code", "url": bad})).unwrap_err();
             assert!(err.contains("só local"), "{bad}: {err}");
+            // A recusa ensina a regra inteira, domínios de dev inclusive.
+            assert!(
+                err.contains("*.test") && err.contains("*.localhost"),
+                "{err}"
+            );
         }
         assert!(ok(json!({"title": "code"})).is_err());
     }

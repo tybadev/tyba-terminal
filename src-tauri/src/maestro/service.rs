@@ -44,10 +44,11 @@ pub fn local_url(port: u16) -> String {
     format!("http://localhost:{port}")
 }
 
-/// Só `http`/`https` para `localhost`, `127.0.0.1` ou `[::1]`, porta opcional
-/// (1–65535). Recusa usuário na URL (`http://localhost@outro`), contrabarra
-/// (o navegador a lê como `/`), espaço e caractere de controle: o que passa
-/// aqui é exatamente o host que o webview vai abrir.
+/// Os hosts que [`is_local_url`] aceita, como o agente e o dono leem: a
+/// descrição das ferramentas e as mensagens de recusa saem daqui, para não
+/// contradizerem a regra (o modelo lê o schema como contrato).
+pub const LOCAL_HOSTS: &str = "localhost, 127.0.0.1, [::1], *.test, *.localhost";
+
 /// Domínio de desenvolvimento: `*.test` e `*.localhost` (RFC 6761: TLDs
 /// reservados, nunca resolvem na internet). O dono usa `https://code.muriki.test`
 /// pelo Caddy, e entrar por `localhost:5180` quebra o login. `.local` fica de
@@ -71,6 +72,10 @@ fn is_dev_domain(host: &str) -> bool {
         })
 }
 
+/// Só `http`/`https` para [`LOCAL_HOSTS`], porta opcional (1–65535). Recusa
+/// usuário na URL (`http://localhost@outro`), contrabarra (o navegador a lê
+/// como `/`), espaço e caractere de controle: o que passa aqui é exatamente
+/// o host que o webview vai abrir.
 pub fn is_local_url(url: &str) -> bool {
     if url
         .chars()

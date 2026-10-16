@@ -286,7 +286,7 @@ pub enum MaestroError {
     FileOutsideDir(String),
     #[error("nó {0}: escolha a pasta onde ele roda (caminho absoluto)")]
     NodeDir(String),
-    #[error("nó {0}: só endereço local (http/https em localhost, 127.0.0.1 ou [::1])")]
+    #[error("nó {0}: só endereço local (http/https em {hosts})", hosts = service::LOCAL_HOSTS)]
     NotLocalUrl(String),
     #[error("nó {0}: id de contêiner inválido")]
     InvalidContainer(String),

@@ -257,15 +257,19 @@ pub fn tool_list() -> Vec<Value> {
         }),
         json!({
             "name": "maestro_create_browser",
-            "description": "Create a Browser node that shows a local page on the canvas. Give \
-                url (http/https on localhost, 127.0.0.1 or [::1] only) or from_node: the \
-                node_id of a Process node, whose first open port becomes the address. \
-                Returns the node_id.",
+            "description": format!(
+                "Create a Browser node that shows a local page on the canvas. Give url \
+                 (http/https on {} only) or from_node: the node_id of a Process node, whose \
+                 first open port becomes the address. Returns the node_id.",
+                super::service::LOCAL_HOSTS
+            ),
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "title": string_prop("Short name shown on the node."),
-                    "url": string_prop("Local address, e.g. http://localhost:5173."),
+                    "url": string_prop(
+                        "Local address, e.g. http://localhost:5173 or https://app.test."
+                    ),
                     "from_node": string_prop("node_id of the Process node that serves the page.")
                 },
                 "required": ["title"],
@@ -427,6 +431,14 @@ mod tests {
             tools[0]["inputSchema"]["required"],
             json!(["title", "command", "dir"])
         );
+        // A regra de URL do navegador é a do core, domínios de dev inclusive.
+        let browser = tools
+            .iter()
+            .find(|t| t["name"] == "maestro_create_browser")
+            .unwrap();
+        let description = browser["description"].as_str().unwrap();
+        assert!(description.contains(crate::maestro::service::LOCAL_HOSTS));
+        assert!(description.contains("*.test") && description.contains("*.localhost"));
     }
 
     #[test]
