@@ -452,6 +452,7 @@ mod tests {
                         role: "revisor".into(),
                         prompt: "revise o diff contra {{alvo}}".into(),
                         dir: "/tmp/repo".into(),
+                        no_create: false,
                     },
                 ),
                 node(

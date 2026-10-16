@@ -51,6 +51,8 @@ export type NodeKind =
       role: string;
       prompt: string;
       dir: string;
+      /** "Não criar nós": as ferramentas do Orbit sem as `orbit_create_*`. */
+      noCreate?: boolean;
     }
   | { type: "process"; command: string; output: OutputKind; file: string | null; dir: string }
   /** `locked`: cadeado "só leitura" para o agente ligado por `memory`. */
@@ -634,6 +636,8 @@ export interface NodeRun {
   sent?: SentMessage | null;
   /** Nota: a última escrita de um agente ligado por `memory`, com o texto novo. */
   written?: NoteWritten | null;
+  /** Agente: a última entrega da fila falhou ("não entregue: <motivo>"); as mensagens seguem na fila. */
+  undelivered?: string | null;
 }
 
 /** Quem abriu a página do navegador (título do nó do agente) e quando (ms). */

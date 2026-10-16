@@ -5067,6 +5067,7 @@ mod tests {
             inbox: 0,
             sent: None,
             written: None,
+            undelivered: None,
             inbox_from: Default::default(),
         };
         let path = dir.path().join("tyba.db");
@@ -7019,6 +7020,7 @@ mod tests {
                         role: "autor".into(),
                         prompt: "corrija {{alvo}}".into(),
                         dir: String::new(),
+                        no_create: false,
                     },
                     position: Position { x: 10.0, y: 20.5 },
                     size: Size { w: 480.0, h: 320.0 },

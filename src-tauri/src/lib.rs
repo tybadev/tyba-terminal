@@ -69,6 +69,9 @@ struct AppState {
     managed_lsp: lsp::managed::SharedManaged,
     repo_reconcile: std::sync::mpsc::Sender<()>,
     rich_input_submit: parking_lot::Mutex<()>,
+    /// O que o dono anda digitando em cada sessão: a conversa do Orbit não
+    /// cola por cima (ver `orbit::talk::OwnerKeys`).
+    owner_input: orbit::talk::OwnerInput,
     worktree_files: rich_input::FilesCache,
     hook_servers: Arc<agent::session::HookServerRegistry>,
     subagents: agent::subagents::SharedSubagents,
@@ -3927,6 +3930,9 @@ fn write_to_session(state: State<'_, AppState>, id: SessionId, data: String) -> 
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(&data)
         .map_err(|e| e.to_string())?;
+    state
+        .owner_input
+        .record(&id.to_string(), &bytes, approvals::now_ms());
     state.pty_pool.write(id, &bytes).map_err(|e| e.to_string())
 }
 
@@ -4150,18 +4156,18 @@ fn submit_rich_input(
     text: String,
     submit: bool,
 ) -> Result<(), String> {
+    state
+        .owner_input
+        .record_rich(&id.to_string(), submit, approvals::now_ms());
     inject_rich_input(&state, id, &text, submit)
 }
 
-/// Cola `text` no terminal da sessão e, com `submit`, envia — pela
-/// estratégia do agente que lê o input. É o input rico do dono e a entrega
-/// da conversa do Orbit (`orbit::run`).
-pub(crate) fn inject_rich_input(
+/// A estratégia de envio do agente que lê o input da sessão e se a colagem
+/// de várias linhas chega inteira (bracketed paste ligado e usado por ela).
+fn rich_input_plan(
     state: &AppState,
     id: SessionId,
-    text: &str,
-    submit: bool,
-) -> Result<(), String> {
+) -> Result<(bool, agent::SubmitStrategy), String> {
     let bracketed = state
         .pty_pool
         .bracketed_paste(id)
@@ -4179,9 +4185,27 @@ pub(crate) fn inject_rich_input(
             (kind, _) => agent::submit_strategy_for(kind),
         })
         .unwrap_or_default();
+    Ok((bracketed && strategy.use_bracketed_paste, strategy))
+}
+
+/// A colagem de várias linhas chega inteira nesta sessão (a conversa do
+/// Orbit vai numa linha só quando não).
+pub(crate) fn rich_input_pastes(state: &AppState, id: SessionId) -> Result<bool, String> {
+    rich_input_plan(state, id).map(|(pastes, _)| pastes)
+}
+
+/// Cola `text` no terminal da sessão e, com `submit`, envia — pela
+/// estratégia do agente que lê o input. É o input rico do dono e a entrega
+/// da conversa do Orbit (`orbit::run`).
+pub(crate) fn inject_rich_input(
+    state: &AppState,
+    id: SessionId,
+    text: &str,
+    submit: bool,
+) -> Result<(), String> {
+    let (pastes, strategy) = rich_input_plan(state, id)?;
     let (normalized, _) = rich_input::normalize(text);
-    let payload =
-        rich_input::plan_injection(&normalized, bracketed && strategy.use_bracketed_paste)?;
+    let payload = rich_input::plan_injection(&normalized, pastes)?;
     if payload.is_empty() {
         return Ok(());
     }
@@ -7693,6 +7717,9 @@ fn write_control(state: State<'_, AppState>, id: SessionId, bytes: String) -> Re
         return Err("apenas caracteres de controle".into());
     }
     state
+        .owner_input
+        .record(&id.to_string(), bytes.as_bytes(), approvals::now_ms());
+    state
         .pty_pool
         .write(id, bytes.as_bytes())
         .map_err(|e| e.to_string())
@@ -9462,6 +9489,7 @@ pub fn run() {
                 managed_lsp,
                 repo_reconcile: reconcile_tx.clone(),
                 rich_input_submit: parking_lot::Mutex::new(()),
+                owner_input: orbit::talk::OwnerInput::default(),
                 worktree_files: rich_input::FilesCache::default(),
                 hook_servers: Arc::new(agent::session::HookServerRegistry::default()),
                 subagents,

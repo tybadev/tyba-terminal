@@ -151,6 +151,11 @@ pub struct NodeRun {
     /// novo (o canvas o copia para o nó, como a url do navegador).
     #[serde(default)]
     pub written: Option<NoteWritten>,
+    /// Agente: a última entrega da fila falhou, com o motivo. As mensagens
+    /// seguem na fila e saem na próxima tentativa; some quando uma entrega
+    /// dá certo.
+    #[serde(default)]
+    pub undelivered: Option<String>,
 }
 
 /// A última mensagem que um agente mandou: a tela mostra "→ para X: …".
@@ -200,6 +205,7 @@ impl NodeRun {
             inbox_from: HashMap::new(),
             sent: None,
             written: None,
+            undelivered: None,
         }
     }
 }
@@ -805,6 +811,11 @@ pub trait RunHost: Send + Sync + 'static {
     /// Escreve `text` no terminal do agente e envia, pela estratégia do
     /// runner (colagem e Enter), como o input rico do dono.
     fn send_input(&self, session_id: &str, text: &str) -> Result<(), String>;
+    /// A colagem de várias linhas chega inteira (bracketed paste ligado e
+    /// usado pelo runner). Sem ela, a conversa vai numa linha só.
+    fn multiline(&self, session_id: &str) -> bool;
+    /// O que o dono anda digitando no terminal da sessão.
+    fn owner_keys(&self, session_id: &str) -> talk::OwnerKeys;
     /// Sobe o processo num PTY e devolve o id da sessão. `on_exit` roda quando
     /// o PTY fecha.
     fn spawn_process(
@@ -1460,7 +1471,14 @@ impl<H: RunHost> Runs<H> {
                 runs.agent_exited(&run, &node, holds);
             }
         });
-        let tools = Some(self.tool_handler(run_id, &start.node.id, !start.created));
+        let no_create = matches!(
+            start.node.kind,
+            NodeKind::Agent {
+                no_create: true,
+                ..
+            }
+        );
+        let tools = Some(self.tool_handler(run_id, &start.node.id, !start.created && !no_create));
         let launch = AgentLaunch {
             title: start.node.title.clone(),
             cwd: start.node_dir.clone(),
@@ -1502,18 +1520,22 @@ impl<H: RunHost> Runs<H> {
         tool: &str,
         args: &serde_json::Value,
     ) -> Result<serde_json::Value, String> {
-        // Sem cascata: o agente criado por outro não cria nós, anuncie o
-        // `tools/list` dele o que anunciar.
-        if orchestrator::is_create_tool(tool)
-            && self
-                .active
-                .lock()
-                .get(run_id)
-                .is_some_and(|a| is_created(a, orchestrator))
-        {
-            return Err(format!(
-                "{tool}: agente criado por outro agente não cria nós (sem cascata)"
-            ));
+        // Sem cascata: o agente criado por outro não cria nós, nem o que o
+        // dono marcou "Não criar nós" — anuncie o `tools/list` dele o que
+        // anunciar.
+        if orchestrator::is_create_tool(tool) {
+            let refused = self.active.lock().get(run_id).and_then(|a| {
+                if is_created(a, orchestrator) {
+                    Some("agente criado por outro agente não cria nós (sem cascata)")
+                } else if no_create(a, orchestrator) {
+                    Some("o dono marcou \"Não criar nós\" neste agente")
+                } else {
+                    None
+                }
+            });
+            if let Some(why) = refused {
+                return Err(format!("{tool}: {why}"));
+            }
         }
         let call = orchestrator::parse_call(tool, args)?;
         eprintln!("[orbit] agente {orchestrator}: {tool}");
@@ -1526,7 +1548,7 @@ impl<H: RunHost> Runs<H> {
                 let id = self.create_node(run_id, orchestrator, title, kind, from_node)?;
                 Ok(serde_json::json!({ "node_id": id }))
             }
-            ToolCall::Status { node_id } => self.node_status(run_id, &node_id),
+            ToolCall::Status { node_id } => self.node_status(run_id, orchestrator, &node_id),
             ToolCall::Stop { node_id } => {
                 self.stop_created(run_id, orchestrator, &node_id)?;
                 Ok(serde_json::json!({ "node_id": node_id, "stopped": true }))
@@ -1559,7 +1581,9 @@ impl<H: RunHost> Runs<H> {
         let a = active
             .get(run_id)
             .ok_or("esta execução já terminou: ▶ Executar de novo para conversar")?;
-        let peers: Vec<serde_json::Value> = talk_peers(&a.graph, agent)
+        let saved = self.saved_graph(&a.graph.id)?;
+        let edges = current_edges(saved.as_ref(), &a.sched.run.created);
+        let peers: Vec<serde_json::Value> = talk_peers(&edges, agent)
             .into_iter()
             .filter_map(|id| a.graph.nodes.iter().find(|n| n.id == id))
             .map(|n| {
@@ -1596,7 +1620,9 @@ impl<H: RunHost> Runs<H> {
         let a = active
             .get_mut(run_id)
             .ok_or("esta execução já terminou: ▶ Executar de novo para conversar")?;
-        if !talk_peers(&a.graph, agent).iter().any(|p| p == to) {
+        let saved = self.saved_graph(&a.graph.id)?;
+        let edges = current_edges(saved.as_ref(), &a.sched.run.created);
+        if !talk_peers(&edges, agent).iter().any(|p| p == to) {
             return Err(format!(
                 "{to} não é um agente ligado a você por conversa: só fala com quem o dono \
                  ligou a você no canvas (veja orbit_peers)"
@@ -1647,49 +1673,102 @@ impl<H: RunHost> Runs<H> {
         Ok(waiting)
     }
 
-    /// O estado visto da sessão do agente `node_id`. Turno fechado com fila:
-    /// o bloco marcado vai para o terminal dele, fora do lock.
+    /// O estado visto da sessão do agente `node_id`. Turno fechado com fila e
+    /// o dono sem nada por enviar no terminal dele: o bloco marcado vai para
+    /// o terminal, fora do lock (numa linha só se a sessão não cola várias).
+    /// A fila só esvazia com o envio Ok; com erro, as mensagens voltam a
+    /// esperar e o retrato leva o motivo (`undelivered`).
     fn agent_state(&self, run_id: &str, node_id: &str, state: PeerState) {
-        let (session, block) = {
+        let (session, delivery) = {
             let mut active = self.active.lock();
             let Some(a) = active.get_mut(run_id) else {
                 return;
             };
-            let Some(block) = a.talk.on_state(node_id, state, now()) else {
+            let session = a
+                .sched
+                .run
+                .nodes
+                .get(node_id)
+                .and_then(|n| n.session_id.clone());
+            let at = now();
+            let quiet = state != PeerState::Ready
+                || session
+                    .as_deref()
+                    .is_none_or(|s| self.host.owner_keys(s).quiet(at));
+            let Some(delivery) = a.talk.on_state(node_id, state, at, quiet) else {
                 return;
             };
-            let Some(n) = a.sched.run.nodes.get_mut(node_id) else {
-                return;
-            };
-            n.inbox = 0;
-            n.inbox_from.clear();
-            (n.session_id.clone(), block)
+            (session, delivery)
         };
-        match session {
+        let sent = match &session {
             Some(session) => {
-                if let Err(e) = self.host.send_input(&session, &block) {
-                    eprintln!("[orbit] entregar a conversa para {node_id}: {e}");
-                }
+                let text = if self.host.multiline(session) {
+                    delivery.block.clone()
+                } else {
+                    talk::one_line(&delivery.block)
+                };
+                self.host.send_input(session, &text)
             }
-            None => eprintln!("[orbit] entregar a conversa para {node_id}: sem sessão"),
+            None => Err("sem sessão".to_string()),
+        };
+        {
+            let mut active = self.active.lock();
+            let Some(a) = active.get_mut(run_id) else {
+                return;
+            };
+            let undelivered = match sent {
+                Ok(()) => {
+                    a.talk.delivered(node_id, delivery.count);
+                    None
+                }
+                Err(e) => {
+                    eprintln!("[orbit] entregar a conversa para {node_id}: {e}");
+                    Some(format!("não entregue: {e}"))
+                }
+            };
+            let (waiting, from_each) = (a.talk.waiting(node_id), a.talk.waiting_from(node_id));
+            if let Some(n) = a.sched.run.nodes.get_mut(node_id) {
+                n.inbox = waiting;
+                n.inbox_from = from_each;
+                n.undelivered = undelivered;
+            }
         }
         self.publish_current(run_id);
     }
 
-    /// A nota `node`, só se ligada a `agent` por `memory`.
-    fn memory_note<'a>(a: &'a Active, agent: &str, node: &str) -> Result<&'a Node, String> {
-        let linked = a
-            .graph
-            .edges
+    /// O grafo salvo agora (o dono edita no canvas durante o run).
+    fn saved_graph(&self, graph_id: &str) -> Result<Option<Graph>, String> {
+        Ok(self
+            .store
+            .get_orbit_graph(graph_id)
+            .map_err(|e| e.to_string())?
+            .map(|s| s.value))
+    }
+
+    /// A nota `node`, só se ligada a `agent` por `memory` nas ligações de
+    /// agora ([`current_edges`]). O texto é o do grafo salvo — o que o dono
+    /// escreveu depois do ▶ conta —; a nota criada no run (fora do salvo)
+    /// vem do run.
+    fn memory_note(
+        a: &Active,
+        saved: Option<&Graph>,
+        agent: &str,
+        node: &str,
+    ) -> Result<Node, String> {
+        let linked = current_edges(saved, &a.sched.run.created)
             .iter()
             .any(|e| e.kind == EdgeKind::Memory && e.from == agent && e.to == node);
-        let note = a
-            .graph
-            .nodes
-            .iter()
-            .find(|n| n.id == node && matches!(n.kind, NodeKind::Note { .. }));
+        let in_saved = saved.and_then(|g| g.nodes.iter().find(|n| n.id == node));
+        let note = in_saved
+            .or_else(|| {
+                a.graph
+                    .nodes
+                    .iter()
+                    .find(|n| n.id == node && is_created(a, node))
+            })
+            .filter(|n| matches!(n.kind, NodeKind::Note { .. }));
         match (linked, note) {
-            (true, Some(n)) => Ok(n),
+            (true, Some(n)) => Ok(n.clone()),
             _ => Err(format!(
                 "{node} não é uma nota ligada a você por memória: só lê e escreve a nota \
                  que o dono ligou a você no canvas"
@@ -1708,7 +1787,8 @@ impl<H: RunHost> Runs<H> {
         let a = active
             .get(run_id)
             .ok_or("esta execução já terminou: ▶ Executar de novo para ler a nota")?;
-        let note = Self::memory_note(a, agent, node)?;
+        let saved = self.saved_graph(&a.graph.id)?;
+        let note = Self::memory_note(a, saved.as_ref(), agent, node)?;
         let NodeKind::Note { markdown, locked } = &note.kind else {
             unreachable!("memory_note só devolve nota");
         };
@@ -1721,9 +1801,12 @@ impl<H: RunHost> Runs<H> {
     }
 
     /// `orbit_note_write`: troca (ou, com `append`, completa) o texto da nota
-    /// ligada por `memory`. Nota com cadeado recusa. Grava no grafo salvo
-    /// (mesma validação do salvar) e no do run; o retrato leva quem escreveu
-    /// e o texto novo à tela. Devolve o tamanho do texto, em caracteres.
+    /// ligada por `memory`, sempre sobre o texto do grafo salvo. Nota com
+    /// cadeado (o do salvo: o dono tranca e destranca pela cápsula, também
+    /// depois do ▶) recusa. Grava no grafo salvo (mesma validação do salvar)
+    /// e no do run; a nota criada no run só no run. O retrato leva quem
+    /// escreveu e o texto novo à tela. Devolve o tamanho do texto, em
+    /// caracteres.
     pub fn note_write(
         &self,
         run_id: &str,
@@ -1736,47 +1819,52 @@ impl<H: RunHost> Runs<H> {
         let a = active
             .get_mut(run_id)
             .ok_or("esta execução já terminou: ▶ Executar de novo para escrever na nota")?;
-        let note = Self::memory_note(a, agent, node)?;
-        let NodeKind::Note { markdown, .. } = &note.kind else {
-            unreachable!("memory_note só devolve nota");
-        };
-        let markdown = talk::note_text(markdown, text, append)?;
         let stored = self
             .store
             .get_orbit_graph(&a.graph.id)
-            .map_err(|e| e.to_string())?
-            .ok_or("grafo não encontrado")?;
-        let mut graph = stored.value;
-        let saved = graph
-            .nodes
-            .iter_mut()
-            .find(|n| n.id == node)
-            .ok_or("a nota não está mais no grafo")?;
-        // O cadeado que vale é o do grafo salvo: o dono tranca e destranca
-        // pela cápsula da nota, também depois do ▶.
-        if matches!(saved.kind, NodeKind::Note { locked: true, .. }) {
+            .map_err(|e| e.to_string())?;
+        let saved = stored.as_ref().map(|s| &s.value);
+        let note = Self::memory_note(a, saved, agent, node)?;
+        let NodeKind::Note { markdown, locked } = &note.kind else {
+            unreachable!("memory_note só devolve nota");
+        };
+        if *locked {
             return Err(format!(
                 "a nota {node} está com cadeado (só leitura): o dono não deixa agente \
                  escrever nela"
             ));
         }
-        saved.kind = NodeKind::Note {
+        let markdown = talk::note_text(markdown, text, append)?;
+        let kind = NodeKind::Note {
             markdown: markdown.clone(),
             locked: false,
         };
-        let integrations = self
-            .store
-            .list_orbit_integrations()
-            .map_err(|e| e.to_string())?;
-        super::validate_graph(&graph, &integrations).map_err(|e| e.to_string())?;
-        self.store
-            .save_orbit_graph(&graph, stored.consented, None)
-            .map_err(|e| e.to_string())?;
+        let in_saved = stored
+            .as_ref()
+            .is_some_and(|s| s.value.nodes.iter().any(|n| n.id == node));
+        match stored {
+            Some(stored) if in_saved => {
+                let mut graph = stored.value;
+                if let Some(n) = graph.nodes.iter_mut().find(|n| n.id == node) {
+                    n.kind = kind.clone();
+                }
+                let integrations = self
+                    .store
+                    .list_orbit_integrations()
+                    .map_err(|e| e.to_string())?;
+                super::validate_graph(&graph, &integrations).map_err(|e| e.to_string())?;
+                self.store
+                    .save_orbit_graph(&graph, stored.consented, None)
+                    .map_err(|e| e.to_string())?;
+            }
+            _ => {
+                if let Some(c) = a.sched.run.created.iter_mut().find(|c| c.node.id == node) {
+                    c.node.kind = kind.clone();
+                }
+            }
+        }
         if let Some(n) = a.graph.nodes.iter_mut().find(|n| n.id == node) {
-            n.kind = NodeKind::Note {
-                markdown: markdown.clone(),
-                locked: false,
-            };
+            n.kind = kind;
         }
         let by = a
             .graph
@@ -1813,18 +1901,19 @@ impl<H: RunHost> Runs<H> {
         let a = active
             .get_mut(run_id)
             .ok_or("esta execução já terminou: ▶ Executar de novo para o agente abrir páginas")?;
-        let linked: Vec<String> = a
-            .graph
-            .edges
-            .iter()
+        // As ligações de agora: o dono liga e desliga no canvas durante o run.
+        let saved = self.saved_graph(&a.graph.id)?;
+        let linked: Vec<String> = current_edges(saved.as_ref(), &a.sched.run.created)
+            .into_iter()
             .filter(|e| e.kind == EdgeKind::Control && e.from == agent)
             .filter(|e| {
-                a.graph
-                    .nodes
+                saved
                     .iter()
+                    .flat_map(|g| g.nodes.iter())
+                    .chain(a.graph.nodes.iter())
                     .any(|n| n.id == e.to && matches!(n.kind, NodeKind::Browser { .. }))
             })
-            .map(|e| e.to.clone())
+            .map(|e| e.to)
             .collect();
         let target = match node {
             Some(n) if linked.iter().any(|l| l == n) => n.to_string(),
@@ -2250,12 +2339,36 @@ impl<H: RunHost> Runs<H> {
     /// sem isto o orquestrador via `done` sem saber o que ele disse nem o que
     /// mudou. Só sai o que já é redigido: nada de caminho para a saída crua
     /// (log, patch, nota, json) — o log inteiro vem por ferramenta que redige.
-    pub fn node_status(&self, run_id: &str, node_id: &str) -> Result<serde_json::Value, String> {
+    ///
+    /// Só de nó ligado a quem pergunta (qualquer ligação, em qualquer
+    /// sentido, nas de agora) ou que ele criou.
+    pub fn node_status(
+        &self,
+        run_id: &str,
+        caller: &str,
+        node_id: &str,
+    ) -> Result<serde_json::Value, String> {
         let run = self.get(run_id).ok_or("execução não encontrada")?;
         let n = run
             .nodes
             .get(node_id)
             .ok_or_else(|| format!("nó não existe neste run: {node_id}"))?;
+        let made = run
+            .created
+            .iter()
+            .any(|c| c.node.id == node_id && c.created_by == caller);
+        let linked = || -> Result<bool, String> {
+            let saved = self.saved_graph(&run.graph_id)?;
+            Ok(current_edges(saved.as_ref(), &run.created).iter().any(|e| {
+                (e.from == caller && e.to == node_id) || (e.from == node_id && e.to == caller)
+            }))
+        };
+        if !made && !linked()? {
+            return Err(format!(
+                "{node_id} não está ligado a você nem foi criado por você: só vê o estado \
+                 de nó ligado a você no canvas ou que você criou"
+            ));
+        }
         let log_path = self
             .root
             .as_ref()
@@ -2710,9 +2823,9 @@ fn prepare_start(a: &Active, id: &str) -> Option<Start> {
 
 /// O nó foi criado por um agente neste run (não é do grafo do dono).
 /// Os agentes ligados a `agent` por `talk`, nos dois sentidos, sem repetir.
-fn talk_peers(graph: &Graph, agent: &str) -> Vec<String> {
+fn talk_peers(edges: &[Edge], agent: &str) -> Vec<String> {
     let mut peers: Vec<String> = Vec::new();
-    for e in graph.edges.iter().filter(|e| e.kind == EdgeKind::Talk) {
+    for e in edges.iter().filter(|e| e.kind == EdgeKind::Talk) {
         let other = if e.from == agent {
             &e.to
         } else if e.to == agent {
@@ -2729,6 +2842,34 @@ fn talk_peers(graph: &Graph, agent: &str) -> Vec<String> {
 
 fn is_created(a: &Active, id: &str) -> bool {
     a.sched.run.created.iter().any(|c| c.node.id == id)
+}
+
+/// O dono marcou "Não criar nós" no agente.
+fn no_create(a: &Active, id: &str) -> bool {
+    a.graph.nodes.iter().any(|n| {
+        n.id == id
+            && matches!(
+                n.kind,
+                NodeKind::Agent {
+                    no_create: true,
+                    ..
+                }
+            )
+    })
+}
+
+/// As ligações que dão permissão agora (conversa, memória, controla, o
+/// estado de outro nó): as do grafo salvo — o dono liga e desliga no canvas
+/// durante o run, e vale na hora — mais as dos nós criados no run, que só
+/// entram no salvo com o "Manter".
+fn current_edges(saved: Option<&Graph>, created: &[Created]) -> Vec<Edge> {
+    let mut edges: Vec<Edge> = saved.map(|g| g.edges.clone()).unwrap_or_default();
+    for e in created.iter().flat_map(|c| c.edges.iter()) {
+        if !edges.iter().any(|x| x.id == e.id) {
+            edges.push(e.clone());
+        }
+    }
+    edges
 }
 
 /// Pasta das execuções no perfil: `~/.tyba/orbit/runs` (dev: `~/.tyba-dev`).
@@ -2889,6 +3030,23 @@ impl RunHost for TauriHost {
             .map_err(|_| format!("sessão inválida: {session_id}"))?;
         let state = self.app.state::<crate::AppState>();
         crate::inject_rich_input(&state, id, text, true)
+    }
+
+    fn multiline(&self, session_id: &str) -> bool {
+        use tauri::Manager;
+        let Ok(id) = session_id.parse() else {
+            return false;
+        };
+        let state = self.app.state::<crate::AppState>();
+        crate::rich_input_pastes(&state, id).unwrap_or(false)
+    }
+
+    fn owner_keys(&self, session_id: &str) -> talk::OwnerKeys {
+        use tauri::Manager;
+        self.app
+            .state::<crate::AppState>()
+            .owner_input
+            .get(session_id)
     }
 
     fn kill(&self, session_id: &str) {
@@ -3292,6 +3450,12 @@ mod tests {
         states: Mutex<HashMap<String, (String, Box<dyn Fn(PeerState) + Send>)>>,
         /// O que o core escreveu no terminal de cada agente (`send_input`).
         inputs: Mutex<Vec<(String, String)>>,
+        /// Quando presente, o `send_input` falha com este motivo.
+        send_error: Mutex<Option<String>>,
+        /// A sessão cola várias linhas (bracketed paste).
+        multiline: Mutex<bool>,
+        /// O teclado do dono em cada sessão.
+        owner: talk::OwnerInput,
     }
 
     impl PtyHost {
@@ -3412,10 +3576,21 @@ mod tests {
         }
 
         fn send_input(&self, session_id: &str, text: &str) -> Result<(), String> {
+            if let Some(e) = self.send_error.lock().clone() {
+                return Err(e);
+            }
             self.inputs
                 .lock()
                 .push((session_id.to_string(), text.to_string()));
             Ok(())
+        }
+
+        fn multiline(&self, _session_id: &str) -> bool {
+            *self.multiline.lock()
+        }
+
+        fn owner_keys(&self, session_id: &str) -> talk::OwnerKeys {
+            self.owner.get(session_id)
         }
     }
 
@@ -3447,6 +3622,9 @@ mod tests {
             gone: Mutex::new(Vec::new()),
             states: Mutex::new(HashMap::new()),
             inputs: Mutex::new(Vec::new()),
+            send_error: Mutex::new(None),
+            multiline: Mutex::new(true),
+            owner: talk::OwnerInput::default(),
         });
         (Runs::new(Arc::clone(&host), store, Some(root)), host, app)
     }
@@ -3658,6 +3836,7 @@ mod tests {
                 role: String::new(),
                 prompt: prompt.into(),
                 dir: String::new(),
+                no_create: false,
             },
         )
     }
@@ -4241,6 +4420,7 @@ mod tests {
                 role: String::new(),
                 prompt: "suba o ambiente".into(),
                 dir: String::new(),
+                no_create: false,
             },
         )
     }
@@ -4840,6 +5020,7 @@ mod tests {
                         role: String::new(),
                         prompt: "x".into(),
                         dir: String::new(),
+                        no_create: false,
                     },
                 ),
                 note("n"),
@@ -5425,6 +5606,286 @@ mod tests {
             .call(
                 "orbit_note_write",
                 &json!({"node": "t", "text": "liberada"}),
+            )
+            .unwrap();
+        runs.stop(&run.id).unwrap();
+    }
+
+    /// Memória sobre o texto do grafo salvo: o que o dono escreveu depois do
+    /// ▶ é o que o agente lê, e o `append` soma a ele (nada volta ao texto
+    /// do ▶).
+    #[cfg(unix)]
+    #[test]
+    fn memory_reads_and_appends_over_the_owners_text_saved_after_start() {
+        use serde_json::json;
+        let dir = tempfile::tempdir().unwrap();
+        let (runs, host, _app) = pty_runs(dir.path().join("runs"));
+        let mut a = orchestrator("a");
+        a.title = "Front".into();
+        let g = graph(
+            vec![a, note("m")],
+            vec![edge("m1", "a", "m", EdgeKind::Memory)],
+        );
+        runs.store.save_orbit_graph(&g, true, None).unwrap();
+        let run = runs.start(g.clone(), vec![]).unwrap();
+        wait_orchestrating(&runs, &run.id, "a");
+        let front = tools_of(&host, "Front");
+
+        // O dono escreve na nota depois do ▶.
+        let mut edited = g.clone();
+        edited.nodes[1].kind = NodeKind::Note {
+            markdown: "do dono".into(),
+            locked: false,
+        };
+        runs.store.save_orbit_graph(&edited, true, None).unwrap();
+        let got = front
+            .call("orbit_note_read", &json!({"node": "m"}))
+            .unwrap();
+        assert_eq!(got["markdown"], "do dono");
+        front
+            .call(
+                "orbit_note_write",
+                &json!({"node": "m", "text": "do agente", "mode": "append"}),
+            )
+            .unwrap();
+        let saved = runs.store.get_orbit_graph("g-1").unwrap().unwrap().value;
+        assert_eq!(
+            saved.nodes[1].kind,
+            NodeKind::Note {
+                markdown: "do dono\ndo agente".into(),
+                locked: false,
+            }
+        );
+        runs.stop(&run.id).unwrap();
+    }
+
+    /// As permissões olham as ligações de agora do grafo salvo: tirar a
+    /// ligação no canvas durante o run revoga na hora, pôr libera na hora —
+    /// conversa, memória e controla.
+    #[cfg(unix)]
+    #[test]
+    fn links_removed_or_added_during_the_run_count_at_once() {
+        use serde_json::json;
+        let dir = tempfile::tempdir().unwrap();
+        let (runs, host, _app) = pty_runs(dir.path().join("runs"));
+        let mut a = orchestrator("a");
+        a.title = "Front".into();
+        let mut b = orchestrator("b");
+        b.title = "Revisor".into();
+        let with = graph(
+            vec![a, b, note("m"), browser("w", "http://localhost:1")],
+            vec![
+                edge("t1", "a", "b", EdgeKind::Talk),
+                edge("m1", "a", "m", EdgeKind::Memory),
+                edge("c1", "a", "w", EdgeKind::Control),
+            ],
+        );
+        let mut without = with.clone();
+        without.edges.clear();
+        runs.store.save_orbit_graph(&with, true, None).unwrap();
+        let run = runs.start(with.clone(), vec![]).unwrap();
+        wait_orchestrating(&runs, &run.id, "a");
+        wait_orchestrating(&runs, &run.id, "b");
+        let front = tools_of(&host, "Front");
+        let calls = [
+            ("orbit_send", json!({"to": "b", "text": "oi"}), "conversa"),
+            ("orbit_note_read", json!({"node": "m"}), "memória"),
+            (
+                "orbit_note_write",
+                json!({"node": "m", "text": "x"}),
+                "memória",
+            ),
+            (
+                "orbit_browser_open",
+                json!({"node": "w", "url": "http://localhost:5173"}),
+                "controla",
+            ),
+            (
+                "orbit_browser_open",
+                json!({"url": "http://localhost:5173"}),
+                "nenhum navegador ligado",
+            ),
+        ];
+        host.set_state("Revisor", PeerState::Working);
+        for (tool, args, _) in &calls {
+            front.call(tool, args).unwrap();
+        }
+        let peers = front.call("orbit_peers", &json!({})).unwrap();
+        assert_eq!(peers["peers"].as_array().unwrap().len(), 1);
+
+        // O dono tira as ligações no canvas: recusa na hora.
+        runs.store.save_orbit_graph(&without, true, None).unwrap();
+        for (tool, args, why) in &calls {
+            let err = front.call(tool, args).unwrap_err();
+            assert!(err.contains(why), "{tool}: {err}");
+        }
+        let peers = front.call("orbit_peers", &json!({})).unwrap();
+        assert!(peers["peers"].as_array().unwrap().is_empty());
+
+        // E põe de volta: aceita na hora.
+        runs.store.save_orbit_graph(&with, true, None).unwrap();
+        for (tool, args, _) in &calls {
+            front.call(tool, args).unwrap();
+        }
+        runs.stop(&run.id).unwrap();
+    }
+
+    /// A fila só esvazia com o envio Ok: com erro, as mensagens voltam a
+    /// esperar e o retrato leva "não entregue" com o motivo. Sessão sem
+    /// bracketed paste recebe o bloco numa linha só. Dono digitando no
+    /// terminal do destino: a entrega espera.
+    #[cfg(unix)]
+    #[test]
+    fn delivery_keeps_the_queue_on_error_goes_one_line_and_waits_for_the_owner() {
+        use serde_json::json;
+        let dir = tempfile::tempdir().unwrap();
+        let (runs, host, _app) = pty_runs(dir.path().join("runs"));
+        let mut a = orchestrator("a");
+        a.title = "Front".into();
+        let mut b = orchestrator("b");
+        b.title = "Revisor".into();
+        let g = graph(vec![a, b], vec![edge("t1", "a", "b", EdgeKind::Talk)]);
+        runs.store.save_orbit_graph(&g, true, None).unwrap();
+        let run = runs.start(g, vec![]).unwrap();
+        wait_orchestrating(&runs, &run.id, "a");
+        wait_orchestrating(&runs, &run.id, "b");
+        let front = tools_of(&host, "Front");
+        let session = runs.get(&run.id).unwrap().nodes["b"]
+            .session_id
+            .clone()
+            .unwrap();
+
+        host.set_state("Revisor", PeerState::Working);
+        front
+            .call("orbit_send", &json!({"to": "b", "text": "um\ndois"}))
+            .unwrap();
+        *host.send_error.lock() = Some("sessão fechou".into());
+        host.set_state("Revisor", PeerState::Ready);
+        assert!(host.inputs.lock().is_empty());
+        let r = runs.get(&run.id).unwrap();
+        assert_eq!(r.nodes["b"].inbox, 1);
+        let why = r.nodes["b"].undelivered.clone().unwrap();
+        assert!(
+            why.contains("não entregue") && why.contains("sessão fechou"),
+            "{why}"
+        );
+
+        // Volta a dar certo no turno seguinte, sem bracketed paste: uma linha.
+        *host.send_error.lock() = None;
+        *host.multiline.lock() = false;
+        host.set_state("Revisor", PeerState::Working);
+        host.set_state("Revisor", PeerState::Ready);
+        let inputs = host.inputs.lock().clone();
+        assert_eq!(inputs.len(), 1);
+        assert!(!inputs[0].1.contains('\n'), "{}", inputs[0].1);
+        assert!(inputs[0].1.contains("> um ⏎ > dois"), "{}", inputs[0].1);
+        let r = runs.get(&run.id).unwrap();
+        assert_eq!(r.nodes["b"].inbox, 0);
+        assert_eq!(r.nodes["b"].undelivered, None);
+
+        // O dono deixou texto por enviar no terminal do Revisor: espera.
+        host.set_state("Revisor", PeerState::Working);
+        front
+            .call("orbit_send", &json!({"to": "b", "text": "três"}))
+            .unwrap();
+        host.owner.record(&session, b"git sta", now());
+        host.set_state("Revisor", PeerState::Ready);
+        assert_eq!(host.inputs.lock().len(), 1);
+        // Enviou, mas teclou agora há pouco: ainda espera.
+        host.owner.record(&session, b"\r", now());
+        host.set_state("Revisor", PeerState::Ready);
+        assert_eq!(host.inputs.lock().len(), 1);
+        // Teclado parado há mais de 2 s: sai no mesmo Idle.
+        host.owner
+            .record(&session, b"\r", now() - talk::OWNER_QUIET_MS - 1);
+        host.set_state("Revisor", PeerState::Ready);
+        let inputs = host.inputs.lock().clone();
+        assert_eq!(inputs.len(), 2);
+        assert!(inputs[1].1.contains("> três"));
+        runs.stop(&run.id).unwrap();
+    }
+
+    /// `orbit_node_status`: só de nó ligado a quem pergunta (qualquer
+    /// ligação, em qualquer sentido) ou que ele criou.
+    #[cfg(unix)]
+    #[test]
+    fn node_status_needs_a_link_or_authorship() {
+        use serde_json::json;
+        let dir = tempfile::tempdir().unwrap();
+        let (runs, host, _app) = pty_runs(dir.path().join("runs"));
+        let mut a = orchestrator("a");
+        a.title = "Front".into();
+        let g = graph(
+            vec![
+                a,
+                note("m"),
+                process("p", "sleep 30"),
+                process("solto", "sleep 30"),
+            ],
+            vec![
+                edge("m1", "a", "m", EdgeKind::Memory),
+                edge("d1", "a", "p", EdgeKind::Diff),
+            ],
+        );
+        runs.store.save_orbit_graph(&g, true, None).unwrap();
+        let run = runs.start(g.clone(), vec![]).unwrap();
+        wait_orchestrating(&runs, &run.id, "a");
+        let front = tools_of(&host, "Front");
+        front
+            .call("orbit_node_status", &json!({"node_id": "m"}))
+            .unwrap();
+        front
+            .call("orbit_node_status", &json!({"node_id": "p"}))
+            .unwrap();
+        let err = front
+            .call("orbit_node_status", &json!({"node_id": "solto"}))
+            .unwrap_err();
+        assert!(err.contains("não está ligado"), "{err}");
+        // A ligação nova no sentido contrário vale na hora.
+        let mut linked = g.clone();
+        linked.edges.push(edge("l1", "solto", "a", EdgeKind::Log));
+        runs.store.save_orbit_graph(&linked, true, None).unwrap();
+        front
+            .call("orbit_node_status", &json!({"node_id": "solto"}))
+            .unwrap();
+        runs.stop(&run.id).unwrap();
+    }
+
+    /// "Não criar nós": o agente tem as ferramentas sem as `orbit_create_*`
+    /// (o `tools/list` não as anuncia e o core recusa a chamada).
+    #[cfg(unix)]
+    #[test]
+    fn agent_marked_no_create_gets_the_tools_without_create() {
+        use serde_json::json;
+        let dir = tempfile::tempdir().unwrap();
+        let work = dir.path().join("api");
+        std::fs::create_dir(&work).unwrap();
+        let (runs, host, _app) = pty_runs(dir.path().join("runs"));
+        let mut a = orchestrator("a");
+        a.title = "Quieto".into();
+        if let NodeKind::Agent { no_create, .. } = &mut a.kind {
+            *no_create = true;
+        }
+        let g = graph(vec![a, orchestrator("o")], vec![]);
+        runs.store.save_orbit_graph(&g, true, None).unwrap();
+        let run = runs.start(g, vec![]).unwrap();
+        wait_orchestrating(&runs, &run.id, "a");
+        wait_orchestrating(&runs, &run.id, "o");
+        assert!(tools_of(&host, "o").can_create);
+        let tools = tools_of(&host, "Quieto");
+        assert!(!tools.can_create);
+        let err = tools
+            .call(
+                "orbit_create_process",
+                &json!({"title": "api", "command": "echo", "dir": work}),
+            )
+            .unwrap_err();
+        assert!(err.contains("Não criar nós"), "{err}");
+        // O resto das ferramentas segue.
+        tools
+            .call(
+                "orbit_plan",
+                &json!({"steps": [{"text": "um", "state": "doing"}]}),
             )
             .unwrap();
         runs.stop(&run.id).unwrap();
