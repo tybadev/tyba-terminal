@@ -1,9 +1,11 @@
 import {
   Fragment,
   createContext,
+  useCallback,
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -12,12 +14,14 @@ import { ArrowClockwise, ArrowsOut, DotsThree, FolderSimple, Trash } from "@phos
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
   Handle,
-  NodeResizer,
+  NodeResizeControl,
   Position,
+  ResizeControlVariant,
   useConnection,
-  useReactFlow,
+  useStore,
   useUpdateNodeInternals,
   type Node,
+  type ResizeDragEvent,
 } from "@xyflow/react";
 
 import {
@@ -52,6 +56,7 @@ import {
   type RingState,
 } from "@/lib/orbitCard";
 import { decideApproval } from "@/lib/notifications";
+import { sizeLabel } from "@/lib/orbitHandling";
 
 export type OrbitFlowNode = Node<FlowNodeData>;
 
@@ -126,6 +131,26 @@ export const CanvasStateContext = createContext<CanvasState>({
   createdBy: new Map(),
   approvals: new Map(),
   telemetry: new Map(),
+});
+
+/**
+ * Apagar pela lixeira (quadro OrbitManuseio 4 e 5): o canvas decide se o nó
+ * some na hora ou se a cápsula pergunta antes ("Parar e apagar X?"). Quem
+ * está perguntando é estado de tela, efêmero.
+ */
+export interface NodeDelete {
+  /** Nó cuja cápsula pergunta agora, ou `null`. */
+  asking: string | null;
+  request: (nodeId: string) => void;
+  confirm: (nodeId: string) => void;
+  cancel: () => void;
+}
+
+export const NodeDeleteContext = createContext<NodeDelete>({
+  asking: null,
+  request: () => {},
+  confirm: () => {},
+  cancel: () => {},
 });
 
 /** Relógio dos tempos (ms); só anda enquanto algo roda. */
@@ -420,6 +445,170 @@ function ApprovalFooter({ node, request }: { node: OrbitNode; request: ApprovalR
 /** Botão de algo que o core ainda não faz: aparece no lugar do quadro, sem ação, com a dica. */
 export const soonClass = "cursor-not-allowed text-tyba-text-ghost";
 
+/** Os risquinhos do canto de baixo à direita (quadro OrbitManuseio 1 e 3). */
+function Grip({ active }: { active: boolean }) {
+  return (
+    <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden className="pointer-events-none">
+      <path
+        d="M13 5 L5 13 M13 9 L9 13"
+        stroke={active ? "var(--tyba-violet)" : "var(--tyba-text-muted)"}
+        strokeWidth={active ? 1.6 : 1.4}
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+const LINE_POSITIONS = ["top", "right", "bottom", "left"] as const;
+const CORNER_POSITIONS = ["top-left", "top-right", "bottom-left", "bottom-right"] as const;
+
+/**
+ * As quatro bordas e os cantos redimensionam sempre, sem precisar selecionar
+ * (alvo invisível de 8px nas bordas e 14px nos cantos); os risquinhos no
+ * canto de baixo à direita aparecem no hover e no selecionado. Shift mantém a
+ * proporção do começo do gesto. Mínimo 260 × 150.
+ */
+function FrameResize({ showGrip, resizing }: { showGrip: boolean; resizing: boolean }) {
+  const [shift, setShift] = useState(false);
+  const onResizeStart = useCallback((e: ResizeDragEvent) => {
+    const source = e.sourceEvent as MouseEvent | undefined;
+    setShift(source?.shiftKey === true);
+  }, []);
+  // Shift no meio do gesto também vale, enquanto ele dura.
+  useEffect(() => {
+    if (!resizing) return;
+    const key = (e: KeyboardEvent) => e.key === "Shift" && setShift(e.type === "keydown");
+    window.addEventListener("keydown", key);
+    window.addEventListener("keyup", key);
+    return () => {
+      window.removeEventListener("keydown", key);
+      window.removeEventListener("keyup", key);
+    };
+  }, [resizing]);
+  const common = {
+    minWidth: 260,
+    minHeight: 150,
+    keepAspectRatio: shift,
+    onResizeStart,
+  };
+  return (
+    <>
+      {LINE_POSITIONS.map((p) => (
+        <NodeResizeControl
+          key={p}
+          {...common}
+          position={p}
+          variant={ResizeControlVariant.Line}
+          // A de cima fica sob a cápsula (que arrasta); as outras, sobre a janela.
+          className={p === "top" ? "z-0 !h-2" : p === "bottom" ? "z-[2] !h-2" : "z-[2] !w-2"}
+          style={{ borderColor: "transparent" }}
+        />
+      ))}
+      {CORNER_POSITIONS.map((p) => (
+        <NodeResizeControl
+          key={p}
+          {...common}
+          position={p}
+          className="z-[2]"
+          style={{ width: 14, height: 14, border: "none", background: "transparent" }}
+        />
+      ))}
+      <NodeResizeControl
+        {...common}
+        position="bottom-right"
+        autoScale={false}
+        className={`z-[2] ${showGrip ? "opacity-100" : "opacity-0 group-hover:opacity-100"}`}
+        style={{
+          left: "auto",
+          top: "auto",
+          right: 6,
+          bottom: 6,
+          translate: "none",
+          width: 14,
+          height: 14,
+          border: "none",
+          borderRadius: 0,
+          background: "transparent",
+        }}
+      >
+        <Grip active={resizing} />
+      </NodeResizeControl>
+    </>
+  );
+}
+
+/**
+ * O nome na cápsula é texto (arrastar por ele move o card); duplo clique
+ * abre o campo (quadro OrbitManuseio 6): Enter e sair do campo salvam, Esc
+ * volta o nome antigo.
+ */
+function CapsuleTitle({
+  id,
+  title,
+  locked,
+  editing,
+  setEditing,
+}: {
+  id: string;
+  title: string;
+  locked: boolean;
+  editing: boolean;
+  setEditing: (on: boolean) => void;
+}) {
+  const { t } = useTranslation();
+  const { updateNode } = useCanvasActions();
+  const [draft, setDraft] = useState(title);
+  // Esc fecha o campo sem salvar: o blur que vem depois não salva.
+  const closed = useRef(false);
+  const save = () => {
+    if (closed.current) return;
+    closed.current = true;
+    setEditing(false);
+    if (draft !== title) updateNode(id, (n) => ({ ...n, title: draft }));
+  };
+  if (!editing) {
+    return (
+      <span
+        onDoubleClick={() => {
+          if (locked) return;
+          closed.current = false;
+          setDraft(title);
+          setEditing(true);
+        }}
+        className="min-w-0 flex-1 truncate font-sans text-[14px] font-semibold text-tyba-text"
+      >
+        {title}
+      </span>
+    );
+  }
+  return (
+    <input
+      aria-label={t("orbitNodeTitle")}
+      autoFocus
+      spellCheck={false}
+      autoCorrect="off"
+      autoCapitalize="off"
+      value={draft}
+      onChange={(e) => setDraft(e.target.value)}
+      onFocus={(e) => e.target.select()}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          e.stopPropagation();
+          save();
+        } else if (e.key === "Escape") {
+          e.preventDefault();
+          e.stopPropagation();
+          closed.current = true;
+          setEditing(false);
+        }
+      }}
+      onBlur={save}
+      className="nodrag min-w-0 flex-1 rounded-[6px] bg-tyba-sunken px-2 py-[3px] font-sans text-[14px] font-semibold text-tyba-text caret-tyba-violet outline outline-1 outline-tyba-violet/60"
+    />
+  );
+}
+
 /**
  * Moldura comum dos nós (quadro OrbitCardsD, "ilha"): a cápsula do
  * cabeçalho flutua sobre a janela sem moldura. Na cápsula, o anel da marca
@@ -469,7 +658,6 @@ export function NodeFrame({
   const { t } = useTranslation();
   const {
     integrations,
-    updateNode,
     setFocusNode,
     keepCreated,
     graph,
@@ -481,7 +669,8 @@ export function NodeFrame({
   } = useOrbit();
   const nodeRun = run?.nodes[id];
   // Criado por outro agente no run à vista: contorno tracejado violeta e
-  // "criado pelo X". Enquanto efêmero, sem editar nem apagar, e "Manter".
+  // "criado pelo X". Enquanto efêmero, sem editar nem ligar, e "Manter";
+  // a lixeira descarta (some da vista do run).
   const creator = createdBy.get(id);
   const created = creator !== undefined;
   const locked = createdIds.has(id);
@@ -491,7 +680,17 @@ export function NodeFrame({
   const ring = ringState(nodeRun, request !== null);
   const failed = ring === "failed";
   const [open, setOpen] = useState(false);
-  const { deleteElements } = useReactFlow();
+  const [editing, setEditing] = useState(false);
+  const del = useContext(NodeDeleteContext);
+  const asking = del.asking === id;
+  // Arrastando e redimensionando (quadro OrbitManuseio 2 e 3): só mudam no
+  // começo e no fim do gesto; o tamanho da cápsula "L × A", a cada passo.
+  const dragging = useStore((s) => s.nodeLookup.get(id)?.dragging === true);
+  const resizeSize = useStore((s) => {
+    const n = s.nodeLookup.get(id);
+    return n?.resizing ? sizeLabel(n.measured.width ?? 0, n.measured.height ?? 0) : null;
+  });
+  const resizing = resizeSize !== null;
   const updateInternals = useUpdateNodeInternals();
 
   const outputs = produces(node.kind, integrations);
@@ -530,13 +729,17 @@ export function NodeFrame({
   const capsule = request
     ? "border-tyba-amber bg-tyba-amber text-tyba-text-inverse"
     : `${
-        created
-          ? "border-dashed border-tyba-violet/80"
-          : failed
-            ? "border-tyba-red/60"
-            : inUse
-              ? "border-tyba-cyan/60"
-              : "border-[color-mix(in_srgb,var(--tyba-text)_10%,transparent)]"
+        asking
+          ? "border-tyba-red/70"
+          : dragging || editing
+            ? "border-tyba-violet/60"
+            : created
+              ? "border-dashed border-tyba-violet/80"
+              : failed
+                ? "border-tyba-red/60"
+                : inUse
+                  ? "border-tyba-cyan/60"
+                  : "border-[color-mix(in_srgb,var(--tyba-text)_10%,transparent)] group-hover:border-[color-mix(in_srgb,var(--tyba-text)_18%,transparent)]"
       } ${
         paper
           ? "bg-[color-mix(in_srgb,var(--tyba-violet)_7%,var(--tyba-surface))]"
@@ -544,33 +747,29 @@ export function NodeFrame({
       }`;
   const win = dropKind
     ? "border-tyba-violet shadow-[0_0_0_4px_color-mix(in_srgb,var(--tyba-violet)_22%,transparent)]"
-    : selected
-      ? "border-tyba-violet shadow-[0_0_0_1px_var(--tyba-violet)]"
-      : request
-        ? "border-tyba-amber/40"
-        : created
-          ? "border-dashed border-tyba-violet/50"
-          : failed
-            ? "border-tyba-red/35"
-            : inUse
-              ? "border-tyba-cyan/50"
-              : "border-tyba-border";
+    : asking
+      ? "border-tyba-red/35"
+      : dragging
+        ? "border-tyba-border shadow-[0_30px_70px_rgba(0,0,0,0.75)]"
+        : selected || resizing
+          ? "border-tyba-violet shadow-[0_0_0_1px_var(--tyba-violet)]"
+          : request
+            ? "border-tyba-amber/40"
+            : created
+              ? "border-dashed border-tyba-violet/50"
+              : failed
+                ? "border-tyba-red/35"
+                : inUse
+                  ? "border-tyba-cyan/50"
+                  : "border-tyba-border group-hover:border-tyba-text/[.16]";
 
   return (
-    <div className="group relative flex h-full w-full flex-col pt-5 font-mono text-tyba-text">
-      <NodeResizer
-        isVisible={selected}
-        minWidth={260}
-        minHeight={150}
-        lineStyle={{ borderColor: "transparent" }}
-        handleStyle={{
-          width: 8,
-          height: 8,
-          borderRadius: 2,
-          border: "1px solid var(--tyba-violet)",
-          background: "var(--tyba-bg)",
-        }}
-      />
+    <div
+      className={`group relative flex h-full w-full flex-col pt-5 font-mono text-tyba-text ${
+        dragging ? "rotate-[-0.6deg]" : ""
+      }`}
+    >
+      <FrameResize showGrip={selected || resizing} resizing={resizing} />
       {/* A entrada existe sempre: as ligações dos criados (url, a tracejada
           do orquestrador) chegam nela mesmo onde o dono não liga nada. */}
       <Handle
@@ -593,64 +792,104 @@ export function NodeFrame({
           style={portStyle(EDGE_COLOR[outputs[0]])}
         />
       )}
+      {/* A cápsula inteira arrasta (menos os botões); o corpo é para usar. */}
       <div
-        className={`absolute top-0 right-3.5 left-3.5 z-[1] flex h-10 items-center gap-2.5 rounded-full border pr-2.5 pl-1.5 shadow-[var(--tyba-shadow-md)] ${capsule}`}
+        className={`absolute top-0 right-3.5 left-3.5 z-[1] flex h-10 items-center gap-2.5 rounded-full border pr-2.5 pl-1.5 ${
+          dragging
+            ? "cursor-grabbing shadow-[0_22px_50px_rgba(0,0,0,0.7)]"
+            : "cursor-grab shadow-[var(--tyba-shadow-md)]"
+        } ${capsule}`}
         title={request ? request.command : undefined}
       >
-        <NodeRing state={inUse && !request ? "user" : ring} tone={markTone}>
+        <NodeRing
+          state={asking ? "failed" : inUse && !request ? "user" : ring}
+          tone={asking ? "text-tyba-red" : markTone}
+        >
           {mark}
         </NodeRing>
         {request ? (
           <span className="min-w-0 flex-1 truncate font-sans text-[14px] font-semibold">
             {t("orbitNeedsYou", { title: node.title })}
           </span>
+        ) : asking ? (
+          <span className="min-w-0 flex-1 truncate font-sans text-[14px] font-semibold">
+            {t("orbitStopAndDelete", { title: node.title })}
+          </span>
         ) : (
-          <input
-            aria-label={t("orbitNodeTitle")}
-            spellCheck={false}
-            autoCorrect="off"
-            autoCapitalize="off"
-            value={node.title}
-            readOnly={locked}
-            onChange={(e) => {
-              const title = e.target.value;
-              updateNode(id, (n) => ({ ...n, title }));
-            }}
-            className="nodrag min-w-0 flex-1 truncate bg-transparent font-sans text-[14px] font-semibold text-tyba-text outline-none"
+          <CapsuleTitle
+            id={id}
+            title={node.title}
+            locked={locked}
+            editing={editing}
+            setEditing={setEditing}
           />
         )}
         {request ? (
           <ApprovalButtons request={request} />
+        ) : asking ? (
+          <>
+            <button
+              type="button"
+              onClick={() => del.confirm(id)}
+              className={`${capsuleBtn} bg-tyba-red text-tyba-text-inverse`}
+            >
+              {t("orbitDeleteConfirm")}
+            </button>
+            <button
+              type="button"
+              onClick={del.cancel}
+              className={`${capsuleBtn} bg-tyba-text/[.08] text-tyba-text`}
+            >
+              {t("orbitDeleteCancel")}
+            </button>
+          </>
         ) : (
           <>
             {status ?? (nodeRun && <CapsuleStatus nodeId={id} nodeRun={nodeRun} />)}
             {extra}
-            <button
-              type="button"
-              aria-label={t("orbitNodeDetails")}
-              aria-pressed={open}
-              title={t("orbitNodeDetails")}
-              onClick={() => setOpen((v) => !v)}
-              className={`nodrag flex shrink-0 items-center rounded-full px-1.5 py-0.5 ${
-                open
-                  ? "bg-tyba-text/[.08] text-tyba-text"
-                  : "text-tyba-text-faint hover:text-tyba-text"
-              }`}
-            >
-              <DotsThree size={16} weight="bold" />
-            </button>
+            {!dragging && (
+              <>
+                <button
+                  type="button"
+                  aria-label={t("orbitTrash")}
+                  title={t("orbitTrash")}
+                  onClick={() => del.request(id)}
+                  className="nodrag flex size-[26px] shrink-0 items-center justify-center rounded-full bg-tyba-text/[.06] text-tyba-text-muted opacity-0 group-hover:opacity-100 hover:text-tyba-text focus-visible:opacity-100"
+                >
+                  <Trash size={14} />
+                </button>
+                <button
+                  type="button"
+                  aria-label={t("orbitNodeDetails")}
+                  aria-pressed={open}
+                  title={t("orbitNodeDetails")}
+                  onClick={() => setOpen((v) => !v)}
+                  className={`nodrag flex shrink-0 items-center rounded-full px-1.5 py-0.5 ${
+                    open
+                      ? "bg-tyba-text/[.08] text-tyba-text"
+                      : "text-tyba-text-faint hover:text-tyba-text"
+                  }`}
+                >
+                  <DotsThree size={16} weight="bold" />
+                </button>
+              </>
+            )}
           </>
         )}
       </div>
       <div
-        className={`relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-[16px] border pt-6 ${
+        className={`nodrag relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-[16px] border pt-6 ${
           paper
             ? "bg-[color-mix(in_srgb,var(--tyba-violet)_4%,var(--tyba-surface))]"
             : "bg-tyba-sunken"
         } ${win}`}
       >
         {children}
-        {request ? (
+        {asking ? (
+          <div className="shrink-0 truncate px-3.5 pt-1 pb-2 text-[11px] text-tyba-red">
+            {t("orbitStopsBeforeLeaving")}
+          </div>
+        ) : request ? (
           <ApprovalFooter node={node} request={request} />
         ) : (
           (fail || created || meta) && (
@@ -768,16 +1007,17 @@ export function NodeFrame({
                   {t("orbitKeepAll")}
                 </button>
               )}
-              {!locked && (
-                <button
-                  type="button"
-                  onClick={() => void deleteElements({ nodes: [{ id }] })}
-                  className={`${detailBtn} text-tyba-text hover:text-tyba-red`}
-                >
-                  <Trash size={12} />
-                  {t("orbitDeleteNode")}
-                </button>
-              )}
+              <button
+                type="button"
+                onClick={() => {
+                  setOpen(false);
+                  del.request(id);
+                }}
+                className={`${detailBtn} text-tyba-text hover:text-tyba-red`}
+              >
+                <Trash size={12} />
+                {t("orbitDeleteNode")}
+              </button>
             </div>
           </div>
         )}
@@ -789,6 +1029,11 @@ export function NodeFrame({
           </div>
         )}
       </div>
+      {resizeSize && (
+        <span className="pointer-events-none absolute right-[26px] -bottom-[26px] z-[2] rounded-full border border-tyba-violet/50 bg-tyba-surface px-[9px] py-0.5 text-[11px] whitespace-nowrap text-tyba-violet">
+          {resizeSize}
+        </span>
+      )}
     </div>
   );
 }

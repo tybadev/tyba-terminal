@@ -1769,6 +1769,49 @@ impl<H: RunHost> Runs<H> {
         Ok(())
     }
 
+    /// Apagar um nó rodando na tela: para só ele (rodando vira `stopped`,
+    /// esperando vira `skipped`, como o `orbit_stop_node`) e mata a sessão
+    /// dele — também a do agente que segue vivo depois do turno, com o run já
+    /// fechado. O front só tira o nó do grafo depois disto. Nó sem nada vivo:
+    /// não faz nada.
+    pub fn stop_one(&self, run_id: &str, node_id: &str) -> Result<(), String> {
+        let (was_active, mut kill) = {
+            let mut active = self.active.lock();
+            match active.get_mut(run_id) {
+                Some(a) => (true, a.sched.stop_node(node_id, now())),
+                None => (false, None),
+            }
+        };
+        let session = match self.get(run_id) {
+            Some(run) => run.nodes.get(node_id).and_then(|n| n.session_id.clone()),
+            None if was_active => None,
+            None => return Err("execução não encontrada".into()),
+        };
+        // O agente vivo depois do turno sai da lista do run: o Parar e o
+        // `live_agents` não o veem mais.
+        if let Some(session) = session {
+            let mut agents = self.agents.lock();
+            if let Some(a) = agents.get_mut(run_id) {
+                let before = a.sessions.len();
+                a.sessions.retain(|s| *s != session);
+                if a.sessions.len() != before {
+                    kill = Some(session);
+                }
+            }
+        }
+        if let Some(session) = &kill {
+            self.host.kill(session);
+        }
+        if was_active {
+            self.publish_current(run_id);
+        } else if kill.is_some() {
+            if let Some(run) = self.get(run_id) {
+                self.publish(run);
+            }
+        }
+        Ok(())
+    }
+
     /// Os nós criados ainda não mantidos do run (o "Manter no grafo"): do
     /// ativo ou do retrato guardado — o run terminado, parado ou do histórico
     /// também os deixa manter.
@@ -2933,6 +2976,53 @@ mod tests {
         assert_eq!(run.status, RunStatus::Stopped);
         assert_eq!(run.nodes["p"].status, NodeStatus::Stopped);
         assert!(!host.pool.is_alive(session.parse().unwrap()));
+    }
+
+    /// Apagar um nó rodando: para só ele; o resto do run segue.
+    #[cfg(unix)]
+    #[test]
+    fn stop_one_kills_only_that_node() {
+        let dir = tempfile::tempdir().unwrap();
+        let (runs, host, _app) = pty_runs(dir.path().join("runs"));
+        let run = runs
+            .start(
+                graph(
+                    vec![process("p", "sleep 30"), process("q", "sleep 30")],
+                    vec![],
+                ),
+                vec![],
+            )
+            .unwrap();
+        let p = run.nodes["p"].session_id.clone().unwrap();
+        let q = run.nodes["q"].session_id.clone().unwrap();
+        runs.stop_one(&run.id, "p").unwrap();
+        let r = runs.get(&run.id).unwrap();
+        assert_eq!(r.nodes["p"].status, NodeStatus::Stopped);
+        assert_eq!(r.nodes["q"].status, NodeStatus::Running);
+        assert_eq!(r.status, RunStatus::Running);
+        assert!(!host.pool.is_alive(p.parse().unwrap()));
+        assert!(host.pool.is_alive(q.parse().unwrap()));
+        // De novo: nada vivo, nada a fazer.
+        runs.stop_one(&run.id, "p").unwrap();
+        runs.stop(&run.id).unwrap();
+        assert!(runs.stop_one("nao-existe", "p").is_err());
+    }
+
+    /// Run fechado, agente vivo depois do turno: apagar o nó mata a sessão.
+    #[cfg(unix)]
+    #[test]
+    fn stop_one_kills_the_live_agent_of_a_closed_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let (runs, host, _app) = pty_runs(dir.path().join("runs"));
+        let run = runs
+            .start(graph(vec![agent("a", "x")], vec![]), vec![])
+            .unwrap();
+        let run = wait_finished(&runs, &run.id);
+        let session = host.spawned.lock()[0].clone();
+        assert_eq!(run.live_agents, vec![session.clone()]);
+        runs.stop_one(&run.id, "a").unwrap();
+        assert!(host.killed.lock().contains(&session));
+        assert!(runs.get(&run.id).unwrap().live_agents.is_empty());
     }
 
     fn agent(id: &str, prompt: &str) -> Node {

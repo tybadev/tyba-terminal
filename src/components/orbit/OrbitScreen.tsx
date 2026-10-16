@@ -117,6 +117,7 @@ import {
 } from "@/lib/graphHistory";
 import { freeSpot, nodeRect, rightOf } from "@/lib/graphLayout";
 import { applyPlans, freshPlans } from "@/lib/orbitPlan";
+import { deletedNotice } from "@/lib/orbitHandling";
 import { IS_MAC } from "@/lib/platform";
 import {
   subagentKey,
@@ -329,12 +330,10 @@ function OrbitInner({
     applyShot(again.shot);
   };
   const onRemoved = useCallback(
-    (count: number) =>
-      setNotice({
-        text: count === 1 ? t("graphNodeDeleted") : t("graphNodesDeleted", { count }),
-        warn: false,
-        undo: true,
-      }),
+    (removed: readonly Pick<OrbitNode, "title" | "kind">[]) => {
+      const notice = deletedNotice(removed);
+      setNotice({ text: t(notice.key, notice.params), warn: false, undo: true });
+    },
     [t],
   );
   const undoNotice = notice?.undo ? notice : null;
@@ -1213,7 +1212,22 @@ function OrbitInner({
               />
             </>
           )}
-          {notice && (
+          {notice?.undo ? (
+            // Quadro OrbitManuseio 4: a pílula embaixo, com o desfazer do ⌘Z.
+            <div
+              role="status"
+              className="absolute bottom-3 left-1/2 z-20 flex max-w-[640px] -translate-x-1/2 items-center gap-3 rounded-full border border-tyba-text/[.12] bg-tyba-surface py-1.5 pr-2 pl-4 text-[12px] whitespace-nowrap text-tyba-text shadow-[var(--tyba-shadow-md)]"
+            >
+              <span className="truncate">{notice.text}</span>
+              <button
+                type="button"
+                onClick={undo}
+                className="shrink-0 rounded-full bg-tyba-text/[.08] px-3 py-[5px] text-[11.5px] text-tyba-text hover:bg-tyba-text/[.12]"
+              >
+                {t("orbitUndoKey", { mod })}
+              </button>
+            </div>
+          ) : notice && (
             <div
               role="status"
               className={`absolute bottom-3 left-1/2 z-20 flex max-w-[640px] -translate-x-1/2 items-start gap-2 rounded-[6px] border px-3 py-2 text-[12px] shadow-[var(--tyba-shadow-md)] ${
@@ -1224,15 +1238,6 @@ function OrbitInner({
             >
               {notice.warn && <Warning size={14} className="mt-px shrink-0" />}
               <span className="break-all">{notice.text}</span>
-              {notice.undo && (
-                <button
-                  type="button"
-                  onClick={undo}
-                  className="shrink-0 font-medium text-tyba-text hover:underline"
-                >
-                  {t("graphUndo")}
-                </button>
-              )}
               <button
                 type="button"
                 aria-label={t("close")}

@@ -856,6 +856,10 @@ export const runStart = (graphId: string) => invoke<string>("orbit_run_start", {
 /** ■ Parar: o core mata o process group de cada nó rodando. */
 export const runStop = (runId: string) => invoke<void>("orbit_run_stop", { runId });
 
+/** Apagar um nó rodando: o core para só ele (e o agente vivo depois do turno). */
+export const runStopNode = (runId: string, nodeId: string) =>
+  invoke<void>("orbit_run_stop_node", { runId, nodeId });
+
 export const runGet = (runId: string) => invoke<Run | null>("orbit_run_get", { runId });
 
 /** As 20 últimas execuções do grafo, mais nova primeiro. */

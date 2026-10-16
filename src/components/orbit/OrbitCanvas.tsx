@@ -20,6 +20,7 @@ import {
   MiniMap,
   Panel,
   ReactFlow,
+  ViewportPortal,
   applyEdgeChanges,
   applyNodeChanges,
   getBezierPath,
@@ -47,6 +48,7 @@ import {
 import { paletteEntries, recentDirs, type PaletteEntry } from "@/lib/graphPalette";
 import { listSnippets, type Snippet } from "@/lib/ipc";
 import { ringState, visibleCardApprovalIds } from "@/lib/orbitCard";
+import { SNAP_PX, deletePlan, snapToGuides, type Guide } from "@/lib/orbitHandling";
 import { IS_MAC } from "@/lib/platform";
 import { getTerm } from "@/lib/termRegistry";
 import {
@@ -92,6 +94,7 @@ import {
   produces,
   rememberDir,
   routeNodeChanges,
+  runStopNode,
   type EdgeKind,
   type FlowEdgeData,
   type Integration,
@@ -102,7 +105,13 @@ import { keepIfSame } from "@/lib/stableItems";
 import { AgentNode } from "./nodes/AgentNode";
 import { BrowserNode } from "./nodes/BrowserNode";
 import { IntegrationNode } from "./nodes/IntegrationNode";
-import { EDGE_COLOR, useOrbit, type OrbitFlowNode } from "./nodes/NodeFrame";
+import {
+  EDGE_COLOR,
+  NodeDeleteContext,
+  useOrbit,
+  type NodeDelete,
+  type OrbitFlowNode,
+} from "./nodes/NodeFrame";
 import { NodeFocus } from "./nodes/NodeFocus";
 import { NodePalette, PALETTE_H, PALETTE_W } from "./NodePalette";
 import { NoteNode } from "./nodes/NoteNode";
@@ -154,15 +163,24 @@ const SUBAGENT = { ...EPHEMERAL, draggable: true } as const;
 /**
  * Nó criado pelo orquestrador: responde como qualquer nó (clicar, digitar no
  * terminal, arrastar, redimensionar, selecionar) — com o EPHEMERAL o xyflow
- * punha `pointer-events: none` nele e nada funcionava. Só não se apaga nem
- * se liga: ele é do run, não do grafo, até "Manter no grafo".
+ * punha `pointer-events: none` nele e nada funcionava. Só não se liga: ele é
+ * do run, não do grafo, até "Manter no grafo". Apagar (lixeira ou Delete)
+ * descarta: some da vista do run (`onBeforeDelete`).
  */
-const CREATED = { connectable: false, deletable: false } as const;
+const CREATED = { connectable: false } as const;
 
 /** Onde o dono deixou cada criado no canvas (fora do grafo salvo). */
 export type CreatedView = Record<
   string,
-  { position: { x: number; y: number }; width?: number; height?: number; selected?: boolean }
+  {
+    position: { x: number; y: number };
+    width?: number;
+    height?: number;
+    selected?: boolean;
+    /** No meio do gesto (a sombra do arrasto, a cápsula "L × A"). */
+    dragging?: boolean;
+    resizing?: boolean;
+  }
 >;
 
 /** O que a etiqueta da ligação faz: trocar o tipo e remover (só ligação do grafo). */
@@ -397,8 +415,8 @@ export function OrbitCanvas({
   setCreatedView: Dispatch<SetStateAction<CreatedView>>;
   onUndo: () => void;
   onRedo: () => void;
-  /** Nós do grafo apagados agora (o aviso "Nó apagado · Desfazer"). */
-  onRemoved: (count: number) => void;
+  /** Nós do grafo apagados agora (o aviso "Nota “X” apagada · Desfazer"). */
+  onRemoved: (removed: readonly OrbitNode[]) => void;
   error: string | null;
   /** Pasta onde o nó novo nasce (a última usada, ou a home). */
   newDir: string;
@@ -443,9 +461,14 @@ export function OrbitCanvas({
     nodes.map((n) => n.data.node),
   );
   modelsRef.current = models;
+  // Criados que o dono descartou (lixeira): somem da vista deste run.
+  const [discarded, setDiscarded] = useState<ReadonlySet<string>>(new Set());
+  const runId = run?.id ?? null;
+  useEffect(() => setDiscarded(new Set()), [runId]);
   const created = useMemo(() => {
     const flow = createdFlow(run, models);
-    const ns: OrbitFlowNode[] = flow.nodes.map((n) => {
+    const shown = (id: string) => !discarded.has(id);
+    const ns: OrbitFlowNode[] = flow.nodes.filter((n) => shown(n.id)).map((n) => {
       const view = createdView[n.id];
       const width = view?.width ?? n.width;
       const height = view?.height ?? n.height;
@@ -455,6 +478,8 @@ export function OrbitCanvas({
         width,
         height,
         selected: view?.selected ?? false,
+        dragging: view?.dragging,
+        resizing: view?.resizing,
         // Com `measured`, o xyflow acha as portas já medidas quando o nó é
         // recriado a cada render.
         measured: { width, height },
@@ -464,14 +489,14 @@ export function OrbitCanvas({
     const es: Edge[] = [
       ...flow.byEdges.map((e) => ({ ...e, style: SUB_EDGE_STYLE, ...EPHEMERAL })),
       ...flow.edges.map((e) => ({ ...e, ...EPHEMERAL })),
-    ];
+    ].filter((e) => shown(e.source) && shown(e.target));
     return {
       nodes: ns,
       edges: es,
       nodeIds: new Set(ns.map((n) => n.id)),
       edgeIds: new Set(es.map((e) => e.id)),
     };
-  }, [run, models, createdView]);
+  }, [run, models, createdView, discarded]);
 
   // Filhos efêmeros: montados a cada render a partir do nó do agente (do
   // grafo ou criado pelo orquestrador), fora do state `nodes`/`edges` — por
@@ -562,13 +587,56 @@ export function OrbitCanvas({
     [bundled.edges, ephemeral.edges, created.edges],
   );
 
+  // O arrasto lê os nós por ref: o `onNodesChange` não muda a cada quadro.
+  const shownRef = useRef(shownNodes);
+  shownRef.current = shownNodes;
+  const nodesRef = useRef(nodes);
+  nodesRef.current = nodes;
+
+  // Guias violeta do arrasto (quadro OrbitManuseio 2): estado de tela.
+  const [guides, setGuides] = useState<Guide[]>([]);
+  const zoom = useStore((s) => s.transform[2]);
+  /**
+   * Um card arrastado sozinho gruda de leve (6px na tela) na borda ou no
+   * centro dos outros. O xyflow refaz a posição a partir do ponteiro a cada
+   * passo, então ajustar a mudança basta — inclusive a do soltar.
+   */
+  const snapDrag = useCallback(
+    (changes: NodeChange<CanvasNode>[]): NodeChange<CanvasNode>[] => {
+      const drags = changes.filter(
+        (c) => c.type === "position" && typeof c.dragging === "boolean" && c.position,
+      );
+      const one = drags.length === 1 ? drags[0] : null;
+      if (!one || one.type !== "position" || !one.position || isSubagentNodeId(one.id)) {
+        if (drags.length) setGuides((g) => (g.length ? [] : g));
+        return changes;
+      }
+      const all = shownRef.current;
+      const me = all.find((n) => n.id === one.id);
+      if (!me) return changes;
+      const others = all
+        .filter((n) => n.id !== one.id && n.type !== "subagent" && n.type !== "subagentRounds")
+        .map(nodeRect);
+      const snap = snapToGuides({ ...nodeRect(me), ...one.position }, others, SNAP_PX / zoom);
+      const next = one.dragging ? snap.guides : [];
+      setGuides((g) => (JSON.stringify(g) === JSON.stringify(next) ? g : next));
+      return changes.map((c) => (c === one ? { ...one, position: { x: snap.x, y: snap.y } } : c));
+    },
+    [zoom],
+  );
+
   const onNodesChange = useCallback(
-    (changes: NodeChange<CanvasNode>[]) => {
+    (raw: NodeChange<CanvasNode>[]) => {
+      const changes = snapDrag(raw);
       const routed = routeNodeChanges(changes, created.nodeIds, isSubagentNodeId);
       const graph = routed.graph as NodeChange<OrbitFlowNode>[];
       if (graph.length) setNodes((ns) => applyNodeChanges(graph, ns));
-      const removed = graph.filter((c) => c.type === "remove").length;
-      if (removed > 0) onRemoved(removed);
+      const removedIds = new Set(graph.flatMap((c) => (c.type === "remove" ? [c.id] : [])));
+      if (removedIds.size > 0) {
+        onRemoved(
+          nodesRef.current.filter((n) => removedIds.has(n.id)).map((n) => n.data.node),
+        );
+      }
       if (routed.created.length) {
         const moved = applyNodeChanges(
           routed.created as NodeChange<OrbitFlowNode>[],
@@ -582,6 +650,8 @@ export function OrbitCanvas({
               width: n.width,
               height: n.height,
               selected: n.selected,
+              dragging: n.dragging,
+              resizing: n.resizing,
             };
           }
           return next;
@@ -597,7 +667,7 @@ export function OrbitCanvas({
         });
       }
     },
-    [setNodes, created.nodeIds, created.nodes, setCreatedView, onRemoved],
+    [snapDrag, setNodes, created.nodeIds, created.nodes, setCreatedView, onRemoved],
   );
   const onEdgesChange = useCallback(
     (changes: EdgeChange<Edge>[]) => {
@@ -610,6 +680,104 @@ export function OrbitCanvas({
       if (mine.length) setEdges((es) => applyEdgeChanges(mine, es));
     },
     [setEdges, created.edgeIds, bundled.members],
+  );
+
+  // ---------------------------------------------------------- apagar
+
+  // Quadro OrbitManuseio 4 e 5: nó parado some na hora (com as ligações e o
+  // aviso de desfazer); rodando, a cápsula pergunta e o core para o nó antes
+  // de ele sair. Criado pelo orquestrador: some só da vista do run (o core
+  // não tem descartar; o que não é mantido já fica fora do grafo).
+  const [asking, setAsking] = useState<string | null>(null);
+  const removeNow = useCallback(
+    (ids: ReadonlySet<string>) => {
+      const fromCreated = [...ids].filter((id) => created.nodeIds.has(id));
+      if (fromCreated.length) setDiscarded((d) => new Set([...d, ...fromCreated]));
+      const removed = nodesRef.current.filter((n) => ids.has(n.id)).map((n) => n.data.node);
+      if (removed.length === 0) return;
+      const gone = new Set(removed.map((n) => n.id));
+      setNodes((ns) => ns.filter((n) => !gone.has(n.id)));
+      setEdges((es) => es.filter((e) => !gone.has(e.source) && !gone.has(e.target)));
+      onRemoved(removed);
+    },
+    [created.nodeIds, setNodes, setEdges, onRemoved],
+  );
+  const planOf = useCallback(
+    (id: string) => {
+      const node = (shownRef.current.find((n) => n.id === id)?.data as { node?: OrbitNode })
+        ?.node;
+      return node ? deletePlan(node.kind, run, id, live) : null;
+    },
+    [run, live],
+  );
+  const stopNode = useCallback(
+    (id: string) => (run ? runStopNode(run.id, id) : Promise.resolve()),
+    [run],
+  );
+  const nodeDelete = useMemo<NodeDelete>(
+    () => ({
+      asking,
+      request: (id) => {
+        const plan = planOf(id);
+        if (!plan) return;
+        if (plan.ask) return setAsking(id);
+        if (plan.stop) void stopNode(id).catch(() => {});
+        removeNow(new Set([id]));
+      },
+      confirm: (id) => {
+        setAsking(null);
+        stopNode(id)
+          .then(() => removeNow(new Set([id])))
+          .catch((e) => toastError(String(e)));
+      },
+      cancel: () => setAsking(null),
+    }),
+    [asking, planOf, stopNode, removeNow],
+  );
+  // O nó que perguntava saiu da vista (desfazer, outro run): sem pergunta.
+  useEffect(() => {
+    if (asking && !shownNodes.some((n) => n.id === asking)) setAsking(null);
+  }, [asking, shownNodes]);
+  // Enter confirma, Esc cancela — antes do terminal e dos atalhos do canvas.
+  const nodeDeleteRef = useRef(nodeDelete);
+  nodeDeleteRef.current = nodeDelete;
+  useEffect(() => {
+    if (!asking) return;
+    const key = (e: KeyboardEvent) => {
+      if (e.key !== "Enter" && e.key !== "Escape") return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.key === "Enter") nodeDeleteRef.current.confirm(asking);
+      else nodeDeleteRef.current.cancel();
+    };
+    window.addEventListener("keydown", key, true);
+    return () => window.removeEventListener("keydown", key, true);
+  }, [asking]);
+  // Delete/Backspace seguem o mesmo caminho: quem roda pergunta (o primeiro
+  // deles) e fica; criado sai da vista; o resto o xyflow apaga.
+  const onBeforeDelete = useCallback(
+    async ({ nodes: ns, edges: es }: { nodes: CanvasNode[]; edges: Edge[] }) => {
+      const held = new Set<string>();
+      for (const n of ns) {
+        const plan = planOf(n.id);
+        if (!plan) continue;
+        if (plan.ask) {
+          held.add(n.id);
+          setAsking((a) => a ?? n.id);
+        } else if (created.nodeIds.has(n.id)) {
+          held.add(n.id);
+          if (plan.stop) void stopNode(n.id).catch(() => {});
+          setDiscarded((d) => new Set([...d, n.id]));
+        } else if (plan.stop) {
+          void stopNode(n.id).catch(() => {});
+        }
+      }
+      return {
+        nodes: ns.filter((n) => !held.has(n.id)),
+        edges: es.filter((e) => !held.has(e.source) && !held.has(e.target)),
+      };
+    },
+    [planOf, stopNode, created.nodeIds],
   );
 
   const model = useMemo(
@@ -804,7 +972,7 @@ export function OrbitCanvas({
   };
 
   const onKey = (e: KeyboardEvent) => {
-    if (e.defaultPrevented || palette || focusNode) return;
+    if (e.defaultPrevented || palette || focusNode || asking) return;
     const action = canvasKey(e, IS_MAC);
     if (!action) return;
     if (keyOwnedElsewhere(document.activeElement) || keyOwnedElsewhere(e.target as Element)) {
@@ -937,76 +1105,96 @@ export function OrbitCanvas({
         openPalette({ x: e.clientX, y: e.clientY }, null, false);
       }}
     >
-      <EdgeActionsContext.Provider value={edgeActions}>
-        <ReactFlow<CanvasNode, Edge>
-          nodes={shownNodes}
-          edges={shownEdges}
-          nodeTypes={nodeTypes}
-          edgeTypes={edgeTypes}
-          onNodesChange={onNodesChange}
-          onEdgesChange={onEdgesChange}
-          onConnect={onConnect}
-          onConnectEnd={onConnectEnd}
-          isValidConnection={isValidConnection}
-          connectionRadius={36}
-          deleteKeyCode={["Backspace", "Delete"]}
-          // Dois dedos movem o canvas; ⌘ + roda (ou pinça) dá zoom (canvas-9).
-          panOnScroll
-          zoomOnPinch
-          zoomActivationKeyCode={IS_MAC ? "Meta" : "Control"}
-          zoomOnDoubleClick={false}
-          minZoom={0.2}
-          maxZoom={2}
-          fitView
-          fitViewOptions={{ padding: 0.15, maxZoom: 1 }}
-          proOptions={{ hideAttribution: true }}
-          connectionLineStyle={{ stroke: "var(--tyba-violet)", strokeWidth: 1.6 }}
-          aria-label={t("orbitCanvas")}
-        >
-          <Background
-            variant={BackgroundVariant.Dots}
-            gap={24}
-            size={1.3}
-            color="var(--tyba-border-strong)"
-          />
-          {showMinimap && (
-            <MiniMap<CanvasNode>
-              pannable
-              zoomable
-              bgColor="var(--tyba-surface)"
-              maskColor="color-mix(in srgb, var(--tyba-bg) 70%, transparent)"
-              nodeColor={nodeColor}
-              onNodeClick={(_, n) => {
-                const r = nodeRect(n);
-                void setCenter(r.x + r.w / 2, r.y + r.h / 2, { duration: 200, zoom: 1 });
-              }}
+      <NodeDeleteContext.Provider value={nodeDelete}>
+        <EdgeActionsContext.Provider value={edgeActions}>
+          <ReactFlow<CanvasNode, Edge>
+            nodes={shownNodes}
+            edges={shownEdges}
+            nodeTypes={nodeTypes}
+            edgeTypes={edgeTypes}
+            onNodesChange={onNodesChange}
+            onEdgesChange={onEdgesChange}
+            onConnect={onConnect}
+            onConnectEnd={onConnectEnd}
+            onBeforeDelete={onBeforeDelete}
+            isValidConnection={isValidConnection}
+            connectionRadius={36}
+            deleteKeyCode={["Backspace", "Delete"]}
+            // Dois dedos movem o canvas; ⌘ + roda (ou pinça) dá zoom (canvas-9).
+            panOnScroll
+            zoomOnPinch
+            zoomActivationKeyCode={IS_MAC ? "Meta" : "Control"}
+            zoomOnDoubleClick={false}
+            minZoom={0.2}
+            maxZoom={2}
+            fitView
+            fitViewOptions={{ padding: 0.15, maxZoom: 1 }}
+            proOptions={{ hideAttribution: true }}
+            connectionLineStyle={{ stroke: "var(--tyba-violet)", strokeWidth: 1.6 }}
+            aria-label={t("orbitCanvas")}
+          >
+            {guides.length > 0 && (
+              <ViewportPortal>
+                {guides.map((g) => (
+                  <div
+                    key={`${g.axis}:${g.at}:${g.from}`}
+                    aria-hidden
+                    className="pointer-events-none absolute bg-tyba-violet/70"
+                    style={{
+                      zIndex: 1000,
+                      ...(g.axis === "x"
+                        ? { left: g.at, top: g.from, width: 1 / zoom, height: g.to - g.from }
+                        : { top: g.at, left: g.from, height: 1 / zoom, width: g.to - g.from }),
+                    }}
+                  />
+                ))}
+              </ViewportPortal>
+            )}
+            <Background
+              variant={BackgroundVariant.Dots}
+              gap={24}
+              size={1.3}
+              color="var(--tyba-border-strong)"
             />
-          )}
-          {error && (
-            <Panel position="top-center">
-              <div
-                role="alert"
-                className="flex max-w-[560px] items-start gap-2 rounded-[6px] border border-tyba-red/50 bg-tyba-red-tint px-3 py-2 font-mono text-[12px] text-tyba-red"
-              >
-                <Warning size={14} className="mt-px shrink-0" />
-                <span>{error}</span>
-              </div>
-            </Panel>
-          )}
-          {nodes.length === 0 && (
-            <Panel position="top-center" className="!top-1/3">
-              <p className="font-mono text-[12.5px] text-tyba-text-faint">
-                {t("orbitEmpty", { mod: modKey })}
+            {showMinimap && (
+              <MiniMap<CanvasNode>
+                pannable
+                zoomable
+                bgColor="var(--tyba-surface)"
+                maskColor="color-mix(in srgb, var(--tyba-bg) 70%, transparent)"
+                nodeColor={nodeColor}
+                onNodeClick={(_, n) => {
+                  const r = nodeRect(n);
+                  void setCenter(r.x + r.w / 2, r.y + r.h / 2, { duration: 200, zoom: 1 });
+                }}
+              />
+            )}
+            {error && (
+              <Panel position="top-center">
+                <div
+                  role="alert"
+                  className="flex max-w-[560px] items-start gap-2 rounded-[6px] border border-tyba-red/50 bg-tyba-red-tint px-3 py-2 font-mono text-[12px] text-tyba-red"
+                >
+                  <Warning size={14} className="mt-px shrink-0" />
+                  <span>{error}</span>
+                </div>
+              </Panel>
+            )}
+            {nodes.length === 0 && (
+              <Panel position="top-center" className="!top-1/3">
+                <p className="font-mono text-[12.5px] text-tyba-text-faint">
+                  {t("orbitEmpty", { mod: modKey })}
+                </p>
+              </Panel>
+            )}
+            <Panel position="bottom-left">
+              <p className="font-mono text-[11.5px] text-tyba-text-faint">
+                {t("graphHint", { mod: modKey })}
               </p>
             </Panel>
-          )}
-          <Panel position="bottom-left">
-            <p className="font-mono text-[11.5px] text-tyba-text-faint">
-              {t("graphHint", { mod: modKey })}
-            </p>
-          </Panel>
-        </ReactFlow>
-      </EdgeActionsContext.Provider>
+          </ReactFlow>
+        </EdgeActionsContext.Provider>
+      </NodeDeleteContext.Provider>
       {palette && (
         <NodePalette
           at={palette.screen}

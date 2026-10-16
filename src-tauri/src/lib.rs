@@ -8706,6 +8706,17 @@ fn orbit_run_stop(runs: State<'_, orbit::run::SharedRuns>, run_id: String) -> Re
     runs.stop(&run_id)
 }
 
+/// Apagar um nó rodando: o core para só ele (e o agente vivo depois do
+/// turno) antes de o front tirá-lo do grafo.
+#[tauri::command]
+fn orbit_run_stop_node(
+    runs: State<'_, orbit::run::SharedRuns>,
+    run_id: String,
+    node_id: String,
+) -> Result<(), String> {
+    runs.stop_one(&run_id, &node_id)
+}
+
 /// "Manter no grafo": os nós que o orquestrador criou no run (ativo,
 /// terminado, parado ou do histórico) entram no grafo salvo como nós normais —
 /// só `node_id` (o "Manter" do nó) ou todos os do `orchestrator` (o "Manter
@@ -9863,6 +9874,7 @@ pub fn run() {
             orbit_run_node,
             orbit_integration_test,
             orbit_run_stop,
+            orbit_run_stop_node,
             orbit_run_get,
             orbit_keep_created,
             orbit_runs_list,
