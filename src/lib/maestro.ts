@@ -557,3 +557,135 @@ export function concurrentAgents(
   }
   return null;
 }
+
+// ------------------------------------------- integrações e importação
+
+/** "Testar com a última entrada": roda só o script com o `in/` da última execução do nó. */
+export const integrationTest = (integrationId: string, graphId: string, nodeId: string) =>
+  invoke<Run>("maestro_integration_test", { integrationId, graphId, nodeId });
+
+/** Grava o `.tyba-maestro.toml`; devolve os nomes das variáveis zeradas (cara de segredo). */
+export const exportGraph = (graphId: string, path: string) =>
+  invoke<string[]>("maestro_export", { graphId, path });
+
+/** O que o core leu e validou do arquivo. Nada foi gravado ainda. */
+export interface ImportPreview {
+  /** SHA-256 do arquivo: o consentimento vale para este conteúdo. */
+  hash: string;
+  graph: Graph;
+  integrations: Integration[];
+  /** Já existe um grafo com esse id: confirmar substitui. */
+  replacesGraph: boolean;
+  /** Integrações locais com o mesmo id: confirmar substitui o script delas. */
+  replacesIntegrations: string[];
+}
+
+export const importPreview = (path: string) =>
+  invoke<ImportPreview>("maestro_import_preview", { path });
+
+/** Relê o arquivo e só grava se o hash for o da prévia. Devolve o id do grafo. */
+export const importConfirm = (path: string, hash: string) =>
+  invoke<string>("maestro_import_confirm", { path, hash });
+
+/** Teto do script de uma integração, em bytes (espelha `MAX_SCRIPT_BYTES` do core). */
+export const MAX_SCRIPT_BYTES = 64 * 1024;
+
+/** `char::is_control` do Rust (categoria Cc), fora `\n` e `\t` — espelha `has_control_chars`. */
+const CONTROL = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/;
+
+export type IntegrationProblem = "emptyName" | "scriptTooLarge" | "controlChars";
+
+/**
+ * Por que o core recusaria a integração (`validate_integration`), ou `null`.
+ * O front avisa antes de salvar; quem decide continua sendo o core.
+ */
+export function integrationProblem(
+  integration: Pick<Integration, "name" | "script">,
+): IntegrationProblem | null {
+  if (integration.name.trim() === "") return "emptyName";
+  if (new TextEncoder().encode(integration.script).length > MAX_SCRIPT_BYTES) {
+    return "scriptTooLarge";
+  }
+  if (CONTROL.test(integration.script)) return "controlChars";
+  return null;
+}
+
+/** Integração nova do painel: script vazio, roda ao receber diff, saída log. */
+export function newIntegration(id: string, name: string): Integration {
+  return { id, name, script: "", trigger: { type: "onInput", kind: "diff" }, output: "log", file: null };
+}
+
+/** Nó do canvas que usa a integração (o "Testar" roda com o `in/` dele). */
+export const integrationNode = (
+  nodes: readonly MaestroNode[],
+  integrationId: string,
+): MaestroNode | null =>
+  nodes.find((n) => n.kind.type === "integration" && n.kind.integrationId === integrationId) ??
+  null;
+
+/** Tipo arrastado do painel de integrações para o canvas. */
+export const INTEGRATION_DRAG_TYPE = "application/x-tyba-maestro-integration";
+
+/** Nome do arquivo exportado: o nome do grafo, só com caracteres seguros. */
+export function exportFileName(graphName: string): string {
+  const slug = graphName
+    .normalize("NFKD")
+    .replace(/[̀-ͯ]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/^[-.]+|-+$/g, "");
+  return `${slug || "maestro"}.tyba-maestro.toml`;
+}
+
+/** Junta pasta e nome com o separador que a pasta já usa. */
+export function joinPath(dir: string, name: string): string {
+  const sep = dir.includes("\\") && !dir.includes("/") ? "\\" : "/";
+  return dir.endsWith(sep) ? `${dir}${name}` : `${dir}${sep}${name}`;
+}
+
+/**
+ * Deixa à vista o que não aparece na tela: caractere de formatação (categoria
+ * Cf — bidi como U+202E, espaço de largura zero) vira `⟨U+XXXX⟩`. O core
+ * recusa caractere de controle, não esses; sem isto um script importado
+ * poderia mostrar uma coisa e rodar outra.
+ */
+export function revealHidden(text: string): string {
+  return text.replace(
+    /[\p{Cf}\u0000-\u0008\u000b-\u001f\u007f-\u009f]/gu,
+    (c) => `⟨U+${c.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0")}⟩`,
+  );
+}
+
+/** Um item do que vai rodar, na ordem em que a tela de importação mostra. */
+export type ImportItem =
+  | { type: "agent"; node: MaestroNode; runner: Runner; role: string; prompt: string }
+  | { type: "process"; node: MaestroNode; command: string; output: OutputKind }
+  | { type: "note"; node: MaestroNode; markdown: string }
+  | { type: "integration"; node: MaestroNode; integration: Integration | null };
+
+/**
+ * Tudo que o arquivo traz para rodar, por nó, com o texto inteiro (nunca
+ * resumo): prompts, comandos, notas e os scripts das integrações.
+ */
+export function importItems(preview: Pick<ImportPreview, "graph" | "integrations">): ImportItem[] {
+  const byId = integrationsById(preview.integrations);
+  return preview.graph.nodes.map((node): ImportItem => {
+    const k = node.kind;
+    switch (k.type) {
+      case "agent":
+        return { type: "agent", node, runner: k.runner, role: k.role, prompt: k.prompt };
+      case "process":
+        return { type: "process", node, command: k.command, output: k.output };
+      case "note":
+        return { type: "note", node, markdown: k.markdown };
+      case "integration":
+        return { type: "integration", node, integration: byId.get(k.integrationId) ?? null };
+    }
+  });
+}
+
+/** Integrações do arquivo que nenhum nó usa: também são gravadas, então também se mostram. */
+export const unusedImportIntegrations = (
+  preview: Pick<ImportPreview, "graph" | "integrations">,
+): Integration[] =>
+  preview.integrations.filter((i) => integrationNode(preview.graph.nodes, i.id) === null);

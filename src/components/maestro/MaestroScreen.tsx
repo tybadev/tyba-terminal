@@ -1,10 +1,22 @@
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+  type DragEvent,
+} from "react";
 import { useTranslation } from "react-i18next";
+import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import {
   BracketsCurly,
   ClockCounterClockwise,
   CornersOut,
+  FileArrowDown,
+  FileArrowUp,
   FolderSimple,
+  GearSix,
   GitBranch,
   MagnifyingGlassMinus,
   MagnifyingGlassPlus,
@@ -13,6 +25,7 @@ import {
   PlugsConnected,
   Plus,
   Stop,
+  Warning,
   X,
 } from "@phosphor-icons/react";
 import { ReactFlowProvider, useReactFlow, useViewport } from "@xyflow/react";
@@ -25,11 +38,18 @@ import {
 } from "@/components/ui/dropdown-menu";
 import {
   EMPTY_RUN_VIEW,
+  INTEGRATION_DRAG_TYPE,
   emptyGraph,
+  exportFileName,
+  exportGraph,
   formatDuration,
   fromFlow,
+  importPreview,
+  integrationTest,
+  joinPath,
   listGraphs,
   listIntegrations,
+  newNode,
   onRun,
   runGet,
   runNode,
@@ -42,9 +62,12 @@ import {
   selectedRun,
   toFlow,
   type Graph,
+  type ImportPreview,
   type Integration,
   type MaestroNode,
 } from "@/lib/maestro";
+import { ImportDialog } from "./ImportDialog";
+import { IntegrationsPanel } from "./IntegrationsPanel";
 import { MaestroCanvas, type MaestroFlowEdge } from "./MaestroCanvas";
 import { RunTimeline } from "./RunTimeline";
 import { MaestroContext, STATUS_TONE, type MaestroFlowNode } from "./nodes/NodeFrame";
@@ -100,6 +123,14 @@ function MaestroInner({
   const lastSaved = useRef<string | null>(null);
   const [runView, dispatchRun] = useReducer(runReducer, EMPTY_RUN_VIEW);
   const [now, setNow] = useState(() => Date.now());
+  const [showInts, setShowInts] = useState(false);
+  const [notice, setNotice] = useState<{ text: string; warn: boolean } | null>(null);
+  const [importing, setImporting] = useState<{ path: string; preview: ImportPreview } | null>(
+    null,
+  );
+  // Depois de importar: qual grafo abrir na pasta (pode haver mais de um nela).
+  const [preferId, setPreferId] = useState<string | null>(null);
+  const [reload, setReload] = useState(0);
 
   // Carrega o grafo da pasta (ou começa um vazio, gravado na primeira edição).
   useEffect(() => {
@@ -110,7 +141,9 @@ function MaestroInner({
     void Promise.all([listGraphs(), listIntegrations()])
       .then(([graphs, ints]) => {
         if (!alive) return;
-        const found = graphs.find((g) => g.dir === dir);
+        const found =
+          graphs.find((g) => g.id === preferId && g.dir === dir) ??
+          graphs.find((g) => g.dir === dir);
         const graph = found ?? emptyGraph(crypto.randomUUID(), dir);
         const flow = toFlow(graph);
         // Grafo novo e vazio conta como "salvo": só vai para o banco na
@@ -131,7 +164,7 @@ function MaestroInner({
     return () => {
       alive = false;
     };
-  }, [dir, t]);
+  }, [dir, t, preferId, reload]);
 
   const snapshot = useMemo(
     () => (meta ? JSON.stringify(fromFlow(meta, nodes, edges)) : null),
@@ -193,14 +226,19 @@ function MaestroInner({
     return () => clearInterval(timer);
   }, [runningId]);
 
+  /** O core lê o grafo do banco: o que ainda está no debounce vai antes. */
+  const flush = async (always = false) => {
+    if (!snapshot) return;
+    if (always || snapshot !== lastSaved.current) {
+      await saveGraph(JSON.parse(snapshot) as Graph);
+      lastSaved.current = snapshot;
+    }
+  };
+
   const start = async () => {
     if (!snapshot || !meta) return;
     try {
-      // O core roda o grafo do banco: o que ainda está no debounce vai antes.
-      if (snapshot !== lastSaved.current) {
-        await saveGraph(JSON.parse(snapshot) as Graph);
-        lastSaved.current = snapshot;
-      }
+      await flush();
       const id = await runStart(meta.id);
       const started = await runGet(id);
       if (started) dispatchRun({ type: "update", run: started });
@@ -223,6 +261,94 @@ function MaestroInner({
     [run, t],
   );
 
+  const testIntegration = async (integrationId: string, nodeId: string) => {
+    if (!meta) return;
+    await flush();
+    dispatchRun({ type: "update", run: await integrationTest(integrationId, meta.id, nodeId) });
+  };
+
+  const integrationSaved = (saved: Integration) =>
+    setIntegrations((list) =>
+      list.some((i) => i.id === saved.id)
+        ? list.map((i) => (i.id === saved.id ? saved : i))
+        : [...list, saved],
+    );
+
+  const exportFile = async () => {
+    if (!meta) return;
+    try {
+      const folder = await openFileDialog({ directory: true, title: t("maestroExportPick") });
+      if (typeof folder !== "string") return;
+      // Grafo novo e vazio ainda não foi para o banco: o export lê de lá.
+      await flush(true);
+      const path = joinPath(folder, exportFileName(meta.name));
+      const cleared = await exportGraph(meta.id, path);
+      setNotice(
+        cleared.length > 0
+          ? { text: t("maestroExportedCleared", { path, names: cleared.join(", ") }), warn: true }
+          : { text: t("maestroExported", { path }), warn: false },
+      );
+    } catch (e) {
+      setNotice({ text: t("maestroExportError", { error: String(e) }), warn: true });
+    }
+  };
+
+  const importFile = async () => {
+    try {
+      const path = await openFileDialog({
+        multiple: false,
+        directory: false,
+        title: t("maestroImportPick"),
+        filters: [{ name: "TYBA Maestro", extensions: ["toml"] }],
+      });
+      if (typeof path !== "string") return;
+      setImporting({ path, preview: await importPreview(path) });
+    } catch (e) {
+      setNotice({ text: t("maestroImportError", { error: String(e) }), warn: true });
+    }
+  };
+
+  const imported = (graphId: string) => {
+    const target = importing?.preview.graph.dir ?? null;
+    setImporting(null);
+    setPreferId(graphId);
+    if (target && dirs.includes(target)) {
+      setDir(target);
+      setReload((n) => n + 1);
+      setNotice({ text: t("maestroImported"), warn: false });
+    } else {
+      setNotice({ text: t("maestroImportedElsewhere", { dir: target ?? "" }), warn: true });
+    }
+  };
+
+  const dropIntegration = (e: DragEvent) => {
+    const integrationId = e.dataTransfer.getData(INTEGRATION_DRAG_TYPE);
+    const integration = integrations.find((i) => i.id === integrationId);
+    // Soltar em cima da própria gaveta não cria nó.
+    if (!integration || (e.target as Element).closest("[data-maestro-sheet]")) return;
+    e.preventDefault();
+    const at = screenToFlowPosition({ x: e.clientX, y: e.clientY });
+    const node = newNode(
+      crypto.randomUUID(),
+      integration.name,
+      { type: "integration", integrationId },
+      { x: 0, y: 0 },
+    );
+    node.position = { x: Math.round(at.x - node.size.w / 2), y: Math.round(at.y - 20) };
+    setNodes((ns) => [
+      ...ns.map((n) => ({ ...n, selected: false })),
+      {
+        id: node.id,
+        type: node.kind.type,
+        position: node.position,
+        width: node.size.w,
+        height: node.size.h,
+        selected: true,
+        data: { node },
+      },
+    ]);
+  };
+
   const updateNode = useCallback(
     (id: string, update: (node: MaestroNode) => MaestroNode) =>
       setNodes((ns) =>
@@ -230,7 +356,7 @@ function MaestroInner({
       ),
     [],
   );
-  const { zoomIn, zoomOut, zoomTo, fitView } = useReactFlow();
+  const { zoomIn, zoomOut, zoomTo, fitView, screenToFlowPosition } = useReactFlow();
   const { zoom } = useViewport();
   const actualSize = Math.round(zoom * 100) === 100;
 
@@ -389,10 +515,41 @@ function MaestroInner({
             <BracketsCurly size={13} />
             {t("maestroVariables")}
           </button>
-          <button type="button" disabled title={t("comingSoon")} className={tbtn}>
+          <button
+            type="button"
+            disabled={!meta}
+            aria-pressed={showInts}
+            aria-expanded={showInts}
+            aria-controls="maestro-integrations"
+            onClick={() => setShowInts((v) => !v)}
+            className={tbtn}
+          >
             <PlugsConnected size={13} />
             {t("maestroIntegrations")}
           </button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                disabled={!meta}
+                aria-label={t("maestroGraphSettings")}
+                title={t("maestroGraphSettings")}
+                className={tbtn}
+              >
+                <GearSix size={13} />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" className="w-56">
+              <DropdownMenuItem className="gap-2 text-xs" onSelect={() => void exportFile()}>
+                <FileArrowDown size={13} />
+                {t("maestroExport")}
+              </DropdownMenuItem>
+              <DropdownMenuItem className="gap-2 text-xs" onSelect={() => void importFile()}>
+                <FileArrowUp size={13} />
+                {t("maestroImport")}
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
           <span className="flex-1" />
           <div
             role="group"
@@ -443,7 +600,15 @@ function MaestroInner({
             <MapTrifold size={13} />
           </button>
         </div>
-        <div className="flex min-h-0 flex-1">
+        <div
+          className="relative flex min-h-0 flex-1"
+          onDragOver={(e) => {
+            if (!e.dataTransfer.types.includes(INTEGRATION_DRAG_TYPE)) return;
+            e.preventDefault();
+            e.dataTransfer.dropEffect = "copy";
+          }}
+          onDrop={dropIntegration}
+        >
           {/* Só monta com o grafo carregado: o `fitView` inicial enquadra os nós dele. */}
           {meta ? (
             <MaestroCanvas
@@ -468,6 +633,44 @@ function MaestroInner({
               onClose={() => setShowVars(false)}
             />
           )}
+          {showInts && meta && (
+            <>
+              <div
+                aria-hidden
+                onMouseDown={() => setShowInts(false)}
+                className="absolute inset-0 z-10 bg-tyba-bg/55"
+              />
+              <IntegrationsPanel
+                integrations={integrations}
+                nodes={graph.nodes}
+                dirName={baseName(dir)}
+                onSaved={integrationSaved}
+                onTest={testIntegration}
+                onClose={() => setShowInts(false)}
+              />
+            </>
+          )}
+          {notice && (
+            <div
+              role="status"
+              className={`absolute bottom-3 left-1/2 z-20 flex max-w-[640px] -translate-x-1/2 items-start gap-2 rounded-[6px] border px-3 py-2 text-[12px] shadow-[var(--tyba-shadow-md)] ${
+                notice.warn
+                  ? "border-tyba-amber/50 bg-tyba-amber-tint text-tyba-amber"
+                  : "border-tyba-border-strong bg-tyba-surface text-tyba-text-muted"
+              }`}
+            >
+              {notice.warn && <Warning size={14} className="mt-px shrink-0" />}
+              <span className="break-all">{notice.text}</span>
+              <button
+                type="button"
+                aria-label={t("close")}
+                onClick={() => setNotice(null)}
+                className="shrink-0 rounded-[4px] p-0.5 opacity-70 hover:opacity-100"
+              >
+                <X size={12} />
+              </button>
+            </div>
+          )}
         </div>
         {meta && (
           <RunTimeline
@@ -478,6 +681,14 @@ function MaestroInner({
           />
         )}
       </div>
+      {importing && (
+        <ImportDialog
+          path={importing.path}
+          preview={importing.preview}
+          onCancel={() => setImporting(null)}
+          onImported={imported}
+        />
+      )}
     </MaestroContext.Provider>
   );
 }
