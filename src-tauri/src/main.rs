@@ -14,6 +14,9 @@ fn main() {
     if let Some(code) = tyba_lib::orbit::mcp::maybe_run_orbit_mcp_mode() {
         std::process::exit(code);
     }
+    if let Some(code) = tyba_lib::orbit::mcp::maybe_run_orbit_open_mode() {
+        std::process::exit(code);
+    }
     if let Some(code) = tyba_lib::hook_ipc::channel::maybe_run_jail_mode() {
         std::process::exit(code);
     }

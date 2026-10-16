@@ -105,6 +105,12 @@ pub enum ToolCall {
     Plan {
         steps: Vec<PlanStep>,
     },
+    /// Abrir `url` (já local) no navegador ligado por `controla`. Sem `node`
+    /// (o `tyba _orbit-open` do `$BROWSER`): o ligado mais recente.
+    BrowserOpen {
+        node: Option<String>,
+        url: String,
+    },
 }
 
 /// Estado de um passo do plano.
@@ -166,6 +172,14 @@ struct BrowserArgs {
     url: Option<String>,
     #[serde(default)]
     from_node: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BrowserOpenArgs {
+    #[serde(default)]
+    node: Option<String>,
+    url: String,
 }
 
 #[derive(Deserialize)]
@@ -287,6 +301,15 @@ pub fn parse_call(tool: &str, value: &Value) -> Result<ToolCall, String> {
             required("node_id", &a.node_id)?;
             Ok(ToolCall::Stop { node_id: a.node_id })
         }
+        "orbit_browser_open" => {
+            let a: BrowserOpenArgs = args(tool, value)?;
+            let url = a.url.trim().to_string();
+            required("url", &url)?;
+            Ok(ToolCall::BrowserOpen {
+                node: a.node.filter(|n| !n.trim().is_empty()),
+                url: browser_url(&url)?,
+            })
+        }
         "orbit_plan" => {
             let a: PlanArgs = args(tool, value)?;
             Ok(ToolCall::Plan {
@@ -295,6 +318,28 @@ pub fn parse_call(tool: &str, value: &Value) -> Result<ToolCall, String> {
         }
         _ => Err(format!("ferramenta desconhecida: {tool}")),
     }
+}
+
+/// Recusa de `file://`: o iframe não abre arquivo (a Fase 5 abre).
+pub const FILE_URL_REFUSED: &str = "arquivo local: sirva por localhost (ex.: python3 -m \
+http.server na pasta) e abra o http://localhost:<porta>; abrir arquivo direto ainda não existe";
+
+/// A url que o agente manda abrir: `file://` ganha a explicação própria; o
+/// resto, a régua do salvar ([`service::is_local_url`]).
+fn browser_url(url: &str) -> Result<String, String> {
+    if url
+        .get(..5)
+        .is_some_and(|s| s.eq_ignore_ascii_case("file:"))
+    {
+        return Err(FILE_URL_REFUSED.into());
+    }
+    if !service::is_local_url(url) {
+        return Err(format!(
+            "url recusada: só local (http/https em {})",
+            service::LOCAL_HOSTS
+        ));
+    }
+    Ok(url.to_string())
 }
 
 /// Texto de uma linha do plano: não vazio, sem nenhum caractere de controle
@@ -787,6 +832,43 @@ mod tests {
             );
         }
         assert!(ok(json!({"title": "code"})).is_err());
+    }
+
+    #[test]
+    fn browser_open_takes_only_a_local_url_and_explains_file() {
+        let open = |args: Value| parse_call("orbit_browser_open", &args);
+        assert_eq!(
+            open(json!({"node": "b", "url": " http://localhost:5173/login "})).unwrap(),
+            ToolCall::BrowserOpen {
+                node: Some("b".into()),
+                url: "http://localhost:5173/login".into()
+            }
+        );
+        // Sem node (o `$BROWSER`): o core escolhe o ligado mais recente.
+        assert_eq!(
+            open(json!({"url": "https://code.muriki.test"})).unwrap(),
+            ToolCall::BrowserOpen {
+                node: None,
+                url: "https://code.muriki.test".into()
+            }
+        );
+        for file in ["file:///Users/x/index.html", "FILE:///tmp/a.html"] {
+            let err = open(json!({"url": file})).unwrap_err();
+            assert_eq!(err, FILE_URL_REFUSED, "{file}");
+            assert!(err.contains("sirva por localhost"));
+        }
+        for bad in [
+            "https://example.com",
+            "http://user@localhost:1",
+            "javascript:alert(1)",
+        ] {
+            let err = open(json!({"node": "b", "url": bad})).unwrap_err();
+            assert!(err.contains("só local"), "{bad}: {err}");
+        }
+        assert!(open(json!({"node": "b"})).is_err());
+        assert!(open(json!({"url": "  "})).is_err());
+        assert!(open(json!({"url": "http://localhost:1", "x": 1})).is_err());
+        assert!(open(json!({"url": "http://localhost:1/\u{1b}[2J"})).is_err());
     }
 
     #[test]

@@ -163,6 +163,7 @@ mod tests {
             reason: None,
             url: None,
             orchestrating: false,
+            opened: None,
         };
         if started {
             n.status = NodeStatus::Done;

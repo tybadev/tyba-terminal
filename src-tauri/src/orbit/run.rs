@@ -132,6 +132,19 @@ pub struct NodeRun {
     /// depende dele, mas o nó segue rodando (e o run aberto) até a sessão sair.
     #[serde(default)]
     pub orchestrating: bool,
+    /// Navegador: a última página que um agente abriu nele
+    /// (`orbit_browser_open`, `$BROWSER`). A tela navega e mostra o chip.
+    #[serde(default)]
+    pub opened: Option<BrowserOpened>,
+}
+
+/// Quem abriu a página do navegador e quando (ms).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserOpened {
+    /// Título do nó do agente, como o canvas o mostra.
+    pub by: String,
+    pub at: u64,
 }
 
 impl NodeRun {
@@ -146,6 +159,7 @@ impl NodeRun {
             reason: None,
             url: None,
             orchestrating: false,
+            opened: None,
         }
     }
 }
@@ -1457,6 +1471,144 @@ impl<H: RunHost> Runs<H> {
                 let id = self.write_plan(run_id, orchestrator, steps)?;
                 Ok(serde_json::json!({ "note_id": id }))
             }
+            ToolCall::BrowserOpen { node, url } => {
+                let id = self.open_browser(run_id, orchestrator, node.as_deref(), &url)?;
+                Ok(serde_json::json!({ "node_id": id, "url": url }))
+            }
+        }
+    }
+
+    /// `orbit_browser_open` e o `$BROWSER` da sessão: só no navegador ligado
+    /// por `controla` a este agente (sem `node`, o ligado mais recente: o
+    /// último a abrir página ou a ganhar a ligação). A url (já local) vira a do
+    /// nó no run e, se o nó é do grafo do dono, no grafo salvo; o retrato do
+    /// run leva `opened` à tela, que navega o frame. Devolve o id do nó.
+    pub fn open_browser(
+        &self,
+        run_id: &str,
+        agent: &str,
+        node: Option<&str>,
+        url: &str,
+    ) -> Result<String, String> {
+        let mut active = self.active.lock();
+        let a = active
+            .get_mut(run_id)
+            .ok_or("esta execução já terminou: ▶ Executar de novo para o agente abrir páginas")?;
+        let linked: Vec<String> = a
+            .graph
+            .edges
+            .iter()
+            .filter(|e| e.kind == EdgeKind::Control && e.from == agent)
+            .filter(|e| {
+                a.graph
+                    .nodes
+                    .iter()
+                    .any(|n| n.id == e.to && matches!(n.kind, NodeKind::Browser { .. }))
+            })
+            .map(|e| e.to.clone())
+            .collect();
+        let target = match node {
+            Some(n) if linked.iter().any(|l| l == n) => n.to_string(),
+            Some(n) => {
+                return Err(format!(
+                    "{n} não é um navegador ligado a você por controla: só abre página no \
+                     navegador que o dono ligou a você no canvas"
+                ))
+            }
+            None => {
+                // A última vez que o navegador mudou para este agente: a
+                // página aberta, ou quando a ligação nasceu (a do grafo, no
+                // ▶; a do criado, ao criar).
+                let touched = |id: &str| {
+                    let linked_at = a
+                        .sched
+                        .run
+                        .created
+                        .iter()
+                        .find(|c| c.node.id == id)
+                        .map_or(a.sched.run.started_at, |c| c.created_at);
+                    let opened_at = a
+                        .sched
+                        .run
+                        .nodes
+                        .get(id)
+                        .and_then(|n| n.opened.as_ref())
+                        .map_or(0, |o| o.at);
+                    linked_at.max(opened_at)
+                };
+                linked
+                    .iter()
+                    .enumerate()
+                    .max_by_key(|(i, id)| (touched(id), *i))
+                    .map(|(_, id)| id.clone())
+                    .ok_or_else(|| {
+                        let hint = if is_created(a, agent) {
+                            "quem te criou pode criar um"
+                        } else {
+                            "o dono liga um no canvas, ou crie com orbit_create_browser"
+                        };
+                        format!(
+                            "nenhum navegador ligado a você por controla ({hint}); o \
+                             navegador do sistema não abre por aqui"
+                        )
+                    })?
+            }
+        };
+        let by = a
+            .graph
+            .nodes
+            .iter()
+            .find(|n| n.id == agent)
+            .map_or_else(|| agent.to_string(), |n| n.title.clone());
+        let kind = NodeKind::Browser {
+            url: url.to_string(),
+        };
+        if let Some(n) = a.graph.nodes.iter_mut().find(|n| n.id == target) {
+            n.kind = kind.clone();
+        }
+        match a.sched.run.created.iter_mut().find(|c| c.node.id == target) {
+            Some(c) => c.node.kind = kind.clone(),
+            None => self.save_browser_url(&a.graph.id, &target, &kind),
+        }
+        if let Some(n) = a.sched.run.nodes.get_mut(&target) {
+            n.url = Some(url.to_string());
+            n.opened = Some(BrowserOpened { by, at: now() });
+        }
+        drop(active);
+        self.publish_current(run_id);
+        Ok(target)
+    }
+
+    /// A url nova do navegador do grafo do dono, no grafo salvo. Falha aqui
+    /// não desfaz a navegação: fica no log.
+    fn save_browser_url(&self, graph_id: &str, node_id: &str, kind: &NodeKind) {
+        let save = || -> Result<(), String> {
+            let Some(stored) = self
+                .store
+                .get_orbit_graph(graph_id)
+                .map_err(|e| e.to_string())?
+            else {
+                return Ok(());
+            };
+            let mut graph = stored.value;
+            let Some(n) = graph.nodes.iter_mut().find(|n| n.id == node_id) else {
+                return Ok(());
+            };
+            if n.kind == *kind {
+                return Ok(());
+            }
+            n.kind = kind.clone();
+            let integrations = self
+                .store
+                .list_orbit_integrations()
+                .map_err(|e| e.to_string())?;
+            super::validate_graph(&graph, &integrations).map_err(|e| e.to_string())?;
+            self.store
+                .save_orbit_graph(&graph, stored.consented, None)
+                .map_err(|e| e.to_string())
+        };
+        if let Err(e) = save() {
+            eprintln!("[orbit] gravar a url do navegador {node_id}: {e}");
         }
     }
 
@@ -4326,6 +4478,135 @@ mod tests {
 
     /// `orbit_plan`: uma nota por orquestrador, no grafo salvo, com a ligação
     /// plan; a segunda chamada só reescreve o texto; o run guarda a cópia.
+    /// `orbit_browser_open`: só no navegador ligado por `controla` ao agente;
+    /// a url vira a do nó no run e no grafo salvo, com quem abriu. Sem `node`
+    /// (o `$BROWSER`), o ligado mais recente.
+    #[cfg(unix)]
+    #[test]
+    fn agent_opens_a_page_only_in_a_browser_linked_by_control() {
+        use serde_json::json;
+        let dir = tempfile::tempdir().unwrap();
+        let (runs, host, _app) = pty_runs(dir.path().join("runs"));
+        let mut o = orchestrator("o");
+        o.title = "Claude".into();
+        let g = graph(
+            vec![
+                o,
+                agent("x", "outro"),
+                browser("b", "http://localhost:1"),
+                browser("solto", "http://localhost:2"),
+            ],
+            vec![edge("c1", "o", "b", EdgeKind::Control)],
+        );
+        runs.store.save_orbit_graph(&g, true, None).unwrap();
+        let run = runs.start(g, vec![]).unwrap();
+        wait_orchestrating(&runs, &run.id, "o");
+        wait_orchestrating(&runs, &run.id, "x");
+        let tools = tools_of(&host, "Claude");
+
+        let got = tools
+            .call(
+                "orbit_browser_open",
+                &json!({"node": "b", "url": "http://localhost:5173/login"}),
+            )
+            .unwrap();
+        assert_eq!(got["node_id"], "b");
+        let r = runs.get(&run.id).unwrap();
+        assert_eq!(
+            r.nodes["b"].url.as_deref(),
+            Some("http://localhost:5173/login")
+        );
+        let opened = r.nodes["b"].opened.clone().unwrap();
+        assert_eq!(opened.by, "Claude");
+        let saved = runs.store.get_orbit_graph("g-1").unwrap().unwrap();
+        let b = saved.value.nodes.iter().find(|n| n.id == "b").unwrap();
+        assert_eq!(
+            b.kind,
+            NodeKind::Browser {
+                url: "http://localhost:5173/login".into()
+            }
+        );
+
+        // Navegador sem ligação dele, url não local, file://: recusa.
+        let err = tools
+            .call(
+                "orbit_browser_open",
+                &json!({"node": "solto", "url": "http://localhost:5173"}),
+            )
+            .unwrap_err();
+        assert!(err.contains("controla"), "{err}");
+        let err = tools
+            .call(
+                "orbit_browser_open",
+                &json!({"node": "b", "url": "https://example.com"}),
+            )
+            .unwrap_err();
+        assert!(err.contains("só local"), "{err}");
+        let err = tools
+            .call(
+                "orbit_browser_open",
+                &json!({"node": "b", "url": "file:///tmp/index.html"}),
+            )
+            .unwrap_err();
+        assert!(err.contains("sirva por localhost"), "{err}");
+        let r = runs.get(&run.id).unwrap();
+        assert_eq!(r.nodes["solto"].opened, None);
+        assert_eq!(
+            r.nodes["b"].url.as_deref(),
+            Some("http://localhost:5173/login")
+        );
+
+        // Agente sem ligação: o `$BROWSER` dele recusa, não abre nada.
+        let err = tools_of(&host, "x")
+            .call("orbit_browser_open", &json!({"url": "http://localhost:3"}))
+            .unwrap_err();
+        assert!(err.contains("nenhum navegador ligado"), "{err}");
+
+        // Sem node: o mais recente — o navegador que ele acabou de criar.
+        let made = tools
+            .call(
+                "orbit_create_browser",
+                &json!({"title": "novo", "url": "http://localhost:4"}),
+            )
+            .unwrap()["node_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let got = tools
+            .call(
+                "orbit_browser_open",
+                &json!({"url": "http://localhost:4/a"}),
+            )
+            .unwrap();
+        assert_eq!(got["node_id"], made.as_str());
+        // E depois o que abriu por último, mesmo sendo a ligação mais velha.
+        std::thread::sleep(Duration::from_millis(5));
+        tools
+            .call(
+                "orbit_browser_open",
+                &json!({"node": "b", "url": "http://localhost:5173/x"}),
+            )
+            .unwrap();
+        let got = tools
+            .call(
+                "orbit_browser_open",
+                &json!({"url": "http://localhost:5173/y"}),
+            )
+            .unwrap();
+        assert_eq!(got["node_id"], "b");
+        // O criado muda só no run, não no grafo salvo.
+        let r = runs.get(&run.id).unwrap();
+        let c = r.created.iter().find(|c| c.node.id == made).unwrap();
+        assert_eq!(
+            c.node.kind,
+            NodeKind::Browser {
+                url: "http://localhost:4/a".into()
+            }
+        );
+        let saved = runs.store.get_orbit_graph("g-1").unwrap().unwrap();
+        assert!(!saved.value.nodes.iter().any(|n| n.id == made));
+    }
+
     #[cfg(unix)]
     #[test]
     fn orchestrator_plan_is_one_note_in_the_graph_rewritten_on_each_call() {

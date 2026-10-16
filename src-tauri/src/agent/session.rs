@@ -1808,7 +1808,13 @@ pub fn spawn_free_agent(
     let runner = build_runner(&spec.runner)?;
     let exe = std::env::current_exe().map_err(|e| format!("exe do Tyba: {e}"))?;
     let hook_cmd = observer_hook_command(&exe);
-    let env = free_agent_env(std::env::vars().collect(), &spec.extra_env);
+    let mut env = free_agent_env(std::env::vars().collect(), &spec.extra_env);
+    // Agente do Orbit: o `$BROWSER` abre no navegador do canvas ligado a ele
+    // por `controla` (`tyba _orbit-open`), nunca no navegador do sistema.
+    if spec.orbit_tools.is_some() {
+        let shim = crate::orbit::mcp::write_open_shim(&runtime, &exe)?;
+        env.insert("BROWSER".into(), shim.to_string_lossy().into_owned());
+    }
     if matches!(runner.kind(), AgentRunnerKind::ClaudeCode) {
         let settings = observer_session_settings(
             &hook_cmd,
@@ -2750,7 +2756,11 @@ mod build_hosted_command_tests {
             &CodexRunner as &dyn AgentRunner,
         ] {
             let mcp = crate::orbit::mcp::agent_args(&runner.kind(), &exe, &socket, &config, true);
-            let env = HashMap::from([("PATH".to_string(), "/usr/bin".to_string())]);
+            let shim = runtime.path().join(crate::orbit::mcp::OPEN_SHIM_FILE);
+            let env = HashMap::from([
+                ("PATH".to_string(), "/usr/bin".to_string()),
+                ("BROWSER".to_string(), shim.to_string_lossy().into_owned()),
+            ]);
             let built = build_free_command(
                 runner,
                 cwd.path(),
@@ -2767,6 +2777,11 @@ mod build_hosted_command_tests {
             assert_eq!(argv.last().map(String::as_str), Some("suba o ambiente"));
             let before_prompt = &argv[..argv.len() - 1];
             assert!(before_prompt.ends_with(&mcp), "{argv:?}");
+            // O `$BROWSER` do Orbit chega ao agente.
+            assert_eq!(
+                built.cmd.get_env("BROWSER").map(|v| v.to_os_string()),
+                Some(shim.clone().into_os_string())
+            );
         }
         // Fora do Orbit, nada de MCP do Orbit.
         let plain = argv(&free(&ClaudeCodeRunner, cwd.path(), runtime.path(), "x").cmd);

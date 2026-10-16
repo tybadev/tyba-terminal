@@ -5063,6 +5063,7 @@ mod tests {
             reason: None,
             url: None,
             orchestrating: false,
+            opened: None,
         };
         let path = dir.path().join("tyba.db");
         let graph = Graph {

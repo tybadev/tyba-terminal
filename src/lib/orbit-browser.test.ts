@@ -3,6 +3,9 @@ import { describe, expect, test } from "bun:test";
 import {
   accepts,
   browserFed,
+  browserRefusal,
+  OPENED_CHIP_MS,
+  openedChipLeft,
   connectionProblem,
   edgeDetail,
   edgeHasValue,
@@ -178,5 +181,22 @@ describe("url antes do fim do processo", () => {
     expect(edgeHasValue({ ...edge, kind: "log" }, ready)).toBe(false);
     expect(edgeDetail("url", ready.nodes.p)?.key).toBe("orbitEdgeReady");
     expect(edgeDetail("log", ready.nodes.p)?.key).toBe("orbitEdgeLive");
+  });
+});
+
+describe("navegador aberto por agente", () => {
+  test("file:// tem o motivo próprio; o resto, a regra local", () => {
+    expect(browserRefusal("file:///Users/x/index.html")).toBe("orbitBrowserFileRefused");
+    expect(browserRefusal(" FILE:///tmp/a.html")).toBe("orbitBrowserFileRefused");
+    expect(browserRefusal("https://example.com")).toBe("orbitBrowserRefused");
+  });
+
+  test("o chip '<agente> abriu' dura alguns segundos", () => {
+    const opened = { by: "Claude", at: 10_000 };
+    expect(openedChipLeft(opened, 10_000)).toBe(OPENED_CHIP_MS);
+    expect(openedChipLeft(opened, 10_000 + OPENED_CHIP_MS - 1)).toBe(1);
+    expect(openedChipLeft(opened, 10_000 + OPENED_CHIP_MS)).toBe(0);
+    expect(openedChipLeft(null, 0)).toBe(0);
+    expect(openedChipLeft(undefined, 0)).toBe(0);
   });
 });

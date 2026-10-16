@@ -117,6 +117,20 @@ export function isLocalUrl(url: string): boolean {
   return n >= 1 && n <= 65535;
 }
 
+/** Por que o navegador não carrega `url`: `file://` tem explicação própria. */
+export function browserRefusal(url: string): "orbitBrowserFileRefused" | "orbitBrowserRefused" {
+  return /^file:/i.test(url.trim()) ? "orbitBrowserFileRefused" : "orbitBrowserRefused";
+}
+
+/** Quanto tempo o chip "<agente> abriu" fica no navegador. */
+export const OPENED_CHIP_MS = 4000;
+
+/** Quanto falta do chip "<agente> abriu" (0: não mostra). */
+export function openedChipLeft(opened: BrowserOpened | null | undefined, now: number): number {
+  if (!opened) return 0;
+  return Math.max(0, opened.at + OPENED_CHIP_MS - now);
+}
+
 /** O que a fonte aponta, curto: o nome do contêiner, a porta, o túnel. Vazio se nada escolhido. */
 export function sourceDetail(source: ServiceSource): string {
   switch (source.type) {
@@ -584,6 +598,14 @@ export interface NodeRun {
    * segue rodando (e a execução aberta) até a sessão sair.
    */
   orchestrating?: boolean;
+  /** Navegador: a última página que um agente abriu nele (`orbit_browser_open`, `$BROWSER`). */
+  opened?: BrowserOpened | null;
+}
+
+/** Quem abriu a página do navegador (título do nó do agente) e quando (ms). */
+export interface BrowserOpened {
+  by: string;
+  at: number;
 }
 
 export interface Run {

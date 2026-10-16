@@ -5,7 +5,7 @@ import type { NodeProps } from "@xyflow/react";
 
 import { openExternalUrl } from "@/lib/clipboard";
 import { frameInUse } from "@/lib/graphKeys";
-import { isLocalUrl, type NodeKind } from "@/lib/orbit";
+import { browserRefusal, isLocalUrl, openedChipLeft, type NodeKind } from "@/lib/orbit";
 import { NodeFrame, useOrbit, type OrbitFlowNode } from "./NodeFrame";
 
 type BrowserKind = Extract<NodeKind, { type: "browser" }>;
@@ -45,6 +45,7 @@ export function BrowserNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
   const node = data.node;
   const kind = node.kind as BrowserKind;
   const runUrl = run?.nodes[id]?.url ?? null;
+  const opened = run?.nodes[id]?.opened ?? null;
 
   // Endereços visitados por aqui (a navegação dentro do frame é de outra
   // origem e não se lê): o ← volta para o anterior.
@@ -77,10 +78,27 @@ export function BrowserNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
     setHistory((h) => (h[h.length - 1] === url ? h : [...h, url]));
   };
 
-  // A url da execução chega pela ligação: vai para o frame.
+  // A url da execução chega pela ligação, ou um agente abriu uma página
+  // (`opened` muda mesmo que a url seja a mesma): vai para o frame.
   useEffect(() => {
     if (runUrl) go(runUrl);
-  }, [runUrl]);
+  }, [runUrl, opened?.at]);
+
+  // Agente abriu: o core já gravou a url no nó; o canvas acompanha, para o
+  // próximo salvar não a desfazer. E o chip "<agente> abriu" por uns segundos.
+  const [openedBy, setOpenedBy] = useState<string | null>(null);
+  useEffect(() => {
+    if (!opened) return;
+    if (runUrl && isLocalUrl(runUrl) && kind.url !== runUrl) {
+      updateNode(id, (n) => ({ ...n, kind: { type: "browser", url: runUrl } }));
+    }
+    const left = openedChipLeft(opened, Date.now());
+    if (left <= 0) return;
+    setOpenedBy(opened.by);
+    const timer = window.setTimeout(() => setOpenedBy(null), left);
+    return () => window.clearTimeout(timer);
+    // Só quando um agente abre de novo.
+  }, [opened?.at]);
 
   const submit = () => {
     const url = draft.trim();
@@ -113,6 +131,10 @@ export function BrowserNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
         inUse ? (
           <span className="shrink-0 rounded-full bg-tyba-cyan/[.18] px-[9px] py-[2px] text-[11.5px] text-tyba-text">
             {t("orbitBrowserYou")}
+          </span>
+        ) : openedBy ? (
+          <span className="max-w-[160px] shrink-0 truncate rounded-full bg-tyba-cyan/[.18] px-[9px] py-[2px] text-[11.5px] text-tyba-text">
+            {t("orbitBrowserOpenedBy", { name: openedBy })}
           </span>
         ) : undefined
       }
@@ -178,7 +200,7 @@ export function BrowserNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
           />
         ) : (
           <p className="absolute inset-0 flex items-center justify-center px-6 text-center font-mono text-[12px] text-tyba-text-faint">
-            {current === "" ? t("orbitBrowserEmpty") : t("orbitBrowserRefused")}
+            {current === "" ? t("orbitBrowserEmpty") : t(browserRefusal(current))}
           </p>
         )}
       </div>
