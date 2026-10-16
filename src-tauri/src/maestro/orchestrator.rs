@@ -232,10 +232,11 @@ pub fn parse_call(tool: &str, value: &Value) -> Result<ToolCall, String> {
     }
 }
 
-/// Tamanho do nó criado (o mesmo `DEFAULT_SIZE` do front).
+/// Tamanho do nó criado (o mesmo `DEFAULT_SIZE` do front). Agente e processo
+/// nascem com tamanho de trabalho: o TUI do claude cabe com conversa à vista.
 fn default_size(kind: &NodeKind) -> Size {
     match kind {
-        NodeKind::Agent { .. } => Size { w: 360.0, h: 300.0 },
+        NodeKind::Agent { .. } | NodeKind::Process { .. } => Size { w: 560.0, h: 440.0 },
         NodeKind::Browser { .. } => Size { w: 640.0, h: 420.0 },
         _ => Size { w: 360.0, h: 250.0 },
     }
@@ -642,5 +643,27 @@ Binary files a/logo.png and b/logo.png differ
             &[&first],
         );
         assert_eq!(second.position.y, 40.0 + 420.0 + 40.0);
+    }
+
+    #[test]
+    fn agent_and_process_start_with_working_size() {
+        for kind in [
+            NodeKind::Agent {
+                runner: crate::maestro::Runner::Claude,
+                role: String::new(),
+                prompt: "subir o ambiente".into(),
+                dir: String::new(),
+                orchestrate: false,
+            },
+            NodeKind::Process {
+                command: "bun dev".into(),
+                output: Default::default(),
+                file: None,
+                dir: String::new(),
+            },
+        ] {
+            let node = new_node("n".into(), "n".into(), kind, None, &[]);
+            assert_eq!(node.size, Size { w: 560.0, h: 440.0 });
+        }
     }
 }

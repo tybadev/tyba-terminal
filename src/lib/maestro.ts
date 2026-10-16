@@ -393,10 +393,14 @@ export function fromFlow(
   };
 }
 
-/** Tamanho inicial de cada tipo de nó (quadro MaestroHarness: nós grandes). */
+/**
+ * Tamanho inicial de cada tipo de nó (quadro MaestroHarness: nós grandes).
+ * Agente e processo nascem com tamanho de trabalho (nos-9), o mesmo do
+ * `default_size` do core para os nós que o orquestrador cria.
+ */
 export const DEFAULT_SIZE: Record<NodeKind["type"], { w: number; h: number }> = {
-  agent: { w: 360, h: 300 },
-  process: { w: 360, h: 250 },
+  agent: { w: 560, h: 440 },
+  process: { w: 560, h: 440 },
   note: { w: 360, h: 170 },
   integration: { w: 360, h: 200 },
   browser: { w: 640, h: 420 },

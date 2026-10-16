@@ -4,9 +4,11 @@ import type { NodeProps } from "@xyflow/react";
 
 import { Select } from "@/components/ui/select";
 import { OUTPUT_KINDS, nodeSession, urlPort, type NodeKind, type OutputKind } from "@/lib/maestro";
+import { firstLine } from "@/lib/nodeSummary";
 import {
   NodeDir,
   NodeFrame,
+  RunningLine,
   fieldClass,
   termClass,
   useMaestro,
@@ -39,31 +41,35 @@ export function ProcessNode({ id, data, selected }: NodeProps<MaestroFlowNode>) 
       label={t("maestroKindProcess").toLowerCase()}
       extra={session ? <FocusButton nodeId={id} /> : undefined}
     >
-      <div className="flex shrink-0 items-center gap-1.5 border-b border-tyba-border px-3.5 py-1.5 text-[11px] text-tyba-text-faint">
-        <span>{t("maestroOutput")}</span>
-        <div className="nodrag">
-          <Select
-            value={kind.output}
-            options={OUTPUT_KINDS.map((k) => ({ value: k, label: t(`maestroEdge_${k}`) }))}
-            onChange={(v) => set({ output: v as OutputKind })}
-            className="h-6 text-[11px]"
-          />
+      {session ? (
+        <RunningLine text={firstLine(kind.command) && `$ ${firstLine(kind.command)}`} kind={kind} />
+      ) : (
+        <div className="flex shrink-0 items-center gap-1.5 border-b border-tyba-border px-3.5 py-1.5 text-[11px] text-tyba-text-faint">
+          <span>{t("maestroOutput")}</span>
+          <div className="nodrag">
+            <Select
+              value={kind.output}
+              options={OUTPUT_KINDS.map((k) => ({ value: k, label: t(`maestroEdge_${k}`) }))}
+              onChange={(v) => set({ output: v as OutputKind })}
+              className="h-6 text-[11px]"
+            />
+          </div>
+          {kind.output === "file" && (
+            <input
+              aria-label={t("maestroOutputFile")}
+              placeholder={t("maestroOutputFile")}
+              spellCheck={false}
+              autoCorrect="off"
+              autoCapitalize="off"
+              value={kind.file ?? ""}
+              onChange={(e) => set({ file: e.target.value || null })}
+              className={`${fieldClass} min-w-0 flex-1`}
+            />
+          )}
+          <span className="flex-1" />
+          <NodeDir id={id} kind={kind} />
         </div>
-        {kind.output === "file" && (
-          <input
-            aria-label={t("maestroOutputFile")}
-            placeholder={t("maestroOutputFile")}
-            spellCheck={false}
-            autoCorrect="off"
-            autoCapitalize="off"
-            value={kind.file ?? ""}
-            onChange={(e) => set({ file: e.target.value || null })}
-            className={`${fieldClass} min-w-0 flex-1`}
-          />
-        )}
-        <span className="flex-1" />
-        <NodeDir id={id} kind={kind} />
-      </div>
+      )}
       {url && port !== null && (
         <div className="flex shrink-0 items-center gap-2 border-b border-tyba-border px-3.5 py-1.5 text-[11px]">
           <span className="rounded-[4px] border border-tyba-cyan/50 px-2 leading-[18px] text-tyba-cyan">

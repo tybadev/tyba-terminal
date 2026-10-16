@@ -377,6 +377,25 @@ export const fieldClass =
   "nodrag h-6 min-w-0 rounded-[4px] border border-tyba-border bg-tyba-text/[.02] px-1.5 font-mono text-[11px] text-tyba-text outline-none focus:border-tyba-border-strong";
 
 /**
+ * O que fica da barra de configuração enquanto o nó roda (nos-9, quadro:
+ * "tarefa: subir ambiente · ~/pasta"): uma linha só, o resto é terminal.
+ */
+export function RunningLine({ text, kind }: { text: string; kind: MaestroNode["kind"] }) {
+  const { graphDir } = useCanvasActions();
+  const dir = nodeDir(kind, graphDir);
+  const parts = [text, dir ? shortDir(dir) : ""].filter(Boolean);
+  if (parts.length === 0) return null;
+  return (
+    <div
+      title={parts.join(" · ")}
+      className="shrink-0 truncate border-b border-tyba-border px-3.5 py-1.5 text-[11.5px] text-tyba-text-faint"
+    >
+      {parts.join(" · ")}
+    </div>
+  );
+}
+
+/**
  * A pasta onde o nó roda, encurtada. Clicar abre o seletor de pasta; a
  * escolhida vira a pasta do nó e a última usada (onde o próximo nó nasce).
  */

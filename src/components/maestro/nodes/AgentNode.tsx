@@ -6,9 +6,11 @@ import { ClaudeIcon } from "@/components/icons/ClaudeIcon";
 import { OpenAIIcon } from "@/components/icons/OpenAIIcon";
 import { ORCHESTRATOR_HANDLE, nodeSession, type NodeKind, type Runner } from "@/lib/maestro";
 import { SUBAGENT_HANDLE, groupRounds, roundTally } from "@/lib/maestroSubagents";
+import { firstLine } from "@/lib/nodeSummary";
 import {
   NodeDir,
   NodeFrame,
+  RunningLine,
   fieldClass,
   termClass,
   useMaestro,
@@ -84,49 +86,56 @@ export function AgentNode({ id, data, selected }: NodeProps<MaestroFlowNode>) {
           style={hidden}
         />
       )}
-      <div className="flex shrink-0 items-center gap-1.5 border-b border-tyba-border px-3.5 py-1.5">
-        <div className="nodrag flex rounded-[5px] border border-tyba-border p-px" role="group">
-          {RUNNERS.map((r) => (
+      {session ? (
+        <RunningLine
+          text={firstLine(kind.prompt) && t("nodeTaskLine", { task: firstLine(kind.prompt) })}
+          kind={kind}
+        />
+      ) : (
+        <div className="flex shrink-0 items-center gap-1.5 border-b border-tyba-border px-3.5 py-1.5">
+          <div className="nodrag flex rounded-[5px] border border-tyba-border p-px" role="group">
+            {RUNNERS.map((r) => (
+              <button
+                key={r}
+                type="button"
+                aria-pressed={kind.runner === r}
+                onClick={() => set({ runner: r })}
+                className={`rounded-[4px] px-2 text-[11px] leading-[20px] ${
+                  kind.runner === r ? "bg-tyba-raised text-tyba-text" : "text-tyba-text-faint"
+                }`}
+              >
+                {r === "claude" ? "Claude" : "Codex"}
+              </button>
+            ))}
+          </div>
+          <input
+            aria-label={t("maestroRole")}
+            placeholder={t("maestroRole")}
+            spellCheck={false}
+            autoCorrect="off"
+            autoCapitalize="off"
+            value={kind.role}
+            onChange={(e) => set({ role: e.target.value })}
+            className={`${fieldClass} min-w-0 flex-1`}
+          />
+          {!created && (
             <button
-              key={r}
               type="button"
-              aria-pressed={kind.runner === r}
-              onClick={() => set({ runner: r })}
-              className={`rounded-[4px] px-2 text-[11px] leading-[20px] ${
-                kind.runner === r ? "bg-tyba-raised text-tyba-text" : "text-tyba-text-faint"
+              aria-pressed={orchestrates}
+              title={t("maestroOrchestrateHint")}
+              onClick={() => set({ orchestrate: !orchestrates })}
+              className={`nodrag shrink-0 rounded-[4px] border px-1.5 text-[11px] leading-[20px] ${
+                orchestrates
+                  ? "border-tyba-violet/50 bg-tyba-violet-tint text-tyba-violet"
+                  : "border-tyba-border text-tyba-text-faint hover:text-tyba-text"
               }`}
             >
-              {r === "claude" ? "Claude" : "Codex"}
+              {t("maestroOrchestrate")}
             </button>
-          ))}
+          )}
+          <NodeDir id={id} kind={kind} />
         </div>
-        <input
-          aria-label={t("maestroRole")}
-          placeholder={t("maestroRole")}
-          spellCheck={false}
-          autoCorrect="off"
-          autoCapitalize="off"
-          value={kind.role}
-          onChange={(e) => set({ role: e.target.value })}
-          className={`${fieldClass} min-w-0 flex-1`}
-        />
-        {!created && (
-          <button
-            type="button"
-            aria-pressed={orchestrates}
-            title={t("maestroOrchestrateHint")}
-            onClick={() => set({ orchestrate: !orchestrates })}
-            className={`nodrag shrink-0 rounded-[4px] border px-1.5 text-[11px] leading-[20px] ${
-              orchestrates
-                ? "border-tyba-violet/50 bg-tyba-violet-tint text-tyba-violet"
-                : "border-tyba-border text-tyba-text-faint hover:text-tyba-text"
-            }`}
-          >
-            {t("maestroOrchestrate")}
-          </button>
-        )}
-        <NodeDir id={id} kind={kind} />
-      </div>
+      )}
       {session ? (
         <NodeTerminal nodeId={id} sessionId={session} focused={selected} />
       ) : (

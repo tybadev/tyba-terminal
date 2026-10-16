@@ -145,8 +145,8 @@ describe("toFlow / fromFlow", () => {
       id: "a",
       type: "agent",
       position: { x: 40, y: 40 },
-      width: 360,
-      height: 300,
+      width: 560,
+      height: 440,
     });
     expect(fe[0]).toMatchObject({
       source: "a",
