@@ -39,6 +39,26 @@ fn kind_label(kind: EdgeKind) -> &'static str {
     }
 }
 
+/// Um arquivo de texto pequeno recebido (uma nota ligada pela saída
+/// "arquivo"), redigido, para entrar no prompt como o contexto entra. Binário,
+/// texto que não é UTF-8 ou acima do teto fica só listado em "Entradas": o
+/// dono ligava a nota pela bolinha de arquivo e o agente ignorava a instrução.
+pub fn read_text_input(path: &Path) -> Option<String> {
+    let meta = std::fs::metadata(path).ok()?;
+    if !meta.is_file() || meta.len() > (CONTEXT_MAX_CHARS * 4) as u64 {
+        return None;
+    }
+    let text = std::fs::read_to_string(path).ok()?;
+    if text.chars().count() > CONTEXT_MAX_CHARS {
+        return None;
+    }
+    let text = text.trim();
+    if text.is_empty() || text.contains('\0') {
+        return None;
+    }
+    Some(context_markdown(text))
+}
+
 /// O texto de um `context.md` recebido, até o teto, para entrar no prompt.
 pub fn read_context(path: &Path) -> Option<String> {
     let text = std::fs::read_to_string(path).ok()?;
@@ -55,17 +75,22 @@ pub fn read_context(path: &Path) -> Option<String> {
 /// Contexto vai no corpo, e não só como caminho: uma nota ligada a um agente
 /// é a instrução dele, e listada como arquivo o agente a ignorava (teste do
 /// dono, 15/10: a nota pedia 6 subagentes e ele rodou 3).
-pub fn build_prompt(prompt: &str, contexts: &[String], inputs: &[(EdgeKind, PathBuf)]) -> String {
+pub fn build_prompt(
+    prompt: &str,
+    contexts: &[(String, String)],
+    inputs: &[(EdgeKind, PathBuf)],
+) -> String {
     if inputs.is_empty() && contexts.is_empty() {
         return prompt.to_string();
     }
     let mut out = prompt.trim_end().to_string();
-    for context in contexts {
+    for (heading, body) in contexts {
         if !out.is_empty() {
             out.push_str("\n\n");
         }
-        out.push_str("Contexto:\n");
-        out.push_str(context);
+        out.push_str(heading);
+        out.push_str(":\n");
+        out.push_str(body);
     }
     if inputs.is_empty() {
         return out;
@@ -279,7 +304,7 @@ mod tests {
     fn context_goes_into_the_prompt_body() {
         let p = build_prompt(
             "",
-            &["rode 6 subagentes com sleep 10".into()],
+            &[("Contexto".into(), "rode 6 subagentes com sleep 10".into())],
             &[(EdgeKind::Context, PathBuf::from("/r/n/in/context.md"))],
         );
         assert_eq!(
@@ -288,6 +313,24 @@ mod tests {
              Entradas (arquivos em $TYBA_IN):\n\
              - /r/n/in/context.md (contexto)"
         );
+    }
+
+    #[test]
+    fn small_text_file_input_is_read_and_redacted() {
+        let dir = tempfile::tempdir().unwrap();
+        let note = dir.path().join("instrucao.md");
+        let key = format!("sk-{}", "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6");
+        std::fs::write(&note, format!("suba a api\nchave {key}\n")).unwrap();
+        let text = read_text_input(&note).unwrap();
+        assert!(text.starts_with("suba a api"));
+        assert!(!text.contains(&key));
+
+        let bin = dir.path().join("x.bin");
+        std::fs::write(&bin, [0u8, 159, 146, 150]).unwrap();
+        assert_eq!(read_text_input(&bin), None);
+        let big = dir.path().join("big.txt");
+        std::fs::write(&big, "a".repeat(CONTEXT_MAX_CHARS + 1)).unwrap();
+        assert_eq!(read_text_input(&big), None);
     }
 
     #[test]

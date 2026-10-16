@@ -1157,10 +1157,23 @@ impl<H: RunHost> Runs<H> {
         let inputs: Vec<(EdgeKind, PathBuf)> =
             start.inputs.iter().map(|i| i.kind).zip(written).collect();
         let prompt = crate::snippet::render(prompt, &start.variables);
-        let contexts: Vec<String> = inputs
+        // Contexto entra inteiro; arquivo de texto pequeno também (uma nota
+        // ligada pela saída "arquivo" é instrução do mesmo jeito).
+        let contexts: Vec<(String, String)> = inputs
             .iter()
-            .filter(|(kind, _)| *kind == EdgeKind::Context)
-            .filter_map(|(_, path)| super::agent::read_context(path))
+            .filter_map(|(kind, path)| match kind {
+                EdgeKind::Context => {
+                    super::agent::read_context(path).map(|t| ("Contexto".to_string(), t))
+                }
+                EdgeKind::File => super::agent::read_text_input(path).map(|t| {
+                    let name = path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    (format!("Arquivo {name}"), t)
+                }),
+                _ => None,
+            })
             .collect();
         let prompt = super::agent::build_prompt(&prompt, &contexts, &inputs);
         let snapshot = super::agent::snapshot(&start.node_dir);
