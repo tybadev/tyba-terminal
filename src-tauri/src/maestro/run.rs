@@ -609,26 +609,60 @@ fn bash_program() -> PathBuf {
     }
 }
 
-/// `bash -lc` com o wrapper de rules. `TYBA_IN`/`TYBA_OUT` chegam como
-/// argumentos posicionais e são exportados antes do comando — assim o caminho
-/// não passa por aspas montadas à mão. O `}` vai em linha própria para um
-/// comentário no fim do comando não engolir o fechamento.
-pub fn process_argv(command: &str, in_dir: &Path, out_dir: &Path) -> (PathBuf, Vec<String>) {
+/// O shell que roda o comando de um nó de Processo: o do dono (`$SHELL`, o
+/// mesmo de um terminal digitado), quando ele entende o wrapper (bash ou
+/// zsh: `set -o pipefail`, posicionais no `-c`). Outro (fish, nu) cai no
+/// bash. Integração não passa por aqui: o script dela é bash por contrato.
+fn process_shell(owner_shell: &str) -> PathBuf {
+    let path = Path::new(owner_shell);
+    let posix = path.is_absolute()
+        && matches!(
+            path.file_name().and_then(|n| n.to_str()),
+            Some("bash" | "zsh")
+        )
+        && path.is_file();
+    if posix {
+        path.to_path_buf()
+    } else {
+        bash_program()
+    }
+}
+
+/// `<shell> -lc` com o wrapper de rules. `TYBA_IN`/`TYBA_OUT` (e o PATH)
+/// chegam como argumentos posicionais e são exportados antes do comando —
+/// assim o caminho não passa por aspas montadas à mão. O `}` vai em linha
+/// própria para um comentário no fim do comando não engolir o fechamento.
+///
+/// `path` é o PATH do shell de login do dono ([`crate::shell_path::login_env`]):
+/// o app aberto pelo Dock herda o do launchd, e o `-l` não lê o `.zshrc`
+/// onde moram o Homebrew, o bun e o nvm. Exportado depois do profile, vale o
+/// mesmo PATH de um terminal digitado.
+pub fn process_argv(
+    shell: &Path,
+    path: Option<&str>,
+    command: &str,
+    in_dir: &Path,
+    out_dir: &Path,
+) -> (PathBuf, Vec<String>) {
+    let path = path.filter(|p| !p.is_empty());
+    let (export_path, shift) = match path {
+        Some(_) => (" PATH=\"$3\"", 3),
+        None => ("", 2),
+    };
     let script = format!(
-        "export TYBA_IN=\"$1\" TYBA_OUT=\"$2\"; shift 2\n\
+        "export TYBA_IN=\"$1\" TYBA_OUT=\"$2\"{export_path}; shift {shift}\n\
          set -o pipefail; {{ {command}\n}} 2>&1 | tee \"$TYBA_OUT/log.txt\"; \
          echo $? > \"$TYBA_OUT/.exit\""
     );
-    (
-        bash_program(),
-        vec![
-            "-lc".into(),
-            script,
-            "tyba-maestro".into(),
-            in_dir.to_string_lossy().into_owned(),
-            out_dir.to_string_lossy().into_owned(),
-        ],
-    )
+    let mut args = vec![
+        "-lc".into(),
+        script,
+        "tyba-maestro".into(),
+        in_dir.to_string_lossy().into_owned(),
+        out_dir.to_string_lossy().into_owned(),
+    ];
+    args.extend(path.map(str::to_string));
+    (shell.to_path_buf(), args)
 }
 
 /// Exit gravado pelo wrapper. Sem `.exit` o processo morreu antes do fim.
@@ -1173,7 +1207,7 @@ impl<H: RunHost> Runs<H> {
                 }
             }
             NodeKind::Integration { .. } => match &start.integration {
-                Some(i) => self.launch_script(run_id, &start, &i.script, i.output),
+                Some(i) => self.launch_script(run_id, &start, &i.script, i.output, bash_program()),
                 None => Launched::Finished(Outcome::failed("integração não encontrada")),
             },
             NodeKind::Agent {
@@ -1184,7 +1218,13 @@ impl<H: RunHost> Runs<H> {
             } => self.launch_agent(run_id, &start, *runner, prompt, *orchestrate),
             NodeKind::Process {
                 command, output, ..
-            } => self.launch_script(run_id, &start, command, *output),
+            } => self.launch_script(
+                run_id,
+                &start,
+                command,
+                *output,
+                process_shell(&crate::session::default_shell()),
+            ),
             NodeKind::Browser { url } => Launched::Finished(browser_outcome(&start, url)),
             NodeKind::Service { source } => self.launch_service(run_id, &start, source.clone()),
         }
@@ -1262,19 +1302,27 @@ impl<H: RunHost> Runs<H> {
     }
 
     /// Processo e integração: o texto (com variáveis) no wrapper de rules,
-    /// num PTY, na pasta do nó.
+    /// rodado por `shell` com o PATH de login do dono, num PTY, na pasta do nó.
     fn launch_script(
         &self,
         run_id: &str,
         start: &Start,
         command: &str,
         output: OutputKind,
+        shell: PathBuf,
     ) -> Launched {
         if let Err(e) = materialize(&start.in_dir, &start.inputs) {
             return Launched::Finished(Outcome::failed(format!("preparar entradas: {e}")));
         }
         let command = crate::snippet::render(command, &start.variables);
-        let (program, args) = process_argv(&command, &start.in_dir, &start.out_dir);
+        let login_path = crate::shell_path::login_env().path;
+        let (program, args) = process_argv(
+            &shell,
+            login_path.as_deref(),
+            &command,
+            &start.in_dir,
+            &start.out_dir,
+        );
         let snapshot = (output == OutputKind::Diff)
             .then(|| super::agent::snapshot(&start.node_dir))
             .flatten();
@@ -2530,6 +2578,68 @@ mod tests {
                 .mode();
             assert_eq!(mode & 0o777, 0o700);
         }
+    }
+
+    /// App aberto pelo Dock: o processo herda o PATH do launchd e o `-l` não
+    /// lê o `.zshrc`. O comando que mora num bin do dono (fixture sintética)
+    /// só é achado com o PATH de login exportado pelo wrapper — no bash da
+    /// integração e no zsh do dono.
+    #[cfg(unix)]
+    #[test]
+    fn process_runs_with_the_owner_login_path_not_the_app_path() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("bin do dono");
+        std::fs::create_dir(&bin).unwrap();
+        let tool = bin.join("tyba-fixture-tool");
+        std::fs::write(&tool, "#!/bin/sh\necho achei\n").unwrap();
+        std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let login_path = format!("{}:/usr/bin:/bin", bin.display());
+
+        let mut shells = vec![bash_program()];
+        if Path::new("/bin/zsh").is_file() {
+            shells.push(PathBuf::from("/bin/zsh"));
+        }
+        for shell in shells {
+            let (in_dir, out_dir) = (dir.path().join("in"), dir.path().join("out"));
+            let _ = std::fs::remove_dir_all(&out_dir);
+            create_private_dir(&in_dir).unwrap();
+            create_private_dir(&out_dir).unwrap();
+            let (program, args) = process_argv(
+                &shell,
+                Some(&login_path),
+                "tyba-fixture-tool",
+                &in_dir,
+                &out_dir,
+            );
+            assert_eq!(program, shell);
+            let status = std::process::Command::new(&program)
+                .args(&args)
+                .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+                .env("HOME", dir.path())
+                .env("ZDOTDIR", dir.path())
+                .status()
+                .unwrap();
+            assert!(status.success(), "{shell:?}");
+            assert_eq!(read_exit(&out_dir), Some(0), "{shell:?}");
+            let log = std::fs::read_to_string(out_dir.join("log.txt")).unwrap();
+            assert_eq!(log.trim(), "achei", "{shell:?}");
+        }
+    }
+
+    #[test]
+    fn process_shell_is_the_owner_shell_when_it_speaks_the_wrapper() {
+        if Path::new("/bin/zsh").is_file() {
+            assert_eq!(process_shell("/bin/zsh"), PathBuf::from("/bin/zsh"));
+        }
+        if Path::new("/bin/bash").is_file() {
+            assert_eq!(process_shell("/bin/bash"), PathBuf::from("/bin/bash"));
+        }
+        // fish/nu não entendem o wrapper; relativo ou inexistente não roda.
+        assert_eq!(process_shell("/opt/homebrew/bin/fish"), bash_program());
+        assert_eq!(process_shell("zsh"), bash_program());
+        assert_eq!(process_shell("/nao/existe/zsh"), bash_program());
+        assert_eq!(process_shell(""), bash_program());
     }
 
     #[cfg(unix)]

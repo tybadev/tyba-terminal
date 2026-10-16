@@ -224,7 +224,10 @@ pub fn tool_list() -> Vec<Value> {
                 "type": "object",
                 "properties": {
                     "title": string_prop("Short name shown on the node."),
-                    "command": string_prop("Shell command (bash -lc)."),
+                    "command": string_prop(
+                        "Shell command, run by the owner's login shell (zsh or bash) with \
+                         their login PATH.",
+                    ),
                     "dir": dir,
                     "output": {
                         "type": "string",
