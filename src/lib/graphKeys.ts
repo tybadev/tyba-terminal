@@ -3,19 +3,31 @@
 // campo, do terminal de um nó (`.nokey`) nem de um diálogo.
 
 export type CanvasKey =
-  "undo" | "redo" | "duplicate" | "copy" | "paste" | "selectAll" | "zoomActual" | "fit" | "palette";
+  | "undo"
+  | "redo"
+  | "duplicate"
+  | "copy"
+  | "paste"
+  | "selectAll"
+  | "zoomActual"
+  | "fit"
+  | "palette"
+  | "focusTerminal";
 
 type KeyLike = Pick<KeyboardEvent, "key" | "metaKey" | "ctrlKey" | "shiftKey" | "altKey">;
 
 /**
  * A ação do canvas para a tecla, ou `null`. O modificador é ⌘ no mac e Ctrl
- * fora dele; `/` sozinho também abre a paleta.
+ * fora dele; `/` sozinho também abre a paleta e Enter sozinho foca o
+ * terminal do nó selecionado.
  */
 export function canvasKey(e: KeyLike, isMac: boolean): CanvasKey | null {
   const mod = isMac ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey;
   if (e.altKey) return null;
   if (!mod) {
-    return e.key === "/" && !e.metaKey && !e.ctrlKey && !e.shiftKey ? "palette" : null;
+    if (e.metaKey || e.ctrlKey || e.shiftKey) return null;
+    if (e.key === "/") return "palette";
+    return e.key === "Enter" ? "focusTerminal" : null;
   }
   const key = e.key.toLowerCase();
   if (e.shiftKey) return key === "z" ? "redo" : null;
@@ -58,4 +70,17 @@ export function keyOwnedElsewhere(target: ElementLike | null): boolean {
   if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
   if (target.isContentEditable) return true;
   return Boolean(target.closest('.nokey, [role="dialog"], [role="menu"], [data-maestro-sheet]'));
+}
+
+/**
+ * A sessão cujo terminal o Enter foca: a do nó selecionado, se for um só e
+ * tiver sessão. Selecionar não foca o terminal — o foco vem do clique nele
+ * ou deste Enter —, senão ⌘A focaria todos e ⌘D/⌘C nunca valeriam num nó
+ * rodando (o teclado já seria do terminal).
+ */
+export function enterTerminal(
+  selected: readonly { id: string }[],
+  sessionOf: (id: string) => string | null,
+): string | null {
+  return selected.length === 1 ? sessionOf(selected[0].id) : null;
 }

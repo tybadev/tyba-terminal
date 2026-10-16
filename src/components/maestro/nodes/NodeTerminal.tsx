@@ -5,6 +5,7 @@ import { useStore } from "@xyflow/react";
 import { TerminalView } from "@/components/TerminalView";
 import { sessionScreenLines } from "@/lib/ipc";
 import { canvasWheel, nodeTerminalClass } from "@/lib/nodeTerminal";
+import { getTerm } from "@/lib/termRegistry";
 import { useMaestro } from "./NodeFrame";
 
 /** O terminal ocupa o nó inteiro: o wrapper é quem tem o tamanho. */
@@ -20,7 +21,10 @@ const PREVIEW_POLL_MS = 400;
  * `nodeTerminal`): texto nítido no WebGL, mouse na célula certa, e o tamanho
  * do PTY é o do nó em 100%, que não muda com o zoom.
  *
- * Selecionar o nó (clicar nele) foca o xterm.
+ * Selecionar o nó não foca o terminal: o foco vem do clique dentro dele (o
+ * xterm cancela o mousedown, então o foco é dado aqui) ou do Enter com o nó
+ * selecionado, no canvas. Assim ⌘A não foca todos, ⌘D/⌘C seguem do canvas
+ * num nó rodando e o título se edita sem o terminal roubar o teclado.
  *
  * Com o nó aberto no modo foco (`NodeFocus`) vai a prévia em texto: a sessão
  * só monta o xterm em UM lugar. O "Abrir" do ⋯ do nó abre o foco.
@@ -71,10 +75,11 @@ export function NodeTerminal({
           <TerminalView
             sessionId={sessionId}
             visible
-            focused={selected}
+            focused={false}
             rect={FULL}
             zoom={zoom}
             fullBleed
+            onFocus={() => getTerm(sessionId)?.term.focus()}
           />
         </div>
       )}

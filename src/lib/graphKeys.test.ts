@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { canvasKey, keyOwnedElsewhere } from "./graphKeys";
+import { canvasKey, enterTerminal, keyOwnedElsewhere } from "./graphKeys";
 
 const key = (
   k: string,
@@ -39,6 +39,14 @@ describe("canvasKey (canvas-9)", () => {
     expect(canvasKey(key("/", { shiftKey: true }), true)).toBeNull();
   });
 
+  test("Enter sozinho foca o terminal do nó; com modificador não", () => {
+    expect(canvasKey(key("Enter"), true)).toBe("focusTerminal");
+    expect(canvasKey(key("Enter"), false)).toBe("focusTerminal");
+    expect(canvasKey(key("Enter", { shiftKey: true }), true)).toBeNull();
+    expect(canvasKey(key("Enter", { altKey: true }), true)).toBeNull();
+    expect(canvasKey(key("Enter", { ctrlKey: true }), true)).toBeNull();
+  });
+
   test("⌥ e ⇧ com outra letra não são do canvas", () => {
     expect(canvasKey(key("z", { metaKey: true, altKey: true }), true)).toBeNull();
     expect(canvasKey(key("d", { metaKey: true, shiftKey: true }), true)).toBeNull();
@@ -67,5 +75,20 @@ describe("keyOwnedElsewhere", () => {
     expect(keyOwnedElsewhere(el("DIV"))).toBe(false);
     expect(keyOwnedElsewhere(el("BODY"))).toBe(false);
     expect(keyOwnedElsewhere(null)).toBe(false);
+  });
+});
+
+describe("enterTerminal", () => {
+  const sessions: Record<string, string | null> = { a: "s-a", b: "s-b", n: null };
+  const sessionOf = (id: string) => sessions[id] ?? null;
+
+  test("um nó selecionado com sessão: o terminal dele", () => {
+    expect(enterTerminal([{ id: "a" }], sessionOf)).toBe("s-a");
+  });
+
+  test("vários selecionados (⌘A), nenhum, ou nó sem sessão: nada recebe o foco", () => {
+    expect(enterTerminal([{ id: "a" }, { id: "b" }], sessionOf)).toBeNull();
+    expect(enterTerminal([], sessionOf)).toBeNull();
+    expect(enterTerminal([{ id: "n" }], sessionOf)).toBeNull();
   });
 });

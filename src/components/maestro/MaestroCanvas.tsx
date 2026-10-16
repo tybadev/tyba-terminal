@@ -34,7 +34,7 @@ import {
 import "@xyflow/react/dist/base.css";
 import { toastError } from "@/lib/toast";
 import { clipBounds, copyNodes, pasteClip, type Clip } from "@/lib/graphClipboard";
-import { canvasKey, keyOwnedElsewhere } from "@/lib/graphKeys";
+import { canvasKey, enterTerminal, keyOwnedElsewhere } from "@/lib/graphKeys";
 import {
   freeSpot,
   minimapTone,
@@ -47,6 +47,7 @@ import { paletteEntries, recentDirs, type PaletteEntry } from "@/lib/graphPalett
 import { listSnippets, type Snippet } from "@/lib/ipc";
 import { ringState } from "@/lib/maestroCard";
 import { IS_MAC } from "@/lib/platform";
+import { getTerm } from "@/lib/termRegistry";
 import {
   SUBAGENT_HANDLE,
   SUB_H,
@@ -774,6 +775,20 @@ export function MaestroCanvas({
     // Texto destacado na página (uma nota, um painel): ⌘C é dele.
     const text = window.getSelection();
     if (action === "copy" && text && !text.isCollapsed) return;
+    // Enter num botão ou link é dele; sem um nó com terminal, também não é do canvas.
+    let enterSession: string | null = null;
+    if (action === "focusTerminal") {
+      if (active?.closest('button, a, [role="button"]')) return;
+      enterSession = enterTerminal(
+        shownNodes.filter((n) => n.selected),
+        (id) => {
+          const node = (shownNodes.find((n) => n.id === id)?.data as { node?: MaestroNode })
+            ?.node;
+          return node ? nodeSession(node.kind, run, id, live) : null;
+        },
+      );
+      if (!enterSession) return;
+    }
     e.preventDefault();
     e.stopPropagation();
     if (e.repeat && action !== "undo" && action !== "redo") return;
@@ -804,6 +819,9 @@ export function MaestroCanvas({
         return;
       case "palette":
         openPalette(pointer.current, null, true);
+        return;
+      case "focusTerminal":
+        if (enterSession) getTerm(enterSession)?.term.focus();
         return;
     }
   };
