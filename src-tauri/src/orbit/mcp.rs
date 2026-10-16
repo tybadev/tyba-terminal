@@ -223,9 +223,7 @@ pub fn tool_list() -> Vec<Value> {
                  call it again when a step starts (doing) and when it ends (done or failed), \
                  always with the whole list. In made, name the node you created in that \
                  step (e.g. \"caddy (:443)\"). Up to {} steps, {} characters per text, one \
-                 line each. If the result has owner_edit, the owner edited the note since \
-                 your last plan: that is their text, so incorporate their edit in your \
-                 next plan.",
+                 line each.",
                 super::orchestrator::MAX_PLAN_STEPS,
                 super::orchestrator::MAX_PLAN_TEXT_CHARS
             ),
@@ -504,10 +502,6 @@ mod tests {
             json!(["todo", "doing", "done", "failed"])
         );
         assert_eq!(plan["required"], json!(["text", "state"]));
-        let plan_description = by_name("orbit_plan")["description"].as_str().unwrap();
-        assert!(
-            plan_description.contains("owner_edit") && plan_description.contains("incorporate")
-        );
         // A regra de URL do navegador é a do core, domínios de dev inclusive.
         let browser = tools
             .iter()

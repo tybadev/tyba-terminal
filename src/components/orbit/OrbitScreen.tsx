@@ -116,7 +116,7 @@ import {
   undo as undoShot,
 } from "@/lib/graphHistory";
 import { freeSpot, nodeRect, rightOf } from "@/lib/graphLayout";
-import { applyPlans, freshPlans, planAfterEdit, splitEditing } from "@/lib/orbitPlan";
+import { applyPlans, freshPlans } from "@/lib/orbitPlan";
 import { IS_MAC } from "@/lib/platform";
 import {
   subagentKey,
@@ -426,31 +426,11 @@ function OrbitInner({
   };
   const putPlansRef = useRef(putPlans);
   putPlansRef.current = putPlans;
-  // A nota em edição (textarea com foco) e o texto dela quando a edição
-  // começou; o plano que chega nela espera o fim da edição.
-  const editingNote = useRef<{ id: string; text: string } | null>(null);
-  const pendingPlans = useRef(new Map<string, Plan>());
   useEffect(() => {
     if (plans.length === 0) return;
     for (const p of plans) appliedPlans.current.set(p.note.id, p.updatedAt);
-    const split = splitEditing(plans, editingNote.current?.id ?? null);
-    for (const p of split.later) pendingPlans.current.set(p.note.id, p);
-    putPlansRef.current(split.now);
+    putPlansRef.current(plans);
   }, [plans]);
-  const editNote = useCallback((nodeId: string, editing: boolean) => {
-    const kind = nodesRef.current.find((n) => n.id === nodeId)?.data.node.kind;
-    const text = kind?.type === "note" ? kind.markdown : "";
-    if (editing) {
-      editingNote.current = { id: nodeId, text };
-      return;
-    }
-    const start = editingNote.current?.id === nodeId ? editingNote.current.text : text;
-    editingNote.current = null;
-    const pending = pendingPlans.current.get(nodeId);
-    pendingPlans.current.delete(nodeId);
-    const plan = planAfterEdit(pending, start, text);
-    if (plan) putPlansRef.current([plan]);
-  }, []);
   // Onde o dono deixou cada nó criado pelo orquestrador (vale enquanto esse
   // run está à vista, e o "Manter no grafo" leva a posição junto).
   const [createdView, setCreatedView] = useState<CreatedView>({});
@@ -796,7 +776,6 @@ function OrbitInner({
       setOpenSubagent: setOpenSub,
       setFocusNode,
       openInBrowser,
-      editNote,
       keepCreated: (nodeId: string | null, orchestrator?: string) =>
         void keepRef.current(nodeId, orchestrator ?? null),
       answerApproval: (id: number, decision: ApprovalDecision) =>
@@ -804,7 +783,7 @@ function OrbitInner({
           setError(t("orbitApprovalError", { error: String(e) })),
         ),
     }),
-    [integrations, updateNode, graphDir, releaseNode, openInBrowser, editNote, t],
+    [integrations, updateNode, graphDir, releaseNode, openInBrowser, t],
   );
   const ctx = useMemo(
     () => ({

@@ -76,8 +76,6 @@ export interface CanvasActions {
    * `null`, todos os que `orchestrator` criou ("Manter tudo" no ⋯ dele).
    */
   keepCreated: (nodeId: string | null, orchestrator?: string) => void;
-  /** A nota ganhou (`true`) ou perdeu o foco do texto: o plano espera o fim. */
-  editNote: (nodeId: string, editing: boolean) => void;
   /** Permitir/Negar da cápsula âmbar: resolve o pedido no core. */
   answerApproval: (requestId: number, decision: ApprovalDecision) => void;
 }
@@ -114,7 +112,6 @@ export const CanvasActionsContext = createContext<CanvasActions>({
   setFocusNode: () => {},
   openInBrowser: () => {},
   keepCreated: () => {},
-  editNote: () => {},
   answerApproval: () => {},
 });
 

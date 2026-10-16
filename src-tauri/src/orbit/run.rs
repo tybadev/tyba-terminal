@@ -1448,12 +1448,8 @@ impl<H: RunHost> Runs<H> {
                 Ok(serde_json::json!({ "node_id": node_id, "stopped": true }))
             }
             ToolCall::Plan { steps } => {
-                let (id, owner_edit) = self.write_plan(run_id, orchestrator, steps)?;
-                let mut out = serde_json::json!({ "note_id": id });
-                if let Some(text) = owner_edit {
-                    out["owner_edit"] = text.into();
-                }
-                Ok(out)
+                let id = self.write_plan(run_id, orchestrator, steps)?;
+                Ok(serde_json::json!({ "note_id": id }))
             }
         }
     }
@@ -1465,22 +1461,20 @@ impl<H: RunHost> Runs<H> {
     /// tirou do grafo, ela volta com o mesmo id). Nota já ligada por `plan`
     /// (um run anterior, ou o dono ligou à mão) só é reaproveitada se o texto
     /// dela está vazio ou é checklist; senão o texto é do dono e nasce outra.
-    /// Devolve o id e, se o dono editou a nota depois do último plano, o
-    /// texto dele (o agente incorpora no próximo). O grafo passa pela
-    /// validação do salvar; o run guarda uma cópia e o evento do run leva a
+    /// Devolve o id da nota. O grafo passa pela validação do salvar; o run guarda uma cópia e o evento do run leva a
     /// nota ao front.
     pub fn write_plan(
         &self,
         run_id: &str,
         orchestrator: &str,
         steps: Vec<PlanStep>,
-    ) -> Result<(String, Option<String>), String> {
+    ) -> Result<String, String> {
         let markdown = orchestrator::plan_markdown(&steps);
         let note_markdown = |n: &Node| match &n.kind {
             NodeKind::Note { markdown } => Some(markdown.clone()),
             _ => None,
         };
-        let (note_id, owner_edit) = {
+        let note_id = {
             let mut active = self.active.lock();
             let a = active.get_mut(run_id).ok_or(
                 "esta execução já terminou: ▶ Executar de novo para o orquestrador escrever o plano",
@@ -1498,20 +1492,11 @@ impl<H: RunHost> Runs<H> {
                 .iter()
                 .find(|p| p.orchestrator == orchestrator)
                 .cloned();
-            let mut owner_edit = None;
             let existing = match &own {
                 Some(p) => {
-                    match graph.nodes.iter().find(|n| n.id == p.note.id) {
-                        Some(n) => {
-                            let before = note_markdown(n).unwrap_or_default();
-                            let last = note_markdown(&p.note).unwrap_or_default();
-                            if before.trim() != last.trim() {
-                                owner_edit =
-                                    Some(crate::session::redact::redact(&before).into_owned());
-                            }
-                        }
-                        // Um salvar da tela em voo a tirou: volta com o mesmo id.
-                        None => graph.nodes.push(p.note.clone()),
+                    // Um salvar da tela em voo a tirou: volta com o mesmo id.
+                    if !graph.nodes.iter().any(|n| n.id == p.note.id) {
+                        graph.nodes.push(p.note.clone());
                     }
                     if !graph.edges.iter().any(|e| e.id == p.edge.id) {
                         graph.edges.push(p.edge.clone());
@@ -1608,10 +1593,10 @@ impl<H: RunHost> Runs<H> {
                 Some(p) => *p = plan,
                 None => plans.push(plan),
             }
-            (note.id, owner_edit)
+            note.id
         };
         self.publish_current(run_id);
-        Ok((note_id, owner_edit))
+        Ok(note_id)
     }
 
     /// Nó novo no run ativo, começando na hora (ou assim que a url do
@@ -4155,8 +4140,6 @@ mod tests {
             )
             .unwrap();
         assert_eq!(second["note_id"], note_id.as_str());
-        // Ninguém mexeu na nota: nada de edição do dono no resultado.
-        assert!(second.get("owner_edit").is_none(), "{second}");
         let saved = runs.store.get_orbit_graph("g-1").unwrap().unwrap().value;
         assert_eq!(saved.nodes.len(), 3);
         assert_eq!(saved.edges.len(), 1);
@@ -4171,44 +4154,19 @@ mod tests {
         assert_eq!(r.plans.len(), 1);
         assert_eq!(r.plans[0].steps[1].state, orchestrator::StepState::Failed);
 
-        // O dono editou a nota (o salvar da tela): o próximo plano reescreve
-        // e devolve ao agente o texto dele, para incorporar.
-        let mut edited = runs.store.get_orbit_graph("g-1").unwrap().unwrap().value;
-        edited
-            .nodes
-            .iter_mut()
-            .find(|n| n.id == note_id)
-            .unwrap()
-            .kind = NodeKind::Note {
-            markdown: "- [x] Subir a api\n- [ ] Abrir o login com o usuário admin\n".into(),
-        };
-        runs.store.save_orbit_graph(&edited, true, None).unwrap();
-        let third = tools
-            .call(
-                "orbit_plan",
-                &json!({"steps": [{"text": "Abrir o login", "state": "doing"}]}),
-            )
-            .unwrap();
-        assert_eq!(third["note_id"], note_id.as_str());
-        assert_eq!(
-            third["owner_edit"],
-            "- [x] Subir a api\n- [ ] Abrir o login com o usuário admin\n"
-        );
-
         // Um salvar da tela em voo tirou a nota (e a ligação) do grafo: ela
         // volta com o mesmo id, sem nascer outra.
         let mut lost = runs.store.get_orbit_graph("g-1").unwrap().unwrap().value;
         lost.nodes.retain(|n| n.id != note_id);
         lost.edges.clear();
         runs.store.save_orbit_graph(&lost, true, None).unwrap();
-        let fourth = tools
+        let third = tools
             .call(
                 "orbit_plan",
                 &json!({"steps": [{"text": "Abrir o login", "state": "done"}]}),
             )
             .unwrap();
-        assert_eq!(fourth["note_id"], note_id.as_str());
-        assert!(fourth.get("owner_edit").is_none(), "{fourth}");
+        assert_eq!(third["note_id"], note_id.as_str());
         let saved = runs.store.get_orbit_graph("g-1").unwrap().unwrap().value;
         assert_eq!(saved.nodes.len(), 3);
         assert_eq!(saved.edges.len(), 1);
