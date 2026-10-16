@@ -94,6 +94,26 @@ export function outsideView(
 }
 
 /**
+ * O nó aparece na tela (com `margin` px de folga em volta)? O terminal do nó
+ * só monta o xterm quando aparece; fora da tela fica a prévia em texto, para
+ * o canvas cheio de nós não manter um xterm por sessão. Área ainda sem
+ * medida conta como à vista.
+ */
+export function onScreen(
+  rect: Rect,
+  view: { x: number; y: number; zoom: number },
+  size: { w: number; h: number },
+  margin = 0,
+): boolean {
+  if (size.w <= 0 || size.h <= 0 || view.zoom <= 0) return true;
+  const left = view.x + rect.x * view.zoom;
+  const top = view.y + rect.y * view.zoom;
+  const right = left + rect.w * view.zoom;
+  const bottom = top + rect.h * view.zoom;
+  return right > -margin && bottom > -margin && left < size.w + margin && top < size.h + margin;
+}
+
+/**
  * Cor do nó no minimapa (canvas-10), pelo estado do anel: esperando o dono
  * âmbar, rodando verde, falhou vermelho; criado pelo orquestrador violeta;
  * na fila apagado; pronto verde mais fraco; fora de execução a borda.

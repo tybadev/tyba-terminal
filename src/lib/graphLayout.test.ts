@@ -1,6 +1,14 @@
 import { describe, expect, test } from "bun:test";
 
-import { freeSpot, minimapTone, nodeRect, outsideView, rightOf, type Rect } from "./graphLayout";
+import {
+  freeSpot,
+  minimapTone,
+  nodeRect,
+  onScreen,
+  outsideView,
+  rightOf,
+  type Rect,
+} from "./graphLayout";
 
 const size = { w: 200, h: 100 };
 
@@ -91,5 +99,33 @@ describe("minimapTone (canvas-10)", () => {
     expect(minimapTone("done", true)).toBe("var(--tyba-violet)");
     expect(minimapTone("idle", false)).toBe("var(--tyba-border-strong)");
     expect(minimapTone("waiting", false)).toBe("var(--tyba-text-faint)");
+  });
+});
+
+describe("onScreen (terminal do nó só monta o xterm à vista)", () => {
+  const pane = { w: 1200, h: 800 };
+  const node: Rect = { x: 100, y: 100, w: 520, h: 300 };
+
+  test("dentro e parcialmente dentro da tela: à vista", () => {
+    expect(onScreen(node, { x: 0, y: 0, zoom: 1 }, pane)).toBe(true);
+    // Só a ponta direita aparece na borda esquerda.
+    expect(onScreen(node, { x: -600, y: 0, zoom: 1 }, pane)).toBe(true);
+  });
+
+  test("fora da tela, em qualquer zoom: prévia", () => {
+    expect(onScreen(node, { x: -700, y: 0, zoom: 1 }, pane)).toBe(false);
+    expect(onScreen(node, { x: 0, y: 900, zoom: 1 }, pane)).toBe(false);
+    // Em 50% o nó em x=2500 cai em 1250 px: além da largura.
+    expect(onScreen({ ...node, x: 2500 }, { x: 0, y: 0, zoom: 0.5 }, pane)).toBe(false);
+    expect(onScreen({ ...node, x: 2300 }, { x: 0, y: 0, zoom: 0.5 }, pane)).toBe(true);
+  });
+
+  test("a folga monta o xterm um pouco antes de o nó entrar", () => {
+    expect(onScreen(node, { x: -700, y: 0, zoom: 1 }, pane, 200)).toBe(true);
+    expect(onScreen(node, { x: -900, y: 0, zoom: 1 }, pane, 200)).toBe(false);
+  });
+
+  test("canvas ainda sem medida: à vista (não esconde o terminal)", () => {
+    expect(onScreen(node, { x: -5000, y: 0, zoom: 1 }, { w: 0, h: 0 })).toBe(true);
   });
 });

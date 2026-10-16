@@ -4,6 +4,7 @@ import { useStore } from "@xyflow/react";
 
 import { TerminalView } from "@/components/TerminalView";
 import { sessionScreenLines } from "@/lib/ipc";
+import { nodeRect, onScreen } from "@/lib/graphLayout";
 import { canvasWheel, nodeTerminalClass } from "@/lib/nodeTerminal";
 import { getTerm } from "@/lib/termRegistry";
 import { useMaestro } from "./NodeFrame";
@@ -12,6 +13,8 @@ import { useMaestro } from "./NodeFrame";
 export const FULL = { left: 0, top: 0, width: 100, height: 100 };
 
 const PREVIEW_LINES = 14;
+/** Folga (px de tela) para montar o xterm um pouco antes de o nó entrar. */
+const SCREEN_MARGIN = 200;
 /** A prévia não precisa de quadro a quadro: a tela do core é lida a cada tanto. */
 const PREVIEW_POLL_MS = 400;
 
@@ -27,7 +30,7 @@ const PREVIEW_POLL_MS = 400;
  * num nó rodando e o título se edita sem o terminal roubar o teclado.
  *
  * Com o nó aberto no modo foco (`NodeFocus`) vai a prévia em texto: a sessão
- * só monta o xterm em UM lugar. O "Abrir" do ⋯ do nó abre o foco.
+ * só monta o xterm em UM lugar. Fora da tela também vai a prévia. O "Abrir" do ⋯ do nó abre o foco.
  */
 export function NodeTerminal({
   nodeId,
@@ -41,6 +44,20 @@ export function NodeTerminal({
   const { focusNode } = useMaestro();
   const zoom = useStore((s) => s.transform[2]);
   const inFocus = focusNode === nodeId;
+  // Fora da tela, a prévia: o canvas cheio de nós não mantém um xterm (e um
+  // atlas do WebGL) por sessão. O seletor devolve booleano, então o pan só
+  // redesenha o nó quando ele entra ou sai da tela.
+  const visible = useStore((s) => {
+    const n = s.nodeLookup.get(nodeId);
+    if (!n) return true;
+    const rect = nodeRect({
+      position: n.internals.positionAbsolute,
+      width: n.measured.width ?? n.width,
+      height: n.measured.height ?? n.height,
+    });
+    const [x, y, z] = s.transform;
+    return onScreen(rect, { x, y, zoom: z }, { w: s.width, h: s.height }, SCREEN_MARGIN);
+  });
 
   // Roda sem o nó selecionado: pega na captura, antes do xterm (que rolaria
   // o scrollback ou mandaria setas ao PTY), e entrega ao canvas.
@@ -66,7 +83,7 @@ export function NodeTerminal({
       ref={box}
       className={`${nodeTerminalClass(selected)} relative min-h-0 flex-1 bg-tyba-sunken`}
     >
-      {inFocus ? (
+      {inFocus || !visible ? (
         <TerminalPreview sessionId={sessionId} />
       ) : (
         // A margem fica do lado de fora do invólucro de zoom: escala junto
