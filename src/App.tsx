@@ -5787,6 +5787,7 @@ export default function App() {
                   approvals={approvals}
                   onCardApprovals={setNodeCardIds}
                   covered={machineScreen !== null}
+                  sessions={sessions}
                 />
               </ErrorBoundary>
               {machineScreen && (

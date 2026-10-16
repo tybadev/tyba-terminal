@@ -3,7 +3,7 @@
 // estado do nó no run, os pedidos de aprovação); aqui só se escolhe o desenho.
 
 import type { ApprovalRequest } from "./ipc";
-import type { NodeRun } from "./maestro";
+import { formatDuration, type NodeKind, type NodeRun, type Runner } from "./maestro";
 
 /**
  * Anel em volta do ícone:
@@ -96,4 +96,95 @@ export function visibleCardApprovalIds(params: {
     if (left >= 0 && top >= 0 && right <= pane.w && bottom <= pane.h) ids.add(request.id);
   }
   return ids;
+}
+
+/** O que a sessão do agente do nó reportou (statusline/hook do Claude, no core). */
+export interface AgentTelemetry {
+  /** Nome do modelo ("Opus 5.5"), ou o id quando não há nome. */
+  model: string | null;
+  contextPct: number | null;
+  linesAdded: number | null;
+  linesRemoved: number | null;
+}
+
+/** "Claude · Opus 5.5" (quadro MaestroCardsD: "Claude · Opus"); sem modelo, só o agente. */
+export function agentName(runner: Runner, model: string | null | undefined): string {
+  const base = runner === "claude" ? "Claude" : "Codex";
+  const m = model?.replace(/^claude[\s-]+/i, "").trim();
+  return m ? `${base} · ${m}` : base;
+}
+
+/** "+42 −7" (o que o agente mudou na sessão); vazio se o core não disse. */
+export function diffSummary(t: Pick<AgentTelemetry, "linesAdded" | "linesRemoved"> | undefined): string {
+  if (!t || (t.linesAdded == null && t.linesRemoved == null)) return "";
+  return `+${t.linesAdded ?? 0} −${t.linesRemoved ?? 0}`;
+}
+
+/** Uma linha da grade do ⋯: a chave de i18n do rótulo e o valor (`null` = o tempo, que anda). */
+export interface DetailRow {
+  key: string;
+  value: string | null;
+}
+
+/**
+ * A grade do ⋯ do agente na ordem do quadro MaestroCardsD — em duas colunas,
+ * agente | pasta / papel | diff / contexto | tempo — e, depois dela, o que o
+ * quadro não tem mas o nó rodando esconde (a tarefa e o orquestrar, cuja
+ * barra recolhe enquanto roda).
+ */
+export function agentDetailRows(p: {
+  runner: Runner;
+  role: string;
+  dir: string;
+  task: string;
+  telemetry: AgentTelemetry | undefined;
+  /** Agente que o orquestrador criou não orquestra: sem a linha. */
+  orchestrate: boolean | null;
+}): DetailRow[] {
+  const pct = p.telemetry?.contextPct;
+  return [
+    { key: "maestroDetailAgent", value: agentName(p.runner, p.telemetry?.model) },
+    { key: "maestroDetailDir", value: p.dir },
+    { key: "maestroRole", value: p.role },
+    { key: "maestroDetailDiff", value: diffSummary(p.telemetry) },
+    { key: "maestroDetailContext", value: pct == null ? "" : `${Math.round(pct)}%` },
+    { key: "maestroDetailTime", value: null },
+    { key: "maestroDetailTask", value: p.task },
+    ...(p.orchestrate === null
+      ? []
+      : [{ key: "maestroOrchestrate", value: p.orchestrate ? "maestroYes" : "maestroNo" }]),
+  ];
+}
+
+/**
+ * A linha embaixo do comando no card que espera o dono (quadro: "Codex ·
+ * revisor · pede há 40s"): quem pede e há quanto tempo.
+ */
+export function approvalLine(
+  kind: NodeKind,
+  requestedAtMs: number,
+  now: number,
+): { who: string; ago: string } {
+  const who =
+    kind.type === "agent"
+      ? [kind.runner === "claude" ? "Claude" : "Codex", kind.role.trim()].filter(Boolean).join(" · ")
+      : "";
+  return { who, ago: formatDuration(Math.max(0, now - requestedAtMs)) };
+}
+
+/**
+ * O rodapé do nó que falhou (quadro: "saiu com 1 · Ver log inteiro"): o
+ * código de saída e o motivo do core (o que houver), e se há log para ver
+ * (processo e integração gravam o `log.txt`). `null` = não falhou.
+ */
+export function failureFooter(
+  kind: NodeKind,
+  nodeRun: NodeRun | undefined,
+): { exitCode: number | null; reason: string; log: boolean } | null {
+  if (nodeRun?.status !== "failed") return null;
+  return {
+    exitCode: nodeRun.exitCode,
+    reason: nodeRun.reason ?? "",
+    log: kind.type === "process" || kind.type === "integration",
+  };
 }

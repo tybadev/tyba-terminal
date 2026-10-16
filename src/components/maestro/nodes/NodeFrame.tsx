@@ -8,7 +8,7 @@ import {
   type ReactNode,
 } from "react";
 import { useTranslation } from "react-i18next";
-import { ArrowsOut, DotsThree, FolderSimple, Trash } from "@phosphor-icons/react";
+import { ArrowClockwise, ArrowsOut, DotsThree, FolderSimple, Trash } from "@phosphor-icons/react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
   Handle,
@@ -43,7 +43,13 @@ import {
   type Run,
 } from "@/lib/maestro";
 import type { ApprovalDecision, ApprovalRequest, SubagentRun } from "@/lib/ipc";
-import { ringState, type RingState } from "@/lib/maestroCard";
+import {
+  approvalLine,
+  failureFooter,
+  ringState,
+  type AgentTelemetry,
+  type RingState,
+} from "@/lib/maestroCard";
 import { decideApproval } from "@/lib/notifications";
 
 export type MaestroFlowNode = Node<FlowNodeData>;
@@ -87,6 +93,8 @@ export interface CanvasState {
   createdBy: ReadonlyMap<string, string>;
   /** Pedido de aprovação pendente de cada nó (o mais antigo da sessão dele). */
   approvals: ReadonlyMap<string, ApprovalRequest>;
+  /** O que a sessão de cada nó de agente reportou (modelo, contexto, diff). */
+  telemetry: ReadonlyMap<string, AgentTelemetry>;
 }
 
 export type MaestroCtx = CanvasActions & CanvasState;
@@ -113,6 +121,7 @@ export const CanvasStateContext = createContext<CanvasState>({
   createdIds: new Set(),
   createdBy: new Map(),
   approvals: new Map(),
+  telemetry: new Map(),
 });
 
 /** Relógio dos tempos (ms); só anda enquanto algo roda. */
@@ -292,7 +301,7 @@ export function NodeRing({
 }
 
 /** O tempo do nó (só ele lê o relógio). */
-function Elapsed({ nodeRun, className }: { nodeRun: NodeRun; className?: string }) {
+export function Elapsed({ nodeRun, className }: { nodeRun: NodeRun; className?: string }) {
   const now = useClock();
   const elapsed = nodeElapsed(nodeRun, now);
   return elapsed === null ? null : <span className={className}>{formatDuration(elapsed)}</span>;
@@ -333,6 +342,10 @@ export interface NodeDetail {
 
 const capsuleBtn = "nodrag shrink-0 rounded-full px-3 py-[3px] text-[11.5px] leading-[18px]";
 
+/** Botão da grade do ⋯ (quadro: pílula clara). */
+const detailBtn =
+  "inline-flex items-center gap-1.5 rounded-full bg-tyba-text/[.08] px-3 py-[3px] text-[11.5px]";
+
 /**
  * Pedido do agente na cápsula âmbar: Permitir/Negar ali mesmo. Vermelho pede
  * dois cliques para permitir (a regra de `decideApproval`, a mesma do toast e
@@ -368,6 +381,27 @@ function ApprovalButtons({ request }: { request: ApprovalRequest }) {
 }
 
 /**
+ * O pedido embaixo da janela (quadro MaestroCardsD): o comando e "Codex ·
+ * revisor · pede há 40s". Só esta linha lê o relógio.
+ */
+function ApprovalFooter({ node, request }: { node: MaestroNode; request: ApprovalRequest }) {
+  const { t } = useTranslation();
+  const now = useClock();
+  const line = approvalLine(node.kind, request.requested_at_ms, now);
+  return (
+    <div className="shrink-0 px-3.5 pt-1 pb-2 text-[11.5px]">
+      <div className="truncate text-tyba-text">{request.command}</div>
+      <div className="truncate text-[11px] text-tyba-text-faint">
+        {[line.who, t("maestroAsksAgo", { ago: line.ago })].filter(Boolean).join(" · ")}
+      </div>
+    </div>
+  );
+}
+
+/** Botão de algo que o core ainda não faz: aparece no lugar do quadro, sem ação, com a dica. */
+export const soonClass = "cursor-not-allowed text-tyba-text-ghost";
+
+/**
  * Moldura comum dos nós (quadro MaestroCardsD, "ilha"): a cápsula do
  * cabeçalho flutua sobre a janela sem moldura. Na cápsula, o anel da marca
  * com o estado, o nome, o estado curto, a ação do nó e o ⋯ (a grade de
@@ -386,6 +420,7 @@ export function NodeFrame({
   status,
   meta,
   details = [],
+  stateRows = true,
   paper = false,
   children,
 }: {
@@ -403,6 +438,8 @@ export function NodeFrame({
   meta?: ReactNode;
   /** Grade do ⋯, além do estado e do tempo. */
   details?: NodeDetail[];
+  /** A grade ganha o estado e o tempo no fim; o agente põe o tempo na ordem do quadro. */
+  stateRows?: boolean;
   /** Nota: tom de papel. */
   paper?: boolean;
   children: ReactNode;
@@ -455,15 +492,16 @@ export function NodeFrame({
   }, [id, handleKey, updateInternals]);
 
   const creatorTitle = creator ? graph.nodes.find((n) => n.id === creator)?.title : undefined;
-  const failure =
-    nodeRun?.status === "failed"
-      ? [
-          nodeRun.exitCode !== null ? t("maestroExitCode", { code: nodeRun.exitCode }) : "",
-          nodeRun.reason ?? "",
-        ]
-          .filter(Boolean)
-          .join(" · ")
-      : "";
+  const fail = failureFooter(node.kind, nodeRun);
+  const failure = fail
+    ? [
+        fail.exitCode !== null ? t("maestroExitCode", { code: fail.exitCode }) : "",
+        fail.reason,
+      ]
+        .filter(Boolean)
+        .join(" · ")
+    : "";
+  const agent = node.kind.type === "agent";
 
   const capsule = request
     ? "border-tyba-amber bg-tyba-amber text-tyba-text-inverse"
@@ -593,30 +631,47 @@ export function NodeFrame({
             : "bg-tyba-sunken"
         } ${win}`}
       >
-        {request && (
-          <div className="shrink-0 truncate px-3.5 pb-1.5 text-[11.5px] text-tyba-text">
-            {request.command}
-          </div>
-        )}
         {children}
-        {(failure || created || meta) && (
-          <div
-            className={`shrink-0 truncate px-3.5 pt-1 pb-2 text-[11px] ${
-              failure ? "text-tyba-red" : created ? "text-tyba-violet" : "text-tyba-text-faint"
-            }`}
-          >
-            {failure ||
-              (created
-                ? t("maestroCreatedByNode", { node: creatorTitle ?? t("maestroAnotherAgent") })
-                : meta)}
-          </div>
+        {request ? (
+          <ApprovalFooter node={node} request={request} />
+        ) : (
+          (fail || created || meta) && (
+            <div
+              className={`shrink-0 truncate px-3.5 pt-1 pb-2 text-[11px] ${
+                fail ? "text-tyba-red" : created ? "text-tyba-violet" : "text-tyba-text-faint"
+              }`}
+            >
+              {fail ? (
+                <>
+                  {failure}
+                  {fail.log && (
+                    <>
+                      {failure && " · "}
+                      <span
+                        role="button"
+                        aria-disabled="true"
+                        title={t("maestroFullLogSoon")}
+                        className="nodrag cursor-not-allowed text-tyba-text-muted"
+                      >
+                        {t("maestroFullLog")}
+                      </span>
+                    </>
+                  )}
+                </>
+              ) : created ? (
+                t("maestroCreatedByNode", { node: creatorTitle ?? t("maestroAnotherAgent") })
+              ) : (
+                meta
+              )}
+            </div>
+          )
         )}
         {open && (
           <div className="nodrag nowheel absolute inset-0 overflow-y-auto bg-tyba-sunken px-4 pt-7 pb-3.5 text-[11px]">
             <div className="grid grid-cols-[auto_1fr_auto_1fr] gap-x-3 gap-y-1.5">
               {[
                 ...details,
-                ...(nodeRun
+                ...(nodeRun && stateRows
                   ? [
                       {
                         label: t("maestroDetailState"),
@@ -634,22 +689,47 @@ export function NodeFrame({
                 </Fragment>
               ))}
             </div>
-            <div className="flex gap-2 pt-3">
-              {session && (
+            <div className="flex flex-wrap gap-2 pt-3">
+              {/* Quadro: ⤢ Abrir · ↻ Reiniciar · Trocar papel. O que o core
+                  ainda não faz fica no lugar, sem ação, com a dica. */}
+              {(session || agent) && (
                 <button
                   type="button"
-                  onClick={() => setFocusNode(id)}
-                  className="inline-flex items-center gap-1.5 rounded-full bg-tyba-text/[.08] px-3 py-[3px] text-[11.5px] text-tyba-text hover:bg-tyba-text/[.12]"
+                  aria-disabled={session ? undefined : true}
+                  title={session ? undefined : t("maestroOpenNoSession")}
+                  onClick={() => session && setFocusNode(id)}
+                  className={`${detailBtn} ${session ? "text-tyba-text hover:bg-tyba-text/[.12]" : soonClass}`}
                 >
                   <ArrowsOut size={12} />
                   {t("maestroOpen")}
                 </button>
               )}
+              {agent && (
+                <>
+                  <button
+                    type="button"
+                    aria-disabled
+                    title={t("maestroRestartSoon")}
+                    className={`${detailBtn} ${soonClass}`}
+                  >
+                    <ArrowClockwise size={12} />
+                    {t("maestroRestart")}
+                  </button>
+                  <button
+                    type="button"
+                    aria-disabled
+                    title={t("maestroSwapRoleSoon")}
+                    className={`${detailBtn} ${soonClass}`}
+                  >
+                    {t("maestroSwapRole")}
+                  </button>
+                </>
+              )}
               {!locked && (
                 <button
                   type="button"
                   onClick={() => void deleteElements({ nodes: [{ id }] })}
-                  className="inline-flex items-center gap-1.5 rounded-full bg-tyba-text/[.08] px-3 py-[3px] text-[11.5px] text-tyba-text hover:text-tyba-red"
+                  className={`${detailBtn} text-tyba-text hover:text-tyba-red`}
                 >
                   <Trash size={12} />
                   {t("maestroDeleteNode")}

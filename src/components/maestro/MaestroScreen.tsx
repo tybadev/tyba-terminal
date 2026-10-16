@@ -103,9 +103,10 @@ import {
   resolveApproval,
   type ApprovalDecision,
   type ApprovalRequest,
+  type Session,
   type SubagentRun,
 } from "@/lib/ipc";
-import { nodeApproval } from "@/lib/maestroCard";
+import { nodeApproval, type AgentTelemetry } from "@/lib/maestroCard";
 import { keepIfSame } from "@/lib/stableItems";
 import {
   EMPTY_HISTORY,
@@ -145,8 +146,11 @@ export function MaestroScreen({
   approvals = [],
   onCardApprovals,
   covered = false,
+  sessions = [],
 }: {
   focusSession?: FocusSessionRequest | null;
+  /** As sessões do core (as dos nós trazem modelo, contexto e diff do agente). */
+  sessions?: readonly Session[];
   /** Outra tela do app por cima do Maestro (Serviços e portas). */
   covered?: boolean;
   /** Pedidos de aprovação pendentes (do core, via App). */
@@ -161,6 +165,7 @@ export function MaestroScreen({
         approvals={approvals}
         onCardApprovals={onCardApprovals}
         covered={covered}
+        sessions={sessions}
       />
     </ReactFlowProvider>
   );
@@ -180,11 +185,13 @@ function MaestroInner({
   approvals,
   onCardApprovals,
   covered,
+  sessions,
 }: {
   focusSession: FocusSessionRequest | null;
   approvals: readonly ApprovalRequest[];
   onCardApprovals?: (ids: ReadonlySet<number>) => void;
   covered: boolean;
+  sessions: readonly Session[];
 }) {
   const { t, i18n } = useTranslation();
   // Home: onde nasce o nó quando ainda não há pasta usada. `null` = lendo.
@@ -407,6 +414,33 @@ function MaestroInner({
     }
     return out;
   }, [agentSessions, approvals]);
+  // Modelo, contexto e diff que a sessão de cada agente reportou (a grade do
+  // ⋯). A chave segura o mapa: a lista de sessões muda a toda hora.
+  const telemetryKey = JSON.stringify(
+    [...agentSessions].map(([nodeId, sessionId]) => {
+      const s = sessions.find((x) => x.id === sessionId);
+      const u = s?.agent_usage;
+      return [
+        nodeId,
+        u?.model ?? s?.agent_model ?? null,
+        u?.context_pct ?? null,
+        u?.lines_added ?? null,
+        u?.lines_removed ?? null,
+      ];
+    }),
+  );
+  const telemetry = useMemo(
+    () =>
+      new Map<string, AgentTelemetry>(
+        (JSON.parse(telemetryKey) as [string, string | null, number | null, number | null, number | null][]).map(
+          ([nodeId, model, contextPct, linesAdded, linesRemoved]) => [
+            nodeId,
+            { model, contextPct, linesAdded, linesRemoved },
+          ],
+        ),
+      ),
+    [telemetryKey],
+  );
   const cardApprovals = useCallback(
     (ids: ReadonlySet<number>) => onCardApprovals?.(ids),
     [onCardApprovals],
@@ -427,7 +461,9 @@ function MaestroInner({
 
   // Relógio dos tempos de nó, de execução e de subagente, só enquanto algo roda.
   const runningId = running?.id ?? null;
-  const ticking = runningId !== null || subagentsActive;
+  // O "pede há 40s" da cápsula âmbar também anda (o run pode já ter fechado
+  // com o agente vivo pedindo).
+  const ticking = runningId !== null || subagentsActive || nodeApprovals.size > 0;
   useEffect(() => {
     if (!ticking) return;
     setNow(Date.now());
@@ -716,6 +752,7 @@ function MaestroInner({
       createdIds,
       createdBy,
       approvals: nodeApprovals,
+      telemetry,
     }),
     [
       viewGraph,
@@ -728,6 +765,7 @@ function MaestroInner({
       createdIds,
       createdBy,
       nodeApprovals,
+      telemetry,
     ],
   );
 

@@ -1,5 +1,5 @@
 import { useTranslation } from "react-i18next";
-import { TerminalWindow } from "@phosphor-icons/react";
+import { ArrowClockwise, TerminalWindow } from "@phosphor-icons/react";
 import type { NodeProps } from "@xyflow/react";
 
 import { Select } from "@/components/ui/select";
@@ -13,7 +13,15 @@ import {
   type OutputKind,
 } from "@/lib/maestro";
 import { firstLine } from "@/lib/nodeSummary";
-import { NodeDir, NodeFrame, fieldClass, termClass, useMaestro, type MaestroFlowNode } from "./NodeFrame";
+import {
+  NodeDir,
+  NodeFrame,
+  fieldClass,
+  soonClass,
+  termClass,
+  useMaestro,
+  type MaestroFlowNode,
+} from "./NodeFrame";
 import { NodeTerminal } from "./NodeTerminal";
 
 type ProcessKind = Extract<NodeKind, { type: "process" }>;
@@ -32,6 +40,7 @@ export function ProcessNode({ id, data, selected }: NodeProps<MaestroFlowNode>) 
     updateNode(id, (n) => ({ ...n, kind: { ...(n.kind as ProcessKind), ...patch } }));
   const dir = nodeDir(kind, graphDir);
   const command = firstLine(kind.command);
+  const failed = run?.nodes[id]?.status === "failed";
 
   return (
     <NodeFrame
@@ -40,8 +49,20 @@ export function ProcessNode({ id, data, selected }: NodeProps<MaestroFlowNode>) 
       selected={selected}
       mark={<TerminalWindow size={13} weight="bold" />}
       markTone="text-tyba-text-muted"
+      // Quadro: falhou, a cápsula leva só o ↻ (o anel vermelho já diz).
+      status={failed ? false : undefined}
       extra={
-        url && port !== null ? (
+        failed ? (
+          <button
+            type="button"
+            aria-disabled
+            aria-label={t("maestroRestart")}
+            title={t("maestroRestartSoon")}
+            className={`nodrag shrink-0 rounded-full bg-tyba-text/[.08] px-2.5 py-[3px] ${soonClass}`}
+          >
+            <ArrowClockwise size={12} />
+          </button>
+        ) : url && port !== null ? (
           <button
             type="button"
             title={t("maestroOpenInBrowser")}

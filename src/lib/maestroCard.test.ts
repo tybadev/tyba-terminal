@@ -2,7 +2,16 @@ import { describe, expect, test } from "bun:test";
 
 import type { ApprovalRequest } from "./ipc";
 import type { NodeRun } from "./maestro";
-import { nodeApproval, ringState, visibleCardApprovalIds } from "./maestroCard";
+import {
+  agentDetailRows,
+  agentName,
+  approvalLine,
+  diffSummary,
+  failureFooter,
+  nodeApproval,
+  ringState,
+  visibleCardApprovalIds,
+} from "./maestroCard";
 
 // Fixtures sintéticas: nada aqui veio de sessão real.
 const nodeRun = (patch: Partial<NodeRun>): NodeRun => ({
@@ -113,5 +122,64 @@ describe("visibleCardApprovalIds: o toast só sai com a cápsula à vista", () =
 
   test("área ainda sem medida: nenhuma", () => {
     expect(ids({ pane: { w: 0, h: 0 } })).toEqual([]);
+  });
+});
+
+describe("cards no quadro MaestroCardsD", () => {
+  const agent = (runner: "claude" | "codex", role: string) =>
+    ({ type: "agent", runner, role, prompt: "", dir: "/p" }) as const;
+  const process = { type: "process", command: "bun test", output: "log", file: null, dir: "/p" } as const;
+
+  test("grade do ⋯ do agente: agente | pasta / papel | diff / contexto | tempo", () => {
+    const rows = agentDetailRows({
+      runner: "claude",
+      role: "desenvolvedor",
+      dir: "muriki-web",
+      task: "escrever os testes",
+      telemetry: { model: "Opus 5.5", contextPct: 12.6, linesAdded: 42, linesRemoved: 7 },
+      orchestrate: false,
+    });
+    expect(rows.slice(0, 6)).toEqual([
+      { key: "maestroDetailAgent", value: "Claude · Opus 5.5" },
+      { key: "maestroDetailDir", value: "muriki-web" },
+      { key: "maestroRole", value: "desenvolvedor" },
+      { key: "maestroDetailDiff", value: "+42 −7" },
+      { key: "maestroDetailContext", value: "13%" },
+      { key: "maestroDetailTime", value: null },
+    ]);
+  });
+
+  test("sem o que o core reporta, o agente sai sozinho e diff/contexto vazios", () => {
+    const rows = agentDetailRows({
+      runner: "codex",
+      role: "",
+      dir: "",
+      task: "",
+      telemetry: undefined,
+      orchestrate: null,
+    });
+    expect(rows.map((r) => r.value).slice(0, 5)).toEqual(["Codex", "", "", "", ""]);
+    expect(rows.some((r) => r.key === "maestroOrchestrate")).toBe(false);
+  });
+
+  test("nome do modelo: o id do Claude perde o prefixo", () => {
+    expect(agentName("claude", "claude-opus-5-5")).toBe("Claude · opus-5-5");
+    expect(agentName("claude", null)).toBe("Claude");
+    expect(diffSummary({ linesAdded: 3, linesRemoved: null })).toBe("+3 −0");
+  });
+
+  test("esperando você: 'Codex · revisor · pede há 40s'", () => {
+    expect(approvalLine(agent("codex", "revisor"), 1_000, 41_000)).toEqual({
+      who: "Codex · revisor",
+      ago: "40s",
+    });
+    expect(approvalLine(agent("claude", " "), 0, 0).who).toBe("Claude");
+  });
+
+  test("processo que falhou: código de saída e 'Ver log inteiro'", () => {
+    const failed = nodeRun({ status: "failed", exitCode: 1 });
+    expect(failureFooter(process, failed)).toEqual({ exitCode: 1, reason: "", log: true });
+    expect(failureFooter(agent("claude", ""), failed)?.log).toBe(false);
+    expect(failureFooter(process, nodeRun({ status: "done" }))).toBeNull();
   });
 });

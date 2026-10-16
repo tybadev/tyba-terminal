@@ -13,8 +13,17 @@ import {
   type Runner,
 } from "@/lib/maestro";
 import { SUBAGENT_HANDLE, groupRounds, roundTally } from "@/lib/maestroSubagents";
+import { agentDetailRows, diffSummary } from "@/lib/maestroCard";
 import { firstLine } from "@/lib/nodeSummary";
-import { NodeDir, NodeFrame, fieldClass, termClass, useMaestro, type MaestroFlowNode } from "./NodeFrame";
+import {
+  Elapsed,
+  NodeDir,
+  NodeFrame,
+  fieldClass,
+  termClass,
+  useMaestro,
+  type MaestroFlowNode,
+} from "./NodeFrame";
 import { NodeTerminal } from "./NodeTerminal";
 
 type AgentKind = Extract<NodeKind, { type: "agent" }>;
@@ -24,7 +33,7 @@ const RUNNERS: Runner[] = ["claude", "codex"];
 /** Nó de agente: Claude (âmbar) ou Codex (ciano), papel, pasta e a tarefa. */
 export function AgentNode({ id, data, selected }: NodeProps<MaestroFlowNode>) {
   const { t } = useTranslation();
-  const { updateNode, run, live, subagents, createdBy, graphDir } = useMaestro();
+  const { updateNode, run, live, subagents, createdBy, graphDir, telemetry } = useMaestro();
   const node = data.node;
   const kind = node.kind as AgentKind;
   const session = nodeSession(kind, run, id, live);
@@ -38,7 +47,6 @@ export function AgentNode({ id, data, selected }: NodeProps<MaestroFlowNode>) {
   const orchestrates = !created && kind.orchestrate === true;
   const hidden = { opacity: 0, width: 1, height: 1, minWidth: 0, minHeight: 0, border: 0 };
   const dir = nodeDir(kind, graphDir);
-  const runnerName = claude ? "Claude" : "Codex";
   const subTally =
     rounds && tally
       ? [
@@ -49,7 +57,10 @@ export function AgentNode({ id, data, selected }: NodeProps<MaestroFlowNode>) {
           .filter(Boolean)
           .join(", ")
       : "";
-  const meta = [dir ? shortDir(dir) : "", subTally].filter(Boolean).join(" · ");
+  const usage = telemetry.get(id);
+  // Quadro: "muriki-web · 2 subagentes · +42 −7".
+  const meta = [dir ? shortDir(dir) : "", subTally, diffSummary(usage)].filter(Boolean).join(" · ");
+  const nodeRun = run?.nodes[id];
 
   return (
     <NodeFrame
@@ -59,20 +70,26 @@ export function AgentNode({ id, data, selected }: NodeProps<MaestroFlowNode>) {
       mark={claude ? <ClaudeIcon size={13} /> : <OpenAIIcon size={13} />}
       markTone={claude ? "text-tyba-amber" : "text-tyba-cyan"}
       meta={session ? meta : undefined}
-      details={[
-        { label: t("maestroDetailAgent"), value: runnerName },
-        { label: t("maestroRole"), value: kind.role },
-        { label: t("maestroDetailDir"), value: dir ? shortDir(dir) : "" },
-        ...(created
-          ? []
-          : [
-              {
-                label: t("maestroOrchestrate"),
-                value: orchestrates ? t("maestroYes") : t("maestroNo"),
-              },
-            ]),
-        { label: t("maestroDetailTask"), value: firstLine(kind.prompt) },
-      ]}
+      // Grade do quadro MaestroCardsD (o tempo entra na ordem dela).
+      stateRows={false}
+      details={agentDetailRows({
+        runner: kind.runner,
+        role: kind.role,
+        dir: dir ? shortDir(dir) : "",
+        task: firstLine(kind.prompt),
+        telemetry: usage,
+        orchestrate: created ? null : orchestrates,
+      }).map((row) => ({
+        label: t(row.key),
+        value:
+          row.value === null ? (
+            nodeRun && <Elapsed nodeRun={nodeRun} />
+          ) : row.key === "maestroOrchestrate" ? (
+            t(row.value)
+          ) : (
+            row.value
+          ),
+      }))}
       status={
         rounds && tally && tally.running > 0 ? (
           <span className="flex shrink-0 items-center gap-1.5 text-[11.5px] whitespace-nowrap text-tyba-blue">
