@@ -3,7 +3,7 @@ import { TerminalWindow } from "@phosphor-icons/react";
 import type { NodeProps } from "@xyflow/react";
 
 import { Select } from "@/components/ui/select";
-import { OUTPUT_KINDS, type NodeKind, type OutputKind } from "@/lib/maestro";
+import { OUTPUT_KINDS, urlPort, type NodeKind, type OutputKind } from "@/lib/maestro";
 import {
   NodeDir,
   NodeFrame,
@@ -19,10 +19,13 @@ type ProcessKind = Extract<NodeKind, { type: "process" }>;
 /** Nó de processo: um comando na pasta do nó e o tipo da saída. */
 export function ProcessNode({ id, data, selected }: NodeProps<MaestroFlowNode>) {
   const { t } = useTranslation();
-  const { updateNode, run, live } = useMaestro();
+  const { updateNode, run, live, openInBrowser } = useMaestro();
   const node = data.node;
   const kind = node.kind as ProcessKind;
   const session = nodeSession(kind, run?.nodes[id], live);
+  // A porta que a sessão do nó abriu (o core detecta; chega com ele rodando).
+  const url = run?.nodes[id]?.url ?? null;
+  const port = urlPort(url);
   const set = (patch: Partial<ProcessKind>) =>
     updateNode(id, (n) => ({ ...n, kind: { ...(n.kind as ProcessKind), ...patch } }));
 
@@ -61,6 +64,20 @@ export function ProcessNode({ id, data, selected }: NodeProps<MaestroFlowNode>) 
         <span className="flex-1" />
         <NodeDir id={id} kind={kind} />
       </div>
+      {url && port !== null && (
+        <div className="flex shrink-0 items-center gap-2 border-b border-tyba-border px-3.5 py-1.5 text-[11px]">
+          <span className="rounded-[4px] border border-tyba-cyan/50 px-2 leading-[18px] text-tyba-cyan">
+            {t("maestroPort", { port })}
+          </span>
+          <button
+            type="button"
+            onClick={() => openInBrowser(id, url)}
+            className="nodrag rounded-[4px] border border-tyba-border-strong px-2 leading-[18px] text-tyba-text-muted hover:text-tyba-text"
+          >
+            {t("maestroOpenInBrowser")}
+          </button>
+        </div>
+      )}
       {session ? (
         <NodeTerminal nodeId={id} sessionId={session} focused={selected} />
       ) : (

@@ -174,7 +174,8 @@ fn secret_fields(graph: &Graph, integrations: &[Integration]) -> Vec<SecretField
             NodeKind::Agent { prompt, .. } => ("prompt", prompt),
             NodeKind::Process { command, .. } => ("command", command),
             NodeKind::Note { markdown } => ("markdown", markdown),
-            NodeKind::Integration { .. } => continue,
+            NodeKind::Browser { url } => ("url", url),
+            NodeKind::Integration { .. } | NodeKind::Service { .. } => continue,
         };
         check(SecretOwner::Node, &node.id, &node.title, field, text);
     }
@@ -506,6 +507,55 @@ mod tests {
         assert_eq!(imported.graph, graph);
         assert_eq!(imported.integrations, vec![integration()]);
         assert_eq!(imported.hash, sha256_hex(text.as_bytes()));
+    }
+
+    #[test]
+    fn round_trip_keeps_browser_and_service() {
+        use crate::maestro::ServiceSource;
+        let (mut graph, integrations) = sample();
+        graph.nodes.extend([
+            node(
+                "s",
+                NodeKind::Service {
+                    source: ServiceSource::Container {
+                        container_id: "abc123def456".into(),
+                        name: "api".into(),
+                    },
+                },
+            ),
+            node(
+                "t",
+                NodeKind::Service {
+                    source: ServiceSource::Port {
+                        session_id: None,
+                        port: 5173,
+                    },
+                },
+            ),
+            node(
+                "b",
+                NodeKind::Browser {
+                    url: "http://localhost:5173/agenda".into(),
+                },
+            ),
+        ]);
+        graph.edges.push(Edge {
+            id: "e3".into(),
+            from: "s".into(),
+            to: "b".into(),
+            kind: EdgeKind::Url,
+        });
+        let (text, _) = export_toml(&graph, &integrations).unwrap();
+        let imported = parse_import(text.as_bytes()).unwrap();
+        assert_eq!(imported.graph, graph);
+        // Navegador e serviço não têm pasta: não entram na escolha de pastas.
+        assert!(import_dirs(&imported.graph)
+            .iter()
+            .all(|d| !["s", "t", "b"].contains(&d.node_id.as_str())));
+
+        // URL não local no arquivo é recusada já na prévia.
+        let bad = text.replace("http://localhost:5173/agenda", "https://example.com");
+        assert!(parse_import(bad.as_bytes()).is_err());
     }
 
     #[test]

@@ -8716,6 +8716,27 @@ fn maestro_runs_list(
     runs.list(&graph_id)
 }
 
+/// Log ao vivo do contêiner no nó de serviço: liga (ou reaproveita) o
+/// seguidor do Maestro e devolve o que já foi lido. As linhas novas chegam em
+/// lote por `maestro-logs://<id>`.
+#[tauri::command]
+async fn maestro_service_logs_start(
+    app: AppHandle,
+    container_id: String,
+) -> Result<docker::logs::LogsSnapshot, String> {
+    docker_blocking(move || maestro::service::start_logs(&app, &container_id)).await?
+}
+
+/// Só sobrevive o seguidor de contêiner que algum nó de serviço do canvas
+/// mostra; o canvas fechado manda a lista vazia.
+#[tauri::command]
+fn maestro_service_logs_retain(
+    logs: State<'_, maestro::service::ServiceLogs>,
+    container_ids: Vec<String>,
+) {
+    logs.0.retain(&container_ids.into_iter().collect());
+}
+
 /// Grava o `.tyba-maestro.toml` com o grafo e as integrações que ele usa.
 /// Devolve as variáveis zeradas e os campos com segredo literal, para avisar.
 #[tauri::command]
@@ -9393,6 +9414,7 @@ pub fn run() {
                 maestro::run::default_root(),
             );
             app.manage(maestro_runs);
+            app.manage(maestro::service::ServiceLogs::default());
 
             // O canal shim↔core (shim v2, passo 2, tech-spec §3/§4): socket por
             // usuário, ligado uma vez no boot, depois do `app.manage` acima —
@@ -9794,6 +9816,8 @@ pub fn run() {
             maestro_run_stop,
             maestro_run_get,
             maestro_runs_list,
+            maestro_service_logs_start,
+            maestro_service_logs_retain,
             maestro_export,
             maestro_import_preview,
             maestro_import_confirm,
@@ -9888,6 +9912,9 @@ pub fn run() {
                 if let Some(state) = app_handle.try_state::<AppState>() {
                     state.pty_pool.kill_all();
                     state.docker_logs.stop_all();
+                }
+                if let Some(logs) = app_handle.try_state::<maestro::service::ServiceLogs>() {
+                    logs.0.stop_all();
                 }
             }
         });

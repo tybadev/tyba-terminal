@@ -17,6 +17,7 @@ import {
   missingImportDirs,
   rememberDir,
   revealHidden,
+  sourceDetail,
   unusedImportIntegrations,
   type ImportDir,
   type ImportItem,
@@ -161,6 +162,20 @@ function ItemView({ item, dir }: { item: ImportItem; dir: ReactNode }) {
           ) : (
             <span className="text-[11.5px] text-tyba-amber">{t("maestroIntegrationMissing")}</span>
           )}
+        </div>
+      );
+    case "browser":
+      return (
+        <div className="flex flex-col gap-1.5">
+          {head(t("maestroKindBrowser"))}
+          <Code>{item.url}</Code>
+        </div>
+      );
+    case "service":
+      return (
+        <div className="flex flex-col gap-1.5">
+          {head(t("maestroKindService"), t(`maestroSource_${item.source.type}`))}
+          <Code>{sourceDetail(item.source)}</Code>
         </div>
       );
   }

@@ -17,6 +17,7 @@ use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
 use super::agent::{AgentTurn, Snapshot};
+use super::service::{self, ServiceReady, ServiceSource};
 use super::{EdgeKind, Graph, Integration, Node, NodeKind, OutputKind, Runner, Stored};
 use crate::session::store::Store;
 
@@ -87,6 +88,10 @@ pub struct NodeRun {
     /// Por que falhou, quando não é só o exit code.
     #[serde(default)]
     pub reason: Option<String>,
+    /// URL local do nó: a que o navegador mostra, a do serviço, ou a porta
+    /// que a sessão do processo abriu (aparece com o processo ainda rodando).
+    #[serde(default)]
+    pub url: Option<String>,
 }
 
 impl NodeRun {
@@ -99,6 +104,7 @@ impl NodeRun {
             exit_code: None,
             outputs: HashMap::new(),
             reason: None,
+            url: None,
         }
     }
 }
@@ -110,6 +116,7 @@ pub struct Outcome {
     pub exit_code: Option<i32>,
     pub outputs: HashMap<EdgeKind, String>,
     pub reason: Option<String>,
+    pub url: Option<String>,
 }
 
 impl Outcome {
@@ -128,7 +135,8 @@ pub struct Scheduler {
     run: Run,
     /// Ordem dos nós no grafo: dá ordem estável ao `ready`.
     order: Vec<String>,
-    sources: HashMap<String, Vec<String>>,
+    /// Quem alimenta cada nó, e com que tipo.
+    sources: HashMap<String, Vec<(String, EdgeKind)>>,
     dependents: HashMap<String, Vec<String>>,
     /// Integrações manuais: esperam o ▶ do dono mesmo com as entradas prontas.
     held: HashSet<String>,
@@ -136,13 +144,13 @@ pub struct Scheduler {
 
 impl Scheduler {
     pub fn new(graph: &Graph, run_id: String, now: u64) -> Self {
-        let mut sources: HashMap<String, Vec<String>> = HashMap::new();
+        let mut sources: HashMap<String, Vec<(String, EdgeKind)>> = HashMap::new();
         let mut dependents: HashMap<String, Vec<String>> = HashMap::new();
         for edge in &graph.edges {
             sources
                 .entry(edge.to.clone())
                 .or_default()
-                .push(edge.from.clone());
+                .push((edge.from.clone(), edge.kind));
             dependents
                 .entry(edge.from.clone())
                 .or_default()
@@ -209,7 +217,18 @@ impl Scheduler {
         self.run.nodes.get(id).map(|n| n.status)
     }
 
-    /// Nós esperando cujas entradas todas já têm valor (origem `done`).
+    /// A ligação já tem valor: a origem terminou, ou é `url` e a origem (um
+    /// processo ainda rodando) já publicou a url.
+    fn has_value(&self, source: &str, kind: EdgeKind) -> bool {
+        self.run.nodes.get(source).is_some_and(|n| {
+            n.status == NodeStatus::Done
+                || (kind == EdgeKind::Url
+                    && n.status == NodeStatus::Running
+                    && n.outputs.contains_key(&EdgeKind::Url))
+        })
+    }
+
+    /// Nós esperando cujas entradas todas já têm valor.
     pub fn ready(&self) -> Vec<String> {
         if self.run.status != RunStatus::Running {
             return Vec::new();
@@ -223,7 +242,7 @@ impl Scheduler {
                     .get(*id)
                     .into_iter()
                     .flatten()
-                    .all(|s| self.status(s) == Some(NodeStatus::Done))
+                    .all(|(s, kind)| self.has_value(s, *kind))
             })
             .cloned()
             .collect()
@@ -244,6 +263,20 @@ impl Scheduler {
         }
     }
 
+    /// Saída que sai antes do fim (a url do processo). Só em nó rodando, e
+    /// a primeira vale. Devolve `true` se gravou.
+    pub fn publish_url(&mut self, id: &str, path: String, url: String) -> bool {
+        let Some(n) = self.run.nodes.get_mut(id) else {
+            return false;
+        };
+        if n.status != NodeStatus::Running || n.outputs.contains_key(&EdgeKind::Url) {
+            return false;
+        }
+        n.outputs.insert(EdgeKind::Url, path);
+        n.url = Some(url);
+        true
+    }
+
     /// Fecha um nó rodando. Falha pula, em cascata, tudo que depende dele.
     /// Devolve `false` quando o nó não estava rodando (ex.: já parado).
     pub fn finish(&mut self, id: &str, outcome: Outcome, now: u64) -> bool {
@@ -260,8 +293,15 @@ impl Scheduler {
         };
         n.finished_at = Some(now);
         n.exit_code = outcome.exit_code;
-        n.outputs = outcome.outputs;
+        // O que saiu antes do fim (url) fica.
+        let early = std::mem::replace(&mut n.outputs, outcome.outputs);
+        for (kind, path) in early {
+            n.outputs.entry(kind).or_insert(path);
+        }
         n.reason = outcome.reason;
+        if outcome.url.is_some() {
+            n.url = outcome.url;
+        }
         if !outcome.ok {
             self.skip_dependents(id);
         }
@@ -357,6 +397,7 @@ fn base_input_name(kind: EdgeKind, file_name: Option<&str>) -> String {
         EdgeKind::File => file_name.unwrap_or("arquivo").to_string(),
         EdgeKind::Log => "log.txt".into(),
         EdgeKind::Json => "input.json".into(),
+        EdgeKind::Url => "url.txt".into(),
     }
 }
 
@@ -558,6 +599,12 @@ pub trait RunHost: Send + Sync + 'static {
     ) -> Result<String, String>;
     /// Mata o process group da sessão.
     fn kill(&self, session_id: &str);
+    /// Portas em que a sessão escuta, do último retrato do poll de serviços
+    /// (`services::CHIP_POLL`).
+    fn session_ports(&self, session_id: &str) -> Vec<u16>;
+    /// Acha o serviço e espera ficar pronto (bloqueia). `Err` diz por que não
+    /// achou o alvo.
+    fn resolve_service(&self, source: &ServiceSource) -> Result<ServiceReady, String>;
     /// A sessão ainda roda (não saiu nem foi morta).
     fn alive(&self, session_id: &str) -> bool;
     /// `maestro://run/<run_id>` com o run inteiro.
@@ -589,6 +636,8 @@ struct Start {
 enum Launched {
     Session(String),
     Finished(Outcome),
+    /// Termina sozinho mais tarde, sem sessão (o serviço).
+    Pending,
 }
 
 pub struct Runs<H: RunHost> {
@@ -905,6 +954,8 @@ impl<H: RunHost> Runs<H> {
                 let node_id = start.node.id.clone();
                 let graph_id = start.graph_id.clone();
                 let is_agent = matches!(start.node.kind, NodeKind::Agent { .. });
+                let is_process = matches!(start.node.kind, NodeKind::Process { .. });
+                let out_dir = start.out_dir.clone();
                 let launched = self.launch(run_id, start);
                 // `active` na mão para decidir: o Parar marca `stopped` sob o
                 // mesmo lock, então ou ele já viu esta sessão no run, ou ela
@@ -914,11 +965,16 @@ impl<H: RunHost> Runs<H> {
                     match (active.get_mut(run_id), launched) {
                         (Some(a), Launched::Session(session)) => {
                             a.sched.set_session(&node_id, session.clone());
+                            if is_process {
+                                self.watch_ports(run_id, &node_id, &session, out_dir);
+                            }
                             if is_agent {
                                 self.register_agent(run_id, &graph_id, session);
                             }
                             None
                         }
+                        (Some(_), Launched::Pending) => None,
+                        (None, Launched::Pending) => return,
                         (Some(a), Launched::Finished(outcome)) => {
                             a.sched.finish(&node_id, outcome, now());
                             None
@@ -977,7 +1033,80 @@ impl<H: RunHost> Runs<H> {
             NodeKind::Process {
                 command, output, ..
             } => self.launch_script(run_id, &start, command, *output),
+            NodeKind::Browser { url } => Launched::Finished(browser_outcome(&start, url)),
+            NodeKind::Service { source } => self.launch_service(run_id, &start, source.clone()),
         }
+    }
+
+    /// O serviço em outra thread: achar o contêiner e ler o primeiro lote de
+    /// log pode levar segundos, e o resto do grafo não espera.
+    fn launch_service(&self, run_id: &str, start: &Start, source: ServiceSource) -> Launched {
+        let me = self.me.clone();
+        let (run, node, out_dir) = (
+            run_id.to_string(),
+            start.node.id.clone(),
+            start.out_dir.clone(),
+        );
+        std::thread::spawn(move || {
+            let Some(runs) = me.upgrade() else { return };
+            let outcome = match runs.host.resolve_service(&source) {
+                Ok(ready) => service_outcome(&out_dir, ready),
+                Err(reason) => Outcome::failed(reason),
+            };
+            runs.finish_later(&run, &node, outcome);
+        });
+        Launched::Pending
+    }
+
+    /// Fecha um nó que terminou fora do `advance` e segue o grafo.
+    fn finish_later(&self, run_id: &str, node_id: &str, outcome: Outcome) {
+        {
+            let mut active = self.active.lock();
+            let Some(a) = active.get_mut(run_id) else {
+                return;
+            };
+            if !a.sched.finish(node_id, outcome, now()) {
+                return;
+            }
+        }
+        self.publish_current(run_id);
+        self.advance(run_id);
+    }
+
+    /// Olha as portas da sessão do processo até a primeira aparecer: aí grava
+    /// `out/url.txt`, publica a url com o processo ainda rodando e segue o
+    /// grafo (quem espera a url começa). Para quando o nó deixa de rodar.
+    fn watch_ports(&self, run_id: &str, node_id: &str, session: &str, out_dir: PathBuf) {
+        let me = self.me.clone();
+        let (run, node, session) = (run_id.to_string(), node_id.to_string(), session.to_string());
+        std::thread::spawn(move || loop {
+            std::thread::sleep(PORT_POLL);
+            let Some(runs) = me.upgrade() else { return };
+            let running = runs
+                .active
+                .lock()
+                .get(&run)
+                .is_some_and(|a| a.sched.status(&node) == Some(NodeStatus::Running));
+            if !running {
+                return;
+            }
+            let Some(url) = service::first_port_url(&runs.host.session_ports(&session)) else {
+                continue;
+            };
+            let path = out_dir.join("url.txt");
+            if std::fs::write(&path, &url).is_err() {
+                return;
+            }
+            let published = runs.active.lock().get_mut(&run).is_some_and(|a| {
+                a.sched
+                    .publish_url(&node, path.to_string_lossy().into_owned(), url)
+            });
+            if published {
+                runs.publish_current(&run);
+                runs.advance(&run);
+            }
+            return;
+        });
     }
 
     /// Processo e integração: o texto (com variáveis) no wrapper de rules,
@@ -1148,6 +1277,7 @@ impl<H: RunHost> Runs<H> {
                 reason: exit
                     .is_none()
                     .then(|| "o processo terminou sem exit code".into()),
+                url: None,
             };
             if !a.sched.finish(node_id, outcome, now()) {
                 return;
@@ -1155,6 +1285,65 @@ impl<H: RunHost> Runs<H> {
         }
         self.publish_current(run_id);
         self.advance(run_id);
+    }
+}
+
+/// De quanto em quanto o processo olha se a sessão abriu porta. O retrato das
+/// portas é o do poll de serviços (`services::CHIP_POLL`); isto só lê dele.
+const PORT_POLL: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Navegador: a url que chegou pela ligação, ou a dele. Só local passa — de
+/// novo aqui, porque a que chega por ligação nunca passou pelo salvar.
+fn browser_outcome(start: &Start, own: &str) -> Outcome {
+    let received = start
+        .inputs
+        .iter()
+        .filter(|i| i.kind == EdgeKind::Url)
+        .filter_map(|i| i.source.as_deref())
+        .filter_map(|p| std::fs::read_to_string(p).ok())
+        .map(|t| t.trim().to_string())
+        .find(|t| !t.is_empty());
+    let url = received.unwrap_or_else(|| own.trim().to_string());
+    if url.is_empty() {
+        return Outcome::failed("sem endereço: ligue uma url ou digite uma no nó");
+    }
+    if !service::is_local_url(&url) {
+        return Outcome::failed(
+            "endereço recusado: só local (http/https em localhost, 127.0.0.1 ou [::1])",
+        );
+    }
+    Outcome {
+        ok: true,
+        url: Some(url),
+        ..Outcome::default()
+    }
+}
+
+/// Serviço pronto: `url.txt` quando há url, `log.txt` quando há log.
+fn service_outcome(out_dir: &Path, ready: ServiceReady) -> Outcome {
+    let mut outputs = HashMap::new();
+    if let Some(url) = &ready.url {
+        if !service::is_local_url(url) {
+            return Outcome::failed("endereço do serviço não é local");
+        }
+        let path = out_dir.join("url.txt");
+        if let Err(e) = std::fs::write(&path, url) {
+            return Outcome::failed(format!("gravar a url: {e}"));
+        }
+        outputs.insert(EdgeKind::Url, path.to_string_lossy().into_owned());
+    }
+    if let Some(log) = &ready.log {
+        let path = out_dir.join("log.txt");
+        if let Err(e) = std::fs::write(&path, log) {
+            return Outcome::failed(format!("gravar o log: {e}"));
+        }
+        outputs.insert(EdgeKind::Log, path.to_string_lossy().into_owned());
+    }
+    Outcome {
+        ok: true,
+        outputs,
+        url: ready.url,
+        ..Outcome::default()
     }
 }
 
@@ -1384,6 +1573,19 @@ impl RunHost for TauriHost {
         })
     }
 
+    fn session_ports(&self, session_id: &str) -> Vec<u16> {
+        use tauri::Manager;
+        let Ok(id) = session_id.parse() else {
+            return Vec::new();
+        };
+        let state = self.app.state::<crate::AppState>();
+        state.services.chip().remove(&id).unwrap_or_default()
+    }
+
+    fn resolve_service(&self, source: &ServiceSource) -> Result<ServiceReady, String> {
+        service::resolve(&self.app, source)
+    }
+
     fn emit(&self, run: &Run) {
         use tauri::Emitter;
         let _ = self.app.emit(&format!("maestro://run/{}", run.id), run);
@@ -1477,6 +1679,82 @@ mod tests {
                 edge("e3", "c", "d", EdgeKind::Log),
             ],
         )
+    }
+
+    fn browser(id: &str, url: &str) -> Node {
+        node(id, NodeKind::Browser { url: url.into() })
+    }
+
+    #[test]
+    fn url_edge_has_value_while_the_process_still_runs() {
+        let g = graph(
+            vec![
+                process("p", "bun run dev"),
+                browser("b", ""),
+                process("q", "x"),
+            ],
+            vec![
+                edge("e1", "p", "b", EdgeKind::Url),
+                edge("e2", "p", "q", EdgeKind::Log),
+            ],
+        );
+        let mut s = Scheduler::new(&g, "r".into(), 0);
+        assert_eq!(s.ready(), vec!["p".to_string()]);
+        s.mark_running("p", 1);
+        assert!(s.ready().is_empty(), "sem porta ainda, a url não tem valor");
+        assert!(s.publish_url("p", "/out/url.txt".into(), "http://localhost:5173".into()));
+        // A url vale com o processo rodando; o log só no fim.
+        assert_eq!(s.ready(), vec!["b".to_string()]);
+        assert_eq!(
+            s.run().nodes["p"].url.as_deref(),
+            Some("http://localhost:5173")
+        );
+        // A primeira url fica.
+        assert!(!s.publish_url("p", "/x".into(), "http://localhost:1".into()));
+        s.mark_running("b", 2);
+        s.finish("p", ok(), 3);
+        // O fim do processo não apaga a url publicada antes.
+        assert_eq!(s.run().nodes["p"].outputs[&EdgeKind::Url], "/out/url.txt");
+        assert_eq!(s.ready(), vec!["q".to_string()]);
+    }
+
+    #[test]
+    fn browser_takes_the_received_url_or_its_own_and_only_local() {
+        let dir = tempfile::tempdir().unwrap();
+        let received = dir.path().join("url.txt");
+        let start = |own: &str, source: Option<PathBuf>| {
+            let node = browser("b", own);
+            browser_outcome(
+                &Start {
+                    node,
+                    in_dir: dir.path().join("in"),
+                    out_dir: dir.path().join("out"),
+                    inputs: vec![Input {
+                        kind: EdgeKind::Url,
+                        source,
+                    }],
+                    variables: Vec::new(),
+                    node_dir: dir.path().to_path_buf(),
+                    integration: None,
+                    graph_id: "g".into(),
+                },
+                own,
+            )
+        };
+        std::fs::write(&received, "http://localhost:5173/\n").unwrap();
+        let o = start("http://127.0.0.1:9", Some(received.clone()));
+        assert!(o.ok);
+        assert_eq!(o.url.as_deref(), Some("http://localhost:5173/"));
+        // Sem valor na ligação, vale a do nó.
+        let o = start("http://127.0.0.1:9", None);
+        assert_eq!(o.url.as_deref(), Some("http://127.0.0.1:9"));
+        // Nada em lugar nenhum: falha com motivo.
+        assert!(!start("", None).ok);
+        // Recebida não local é recusada na execução.
+        std::fs::write(&received, "https://example.com").unwrap();
+        let o = start("", Some(received));
+        assert!(!o.ok);
+        assert!(o.reason.unwrap().contains("só local"));
     }
 
     #[test]
@@ -1625,6 +1903,10 @@ mod tests {
         /// Quando presente, o próximo `spawn_agent` avisa que entrou e espera
         /// a liberação antes de devolver — simula o spawn lento.
         hold_spawn: Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
+        /// Portas que toda sessão "abriu" (o poll de serviços de mentira).
+        ports: Mutex<Vec<u16>>,
+        /// O que o `resolve_service` devolve.
+        service: Mutex<Result<ServiceReady, String>>,
     }
 
     /// Fixture sintética: chave no formato `sk-` que a redação pega.
@@ -1694,6 +1976,14 @@ mod tests {
             !self.killed.lock().iter().any(|k| k == session_id)
         }
 
+        fn session_ports(&self, _session_id: &str) -> Vec<u16> {
+            self.ports.lock().clone()
+        }
+
+        fn resolve_service(&self, _source: &ServiceSource) -> Result<ServiceReady, String> {
+            self.service.lock().clone()
+        }
+
         fn emit(&self, run: &Run) {
             self.runs.lock().push(run.clone());
         }
@@ -1716,6 +2006,8 @@ mod tests {
             killed: Mutex::new(Vec::new()),
             spawned: Mutex::new(Vec::new()),
             hold_spawn: Mutex::new(None),
+            ports: Mutex::new(Vec::new()),
+            service: Mutex::new(Err("sem serviço".into())),
         });
         let store = Arc::new(Store::open_in_memory().unwrap());
         (Runs::new(Arc::clone(&host), store, Some(root)), host, app)
@@ -2293,6 +2585,77 @@ mod tests {
         );
         // A poda segue valendo para os outros.
         assert_eq!(runs.list("g-1").len(), KEEP_RUNS);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn process_port_feeds_browser_before_the_process_ends() {
+        let dir = tempfile::tempdir().unwrap();
+        let (runs, host, _app) = pty_runs(dir.path().join("runs"));
+        *host.ports.lock() = vec![24678, 5173];
+        let g = graph(
+            vec![process("p", "sleep 3"), browser("b", "")],
+            vec![edge("e1", "p", "b", EdgeKind::Url)],
+        );
+        let run = runs.start(g, vec![]).unwrap();
+        let mid = wait_status(&runs, &run.id, "b", NodeStatus::Done);
+        assert_eq!(mid.nodes["p"].status, NodeStatus::Running, "{mid:?}");
+        assert_eq!(mid.nodes["p"].url.as_deref(), Some("http://localhost:5173"));
+        assert_eq!(mid.nodes["b"].url.as_deref(), Some("http://localhost:5173"));
+        let url = std::fs::read_to_string(&mid.nodes["p"].outputs[&EdgeKind::Url]).unwrap();
+        assert_eq!(url, "http://localhost:5173");
+        let done = wait_finished(&runs, &run.id);
+        assert_eq!(done.status, RunStatus::Done, "{done:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn service_writes_log_and_url_or_fails_with_reason() {
+        let dir = tempfile::tempdir().unwrap();
+        let (runs, host, _app) = pty_runs(dir.path().join("runs"));
+        let service = node(
+            "s",
+            NodeKind::Service {
+                source: ServiceSource::Port {
+                    session_id: None,
+                    port: 3000,
+                },
+            },
+        );
+        *host.service.lock() = Ok(ServiceReady {
+            url: Some("http://localhost:3000".into()),
+            log: Some("GET / 200\n".into()),
+        });
+        let g = graph(
+            vec![
+                service.clone(),
+                browser("b", ""),
+                process("q", "cat \"$TYBA_IN/log.txt\""),
+            ],
+            vec![
+                edge("e1", "s", "b", EdgeKind::Url),
+                edge("e2", "s", "q", EdgeKind::Log),
+            ],
+        );
+        let run = wait_finished(&runs, &runs.start(g, vec![]).unwrap().id);
+        assert_eq!(run.status, RunStatus::Done, "{run:?}");
+        assert_eq!(run.nodes["b"].url.as_deref(), Some("http://localhost:3000"));
+        let q = std::fs::read_to_string(&run.nodes["q"].outputs[&EdgeKind::Log]).unwrap();
+        assert!(q.contains("GET / 200"), "{q:?}");
+
+        // Alvo que não existe: falha com o motivo e pula quem depende.
+        *host.service.lock() = Err("nada escuta na porta :3000".into());
+        let g = graph(
+            vec![service, browser("b", "")],
+            vec![edge("e1", "s", "b", EdgeKind::Url)],
+        );
+        let run = wait_finished(&runs, &runs.start(g, vec![]).unwrap().id);
+        assert_eq!(run.status, RunStatus::Failed);
+        assert_eq!(
+            run.nodes["s"].reason.as_deref(),
+            Some("nada escuta na porta :3000")
+        );
+        assert_eq!(run.nodes["b"].status, NodeStatus::Skipped);
     }
 
     #[test]

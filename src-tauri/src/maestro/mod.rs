@@ -12,6 +12,9 @@ pub mod agent;
 pub mod export;
 pub mod integration;
 pub mod run;
+pub mod service;
+
+pub use service::ServiceSource;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -97,6 +100,16 @@ pub enum NodeKind {
         #[serde(default)]
         dir: String,
     },
+    /// Mostra uma página local. Recebe `url` (ou usa a dele); não produz nada.
+    Browser {
+        /// Endereço digitado no nó; vazio espera a ligação url.
+        #[serde(default)]
+        url: String,
+    },
+    /// Liga num serviço que já roda: produz `log` e `url`.
+    Service {
+        source: ServiceSource,
+    },
 }
 
 impl NodeKind {
@@ -106,7 +119,7 @@ impl NodeKind {
             NodeKind::Agent { dir, .. }
             | NodeKind::Process { dir, .. }
             | NodeKind::Integration { dir, .. } => Some(dir),
-            NodeKind::Note { .. } => None,
+            NodeKind::Note { .. } | NodeKind::Browser { .. } | NodeKind::Service { .. } => None,
         }
     }
 
@@ -115,7 +128,7 @@ impl NodeKind {
             NodeKind::Agent { dir, .. }
             | NodeKind::Process { dir, .. }
             | NodeKind::Integration { dir, .. } => Some(dir),
-            NodeKind::Note { .. } => None,
+            NodeKind::Note { .. } | NodeKind::Browser { .. } | NodeKind::Service { .. } => None,
         }
     }
 }
@@ -146,15 +159,18 @@ pub enum EdgeKind {
     File,
     Log,
     Json,
+    /// Texto com uma URL local (`out/url.txt`).
+    Url,
 }
 
 impl EdgeKind {
-    const ALL: [EdgeKind; 5] = [
+    const ALL: [EdgeKind; 6] = [
         EdgeKind::Context,
         EdgeKind::Diff,
         EdgeKind::File,
         EdgeKind::Log,
         EdgeKind::Json,
+        EdgeKind::Url,
     ];
 }
 
@@ -263,6 +279,10 @@ pub enum MaestroError {
     FileOutsideDir(String),
     #[error("nó {0}: escolha a pasta onde ele roda (caminho absoluto)")]
     NodeDir(String),
+    #[error("nó {0}: só endereço local (http/https em localhost, 127.0.0.1 ou [::1])")]
+    NotLocalUrl(String),
+    #[error("nó {0}: id de contêiner inválido")]
+    InvalidContainer(String),
 }
 
 /// Mesma regra de `snippet::validate`: `\n` e `\t` passam, o resto dos
@@ -318,7 +338,8 @@ pub fn validate_integration(integration: &Integration) -> Result<(), MaestroErro
 fn produces(kind: &NodeKind, integrations: &HashMap<&str, &Integration>) -> Vec<EdgeKind> {
     match kind {
         NodeKind::Agent { .. } => vec![EdgeKind::Context, EdgeKind::Diff],
-        NodeKind::Process { output, .. } => vec![(*output).into()],
+        // A url só fica disponível quando a sessão do processo abre porta.
+        NodeKind::Process { output, .. } => vec![(*output).into(), EdgeKind::Url],
         // O texto da nota entra no prompt de quem a recebe (context) ou como
         // arquivo para um processo ler (file).
         NodeKind::Note { .. } => vec![EdgeKind::Context, EdgeKind::File],
@@ -326,6 +347,8 @@ fn produces(kind: &NodeKind, integrations: &HashMap<&str, &Integration>) -> Vec<
             .get(integration_id.as_str())
             .map(|i| vec![i.output.into()])
             .unwrap_or_default(),
+        NodeKind::Browser { .. } => Vec::new(),
+        NodeKind::Service { .. } => vec![EdgeKind::Log, EdgeKind::Url],
     }
 }
 
@@ -333,7 +356,8 @@ fn produces(kind: &NodeKind, integrations: &HashMap<&str, &Integration>) -> Vec<
 fn accepts(kind: &NodeKind, integrations: &HashMap<&str, &Integration>) -> Vec<EdgeKind> {
     match kind {
         NodeKind::Agent { .. } | NodeKind::Process { .. } => EdgeKind::ALL.to_vec(),
-        NodeKind::Note { .. } => Vec::new(),
+        NodeKind::Note { .. } | NodeKind::Service { .. } => Vec::new(),
+        NodeKind::Browser { .. } => vec![EdgeKind::Url],
         NodeKind::Integration { integration_id, .. } => {
             match integrations.get(integration_id.as_str()).map(|i| i.trigger) {
                 Some(Trigger::OnInput { kind }) => vec![kind],
@@ -411,6 +435,13 @@ pub fn validate_structure(graph: &Graph, integrations: &[Integration]) -> Result
                 })?;
                 validate_integration(integration)?;
             }
+            NodeKind::Browser { url } => {
+                check_text(what, url)?;
+                if !url.is_empty() && !service::is_local_url(url) {
+                    return Err(MaestroError::NotLocalUrl(node.id.clone()));
+                }
+            }
+            NodeKind::Service { source } => check_source(&node.id, source)?,
         }
     }
 
@@ -447,6 +478,32 @@ pub fn validate_structure(graph: &Graph, integrations: &[Integration]) -> Result
     }
 
     check_acyclic(graph)
+}
+
+/// Fonte do serviço: texto sem controle e id de contêiner na forma do docker.
+/// Fonte incompleta (porta 0, contêiner vazio) grava: o nó acabou de nascer e
+/// o dono ainda escolhe; a execução falha com o motivo.
+fn check_source(node: &str, source: &ServiceSource) -> Result<(), MaestroError> {
+    let what = || format!("nó {node}");
+    match source {
+        ServiceSource::Container { container_id, name } => {
+            check_text(what, name)?;
+            if !container_id.is_empty() && !crate::docker::is_valid_container_id(container_id) {
+                return Err(MaestroError::InvalidContainer(node.to_string()));
+            }
+        }
+        ServiceSource::Port { session_id, .. } => {
+            check_text(what, session_id.as_deref().unwrap_or_default())?;
+        }
+        ServiceSource::Tunnel {
+            session_id,
+            tunnel_id,
+        } => {
+            check_text(what, session_id)?;
+            check_text(what, tunnel_id)?;
+        }
+    }
+    Ok(())
 }
 
 /// Kahn: o que sobra com grau de entrada > 0 depois de esvaziar a fila está
@@ -895,6 +952,144 @@ mod tests {
         assert_eq!(g.nodes[0].kind.dir(), Some(""));
         assert_eq!(g.node_dir(&g.nodes[0]), "/tmp/repo");
         assert_eq!(validate_graph(&g, &[]), Ok(()));
+    }
+
+    fn browser(id: &str, url: &str) -> Node {
+        node(id, NodeKind::Browser { url: url.into() })
+    }
+
+    fn service(id: &str) -> Node {
+        node(
+            id,
+            NodeKind::Service {
+                source: ServiceSource::Port {
+                    session_id: None,
+                    port: 5173,
+                },
+            },
+        )
+    }
+
+    #[test]
+    fn browser_and_service_produce_and_accept() {
+        let none = HashMap::new();
+        assert!(produces(&browser("b", "").kind, &none).is_empty());
+        assert_eq!(accepts(&browser("b", "").kind, &none), vec![EdgeKind::Url]);
+        assert_eq!(
+            produces(&service("s").kind, &none),
+            vec![EdgeKind::Log, EdgeKind::Url]
+        );
+        assert!(accepts(&service("s").kind, &none).is_empty());
+        // Processo de log também oferece url (vale quando a porta aparece).
+        assert_eq!(
+            produces(&process("p", OutputKind::Log).kind, &none),
+            vec![EdgeKind::Log, EdgeKind::Url]
+        );
+        assert!(accepts(&agent("a").kind, &none).contains(&EdgeKind::Url));
+        assert!(!accepts(&note("n").kind, &none).contains(&EdgeKind::Url));
+
+        let ok = graph(
+            vec![
+                process("p", OutputKind::Log),
+                service("s"),
+                browser("b1", ""),
+                browser("b2", ""),
+                agent("a"),
+            ],
+            vec![
+                edge("e1", "p", "b1", EdgeKind::Url),
+                edge("e2", "s", "b2", EdgeKind::Url),
+                edge("e3", "s", "a", EdgeKind::Log),
+            ],
+        );
+        assert_eq!(validate_graph(&ok, &[]), Ok(()));
+
+        // Navegador não produz; serviço não recebe; navegador só recebe url.
+        for (from, to, kind) in [
+            ("b1", "a", EdgeKind::Url),
+            ("a", "s", EdgeKind::Context),
+            ("s", "b1", EdgeKind::Log),
+        ] {
+            let g = graph(
+                vec![service("s"), browser("b1", ""), agent("a")],
+                vec![edge("e", from, to, kind)],
+            );
+            assert!(validate_graph(&g, &[]).is_err(), "{from} → {to} {kind:?}");
+        }
+    }
+
+    #[test]
+    fn browser_url_must_be_local() {
+        for ok in [
+            "",
+            "http://localhost:5173",
+            "http://127.0.0.1/x",
+            "http://[::1]:8080",
+        ] {
+            assert_eq!(
+                validate_graph(&graph(vec![browser("b", ok)], vec![]), &[]),
+                Ok(()),
+                "{ok}"
+            );
+        }
+        for bad in [
+            "http://192.168.0.2:5173",
+            "https://example.com",
+            "javascript:alert(1)",
+            "file:///etc/passwd",
+        ] {
+            assert_eq!(
+                validate_graph(&graph(vec![browser("b", bad)], vec![]), &[]),
+                Err(MaestroError::NotLocalUrl("b".into())),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn service_source_is_checked_but_may_be_incomplete() {
+        let with = |source| graph(vec![node("s", NodeKind::Service { source })], vec![]);
+        // Recém-criado: ainda sem escolha.
+        assert_eq!(
+            validate_graph(
+                &with(ServiceSource::Container {
+                    container_id: String::new(),
+                    name: String::new()
+                }),
+                &[]
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            validate_graph(
+                &with(ServiceSource::Container {
+                    container_id: "abc123def456".into(),
+                    name: "api".into()
+                }),
+                &[]
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            validate_graph(
+                &with(ServiceSource::Container {
+                    container_id: "--privileged".into(),
+                    name: "api".into()
+                }),
+                &[]
+            ),
+            Err(MaestroError::InvalidContainer("s".into()))
+        );
+        assert!(matches!(
+            validate_graph(
+                &with(ServiceSource::Tunnel {
+                    session_id: "x\u{1b}".into(),
+                    tunnel_id: "t".into()
+                }),
+                &[]
+            ),
+            Err(MaestroError::ControlChars(_))
+        ));
     }
 
     #[test]

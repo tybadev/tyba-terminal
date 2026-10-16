@@ -161,6 +161,7 @@ mod tests {
             exit_code: None,
             outputs: HashMap::new(),
             reason: None,
+            url: None,
         };
         if started {
             n.status = NodeStatus::Done;

@@ -50,6 +50,7 @@ import {
   NEW_IN_HANDLE,
   connectionProblem,
   edgeDetail,
+  edgeHasValue,
   inHandle,
   kindOfOutHandle,
   newNode,
@@ -58,12 +59,14 @@ import {
   type NodeKind,
 } from "@/lib/maestro";
 import { AgentNode } from "./nodes/AgentNode";
+import { BrowserNode } from "./nodes/BrowserNode";
 import { IntegrationNode } from "./nodes/IntegrationNode";
 import { EDGE_COLOR, useMaestro, type MaestroFlowNode } from "./nodes/NodeFrame";
 import { NodeFocus } from "./nodes/NodeFocus";
 import { nodeSession } from "./nodes/NodeTerminal";
 import { NoteNode } from "./nodes/NoteNode";
 import { ProcessNode } from "./nodes/ProcessNode";
+import { ServiceNode } from "./nodes/ServiceNode";
 import {
   SubagentNode,
   SubagentRoundsNode,
@@ -81,6 +84,8 @@ const nodeTypes = {
   process: ProcessNode,
   note: NoteNode,
   integration: IntegrationNode,
+  browser: BrowserNode,
+  service: ServiceNode,
   subagent: SubagentNode,
   subagentRounds: SubagentRoundsNode,
 };
@@ -127,7 +132,8 @@ function MaestroEdgeView({
   const sourceRun = run?.nodes[source];
   const detail = kind ? edgeDetail(kind, sourceRun) : null;
   // Quadro: tracejado enquanto o valor não saiu nesta execução.
-  const pending = sourceRun !== undefined && sourceRun.status !== "done";
+  const pending =
+    sourceRun !== undefined && !(run && kind && edgeHasValue({ from: source, kind }, run));
   return (
     <>
       <BaseEdge
@@ -138,7 +144,9 @@ function MaestroEdgeView({
             ? "var(--tyba-violet)"
             : kind === "context"
               ? "color-mix(in srgb, var(--tyba-violet) 70%, transparent)"
-              : "color-mix(in srgb, var(--tyba-text) 36%, transparent)",
+              : kind === "url"
+                ? "var(--tyba-cyan)"
+                : "color-mix(in srgb, var(--tyba-text) 36%, transparent)",
           strokeWidth: selected ? 2.4 : 1.6,
           strokeDasharray: pending ? "3 6" : undefined,
         }}
@@ -491,6 +499,23 @@ export function MaestroCanvas({
                 onSelect={() => addNode(t("maestroKindNote"), { type: "note", markdown: "" })}
               >
                 {t("maestroKindNote")}
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                className="text-xs"
+                onSelect={() => addNode(t("maestroKindBrowser"), { type: "browser", url: "" })}
+              >
+                {t("maestroKindBrowser")}
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                className="text-xs"
+                onSelect={() =>
+                  addNode(t("maestroKindService"), {
+                    type: "service",
+                    source: { type: "container", containerId: "", name: "" },
+                  })
+                }
+              >
+                {t("maestroKindService")}
               </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuLabel className="text-[11px] font-normal text-tyba-text-faint">

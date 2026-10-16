@@ -83,13 +83,13 @@ const graph: Graph = {
 describe("produces / accepts", () => {
   test("seguem a tabela de rules", () => {
     expect(produces(claude.kind, integrations)).toEqual(["context", "diff"]);
-    expect(produces(tests.kind, integrations)).toEqual(["json"]);
+    expect(produces(tests.kind, integrations)).toEqual(["json", "url"]);
     expect(produces(note.kind, integrations)).toEqual(["context", "file"]);
     expect(produces(lint.kind, integrations)).toEqual(["log"]);
     expect(accepts(note.kind, integrations)).toEqual([]);
-    expect(accepts(claude.kind, integrations)).toHaveLength(5);
+    expect(accepts(claude.kind, integrations)).toHaveLength(6);
     expect(accepts(lint.kind, integrations)).toEqual(["diff"]);
-    expect(accepts(manualHook.kind, integrations)).toHaveLength(5);
+    expect(accepts(manualHook.kind, integrations)).toHaveLength(6);
   });
 
   test("integração apagada não produz nem aceita nada", () => {

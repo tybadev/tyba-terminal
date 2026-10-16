@@ -42,6 +42,12 @@ import {
 import {
   EMPTY_RUN_VIEW,
   INTEGRATION_DRAG_TYPE,
+  browserFed,
+  inHandle,
+  isLocalUrl,
+  outHandle,
+  serviceContainers,
+  serviceLogsRetain,
   emptyGraph,
   exportFileName,
   exportGraph,
@@ -420,6 +426,63 @@ function MaestroInner() {
     }),
     [nodes, edges],
   );
+  // Log ao vivo dos serviços: só o seguidor de contêiner que um nó mostra fica.
+  const containers = serviceContainers(graph.nodes).join(",");
+  useEffect(() => {
+    void serviceLogsRetain(containers ? containers.split(",") : []).catch(() => {});
+  }, [containers]);
+  useEffect(() => () => void serviceLogsRetain([]).catch(() => {}), []);
+
+  // "Abrir no navegador" do processo: o navegador que já recebe a url dele, ou
+  // um novo ao lado, ligado pela url e já com o endereço.
+  const openInBrowser = useCallback(
+    (fromId: string, url: string) => {
+      const fed = browserFed(graph, fromId);
+      if (fed) {
+        setNodes((ns) => ns.map((n) => ({ ...n, selected: n.id === fed.id })));
+        void fitView({ nodes: [{ id: fed.id }], padding: 0.2, maxZoom: 1, duration: 200 });
+        return;
+      }
+      const from = nodes.find((n) => n.id === fromId);
+      if (!from) return;
+      const node = newNode(
+        crypto.randomUUID(),
+        t("maestroKindBrowser"),
+        { type: "browser", url: isLocalUrl(url) ? url : "" },
+        {
+          x: Math.round(from.position.x + (from.width ?? from.data.node.size.w) + 120),
+          y: Math.round(from.position.y),
+        },
+      );
+      const edgeId = crypto.randomUUID();
+      setNodes((ns) => [
+        ...ns.map((n) => ({ ...n, selected: false })),
+        {
+          id: node.id,
+          type: node.kind.type,
+          position: node.position,
+          width: node.size.w,
+          height: node.size.h,
+          selected: true,
+          data: { node },
+        },
+      ]);
+      setEdges((es) => [
+        ...es,
+        {
+          id: edgeId,
+          type: "maestro",
+          source: fromId,
+          target: node.id,
+          sourceHandle: outHandle("url"),
+          targetHandle: inHandle(edgeId),
+          data: { kind: "url" },
+        },
+      ]);
+    },
+    [graph, nodes, t, fitView],
+  );
+
   const graphDir = meta?.dir ?? "";
   // Nó novo nasce na última pasta usada; sem ela, na home.
   const newDir = lastDir() ?? (home || graphDir);
@@ -439,6 +502,7 @@ function MaestroInner() {
       setOpenSubagent: setOpenSub,
       focusNode,
       setFocusNode,
+      openInBrowser,
     }),
     [
       integrations,
@@ -454,6 +518,7 @@ function MaestroInner() {
       opened,
       openSub,
       focusNode,
+      openInBrowser,
     ],
   );
 

@@ -9,7 +9,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 export type Runner = "claude" | "codex";
 
 /** Tipo do valor que uma ligação leva. */
-export type EdgeKind = "context" | "diff" | "file" | "log" | "json";
+export type EdgeKind = "context" | "diff" | "file" | "log" | "json" | "url";
 
 /** Saída declarada de processo ou integração. `context` só o agente produz. */
 export type OutputKind = "log" | "json" | "file" | "diff";
@@ -20,6 +20,7 @@ export const EDGE_KINDS: readonly EdgeKind[] = [
   "file",
   "log",
   "json",
+  "url",
 ];
 
 export const OUTPUT_KINDS: readonly OutputKind[] = ["log", "json", "file", "diff"];
@@ -32,7 +33,86 @@ export type NodeKind =
   | { type: "agent"; runner: Runner; role: string; prompt: string; dir: string }
   | { type: "process"; command: string; output: OutputKind; file: string | null; dir: string }
   | { type: "note"; markdown: string }
-  | { type: "integration"; integrationId: string; dir: string };
+  | { type: "integration"; integrationId: string; dir: string }
+  /** Mostra uma página local. Recebe `url` (ou usa a dele); não produz nada. */
+  | { type: "browser"; url: string }
+  /** Serviço que já roda: produz `log` e `url`. */
+  | { type: "service"; source: ServiceSource };
+
+/** De onde o nó de Serviço lê (espelha `ServiceSource` do core). */
+export type ServiceSource =
+  | { type: "container"; containerId: string; name: string }
+  | { type: "port"; sessionId: string | null; port: number }
+  | { type: "tunnel"; sessionId: string; tunnelId: string };
+
+export type ServiceSourceType = ServiceSource["type"];
+
+export const SERVICE_SOURCES: readonly ServiceSourceType[] = ["container", "port", "tunnel"];
+
+/** Fonte vazia de cada tipo: o nó recém-trocado ainda não escolheu nada. */
+export function emptySource(type: ServiceSourceType): ServiceSource {
+  switch (type) {
+    case "container":
+      return { type, containerId: "", name: "" };
+    case "port":
+      return { type, sessionId: null, port: 0 };
+    case "tunnel":
+      return { type, sessionId: "", tunnelId: "" };
+  }
+}
+
+/**
+ * Só `http`/`https` para `localhost`, `127.0.0.1` ou `[::1]`, porta opcional
+ * (1–65535). Espelha `service::is_local_url` do core, que é quem decide (no
+ * salvar e na execução); aqui serve para não montar o iframe de URL de fora.
+ */
+export function isLocalUrl(url: string): boolean {
+  if (/[\s\\\u0000-\u001f\u007f-\u009f]/.test(url)) return false;
+  const lower = url.toLowerCase();
+  const scheme = lower.startsWith("http://") ? 7 : lower.startsWith("https://") ? 8 : 0;
+  if (!scheme) return false;
+  const rest = lower.slice(scheme);
+  const end = rest.search(/[/?#]/);
+  const authority = end < 0 ? rest : rest.slice(0, end);
+  if (authority.includes("@")) return false;
+  let host: string;
+  let port: string;
+  if (authority.startsWith("[::1]")) {
+    host = "[::1]";
+    port = authority.slice(5);
+  } else {
+    const i = authority.lastIndexOf(":");
+    host = i < 0 ? authority : authority.slice(0, i);
+    port = i < 0 ? "" : authority.slice(i);
+  }
+  if (host !== "localhost" && host !== "127.0.0.1" && host !== "[::1]") return false;
+  if (port === "") return true;
+  const digits = port.slice(1);
+  if (!port.startsWith(":") || !/^[0-9]{1,5}$/.test(digits)) return false;
+  const n = Number(digits);
+  return n >= 1 && n <= 65535;
+}
+
+/** O que a fonte aponta, curto: o nome do contêiner, a porta, o túnel. Vazio se nada escolhido. */
+export function sourceDetail(source: ServiceSource): string {
+  switch (source.type) {
+    case "container":
+      return source.name || source.containerId.slice(0, 12);
+    case "port":
+      return source.port > 0 ? `:${source.port}` : "";
+    case "tunnel":
+      return source.tunnelId ? source.tunnelId.slice(0, 8) : "";
+  }
+}
+
+/** `http://localhost:<porta>` (espelha `service::local_url`). */
+export const localUrl = (port: number) => `http://localhost:${port}`;
+
+/** A porta da URL local, para o chip "porta :5173" (`null` se não há). */
+export function urlPort(url: string | null | undefined): number | null {
+  const m = url?.match(/^https?:\/\/(?:\[::1\]|[^/:?#]+):(\d+)/i);
+  return m ? Number(m[1]) : null;
+}
 
 export interface MaestroNode {
   id: string;
@@ -106,13 +186,18 @@ export function produces(kind: NodeKind, integrations: IntegrationsById): EdgeKi
     case "agent":
       return ["context", "diff"];
     case "process":
-      return [kind.output];
+      // A url só fica disponível quando a sessão do processo abre porta.
+      return [kind.output, "url"];
     case "note":
       return ["context", "file"];
     case "integration": {
       const i = integrations.get(kind.integrationId);
       return i ? [i.output] : [];
     }
+    case "browser":
+      return [];
+    case "service":
+      return ["log", "url"];
   }
 }
 
@@ -123,7 +208,10 @@ export function accepts(kind: NodeKind, integrations: IntegrationsById): EdgeKin
     case "process":
       return [...EDGE_KINDS];
     case "note":
+    case "service":
       return [];
+    case "browser":
+      return ["url"];
     case "integration": {
       const trigger = integrations.get(kind.integrationId)?.trigger;
       if (!trigger) return [];
@@ -289,6 +377,8 @@ export const DEFAULT_SIZE: Record<NodeKind["type"], { w: number; h: number }> = 
   process: { w: 360, h: 250 },
   note: { w: 360, h: 170 },
   integration: { w: 360, h: 200 },
+  browser: { w: 640, h: 420 },
+  service: { w: 380, h: 300 },
 };
 
 export function newNode(
@@ -305,9 +395,9 @@ export function emptyGraph(id: string, name: string, dir: string): Graph {
   return { id, name, dir, nodes: [], edges: [], variables: {} };
 }
 
-/** Onde o nó roda: a pasta dele, ou a padrão do grafo. `null` na nota. */
+/** Onde o nó roda: a pasta dele, ou a padrão do grafo. `null` em quem não roda nada. */
 export function nodeDir(kind: NodeKind, graphDir: string): string | null {
-  if (kind.type === "note") return null;
+  if (kind.type === "note" || kind.type === "browser" || kind.type === "service") return null;
   return kind.dir || graphDir;
 }
 
@@ -367,6 +457,11 @@ export interface NodeRun {
   /** Tipo da saída → caminho do arquivo com o valor. */
   outputs: Partial<Record<EdgeKind, string>>;
   reason: string | null;
+  /**
+   * URL local do nó: a que o navegador mostra, a do serviço, ou a porta que
+   * a sessão do processo abriu (chega com o processo ainda rodando).
+   */
+  url?: string | null;
 }
 
 export interface Run {
@@ -525,6 +620,8 @@ const baseOf = (path: string) => path.split(/[\\/]/).filter(Boolean).pop() ?? pa
  */
 export function edgeDetail(kind: EdgeKind, source: NodeRun | undefined): Label | null {
   if (!source) return null;
+  // A url do processo sai antes do fim.
+  if (source.status === "running" && source.outputs[kind]) return { key: "maestroEdgeReady" };
   switch (source.status) {
     case "waiting":
       return { key: "maestroEdgeWaiting" };
@@ -546,6 +643,14 @@ export function edgeDetail(kind: EdgeKind, source: NodeRun | undefined): Label |
   }
 }
 
+/** A ligação já tem valor: a origem terminou, ou a url do processo já saiu (espelha o core). */
+export function edgeHasValue(edge: Pick<MaestroEdge, "from" | "kind">, run: Run): boolean {
+  const source = run.nodes[edge.from];
+  if (!source) return false;
+  if (source.status === "done") return true;
+  return edge.kind === "url" && source.status === "running" && Boolean(source.outputs.url);
+}
+
 /** O que a linha da execução e o nó dizem do estado. */
 export function nodeStatusLabel(
   graph: Pick<Graph, "nodes" | "edges">,
@@ -556,9 +661,7 @@ export function nodeStatusLabel(
   if (!n) return null;
   if (n.status !== "waiting") return { key: `maestroStatus_${n.status}` };
   if (run.status !== "running") return { key: "maestroStatus_waiting" };
-  const pending = graph.edges.find(
-    (e) => e.to === nodeId && run.nodes[e.from]?.status !== "done",
-  );
+  const pending = graph.edges.find((e) => e.to === nodeId && !edgeHasValue(e, run));
   if (pending) {
     const from = graph.nodes.find((x) => x.id === pending.from);
     return {
@@ -775,7 +878,9 @@ export type ImportItem =
       file: string | null;
     }
   | { type: "note"; node: MaestroNode; markdown: string }
-  | { type: "integration"; node: MaestroNode; integration: Integration | null };
+  | { type: "integration"; node: MaestroNode; integration: Integration | null }
+  | { type: "browser"; node: MaestroNode; url: string }
+  | { type: "service"; node: MaestroNode; source: ServiceSource };
 
 /**
  * Tudo que o arquivo traz para rodar, por nó, com o texto inteiro (nunca
@@ -794,6 +899,10 @@ export function importItems(preview: Pick<ImportPreview, "graph" | "integrations
         return { type: "note", node, markdown: k.markdown };
       case "integration":
         return { type: "integration", node, integration: byId.get(k.integrationId) ?? null };
+      case "browser":
+        return { type: "browser", node, url: k.url };
+      case "service":
+        return { type: "service", node, source: k.source };
     }
   });
 }
@@ -803,3 +912,60 @@ export const unusedImportIntegrations = (
   preview: Pick<ImportPreview, "graph" | "integrations">,
 ): Integration[] =>
   preview.integrations.filter((i) => integrationNode(preview.graph.nodes, i.id) === null);
+
+// ------------------------------------------------ serviço: log ao vivo
+
+/** Linha do log do contêiner, como o core manda (o mesmo `LogLine` da aba de logs). */
+export interface ServiceLogLine {
+  seq: number;
+  ts: string | null;
+  text: string;
+  stderr: boolean;
+  level: string | null;
+}
+
+export interface ServiceLogsSnapshot {
+  lines: ServiceLogLine[];
+  following: boolean;
+}
+
+/** Liga (ou reaproveita) o `docker logs -f` do contêiner do nó; devolve o já lido. */
+export const serviceLogsStart = (containerId: string) =>
+  invoke<ServiceLogsSnapshot>("maestro_service_logs_start", { containerId });
+
+/** Só ficam vivos os seguidores dos contêineres que o canvas mostra. */
+export const serviceLogsRetain = (containerIds: string[]) =>
+  invoke<void>("maestro_service_logs_retain", { containerIds });
+
+export const onServiceLogs = (
+  containerId: string,
+  handler: (batch: { lines: ServiceLogLine[]; ended: boolean }) => void,
+): Promise<UnlistenFn> =>
+  listen<{ lines: ServiceLogLine[]; ended: boolean }>(`maestro-logs://${containerId}`, (e) =>
+    handler(e.payload),
+  );
+
+/** Contêineres que os nós de serviço do grafo mostram (para o `retain`). */
+export const serviceContainers = (nodes: readonly MaestroNode[]): string[] => [
+  ...new Set(
+    nodes.flatMap((n) =>
+      n.kind.type === "service" && n.kind.source.type === "container" && n.kind.source.containerId
+        ? [n.kind.source.containerId]
+        : [],
+    ),
+  ),
+];
+
+/** Nó de navegador que já recebe a url deste nó, se houver. */
+export const browserFed = (
+  graph: Pick<Graph, "nodes" | "edges">,
+  fromId: string,
+): MaestroNode | null => {
+  const edge = graph.edges.find(
+    (e) =>
+      e.from === fromId &&
+      e.kind === "url" &&
+      graph.nodes.find((n) => n.id === e.to)?.kind.type === "browser",
+  );
+  return edge ? (graph.nodes.find((n) => n.id === edge.to) ?? null) : null;
+};

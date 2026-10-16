@@ -1,0 +1,153 @@
+import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
+import { ArrowClockwise, ArrowLeft, ArrowSquareOut, Browser } from "@phosphor-icons/react";
+import type { NodeProps } from "@xyflow/react";
+
+import { openExternalUrl } from "@/lib/clipboard";
+import { isLocalUrl, type NodeKind } from "@/lib/maestro";
+import { NodeFrame, useMaestro, type MaestroFlowNode } from "./NodeFrame";
+
+type BrowserKind = Extract<NodeKind, { type: "browser" }>;
+
+/** Atributo `sandbox` do iframe: a página roda, mas não navega o app. */
+const SANDBOX = "allow-scripts allow-same-origin allow-forms allow-popups";
+
+/**
+ * A página pode ir para o iframe: endereço local (a regra do core) e nunca a
+ * origem do próprio app — com `allow-same-origin`, o TYBA em dev servido em
+ * localhost se enxergaria por dentro do frame.
+ */
+function frameable(url: string): boolean {
+  if (!isLocalUrl(url)) return false;
+  try {
+    return new URL(url).origin !== window.location.origin;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Nó de navegador (quadro MaestroNavegador): voltar, recarregar, endereço e
+ * "Abrir fora"; a página num iframe com `sandbox`. Só endereço local carrega —
+ * o resto mostra o aviso e nada vai para o frame (a CSP `frame-src` também
+ * recusa). A url que chega pela ligação, na execução, toma o lugar da do nó.
+ */
+export function BrowserNode({ id, data, selected }: NodeProps<MaestroFlowNode>) {
+  const { t } = useTranslation();
+  const { updateNode, run } = useMaestro();
+  const node = data.node;
+  const kind = node.kind as BrowserKind;
+  const runUrl = run?.nodes[id]?.url ?? null;
+
+  // Endereços visitados por aqui (a navegação dentro do frame é de outra
+  // origem e não se lê): o ← volta para o anterior.
+  const [history, setHistory] = useState<string[]>(() => (kind.url ? [kind.url] : []));
+  const [draft, setDraft] = useState(kind.url);
+  const [reload, setReload] = useState(0);
+  const current = history[history.length - 1] ?? "";
+
+  const go = (url: string) => {
+    setDraft(url);
+    setHistory((h) => (h[h.length - 1] === url ? h : [...h, url]));
+  };
+
+  // A url da execução chega pela ligação: vai para o frame.
+  useEffect(() => {
+    if (runUrl) go(runUrl);
+  }, [runUrl]);
+
+  const submit = () => {
+    const url = draft.trim();
+    if (!url) return;
+    go(url);
+    // Só endereço local vira a url do nó: o core recusaria salvar o resto.
+    if (isLocalUrl(url)) updateNode(id, (n) => ({ ...n, kind: { type: "browser", url } }));
+  };
+
+  const back = () => {
+    if (history.length < 2) return;
+    const prev = history.slice(0, -1);
+    setHistory(prev);
+    setDraft(prev[prev.length - 1]);
+  };
+
+  const ok = current !== "" && frameable(current);
+  const btn =
+    "nodrag flex shrink-0 items-center rounded-[4px] p-1 text-tyba-text-muted hover:bg-tyba-raised hover:text-tyba-text disabled:text-tyba-text-ghost disabled:hover:bg-transparent";
+
+  return (
+    <NodeFrame
+      id={id}
+      node={node}
+      selected={selected}
+      mark={<Browser size={14} weight="bold" />}
+      markClass="bg-tyba-cyan-tint text-tyba-cyan"
+      label={t("maestroKindBrowser").toLowerCase()}
+    >
+      <div className="flex shrink-0 items-center gap-1.5 border-b border-tyba-border px-3.5 py-1.5">
+        <button
+          type="button"
+          aria-label={t("maestroBrowserBack")}
+          title={t("maestroBrowserBack")}
+          disabled={history.length < 2}
+          onClick={back}
+          className={btn}
+        >
+          <ArrowLeft size={13} />
+        </button>
+        <button
+          type="button"
+          aria-label={t("maestroBrowserReload")}
+          title={t("maestroBrowserReload")}
+          disabled={!ok}
+          onClick={() => setReload((n) => n + 1)}
+          className={btn}
+        >
+          <ArrowClockwise size={13} />
+        </button>
+        <input
+          aria-label={t("maestroBrowserAddress")}
+          placeholder="http://localhost:5173"
+          spellCheck={false}
+          autoCorrect="off"
+          autoCapitalize="off"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") submit();
+          }}
+          onBlur={submit}
+          className="nodrag h-7 min-w-0 flex-1 rounded-[6px] border border-tyba-border-strong bg-tyba-sunken px-2.5 font-mono text-[12px] text-tyba-text outline-none focus:border-tyba-cyan/60"
+        />
+        <button
+          type="button"
+          disabled={!ok}
+          onClick={() => void openExternalUrl(current).catch(() => {})}
+          className="nodrag inline-flex h-6 shrink-0 items-center gap-1 rounded-[4px] border border-tyba-border-strong px-2 text-[11px] text-tyba-text-muted hover:text-tyba-text disabled:text-tyba-text-ghost"
+        >
+          <ArrowSquareOut size={12} />
+          {t("maestroBrowserOpenOutside")}
+        </button>
+      </div>
+      <div className="nodrag nowheel nopan relative m-2.5 min-h-0 flex-1 overflow-hidden rounded-[6px] border border-tyba-border bg-tyba-sunken">
+        {ok ? (
+          <iframe
+            key={`${current}#${reload}`}
+            title={node.title}
+            src={current}
+            sandbox={SANDBOX}
+            referrerPolicy="no-referrer"
+            className="absolute inset-0 h-full w-full border-0 bg-white"
+          />
+        ) : (
+          <p className="absolute inset-0 flex items-center justify-center px-6 text-center font-mono text-[12px] text-tyba-text-faint">
+            {current === "" ? t("maestroBrowserEmpty") : t("maestroBrowserRefused")}
+          </p>
+        )}
+      </div>
+      <div className="shrink-0 border-t border-tyba-border px-3.5 py-1.5 font-mono text-[11px] text-tyba-text-faint">
+        {t("maestroBrowserLocalOnly")}
+      </div>
+    </NodeFrame>
+  );
+}

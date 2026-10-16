@@ -63,6 +63,8 @@ export interface MaestroCtx {
   /** Nó aberto no modo foco (terminal em tamanho real por cima do canvas), ou `null`. */
   focusNode: string | null;
   setFocusNode: (nodeId: string | null) => void;
+  /** "Abrir no navegador" do processo: o navegador ligado nele, ou um novo. */
+  openInBrowser: (fromId: string, url: string) => void;
 }
 
 export const MaestroContext = createContext<MaestroCtx>({
@@ -80,6 +82,7 @@ export const MaestroContext = createContext<MaestroCtx>({
   setOpenSubagent: () => {},
   focusNode: null,
   setFocusNode: () => {},
+  openInBrowser: () => {},
 });
 
 export const useMaestro = () => useContext(MaestroContext);
@@ -91,6 +94,7 @@ export const EDGE_COLOR: Record<EdgeKind, string> = {
   file: "var(--tyba-text-muted)",
   log: "var(--tyba-cyan)",
   json: "var(--tyba-blue)",
+  url: "var(--tyba-cyan)",
 };
 
 /** Cor do texto e do ponto de cada estado (quadro: rodando verde, aguardando âmbar). */
@@ -324,9 +328,7 @@ export function NodeDir({ id, kind }: { id: string; kind: MaestroNode["kind"] })
     }).catch(() => null);
     if (typeof chosen !== "string") return;
     rememberDir(chosen);
-    updateNode(id, (n) =>
-      n.kind.type === "note" ? n : { ...n, kind: { ...n.kind, dir: chosen } },
-    );
+    updateNode(id, (n) => ("dir" in n.kind ? { ...n, kind: { ...n.kind, dir: chosen } } : n));
   };
   return (
     <button
