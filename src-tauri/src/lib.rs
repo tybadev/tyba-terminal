@@ -8670,6 +8670,83 @@ fn maestro_runs_list(
     runs.list(&graph_id)
 }
 
+/// Grava o `.tyba-maestro.toml` com o grafo e as integrações que ele usa.
+/// Devolve os nomes das variáveis zeradas por parecerem segredo.
+#[tauri::command]
+fn maestro_export(
+    state: State<'_, AppState>,
+    graph_id: String,
+    path: String,
+) -> Result<Vec<String>, String> {
+    let graph = state
+        .store
+        .get_maestro_graph(&graph_id)
+        .map_err(|e| e.to_string())?
+        .ok_or("grafo não encontrado")?
+        .value;
+    let integrations = state
+        .store
+        .list_maestro_integrations()
+        .map_err(|e| e.to_string())?;
+    maestro::export::export_to(std::path::Path::new(&path), &graph, &integrations)
+        .map_err(|e| e.to_string())
+}
+
+/// Prévia da importação: lê e valida, devolve tudo que vai rodar e o hash.
+/// Não grava nada.
+#[tauri::command]
+fn maestro_import_preview(
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<maestro::export::ImportPreview, String> {
+    let imported =
+        maestro::export::read_import(std::path::Path::new(&path)).map_err(|e| e.to_string())?;
+    let replaces_graph = state
+        .store
+        .get_maestro_graph(&imported.graph.id)
+        .map_err(|e| e.to_string())?
+        .is_some();
+    let mut replaces_integrations = Vec::new();
+    for integration in &imported.integrations {
+        if state
+            .store
+            .get_maestro_integration(&integration.id)
+            .map_err(|e| e.to_string())?
+            .is_some()
+        {
+            replaces_integrations.push(integration.id.clone());
+        }
+    }
+    Ok(maestro::export::ImportPreview {
+        imported,
+        replaces_graph,
+        replaces_integrations,
+    })
+}
+
+/// Confirmar da importação: relê o arquivo e só grava se o hash for o mesmo
+/// que o dono viu na prévia. Grava consentido e com a origem (`imported_hash`).
+#[tauri::command]
+fn maestro_import_confirm(
+    state: State<'_, AppState>,
+    path: String,
+    hash: String,
+) -> Result<String, String> {
+    let imported = maestro::export::read_confirmed(std::path::Path::new(&path), &hash)
+        .map_err(|e| e.to_string())?;
+    for integration in &imported.integrations {
+        state
+            .store
+            .save_maestro_integration(integration, true, Some(&imported.hash))
+            .map_err(|e| e.to_string())?;
+    }
+    state
+        .store
+        .save_maestro_graph(&imported.graph, true, Some(&imported.hash))
+        .map_err(|e| e.to_string())?;
+    Ok(imported.graph.id)
+}
+
 /// Histórico de notificações: mais nova primeiro, até 500, dos últimos 7 dias.
 #[tauri::command]
 async fn notifications_list(
@@ -9649,6 +9726,9 @@ pub fn run() {
             maestro_run_stop,
             maestro_run_get,
             maestro_runs_list,
+            maestro_export,
+            maestro_import_preview,
+            maestro_import_confirm,
             snippet_placeholders,
             notifications_list,
             notifications_mark_read,
