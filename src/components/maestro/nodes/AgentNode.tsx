@@ -4,6 +4,7 @@ import type { NodeProps } from "@xyflow/react";
 
 import type { NodeKind, Runner } from "@/lib/maestro";
 import { NodeFrame, fieldClass, termClass, useMaestro, type MaestroFlowNode } from "./NodeFrame";
+import { NodeTerminal, nodeSession } from "./NodeTerminal";
 
 type AgentKind = Extract<NodeKind, { type: "agent" }>;
 
@@ -12,9 +13,10 @@ const RUNNERS: Runner[] = ["claude", "codex"];
 /** Nó de agente: Claude (âmbar) ou Codex (ciano), papel e a tarefa. */
 export function AgentNode({ id, data, selected }: NodeProps<MaestroFlowNode>) {
   const { t } = useTranslation();
-  const { updateNode } = useMaestro();
+  const { updateNode, run, live } = useMaestro();
   const node = data.node;
   const kind = node.kind as AgentKind;
+  const session = nodeSession(kind, run?.nodes[id], live);
   const set = (patch: Partial<AgentKind>) =>
     updateNode(id, (n) => ({ ...n, kind: { ...(n.kind as AgentKind), ...patch } }));
   const claude = kind.runner === "claude";
@@ -55,16 +57,20 @@ export function AgentNode({ id, data, selected }: NodeProps<MaestroFlowNode>) {
           className={`${fieldClass} flex-1`}
         />
       </div>
-      <textarea
-        aria-label={t("maestroPrompt")}
-        placeholder={t("maestroPrompt")}
-        spellCheck={false}
-        autoCorrect="off"
-        autoCapitalize="off"
-        value={kind.prompt}
-        onChange={(e) => set({ prompt: e.target.value })}
-        className={termClass}
-      />
+      {session ? (
+        <NodeTerminal sessionId={session} focused={selected} />
+      ) : (
+        <textarea
+          aria-label={t("maestroPrompt")}
+          placeholder={t("maestroPrompt")}
+          spellCheck={false}
+          autoCorrect="off"
+          autoCapitalize="off"
+          value={kind.prompt}
+          onChange={(e) => set({ prompt: e.target.value })}
+          className={termClass}
+        />
+      )}
     </NodeFrame>
   );
 }

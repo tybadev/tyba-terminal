@@ -1,9 +1,11 @@
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { PlugsConnected, Warning } from "@phosphor-icons/react";
+import { Play, PlugsConnected, Warning } from "@phosphor-icons/react";
 import type { NodeProps } from "@xyflow/react";
 
 import type { NodeKind } from "@/lib/maestro";
 import { NodeFrame, useMaestro, type MaestroFlowNode } from "./NodeFrame";
+import { NodeTerminal, nodeSession } from "./NodeTerminal";
 
 /**
  * Nó de integração: aponta para um script salvo na biblioteca. Aqui só se
@@ -11,10 +13,19 @@ import { NodeFrame, useMaestro, type MaestroFlowNode } from "./NodeFrame";
  */
 export function IntegrationNode({ id, data, selected }: NodeProps<MaestroFlowNode>) {
   const { t } = useTranslation();
-  const { integrations } = useMaestro();
+  const { integrations, run, live, runNode } = useMaestro();
   const node = data.node;
   const kind = node.kind as Extract<NodeKind, { type: "integration" }>;
   const integration = integrations.get(kind.integrationId);
+  const nodeRun = run?.nodes[id];
+  const session = nodeSession(kind, nodeRun, live);
+  // Run em que o dono já deu ▶: o nó segue `waiting` até as entradas chegarem.
+  const [released, setReleased] = useState<string | null>(null);
+  const canRelease =
+    integration?.trigger.type === "manual" &&
+    run?.status === "running" &&
+    nodeRun?.status === "waiting" &&
+    released !== run.id;
 
   return (
     <NodeFrame
@@ -24,8 +35,26 @@ export function IntegrationNode({ id, data, selected }: NodeProps<MaestroFlowNod
       mark={<PlugsConnected size={14} weight="bold" />}
       markClass="bg-tyba-blue-tint text-tyba-blue"
       label={integration?.name ?? t("maestroKindIntegration").toLowerCase()}
+      extra={
+        canRelease && run ? (
+          <button
+            type="button"
+            aria-label={t("maestroRunNode")}
+            title={t("maestroRunNode")}
+            onClick={() => {
+              setReleased(run.id);
+              runNode(id);
+            }}
+            className="nodrag flex shrink-0 items-center rounded-[5px] border border-tyba-green/40 bg-tyba-green-tint p-1 text-tyba-green hover:border-tyba-green"
+          >
+            <Play size={11} weight="fill" />
+          </button>
+        ) : null
+      }
     >
-      {integration ? (
+      {session ? (
+        <NodeTerminal sessionId={session} focused={selected} />
+      ) : integration ? (
         <div className="flex min-h-0 flex-1 flex-col bg-tyba-sunken px-3.5 py-2.5 font-mono text-[11.5px] leading-[17px] text-tyba-text-muted">
           <span className="shrink-0 text-tyba-text-faint">
             {integration.trigger.type === "manual"

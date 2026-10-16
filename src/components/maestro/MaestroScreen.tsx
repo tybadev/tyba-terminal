@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   BracketsCurly,
@@ -24,18 +24,30 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
+  EMPTY_RUN_VIEW,
   emptyGraph,
+  formatDuration,
   fromFlow,
   listGraphs,
   listIntegrations,
+  onRun,
+  runGet,
+  runNode,
+  runNumber,
+  runReducer,
+  runStart,
+  runStop,
+  runsList,
   saveGraph,
+  selectedRun,
   toFlow,
   type Graph,
   type Integration,
   type MaestroNode,
 } from "@/lib/maestro";
 import { MaestroCanvas, type MaestroFlowEdge } from "./MaestroCanvas";
-import { MaestroContext, type MaestroFlowNode } from "./nodes/NodeFrame";
+import { RunTimeline } from "./RunTimeline";
+import { MaestroContext, STATUS_TONE, type MaestroFlowNode } from "./nodes/NodeFrame";
 
 const SAVE_DEBOUNCE_MS = 500;
 
@@ -72,7 +84,7 @@ function MaestroInner({
   activeDir: string | null;
   branch: string | null;
 }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const [dir, setDir] = useState<string | null>(activeDir ?? dirs[0] ?? null);
   useEffect(() => {
     if (dir === null && (activeDir ?? dirs[0])) setDir(activeDir ?? dirs[0]);
@@ -86,12 +98,15 @@ function MaestroInner({
   const [showVars, setShowVars] = useState(false);
   const [showMinimap, setShowMinimap] = useState(false);
   const lastSaved = useRef<string | null>(null);
+  const [runView, dispatchRun] = useReducer(runReducer, EMPTY_RUN_VIEW);
+  const [now, setNow] = useState(() => Date.now());
 
   // Carrega o grafo da pasta (ou começa um vazio, gravado na primeira edição).
   useEffect(() => {
     if (!dir) return;
     let alive = true;
     setMeta(null);
+    dispatchRun({ type: "reset" });
     void Promise.all([listGraphs(), listIntegrations()])
       .then(([graphs, ints]) => {
         if (!alive) return;
@@ -106,6 +121,11 @@ function MaestroInner({
         setEdges(flow.edges);
         setMeta({ id: graph.id, name: graph.name, dir: graph.dir, variables: graph.variables });
         setError(null);
+        if (found) {
+          void runsList(graph.id)
+            .then((runs) => alive && dispatchRun({ type: "history", runs }))
+            .catch(() => {});
+        }
       })
       .catch((e) => alive && setError(t("maestroLoadError", { error: String(e) })));
     return () => {
@@ -132,6 +152,77 @@ function MaestroInner({
     return () => clearTimeout(timer);
   }, [snapshot, t]);
 
+  // Escuta cada run rodando; depois de assinar, relê o run para não perder o
+  // que mudou antes (o core já emite na largada). O reducer descarta retrato
+  // velho, então a ordem entre evento e leitura não importa.
+  const runningIds = runView.runs
+    .filter((r) => r.status === "running")
+    .map((r) => r.id)
+    .join(",");
+  useEffect(() => {
+    if (!runningIds) return;
+    let alive = true;
+    const unlisten: (() => void)[] = [];
+    for (const id of runningIds.split(",")) {
+      void onRun(id, (run) => alive && dispatchRun({ type: "update", run }))
+        .then((un) => {
+          if (!alive) return un();
+          unlisten.push(un);
+          return runGet(id).then((run) => {
+            if (alive && run) dispatchRun({ type: "update", run });
+          });
+        })
+        .catch(() => {});
+    }
+    return () => {
+      alive = false;
+      unlisten.forEach((un) => un());
+    };
+  }, [runningIds]);
+
+  const run = selectedRun(runView);
+  const latest = runView.runs[0] ?? null;
+  const running = runView.runs.find((r) => r.status === "running") ?? null;
+
+  // Relógio dos tempos de nó e de execução, só enquanto algo roda.
+  const runningId = running?.id ?? null;
+  useEffect(() => {
+    if (!runningId) return;
+    setNow(Date.now());
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [runningId]);
+
+  const start = async () => {
+    if (!snapshot || !meta) return;
+    try {
+      // O core roda o grafo do banco: o que ainda está no debounce vai antes.
+      if (snapshot !== lastSaved.current) {
+        await saveGraph(JSON.parse(snapshot) as Graph);
+        lastSaved.current = snapshot;
+      }
+      const id = await runStart(meta.id);
+      const started = await runGet(id);
+      if (started) dispatchRun({ type: "update", run: started });
+      setError(null);
+    } catch (e) {
+      setError(t("maestroRunError", { error: String(e) }));
+    }
+  };
+
+  const stop = () => {
+    if (!running) return;
+    runStop(running.id).catch((e) => setError(t("maestroRunError", { error: String(e) })));
+  };
+
+  const releaseNode = useCallback(
+    (nodeId: string) => {
+      if (!run) return;
+      runNode(run.id, nodeId).catch((e) => setError(t("maestroRunError", { error: String(e) })));
+    },
+    [run, t],
+  );
+
   const updateNode = useCallback(
     (id: string, update: (node: MaestroNode) => MaestroNode) =>
       setNodes((ns) =>
@@ -139,13 +230,33 @@ function MaestroInner({
       ),
     [],
   );
-  const ctx = useMemo(
-    () => ({ integrations: new Map(integrations.map((i) => [i.id, i])), updateNode }),
-    [integrations, updateNode],
-  );
-
-  const { zoomIn, zoomOut, fitView } = useReactFlow();
+  const { zoomIn, zoomOut, zoomTo, fitView } = useReactFlow();
   const { zoom } = useViewport();
+  const actualSize = Math.round(zoom * 100) === 100;
+
+  const graph = useMemo(
+    () => ({
+      nodes: nodes.map((n) => n.data.node),
+      edges: edges.flatMap((e) =>
+        e.data ? [{ id: e.id, from: e.source, to: e.target, kind: e.data.kind }] : [],
+      ),
+    }),
+    [nodes, edges],
+  );
+  const live = run !== null && run.id === latest?.id;
+  const ctx = useMemo(
+    () => ({
+      integrations: new Map(integrations.map((i) => [i.id, i])),
+      updateNode,
+      graph,
+      run,
+      live,
+      now,
+      actualSize,
+      runNode: releaseNode,
+    }),
+    [integrations, updateNode, graph, run, live, now, actualSize, releaseNode],
+  );
 
   if (!dir) {
     return (
@@ -155,7 +266,6 @@ function MaestroInner({
     );
   }
 
-  const soon = t("maestroRunSoon");
   const dirChip = (
     <span className="inline-flex items-center gap-1.5 rounded-[5px] border border-tyba-border bg-tyba-raised px-2 py-[3px] text-[11px] text-tyba-text-muted">
       <FolderSimple size={12} />
@@ -213,20 +323,63 @@ function MaestroInner({
             <span title={dir}>{dirChip}</span>
           )}
           {sep}
-          {/* Executar, Parar e Execuções ligam com a execução (B7). */}
-          <button type="button" disabled title={soon} className={tbtn}>
+          <button
+            type="button"
+            disabled={!meta || nodes.length === 0 || running !== null}
+            onClick={() => void start()}
+            className={`${tbtn} enabled:border-tyba-green/45 enabled:bg-tyba-green-tint enabled:font-medium enabled:text-tyba-green enabled:hover:border-tyba-green enabled:hover:bg-tyba-green-tint`}
+          >
             <Play size={13} weight="fill" />
             {t("maestroRun")}
           </button>
-          <button type="button" disabled title={soon} className={tbtn}>
+          <button type="button" disabled={!running} onClick={stop} className={tbtn}>
             <Stop size={13} weight="fill" />
             {t("maestroStop")}
           </button>
           {sep}
-          <button type="button" disabled title={soon} className={tbtn}>
-            <ClockCounterClockwise size={13} />
-            {t("maestroRuns")}
-          </button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button type="button" disabled={runView.runs.length === 0} className={tbtn}>
+                <ClockCounterClockwise size={13} />
+                {t("maestroRuns")}
+                {latest && (
+                  <span className="rounded-[4px] bg-tyba-raised px-[5px] text-[10.5px] leading-4 text-tyba-text-muted">
+                    #{runNumber(runView, latest.id)}
+                  </span>
+                )}
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" className="w-72">
+              {runView.runs.map((r) => (
+                <DropdownMenuItem
+                  key={r.id}
+                  className="gap-2 font-mono text-xs"
+                  onSelect={() => dispatchRun({ type: "select", runId: r.id })}
+                >
+                  <i
+                    className={`size-[7px] shrink-0 rounded-full ${
+                      STATUS_TONE[r.status].dot
+                    }`}
+                  />
+                  <span className={r.id === run?.id ? "text-tyba-text" : "text-tyba-text-muted"}>
+                    #{runNumber(runView, r.id)}
+                  </span>
+                  <span className="text-tyba-text-faint">
+                    {new Date(r.startedAt).toLocaleString(i18n.language, {
+                      day: "2-digit",
+                      month: "2-digit",
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    })}
+                  </span>
+                  <span className="ml-auto text-tyba-text-faint">
+                    {t(`maestroRunStatus_${r.status}`)} ·{" "}
+                    {formatDuration((r.finishedAt ?? now) - r.startedAt)}
+                  </span>
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
           <button
             type="button"
             aria-pressed={showVars}
@@ -254,9 +407,14 @@ function MaestroInner({
             >
               <MagnifyingGlassMinus size={13} />
             </button>
-            <span className="min-w-[34px] px-1.5 text-center text-[11.5px] text-tyba-text">
+            <button
+              type="button"
+              title={t("maestroZoomActual")}
+              onClick={() => void zoomTo(1, { duration: 150 })}
+              className="min-w-[34px] px-1.5 text-center text-[11.5px] text-tyba-text"
+            >
               {Math.round(zoom * 100)}%
-            </span>
+            </button>
             <button
               type="button"
               aria-label={t("maestroZoomIn")}
@@ -311,6 +469,14 @@ function MaestroInner({
             />
           )}
         </div>
+        {meta && (
+          <RunTimeline
+            graph={graph}
+            run={run}
+            number={run ? runNumber(runView, run.id) : 0}
+            now={now}
+          />
+        )}
       </div>
     </MaestroContext.Provider>
   );

@@ -32,6 +32,7 @@ import {
 import {
   NEW_IN_HANDLE,
   connectionProblem,
+  edgeDetail,
   inHandle,
   kindOfOutHandle,
   newNode,
@@ -41,7 +42,7 @@ import {
 } from "@/lib/maestro";
 import { AgentNode } from "./nodes/AgentNode";
 import { IntegrationNode } from "./nodes/IntegrationNode";
-import { EDGE_COLOR, type MaestroFlowNode } from "./nodes/NodeFrame";
+import { EDGE_COLOR, useMaestro, type MaestroFlowNode } from "./nodes/NodeFrame";
 import { NoteNode } from "./nodes/NoteNode";
 import { ProcessNode } from "./nodes/ProcessNode";
 
@@ -57,6 +58,7 @@ const nodeTypes = {
 /** Ligação com a etiqueta do tipo no meio (quadro: a "pílula"). */
 function MaestroEdgeView({
   id,
+  source,
   sourceX,
   sourceY,
   targetX,
@@ -75,8 +77,13 @@ function MaestroEdgeView({
     sourcePosition,
     targetPosition,
   });
+  const { run } = useMaestro();
   const kind = data?.kind;
   const color = kind ? EDGE_COLOR[kind] : "var(--tyba-text-faint)";
+  const sourceRun = run?.nodes[source];
+  const detail = kind ? edgeDetail(kind, sourceRun) : null;
+  // Quadro: tracejado enquanto o valor não saiu nesta execução.
+  const pending = sourceRun !== undefined && sourceRun.status !== "done";
   return (
     <>
       <BaseEdge
@@ -89,16 +96,31 @@ function MaestroEdgeView({
               ? "color-mix(in srgb, var(--tyba-violet) 70%, transparent)"
               : "color-mix(in srgb, var(--tyba-text) 36%, transparent)",
           strokeWidth: selected ? 2.4 : 1.6,
+          strokeDasharray: pending ? "3 6" : undefined,
         }}
       />
       {kind && (
         <EdgeLabelRenderer>
           <div
-            className="nodrag nopan pointer-events-auto absolute flex items-center gap-1.5 rounded-[7px] border border-tyba-border-strong bg-tyba-surface px-2 py-1 font-mono text-[11px] font-medium whitespace-nowrap text-tyba-text shadow-[var(--tyba-shadow-md)]"
+            className={`nodrag nopan pointer-events-auto absolute flex flex-col items-start gap-0.5 rounded-[7px] border bg-tyba-surface px-2 py-1 font-mono whitespace-nowrap shadow-[var(--tyba-shadow-md)] ${
+              sourceRun?.status === "running" ? "border-tyba-cyan/60" : "border-tyba-border-strong"
+            }`}
             style={{ transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)` }}
           >
-            <i className="size-1.5 rounded-[2px]" style={{ background: color }} />
-            {t(`maestroEdge_${kind}`)}
+            <span className="flex items-center gap-1.5 text-[11px] font-medium text-tyba-text">
+              <i className="size-1.5 rounded-[2px]" style={{ background: color }} />
+              {t(`maestroEdge_${kind}`)}
+              {kind === "context" && (
+                <span className="rounded-[4px] border border-tyba-cyan/35 px-1 text-[10px] leading-[15px] font-normal text-tyba-cyan">
+                  {t("maestroRedacted")}
+                </span>
+              )}
+            </span>
+            {detail && (
+              <span className="text-[10.5px] text-tyba-text-faint">
+                {t(detail.key, detail.params)}
+              </span>
+            )}
           </div>
         </EdgeLabelRenderer>
       )}

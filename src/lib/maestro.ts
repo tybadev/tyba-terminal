@@ -4,6 +4,7 @@
 // ligação válida que o front usa para OFERECER ligações, nunca para decidir.
 
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 export type Runner = "claude" | "codex";
 
@@ -299,4 +300,260 @@ export function newNode(
 export function emptyGraph(id: string, dir: string): Graph {
   const name = dir.split(/[\\/]/).filter(Boolean).pop() ?? dir;
   return { id, name, dir, nodes: [], edges: [], variables: {} };
+}
+
+// ------------------------------------------------------------ execução
+
+export type RunStatus = "running" | "done" | "failed" | "stopped";
+
+export type NodeStatus = "waiting" | "running" | "done" | "failed" | "skipped" | "stopped";
+
+/** Estado de um nó numa execução, como o core manda (tempos em ms). */
+export interface NodeRun {
+  status: NodeStatus;
+  /** Sessão do terminal do nó. Só aparece no canvas, nunca na grade. */
+  sessionId: string | null;
+  startedAt: number | null;
+  finishedAt: number | null;
+  exitCode: number | null;
+  /** Tipo da saída → caminho do arquivo com o valor. */
+  outputs: Partial<Record<EdgeKind, string>>;
+  reason: string | null;
+}
+
+export interface Run {
+  id: string;
+  graphId: string;
+  startedAt: number;
+  finishedAt: number | null;
+  status: RunStatus;
+  nodes: Record<string, NodeRun>;
+}
+
+/** ▶ Executar: o core recusa grafo não consentido ou inválido. */
+export const runStart = (graphId: string) => invoke<string>("maestro_run_start", { graphId });
+
+/** ■ Parar: o core mata o process group de cada nó rodando. */
+export const runStop = (runId: string) => invoke<void>("maestro_run_stop", { runId });
+
+export const runGet = (runId: string) => invoke<Run | null>("maestro_run_get", { runId });
+
+/** As 20 últimas execuções do grafo, mais nova primeiro. */
+export const runsList = (graphId: string) => invoke<Run[]>("maestro_runs_list", { graphId });
+
+/** O ▶ num nó de integração manual: roda assim que as entradas chegarem. */
+export const runNode = (runId: string, nodeId: string) =>
+  invoke<void>("maestro_run_node", { runId, nodeId });
+
+/** Cada mudança de estado do run chega com o run inteiro. */
+export const onRun = (runId: string, handler: (run: Run) => void): Promise<UnlistenFn> =>
+  listen<Run>(`maestro://run/${runId}`, (e) => handler(e.payload));
+
+/** Execuções guardadas por grafo (o core poda o resto). */
+export const KEEP_RUNS = 20;
+
+/** O que a tela sabe das execuções: o histórico e a que está à vista. */
+export interface RunView {
+  /** Mais nova primeiro, no máximo {@link KEEP_RUNS}. */
+  runs: Run[];
+  /** Execução desenhada no canvas e na linha da execução. */
+  selectedId: string | null;
+}
+
+export type RunAction =
+  | { type: "history"; runs: Run[] }
+  | { type: "update"; run: Run }
+  | { type: "select"; runId: string }
+  | { type: "reset" };
+
+export const EMPTY_RUN_VIEW: RunView = { runs: [], selectedId: null };
+
+const NODE_RANK: Record<NodeStatus, number> = {
+  waiting: 0,
+  running: 1,
+  done: 2,
+  failed: 2,
+  skipped: 2,
+  stopped: 2,
+};
+
+/**
+ * Quanto o run já andou. Estado de nó só anda para a frente, então um retrato
+ * com menos progresso que o guardado é velho (evento que chegou depois do
+ * `runGet`, ou o contrário) e não pode desfazer o que já se viu.
+ */
+export function runProgress(run: Run): number {
+  let total = run.status === "running" ? 0 : 1;
+  for (const n of Object.values(run.nodes)) {
+    total += NODE_RANK[n.status] * 2 + (n.sessionId ? 1 : 0);
+  }
+  return total;
+}
+
+const newestFirst = (runs: Run[]) =>
+  [...runs].sort((a, b) => b.startedAt - a.startedAt).slice(0, KEEP_RUNS);
+
+export function runReducer(view: RunView, action: RunAction): RunView {
+  switch (action.type) {
+    case "reset":
+      return EMPTY_RUN_VIEW;
+    case "history": {
+      // O que já chegou por evento pode ser mais novo que a lista.
+      const byId = new Map(view.runs.map((r) => [r.id, r]));
+      const listed = new Set(action.runs.map((r) => r.id));
+      const runs = newestFirst([
+        ...action.runs.map((r) => {
+          const known = byId.get(r.id);
+          return known && runProgress(known) > runProgress(r) ? known : r;
+        }),
+        ...view.runs.filter((r) => !listed.has(r.id)),
+      ]);
+      const keep = runs.some((r) => r.id === view.selectedId);
+      return { runs, selectedId: keep ? view.selectedId : (runs[0]?.id ?? null) };
+    }
+    case "update": {
+      const { run } = action;
+      const old = view.runs.find((r) => r.id === run.id);
+      if (old && runProgress(old) > runProgress(run)) return view;
+      const runs = newestFirst([run, ...view.runs.filter((r) => r.id !== run.id)]);
+      // Run novo vai para a vista; atualização de outro run não tira o dono
+      // de onde ele está olhando.
+      const selectedId = old && view.selectedId ? view.selectedId : run.id;
+      return { runs, selectedId };
+    }
+    case "select":
+      return view.runs.some((r) => r.id === action.runId)
+        ? { ...view, selectedId: action.runId }
+        : view;
+  }
+}
+
+export const selectedRun = (view: RunView): Run | null =>
+  view.runs.find((r) => r.id === view.selectedId) ?? null;
+
+/** Número da execução na lista guardada: a mais antiga é #1. */
+export const runNumber = (view: RunView, runId: string): number => {
+  const i = view.runs.findIndex((r) => r.id === runId);
+  return i < 0 ? 0 : view.runs.length - i;
+};
+
+/** "3m10s", "42s", "1h02m". */
+export function formatDuration(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m${String(s % 60).padStart(2, "0")}s`;
+  return `${Math.floor(m / 60)}h${String(m % 60).padStart(2, "0")}m`;
+}
+
+/** Tempo do nó: até agora se roda, até o fim se acabou, nada se não começou. */
+export function nodeElapsed(n: NodeRun | undefined, now: number): number | null {
+  if (!n?.startedAt) return null;
+  return (n.finishedAt ?? (n.status === "running" ? now : n.startedAt)) - n.startedAt;
+}
+
+/** Chave de i18n e parâmetros: o texto sai da tela, a regra fica testável. */
+export interface Label {
+  key: string;
+  params?: Record<string, string | number>;
+}
+
+const baseOf = (path: string) => path.split(/[\\/]/).filter(Boolean).pop() ?? path;
+
+/**
+ * Segunda linha da etiqueta da ligação: em que pé está o valor que ela leva,
+ * a partir do estado do nó de origem na execução à vista.
+ */
+export function edgeDetail(kind: EdgeKind, source: NodeRun | undefined): Label | null {
+  if (!source) return null;
+  switch (source.status) {
+    case "waiting":
+      return { key: "maestroEdgeWaiting" };
+    case "running":
+      return { key: "maestroEdgeLive" };
+    case "failed":
+      return { key: "maestroEdgeSourceFailed" };
+    case "skipped":
+      return { key: "maestroEdgeSkipped" };
+    case "stopped":
+      return { key: "maestroEdgeStopped" };
+    case "done": {
+      const path = source.outputs[kind];
+      if (!path) return { key: "maestroEdgeEmpty" };
+      return kind === "file"
+        ? { key: "maestroEdgeReadyFile", params: { name: baseOf(path) } }
+        : { key: "maestroEdgeReady" };
+    }
+  }
+}
+
+/** O que a linha da execução e o nó dizem do estado. */
+export function nodeStatusLabel(
+  graph: Pick<Graph, "nodes" | "edges">,
+  run: Run,
+  nodeId: string,
+): Label | null {
+  const n = run.nodes[nodeId];
+  if (!n) return null;
+  if (n.status !== "waiting") return { key: `maestroStatus_${n.status}` };
+  if (run.status !== "running") return { key: "maestroStatus_waiting" };
+  const pending = graph.edges.find(
+    (e) => e.to === nodeId && run.nodes[e.from]?.status !== "done",
+  );
+  if (pending) {
+    const from = graph.nodes.find((x) => x.id === pending.from);
+    return {
+      key: "maestroWaitingFor",
+      params: { kind: pending.kind, node: from?.title ?? pending.from },
+    };
+  }
+  return { key: "maestroStatus_waiting" };
+}
+
+/**
+ * Passos da linha da execução: nós agrupados pela profundidade no grafo (o
+ * caminho mais longo desde um nó sem entrada). O mesmo grupo pode rodar junto.
+ */
+export function timelineSteps(graph: Pick<Graph, "nodes" | "edges">): string[][] {
+  const depth = new Map<string, number>();
+  const visit = (id: string, guard: Set<string>): number => {
+    const known = depth.get(id);
+    if (known !== undefined) return known;
+    if (guard.has(id)) return 0;
+    guard.add(id);
+    const d = Math.max(
+      0,
+      ...graph.edges.filter((e) => e.to === id).map((e) => visit(e.from, guard) + 1),
+    );
+    guard.delete(id);
+    depth.set(id, d);
+    return d;
+  };
+  const groups: string[][] = [];
+  for (const n of graph.nodes) {
+    // Nota é pronta na hora: não é passo da execução.
+    if (n.kind.type === "note") continue;
+    const d = visit(n.id, new Set());
+    (groups[d] ??= []).push(n.id);
+  }
+  return groups.filter((g) => g && g.length > 0);
+}
+
+/**
+ * Dois agentes que podem rodar ao mesmo tempo (nenhum depende do outro). Na
+ * mesma pasta, um vê no diff o que o outro mudou — a tela avisa.
+ */
+export function concurrentAgents(
+  graph: Pick<Graph, "nodes" | "edges">,
+): [MaestroNode, MaestroNode] | null {
+  const agents = graph.nodes.filter((n) => n.kind.type === "agent");
+  for (let i = 0; i < agents.length; i++) {
+    for (let j = i + 1; j < agents.length; j++) {
+      const [a, b] = [agents[i], agents[j]];
+      if (!reaches(graph.edges, a.id, b.id) && !reaches(graph.edges, b.id, a.id)) {
+        return [a, b];
+      }
+    }
+  }
+  return null;
 }

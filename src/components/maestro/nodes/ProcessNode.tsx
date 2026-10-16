@@ -5,15 +5,17 @@ import type { NodeProps } from "@xyflow/react";
 import { Select } from "@/components/ui/select";
 import { OUTPUT_KINDS, type NodeKind, type OutputKind } from "@/lib/maestro";
 import { NodeFrame, fieldClass, termClass, useMaestro, type MaestroFlowNode } from "./NodeFrame";
+import { NodeTerminal, nodeSession } from "./NodeTerminal";
 
 type ProcessKind = Extract<NodeKind, { type: "process" }>;
 
 /** Nó de processo: um comando na pasta do workspace e o tipo da saída. */
 export function ProcessNode({ id, data, selected }: NodeProps<MaestroFlowNode>) {
   const { t } = useTranslation();
-  const { updateNode } = useMaestro();
+  const { updateNode, run, live } = useMaestro();
   const node = data.node;
   const kind = node.kind as ProcessKind;
+  const session = nodeSession(kind, run?.nodes[id], live);
   const set = (patch: Partial<ProcessKind>) =>
     updateNode(id, (n) => ({ ...n, kind: { ...(n.kind as ProcessKind), ...patch } }));
 
@@ -49,21 +51,25 @@ export function ProcessNode({ id, data, selected }: NodeProps<MaestroFlowNode>) 
           />
         )}
       </div>
-      <div className="flex min-h-0 flex-1 bg-tyba-sunken">
-        <span className="select-none pt-2.5 pl-3.5 font-mono text-[11.5px] leading-[17px] text-tyba-green">
-          $
-        </span>
-        <textarea
-          aria-label={t("maestroCommand")}
-          placeholder={t("maestroCommand")}
-          spellCheck={false}
-          autoCorrect="off"
-          autoCapitalize="off"
-          value={kind.command}
-          onChange={(e) => set({ command: e.target.value })}
-          className={`${termClass} pl-2 text-tyba-text`}
-        />
-      </div>
+      {session ? (
+        <NodeTerminal sessionId={session} focused={selected} />
+      ) : (
+        <div className="flex min-h-0 flex-1 bg-tyba-sunken">
+          <span className="select-none pt-2.5 pl-3.5 font-mono text-[11.5px] leading-[17px] text-tyba-green">
+            $
+          </span>
+          <textarea
+            aria-label={t("maestroCommand")}
+            placeholder={t("maestroCommand")}
+            spellCheck={false}
+            autoCorrect="off"
+            autoCapitalize="off"
+            value={kind.command}
+            onChange={(e) => set({ command: e.target.value })}
+            className={`${termClass} pl-2 text-tyba-text`}
+          />
+        </div>
+      )}
     </NodeFrame>
   );
 }

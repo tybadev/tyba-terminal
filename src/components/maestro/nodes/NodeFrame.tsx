@@ -17,24 +17,48 @@ import {
   inHandle,
   kindOfOutHandle,
   outHandle,
+  formatDuration,
+  nodeElapsed,
+  nodeStatusLabel,
   produces,
   type EdgeKind,
   type FlowNodeData,
+  type Graph,
   type Integration,
   type MaestroNode,
+  type NodeRun,
+  type NodeStatus,
+  type Run,
 } from "@/lib/maestro";
 
 export type MaestroFlowNode = Node<FlowNodeData>;
 
-/** O que os nós precisam da tela: integrações salvas e como mudar o próprio nó. */
+/**
+ * O que os nós precisam da tela: integrações salvas, como mudar o próprio nó
+ * e a execução à vista (estado que veio do core, só desenhado aqui).
+ */
 export interface MaestroCtx {
   integrations: ReadonlyMap<string, Integration>;
   updateNode: (id: string, update: (node: MaestroNode) => MaestroNode) => void;
+  graph: Pick<Graph, "nodes" | "edges">;
+  run: Run | null;
+  /** O run à vista é o mais novo: os terminais vivos são dele. */
+  live: boolean;
+  now: number;
+  /** Zoom em 100%: terminal real no nó. Fora disso, prévia em texto. */
+  actualSize: boolean;
+  runNode: (nodeId: string) => void;
 }
 
 export const MaestroContext = createContext<MaestroCtx>({
   integrations: new Map(),
   updateNode: () => {},
+  graph: { nodes: [], edges: [] },
+  run: null,
+  live: false,
+  now: 0,
+  actualSize: true,
+  runNode: () => {},
 });
 
 export const useMaestro = () => useContext(MaestroContext);
@@ -47,6 +71,39 @@ export const EDGE_COLOR: Record<EdgeKind, string> = {
   log: "var(--tyba-cyan)",
   json: "var(--tyba-blue)",
 };
+
+/** Cor do texto e do ponto de cada estado (quadro: rodando verde, aguardando âmbar). */
+export const STATUS_TONE: Record<NodeStatus, { text: string; dot: string }> = {
+  waiting: { text: "text-tyba-amber", dot: "border-[1.5px] border-tyba-amber" },
+  running: { text: "text-tyba-green", dot: "bg-tyba-green animate-pulse" },
+  done: { text: "text-tyba-text-muted", dot: "bg-tyba-green" },
+  failed: { text: "text-tyba-red", dot: "bg-tyba-red" },
+  skipped: { text: "text-tyba-text-faint", dot: "border-[1.5px] border-tyba-text-faint" },
+  stopped: { text: "text-tyba-text-faint", dot: "bg-tyba-text-faint" },
+};
+
+/** Estado e tempo do nó na execução à vista. */
+export function NodeStatusBadge({ nodeId, nodeRun }: { nodeId: string; nodeRun: NodeRun }) {
+  const { t } = useTranslation();
+  const { graph, run, now } = useMaestro();
+  const label = run ? nodeStatusLabel(graph, run, nodeId) : null;
+  const elapsed = nodeElapsed(nodeRun, now);
+  const tone = STATUS_TONE[nodeRun.status];
+  return (
+    <span
+      className={`flex shrink-0 items-center gap-1.5 text-[11.5px] whitespace-nowrap ${tone.text}`}
+      title={nodeRun.reason ?? undefined}
+    >
+      {label &&
+        t(label.key, {
+          ...label.params,
+          ...(label.params?.kind ? { kind: t(`maestroEdge_${label.params.kind}`) } : {}),
+        })}
+      {elapsed !== null && <span className="text-tyba-text-faint">{formatDuration(elapsed)}</span>}
+      <i className={`size-[7px] shrink-0 rounded-full ${tone.dot}`} />
+    </span>
+  );
+}
 
 const handleStyle = (color: string, filled: boolean) => ({
   width: 11,
@@ -68,6 +125,7 @@ export function NodeFrame({
   mark,
   markClass,
   label,
+  extra,
   children,
 }: {
   id: string;
@@ -76,10 +134,13 @@ export function NodeFrame({
   mark: ReactNode;
   markClass: string;
   label: string;
+  /** Ação do nó no cabeçalho (o ▶ da integração manual). */
+  extra?: ReactNode;
   children: ReactNode;
 }) {
   const { t } = useTranslation();
-  const { integrations, updateNode } = useMaestro();
+  const { integrations, updateNode, run } = useMaestro();
+  const nodeRun = run?.nodes[id];
   const { deleteElements } = useReactFlow();
   const updateInternals = useUpdateNodeInternals();
 
@@ -138,9 +199,11 @@ export function NodeFrame({
           }}
           className="nodrag min-w-0 flex-1 bg-transparent text-[14.5px] font-medium text-tyba-text outline-none"
         />
-        <span className="shrink-0 truncate text-[11.5px] text-tyba-text-faint">
+        <span className="min-w-0 shrink truncate text-[11.5px] text-tyba-text-faint">
           {label}
         </span>
+        {nodeRun && <NodeStatusBadge nodeId={id} nodeRun={nodeRun} />}
+        {extra}
         <button
           type="button"
           aria-label={t("maestroDeleteNode")}
@@ -212,7 +275,7 @@ export function NodeFrame({
   );
 }
 
-/** Área de texto no estilo do terminal do nó (o terminal real chega no B7). */
+/** Área de texto no estilo do terminal do nó (o terminal real é o `NodeTerminal`). */
 export const termClass =
   "nodrag nowheel min-h-0 w-full flex-1 resize-none bg-tyba-sunken px-3.5 py-2.5 font-mono text-[11.5px] leading-[17px] text-tyba-text-muted outline-none placeholder:text-tyba-text-ghost";
 
