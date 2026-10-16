@@ -1378,13 +1378,12 @@ impl<H: RunHost> Runs<H> {
                 }
             })
         };
-        // O orquestrador segura o nó (e o run) até a sessão sair.
-        let on_exit = orchestrate.then(|| {
-            Box::new(move || {
-                if let Some(runs) = me.upgrade() {
-                    runs.orchestrator_exited(&run, &node);
-                }
-            }) as Box<dyn FnOnce() + Send>
+        // Toda sessão de agente avisa a saída: o orquestrador segura o nó (e o
+        // run) até ela; a de qualquer agente sai de `live_agents`.
+        let on_exit: Box<dyn FnOnce() + Send> = Box::new(move || {
+            if let Some(runs) = me.upgrade() {
+                runs.agent_exited(&run, &node, orchestrate);
+            }
         });
         let tools = orchestrate.then(|| self.tool_handler(run_id, &start.node.id));
         let launch = AgentLaunch {
@@ -1396,7 +1395,7 @@ impl<H: RunHost> Runs<H> {
             out_dir: start.out_dir.clone(),
             tools,
         };
-        match self.host.spawn_agent(launch, on_turn, on_exit) {
+        match self.host.spawn_agent(launch, on_turn, Some(on_exit)) {
             Ok(session) => Launched::Session(session),
             Err(e) => Launched::Finished(Outcome::failed(format!("subir o agente: {e}"))),
         }
@@ -1700,6 +1699,26 @@ impl<H: RunHost> Runs<H> {
 
     /// A sessão do orquestrador saiu depois do primeiro turno: o nó fica
     /// pronto (com as saídas do turno) e o run fecha se nada mais roda.
+    /// A sessão de agente saiu depois do primeiro turno. Run ativo: o
+    /// orquestrador fecha o nó, e o retrato novo leva `live_agents` sem ela.
+    /// Run já fechado: o retrato guardado é republicado só por isso.
+    fn agent_exited(&self, run_id: &str, node_id: &str, orchestrate: bool) {
+        {
+            let active = self.active.lock();
+            if !active.contains_key(run_id) {
+                if let Some(run) = self.stored_closed(run_id) {
+                    self.publish(run);
+                }
+                return;
+            }
+        }
+        if orchestrate {
+            self.orchestrator_exited(run_id, node_id);
+        } else {
+            self.publish_current(run_id);
+        }
+    }
+
     fn orchestrator_exited(&self, run_id: &str, node_id: &str) {
         {
             let mut active = self.active.lock();
@@ -2397,7 +2416,7 @@ mod tests {
         ports: Mutex<Vec<u16>>,
         /// O que o `resolve_service` devolve.
         service: Mutex<Result<ServiceReady, String>>,
-        /// O `on_exit` de cada sessão de agente que o pediu (orquestrador).
+        /// O `on_exit` de cada sessão de agente.
         exits: Mutex<HashMap<String, Box<dyn FnOnce() + Send>>>,
         /// Sessões de agente que saíram sozinhas.
         gone: Mutex<Vec<String>>,
@@ -3362,9 +3381,19 @@ mod tests {
         assert_eq!(r.status, RunStatus::Done, "{r:?}");
         assert_eq!(r.nodes["a"].status, NodeStatus::Done);
         assert!(!r.nodes["a"].orchestrating);
-        // Sessão viva depois do turno, como antes; sem aviso de saída.
-        assert_eq!(r.live_agents, vec![host.spawned.lock()[0].clone()]);
-        assert!(host.exits.lock().is_empty());
+        // Sessão viva depois do turno, como antes.
+        let session = host.spawned.lock()[0].clone();
+        assert_eq!(r.live_agents, vec![session.clone()]);
+
+        // A sessão sai com o run já fechado: o retrato é republicado sem ela
+        // (a tela esconde o terminal) e o banco também fica sabendo.
+        host.exit_agent(&session);
+        let last = host.runs.lock().last().cloned().unwrap();
+        assert_eq!(last.id, run.id);
+        assert_eq!(last.status, RunStatus::Done);
+        assert!(last.live_agents.is_empty(), "{last:?}");
+        let stored = runs.store.get_maestro_run(&run.id).unwrap().unwrap();
+        assert!(stored.live_agents.is_empty(), "{stored:?}");
     }
 
     /// As ferramentas que o run entregou à sessão do orquestrador.
