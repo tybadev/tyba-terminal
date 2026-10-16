@@ -321,6 +321,12 @@ pub fn claude_config(exe: &Path, socket: &Path) -> Value {
 /// e, separada, comeria o prompt posicional que vem depois. Codex: as
 /// `--config mcp_servers.maestro.*` (medido no codex-cli 0.144.1 com `codex
 /// mcp get`).
+///
+/// Os dois recebem a [`ORCHESTRATOR_PROMPT`]: o Claude por
+/// `--append-system-prompt`, o Codex por `--config developer_instructions`
+/// (medido no codex-cli 0.144.1: `codex debug -c developer_instructions=…
+/// prompt-input` põe o texto na mensagem `developer`; chave desconhecida não
+/// aparece). Sem ela o Codex subia os serviços no próprio shell.
 pub fn agent_args(
     runner: &crate::session::AgentRunnerKind,
     exe: &Path,
@@ -341,6 +347,11 @@ pub fn agent_args(
                     "{key}.env={{TYBA_HOOK_SOCKET={}}}",
                     toml_string(&socket.to_string_lossy())
                 ),
+                "--config".into(),
+                format!(
+                    "developer_instructions={}",
+                    toml_string(ORCHESTRATOR_PROMPT)
+                ),
             ]
         }
         _ => vec![
@@ -350,7 +361,8 @@ pub fn agent_args(
     }
 }
 
-/// A orientação do orquestrador, anexada ao system prompt do Claude.
+/// A orientação do orquestrador, anexada ao system prompt do Claude e às
+/// instruções de desenvolvedor do Codex.
 ///
 /// Sem ela o agente fazia o que faria num terminal qualquer: subia os
 /// serviços dentro da própria sessão e abria o Chrome pela extensão — nada
@@ -617,8 +629,18 @@ mod tests {
         );
 
         let codex = agent_args(&crate::session::AgentRunnerKind::Codex, exe, socket, cfg);
-        assert_eq!(codex.len(), 6);
-        let doc: String = codex
+        assert_eq!(codex.len(), 8);
+        assert!(
+            codex.chunks(2).all(|pair| pair[0] == "--config"),
+            "{codex:?}"
+        );
+        // A orientação, em TOML que o Codex lê de volta inteira.
+        let instructions: toml::Value = toml::from_str(&codex[7]).unwrap();
+        assert_eq!(
+            instructions["developer_instructions"].as_str(),
+            Some(ORCHESTRATOR_PROMPT)
+        );
+        let doc: String = codex[..6]
             .iter()
             .filter(|a| *a != "--config")
             .map(|a| a.replacen("mcp_servers.maestro.", "", 1))
