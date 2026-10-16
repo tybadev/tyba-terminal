@@ -1,6 +1,6 @@
 //! Navegador e Serviço: a URL local e o serviço que já roda.
 //!
-//! O canvas não vira navegador da internet: toda URL que o Maestro aceita
+//! O canvas não vira navegador da internet: toda URL que o Orbit aceita
 //! (a digitada no nó, a que chega por ligação, a montada de porta ou túnel)
 //! passa por [`is_local_url`] — no salvar e na execução. O front repete a
 //! regra para avisar, mas quem decide é aqui.
@@ -157,16 +157,16 @@ pub struct ServiceReady {
     pub log: Option<String>,
 }
 
-/// Seguidores de `docker logs -f` do Maestro. Separados dos da aba de logs:
+/// Seguidores de `docker logs -f` do Orbit. Separados dos da aba de logs:
 /// aqueles o layout poda a cada mudança (`LogsManager::retain`), e o nó do
 /// serviço não é aba. Estes vivem enquanto o canvas mostra o nó (o front chama
-/// `maestro_service_logs_retain`) e morrem na saída do app.
+/// `orbit_service_logs_retain`) e morrem na saída do app.
 #[derive(Default, Clone)]
 pub struct ServiceLogs(pub std::sync::Arc<crate::docker::logs::LogsManager>);
 
 /// Evento das linhas novas do contêiner no nó do serviço.
 pub fn logs_event(container_id: &str) -> String {
-    format!("maestro-logs://{container_id}")
+    format!("orbit-logs://{container_id}")
 }
 
 /// Liga (ou reaproveita) o seguidor do contêiner: o mesmo caminho do
@@ -247,10 +247,7 @@ pub fn resolve(app: &tauri::AppHandle, source: &ServiceSource) -> Result<Service
                     None => l.text.clone(),
                 })
                 .collect();
-            eprintln!(
-                "[maestro] serviço de contêiner pronto: {} linhas",
-                text.len()
-            );
+            eprintln!("[orbit] serviço de contêiner pronto: {} linhas", text.len());
             Ok(ServiceReady {
                 url: container_url(&detail.ports),
                 log: Some(crate::docker::logs::export_text(&text)),

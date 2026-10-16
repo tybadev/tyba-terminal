@@ -150,11 +150,11 @@ struct HandlerCtx {
     /// `PreToolUse` nunca vira card nem espera ninguém — ver
     /// [`session_route`].
     observe_only: bool,
-    /// Agente de nó do Maestro: onde o fim do turno fica para ele ler.
+    /// Agente de nó do Orbit: onde o fim do turno fica para ele ler.
     turn_tail: Option<SharedTurnTail>,
-    /// Nó do Maestro com orquestrar ligado: quem atende o `MaestroTool` que o
-    /// `tyba _maestro-mcp` da sessão manda. `None` em toda outra sessão.
-    maestro_tools: Option<crate::maestro::orchestrator::ToolHandler>,
+    /// Nó do Orbit com orquestrar ligado: quem atende o `OrbitTool` que o
+    /// `tyba _orbit-mcp` da sessão manda. `None` em toda outra sessão.
+    orbit_tools: Option<crate::orbit::orchestrator::ToolHandler>,
 }
 
 fn main_window_focused(app: &AppHandle) -> bool {
@@ -923,13 +923,13 @@ fn record_inferred_notification(
     }
 }
 
-/// Ferramenta do Maestro pedida pelo `tyba _maestro-mcp` da sessão. Não é
+/// Ferramenta do Orbit pedida pelo `tyba _orbit-mcp` da sessão. Não é
 /// hook do agente: não passa pelo registro de eventos nem pelo gate. Só a
 /// sessão de nó com orquestrar ligado tem quem atenda.
-fn on_maestro_tool(ctx: &HandlerCtx, event: &HookEvent) -> HookAction {
-    let Some(tools) = &ctx.maestro_tools else {
+fn on_orbit_tool(ctx: &HandlerCtx, event: &HookEvent) -> HookAction {
+    let Some(tools) = &ctx.orbit_tools else {
         return HookAction::Deny {
-            reason: "as ferramentas do Maestro só existem na sessão de um nó com orquestrar ligado"
+            reason: "as ferramentas do Orbit só existem na sessão de um nó com orquestrar ligado"
                 .into(),
         };
     };
@@ -950,8 +950,8 @@ fn on_maestro_tool(ctx: &HandlerCtx, event: &HookEvent) -> HookAction {
 }
 
 fn handle_event(ctx: &HandlerCtx, event: HookEvent) -> HookAction {
-    if event.hook_event_name == crate::maestro::mcp::TOOL_EVENT {
-        return on_maestro_tool(ctx, &event);
+    if event.hook_event_name == crate::orbit::mcp::TOOL_EVENT {
+        return on_orbit_tool(ctx, &event);
     }
     capture_conversation_id(ctx, &event);
     if let Some(tail) = &ctx.turn_tail {
@@ -1606,7 +1606,7 @@ pub fn prepare_hosted_agent(
         seen_transcript: Arc::new(Mutex::new(None)),
         observe_only: true,
         turn_tail: None,
-        maestro_tools: None,
+        orbit_tools: None,
     };
     // Review round 1, achado BLOQUEANTE: derruba o HookServer ANTIGO desta
     // sessão ANTES de religar em `socket_path` — nunca depois. `runtime_dir(id)`
@@ -1638,7 +1638,7 @@ pub fn prepare_hosted_agent(
     Ok(runtime.join(LAUNCH_PLAN_FILE))
 }
 
-/// O que o Maestro pede para subir o agente de um nó.
+/// O que o Orbit pede para subir o agente de um nó.
 pub struct FreeAgentSpec {
     pub runner: AgentRunnerKind,
     /// A pasta do workspace. Sem worktree.
@@ -1650,13 +1650,13 @@ pub struct FreeAgentSpec {
     pub extra_env: Vec<(String, String)>,
     pub cols: u16,
     pub rows: u16,
-    /// Nó com orquestrar ligado: a sessão ganha o servidor MCP do Maestro
-    /// (`tyba _maestro-mcp`) e o socket dela atende as ferramentas.
-    pub maestro_tools: Option<crate::maestro::orchestrator::ToolHandler>,
+    /// Nó com orquestrar ligado: a sessão ganha o servidor MCP do Orbit
+    /// (`tyba _orbit-mcp`) e o socket dela atende as ferramentas.
+    pub orbit_tools: Option<crate::orbit::orchestrator::ToolHandler>,
 }
 
 /// O fim de turno como o hook do fio principal o viu. O status da sessão
-/// guarda só um resumo curto; o Maestro precisa da fala inteira.
+/// guarda só um resumo curto; o Orbit precisa da fala inteira.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct TurnTail {
     pub transcript_path: Option<PathBuf>,
@@ -1743,7 +1743,7 @@ fn free_agent_env(
     env
 }
 
-/// O argv/env do agente livre do Maestro, sem `AppHandle` (testável): hooks
+/// O argv/env do agente livre do Orbit, sem `AppHandle` (testável): hooks
 /// de observação, prompt como argumento, `Sandbox` passthrough.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[allow(clippy::too_many_arguments)]
@@ -1764,7 +1764,7 @@ fn build_free_command(
         .map(|top| crate::repo::canonicalize_or(&top))
         .unwrap_or_else(|| cwd.to_path_buf());
     let mut cmd = runner.build_command(cwd, env, hook_setup, None, None);
-    // O servidor MCP do Maestro (só no orquestrador) antes do prompt.
+    // O servidor MCP do Orbit (só no orquestrador) antes do prompt.
     for arg in mcp_args {
         cmd.arg(arg);
     }
@@ -1782,14 +1782,14 @@ fn build_free_command(
     })
 }
 
-/// Agente de um nó do Maestro: **livre e observado**, igual ao claude
+/// Agente de um nó do Orbit: **livre e observado**, igual ao claude
 /// digitado ([`prepare_hosted_agent`]) — sem jaula, env do usuário, hooks de
 /// observação com o guarda-corpo do `PreToolUse` (`tyba _hook --observe`),
 /// subagentes registrados —, mas subido direto pelo core, na pasta do
 /// workspace, sem worktree. Claude e Codex (o Codex pelas `--config` de
 /// [`crate::agent::codex_hooks`], com o mesmo hook observador).
 ///
-/// Devolve também o [`SharedTurnTail`], de onde o Maestro lê a fala final.
+/// Devolve também o [`SharedTurnTail`], de onde o Orbit lê a fala final.
 /// No `on_exit` o próprio spawn desfaz o que montou (servidor de hooks,
 /// subagentes, prompt nativo pendente) antes de chamar o do chamador.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -1825,14 +1825,14 @@ pub fn spawn_free_agent(
     };
     // Orquestrador: o servidor MCP é este binário, falando pelo socket desta
     // sessão. O `--mcp-config` do Claude vai num arquivo 0600 no runtime dir.
-    let mcp_args = match &spec.maestro_tools {
+    let mcp_args = match &spec.orbit_tools {
         Some(_) => {
-            use crate::maestro::mcp;
+            use crate::orbit::mcp;
             if matches!(runner.kind(), AgentRunnerKind::ClaudeCode) {
                 let body = serde_json::to_string_pretty(&mcp::claude_config(&exe, &socket_path))
-                    .map_err(|e| format!("config do MCP do Maestro: {e}"))?;
+                    .map_err(|e| format!("config do MCP do Orbit: {e}"))?;
                 crate::session::write_private(&runtime, mcp::CLAUDE_CONFIG_FILE, &body)
-                    .map_err(|e| format!("escrita da config do MCP do Maestro: {e}"))?;
+                    .map_err(|e| format!("escrita da config do MCP do Orbit: {e}"))?;
             }
             mcp::agent_args(
                 &runner.kind(),
@@ -1877,7 +1877,7 @@ pub fn spawn_free_agent(
         seen_transcript: Arc::new(Mutex::new(None)),
         observe_only,
         turn_tail: Some(tail.clone()),
-        maestro_tools: spec.maestro_tools.clone(),
+        orbit_tools: spec.orbit_tools.clone(),
     };
     let server = HookServer::bind(
         &socket_path,
@@ -1916,8 +1916,8 @@ pub fn spawn_free_agent(
             spec.cols,
             spec.rows,
             false,
-            // O agente livre é sempre de um nó do Maestro: nunca vai ao banco.
-            crate::session::SessionOwner::Maestro,
+            // O agente livre é sempre de um nó do Orbit: nunca vai ao banco.
+            crate::session::SessionOwner::Orbit,
             teardown,
         )
         .map_err(|e| {
@@ -2324,7 +2324,7 @@ fn spawn_prepared(
         seen_transcript: Arc::new(Mutex::new(None)),
         observe_only: false,
         turn_tail: None,
-        maestro_tools: None,
+        orbit_tools: None,
     };
     let server = HookServer::bind(
         &socket_path,
@@ -2692,10 +2692,10 @@ mod build_hosted_command_tests {
             .collect()
     }
 
-    /// O nó do Maestro sobe como o claude digitado: o hook só observa, e
+    /// O nó do Orbit sobe como o claude digitado: o hook só observa, e
     /// nenhum evento (nem o `PermissionRequest` do Codex) cai no gate.
     #[test]
-    fn maestro_agent_is_observe_only_and_never_reaches_the_gate() {
+    fn orbit_agent_is_observe_only_and_never_reaches_the_gate() {
         let cwd = tempfile::tempdir().unwrap();
         let runtime = tempfile::tempdir().unwrap();
         for runner in [
@@ -2732,21 +2732,21 @@ mod build_hosted_command_tests {
         );
     }
 
-    /// Orquestrador: o servidor MCP do Maestro entra antes do prompt, e o
+    /// Orquestrador: o servidor MCP do Orbit entra antes do prompt, e o
     /// `--mcp-config=<arquivo>` numa peça só (separado, a opção variádica do
     /// Claude comeria o prompt).
     #[test]
-    fn orchestrator_gets_the_maestro_mcp_before_the_prompt() {
+    fn orchestrator_gets_the_orbit_mcp_before_the_prompt() {
         let cwd = tempfile::tempdir().unwrap();
         let runtime = tempfile::tempdir().unwrap();
         let exe = std::env::current_exe().unwrap();
         let socket = runtime.path().join(HOOK_SOCKET_FILE);
-        let config = runtime.path().join(crate::maestro::mcp::CLAUDE_CONFIG_FILE);
+        let config = runtime.path().join(crate::orbit::mcp::CLAUDE_CONFIG_FILE);
         for runner in [
             &ClaudeCodeRunner as &dyn AgentRunner,
             &CodexRunner as &dyn AgentRunner,
         ] {
-            let mcp = crate::maestro::mcp::agent_args(&runner.kind(), &exe, &socket, &config);
+            let mcp = crate::orbit::mcp::agent_args(&runner.kind(), &exe, &socket, &config);
             let env = HashMap::from([("PATH".to_string(), "/usr/bin".to_string())]);
             let built = build_free_command(
                 runner,
@@ -2765,7 +2765,7 @@ mod build_hosted_command_tests {
             let before_prompt = &argv[..argv.len() - 1];
             assert!(before_prompt.ends_with(&mcp), "{argv:?}");
         }
-        // Sem orquestrar, nada de MCP do Maestro.
+        // Sem orquestrar, nada de MCP do Orbit.
         let plain = argv(&free(&ClaudeCodeRunner, cwd.path(), runtime.path(), "x").cmd);
         assert!(!plain.iter().any(|a| a.contains("mcp")), "{plain:?}");
     }

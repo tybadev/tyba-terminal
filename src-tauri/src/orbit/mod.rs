@@ -1,4 +1,4 @@
-//! Maestro: o Workspace como harness de agentes.
+//! Orbit: o Workspace como harness de agentes.
 //!
 //! Um grafo de nós (agente, processo, nota, integração) ligados por ligações
 //! tipadas. Cada nó executável (agente, processo, integração) roda na própria
@@ -82,8 +82,8 @@ pub enum NodeKind {
         /// Pasta onde o agente roda. Vazio: `Graph::dir`.
         #[serde(default)]
         dir: String,
-        /// Orquestrador: a sessão recebe as ferramentas do Maestro (servidor
-        /// MCP `tyba _maestro-mcp`) e cria nós no run em vez de rodar tudo
+        /// Orquestrador: a sessão recebe as ferramentas do Orbit (servidor
+        /// MCP `tyba _orbit-mcp`) e cria nós no run em vez de rodar tudo
         /// dentro dela. Ver [`orchestrator`].
         #[serde(default)]
         orchestrate: bool,
@@ -245,7 +245,7 @@ pub struct Stored<T> {
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
-pub enum MaestroError {
+pub enum OrbitError {
     #[error("grafo sem id")]
     EmptyGraphId,
     #[error("grafo com {0} nós passa do teto de {MAX_NODES}")]
@@ -299,9 +299,9 @@ pub(crate) fn has_control_chars(text: &str) -> bool {
         .any(|c| c != '\n' && c != '\t' && c.is_control())
 }
 
-fn check_text(what: impl FnOnce() -> String, text: &str) -> Result<(), MaestroError> {
+fn check_text(what: impl FnOnce() -> String, text: &str) -> Result<(), OrbitError> {
     if has_control_chars(text) {
-        return Err(MaestroError::ControlChars(what()));
+        return Err(OrbitError::ControlChars(what()));
     }
     Ok(())
 }
@@ -309,27 +309,27 @@ fn check_text(what: impl FnOnce() -> String, text: &str) -> Result<(), MaestroEr
 /// O `file` de saída é lido de `dir.join(file)`: absoluto ou com `..` lê
 /// fora da pasta do nó. Barra e contrabarra contam como separador nos
 /// dois sistemas, e `C:` também é raiz.
-fn check_file(what: impl FnOnce() -> String, file: Option<&str>) -> Result<(), MaestroError> {
+fn check_file(what: impl FnOnce() -> String, file: Option<&str>) -> Result<(), OrbitError> {
     let Some(file) = file else { return Ok(()) };
     let bytes = file.as_bytes();
     let rooted = file.starts_with(['/', '\\'])
         || std::path::Path::new(file).is_absolute()
         || (bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':');
     if rooted || file.split(['/', '\\']).any(|part| part == "..") {
-        return Err(MaestroError::FileOutsideDir(what()));
+        return Err(OrbitError::FileOutsideDir(what()));
     }
     check_text(what, file)
 }
 
-pub fn validate_integration(integration: &Integration) -> Result<(), MaestroError> {
+pub fn validate_integration(integration: &Integration) -> Result<(), OrbitError> {
     if integration.id.trim().is_empty() {
-        return Err(MaestroError::EmptyIntegrationId);
+        return Err(OrbitError::EmptyIntegrationId);
     }
     if integration.name.trim().is_empty() {
-        return Err(MaestroError::EmptyIntegrationName);
+        return Err(OrbitError::EmptyIntegrationName);
     }
     if integration.script.len() > MAX_SCRIPT_BYTES {
-        return Err(MaestroError::ScriptTooLarge(integration.id.clone()));
+        return Err(OrbitError::ScriptTooLarge(integration.id.clone()));
     }
     check_text(
         || format!("script da integração {}", integration.id),
@@ -381,7 +381,7 @@ fn accepts(kind: &NodeKind, integrations: &HashMap<&str, &Integration>) -> Vec<E
 /// Barreira do core antes de gravar ou rodar um grafo: a estrutura
 /// ([`validate_structure`]) e a pasta de cada nó executável — não vazia e
 /// absoluta (a do nó ou, sem ela, a padrão do grafo).
-pub fn validate_graph(graph: &Graph, integrations: &[Integration]) -> Result<(), MaestroError> {
+pub fn validate_graph(graph: &Graph, integrations: &[Integration]) -> Result<(), OrbitError> {
     validate_structure(graph, integrations)?;
     for node in &graph.nodes {
         if node.kind.dir().is_none() {
@@ -389,7 +389,7 @@ pub fn validate_graph(graph: &Graph, integrations: &[Integration]) -> Result<(),
         }
         let dir = graph.node_dir(node);
         if dir.trim().is_empty() || !std::path::Path::new(dir).is_absolute() {
-            return Err(MaestroError::NodeDir(node.id.clone()));
+            return Err(OrbitError::NodeDir(node.id.clone()));
         }
     }
     Ok(())
@@ -399,12 +399,12 @@ pub fn validate_graph(graph: &Graph, integrations: &[Integration]) -> Result<(),
 /// DAG e texto (inclusive as pastas) sem caractere de controle. Não olha se a
 /// pasta existe nem se é absoluta: o arquivo importado traz a pasta de outra
 /// máquina, e a importação pede a pasta antes de gravar.
-pub fn validate_structure(graph: &Graph, integrations: &[Integration]) -> Result<(), MaestroError> {
+pub fn validate_structure(graph: &Graph, integrations: &[Integration]) -> Result<(), OrbitError> {
     if graph.id.trim().is_empty() {
-        return Err(MaestroError::EmptyGraphId);
+        return Err(OrbitError::EmptyGraphId);
     }
     if graph.nodes.len() > MAX_NODES {
-        return Err(MaestroError::TooManyNodes(graph.nodes.len()));
+        return Err(OrbitError::TooManyNodes(graph.nodes.len()));
     }
     // Variável é substituída dentro de comando, script e prompt: o valor
     // passaria por fora da checagem do texto se não fosse checado aqui.
@@ -420,10 +420,10 @@ pub fn validate_structure(graph: &Graph, integrations: &[Integration]) -> Result
     let mut nodes: HashMap<&str, &Node> = HashMap::new();
     for node in &graph.nodes {
         if node.id.trim().is_empty() {
-            return Err(MaestroError::EmptyNodeId);
+            return Err(OrbitError::EmptyNodeId);
         }
         if nodes.insert(node.id.as_str(), node).is_some() {
-            return Err(MaestroError::DuplicateNode(node.id.clone()));
+            return Err(OrbitError::DuplicateNode(node.id.clone()));
         }
         let what = || format!("nó {}", node.id);
         if let Some(dir) = node.kind.dir() {
@@ -438,7 +438,7 @@ pub fn validate_structure(graph: &Graph, integrations: &[Integration]) -> Result
             NodeKind::Note { markdown } => check_text(what, markdown)?,
             NodeKind::Integration { integration_id, .. } => {
                 let integration = by_id.get(integration_id.as_str()).ok_or_else(|| {
-                    MaestroError::UnknownIntegration {
+                    OrbitError::UnknownIntegration {
                         node: node.id.clone(),
                         integration: integration_id.clone(),
                     }
@@ -448,7 +448,7 @@ pub fn validate_structure(graph: &Graph, integrations: &[Integration]) -> Result
             NodeKind::Browser { url } => {
                 check_text(what, url)?;
                 if !url.is_empty() && !service::is_local_url(url) {
-                    return Err(MaestroError::NotLocalUrl(node.id.clone()));
+                    return Err(OrbitError::NotLocalUrl(node.id.clone()));
                 }
             }
             NodeKind::Service { source } => check_source(&node.id, source)?,
@@ -458,13 +458,13 @@ pub fn validate_structure(graph: &Graph, integrations: &[Integration]) -> Result
     let mut edge_ids: HashSet<&str> = HashSet::new();
     for edge in &graph.edges {
         if !edge_ids.insert(edge.id.as_str()) {
-            return Err(MaestroError::DuplicateEdge(edge.id.clone()));
+            return Err(OrbitError::DuplicateEdge(edge.id.clone()));
         }
         let lookup = |id: &str| {
             nodes
                 .get(id)
                 .copied()
-                .ok_or_else(|| MaestroError::UnknownNode {
+                .ok_or_else(|| OrbitError::UnknownNode {
                     edge: edge.id.clone(),
                     node: id.to_string(),
                 })
@@ -472,14 +472,14 @@ pub fn validate_structure(graph: &Graph, integrations: &[Integration]) -> Result
         let from = lookup(&edge.from)?;
         let to = lookup(&edge.to)?;
         if !produces(&from.kind, &by_id).contains(&edge.kind) {
-            return Err(MaestroError::NotProduced {
+            return Err(OrbitError::NotProduced {
                 edge: edge.id.clone(),
                 node: from.id.clone(),
                 kind: edge.kind,
             });
         }
         if !accepts(&to.kind, &by_id).contains(&edge.kind) {
-            return Err(MaestroError::NotAccepted {
+            return Err(OrbitError::NotAccepted {
                 edge: edge.id.clone(),
                 node: to.id.clone(),
                 kind: edge.kind,
@@ -493,13 +493,13 @@ pub fn validate_structure(graph: &Graph, integrations: &[Integration]) -> Result
 /// Fonte do serviço: texto sem controle e id de contêiner na forma do docker.
 /// Fonte incompleta (porta 0, contêiner vazio) grava: o nó acabou de nascer e
 /// o dono ainda escolhe; a execução falha com o motivo.
-fn check_source(node: &str, source: &ServiceSource) -> Result<(), MaestroError> {
+fn check_source(node: &str, source: &ServiceSource) -> Result<(), OrbitError> {
     let what = || format!("nó {node}");
     match source {
         ServiceSource::Container { container_id, name } => {
             check_text(what, name)?;
             if !container_id.is_empty() && !crate::docker::is_valid_container_id(container_id) {
-                return Err(MaestroError::InvalidContainer(node.to_string()));
+                return Err(OrbitError::InvalidContainer(node.to_string()));
             }
         }
         ServiceSource::Port { session_id, .. } => {
@@ -518,7 +518,7 @@ fn check_source(node: &str, source: &ServiceSource) -> Result<(), MaestroError> 
 
 /// Kahn: o que sobra com grau de entrada > 0 depois de esvaziar a fila está
 /// num ciclo. Aponta uma ligação entre dois nós que sobraram.
-fn check_acyclic(graph: &Graph) -> Result<(), MaestroError> {
+fn check_acyclic(graph: &Graph) -> Result<(), OrbitError> {
     let mut indegree: HashMap<&str, usize> =
         graph.nodes.iter().map(|n| (n.id.as_str(), 0)).collect();
     for edge in &graph.edges {
@@ -540,7 +540,7 @@ fn check_acyclic(graph: &Graph) -> Result<(), MaestroError> {
     }
     let stuck = |id: &str| indegree.get(id).is_some_and(|d| *d > 0);
     match graph.edges.iter().find(|e| stuck(&e.from) && stuck(&e.to)) {
-        Some(edge) => Err(MaestroError::Cycle(edge.id.clone())),
+        Some(edge) => Err(OrbitError::Cycle(edge.id.clone())),
         None => Ok(()),
     }
 }
@@ -646,10 +646,7 @@ mod tests {
                 edge("e3", "c", "a", EdgeKind::Context),
             ],
         );
-        assert!(matches!(
-            validate_graph(&g, &[]),
-            Err(MaestroError::Cycle(_))
-        ));
+        assert!(matches!(validate_graph(&g, &[]), Err(OrbitError::Cycle(_))));
     }
 
     #[test]
@@ -658,10 +655,7 @@ mod tests {
             vec![agent("a")],
             vec![edge("e1", "a", "a", EdgeKind::Context)],
         );
-        assert_eq!(
-            validate_graph(&g, &[]),
-            Err(MaestroError::Cycle("e1".into()))
-        );
+        assert_eq!(validate_graph(&g, &[]), Err(OrbitError::Cycle("e1".into())));
     }
 
     #[test]
@@ -672,7 +666,7 @@ mod tests {
         );
         assert!(matches!(
             validate_graph(&g, &[]),
-            Err(MaestroError::NotAccepted { .. })
+            Err(OrbitError::NotAccepted { .. })
         ));
     }
 
@@ -685,7 +679,7 @@ mod tests {
         );
         assert!(matches!(
             validate_graph(&g, &[]),
-            Err(MaestroError::NotProduced { .. })
+            Err(OrbitError::NotProduced { .. })
         ));
     }
 
@@ -716,7 +710,7 @@ mod tests {
         );
         assert!(matches!(
             validate_graph(&bad, &integrations),
-            Err(MaestroError::NotAccepted { .. })
+            Err(OrbitError::NotAccepted { .. })
         ));
     }
 
@@ -734,7 +728,7 @@ mod tests {
         );
         assert_eq!(
             validate_graph(&g, &[integration("i-1", Trigger::Manual)]),
-            Err(MaestroError::UnknownIntegration {
+            Err(OrbitError::UnknownIntegration {
                 node: "i".into(),
                 integration: "nao-existe".into(),
             })
@@ -746,7 +740,7 @@ mod tests {
         let g = graph(vec![agent("a"), agent("a")], vec![]);
         assert_eq!(
             validate_graph(&g, &[]),
-            Err(MaestroError::DuplicateNode("a".into()))
+            Err(OrbitError::DuplicateNode("a".into()))
         );
         let g = graph(
             vec![agent("a"), agent("b"), agent("c")],
@@ -757,7 +751,7 @@ mod tests {
         );
         assert_eq!(
             validate_graph(&g, &[]),
-            Err(MaestroError::DuplicateEdge("e".into()))
+            Err(OrbitError::DuplicateEdge("e".into()))
         );
     }
 
@@ -769,7 +763,7 @@ mod tests {
         );
         assert!(matches!(
             validate_graph(&g, &[]),
-            Err(MaestroError::UnknownNode { .. })
+            Err(OrbitError::UnknownNode { .. })
         ));
     }
 
@@ -778,7 +772,7 @@ mod tests {
         let nodes = (0..=MAX_NODES).map(|i| note(&format!("n{i}"))).collect();
         assert_eq!(
             validate_graph(&graph(nodes, vec![]), &[]),
-            Err(MaestroError::TooManyNodes(MAX_NODES + 1))
+            Err(OrbitError::TooManyNodes(MAX_NODES + 1))
         );
     }
 
@@ -793,7 +787,7 @@ mod tests {
         };
         assert!(matches!(
             validate_graph(&graph(vec![p], vec![]), &[]),
-            Err(MaestroError::ControlChars(_))
+            Err(OrbitError::ControlChars(_))
         ));
 
         let mut a = agent("a");
@@ -806,14 +800,14 @@ mod tests {
         };
         assert!(matches!(
             validate_graph(&graph(vec![a], vec![]), &[]),
-            Err(MaestroError::ControlChars(_))
+            Err(OrbitError::ControlChars(_))
         ));
 
         let mut g = graph(vec![], vec![]);
         g.variables.insert("alvo".into(), "main\r".into());
         assert!(matches!(
             validate_graph(&g, &[]),
-            Err(MaestroError::ControlChars(_))
+            Err(OrbitError::ControlChars(_))
         ));
 
         // `\n` e `\t` seguem permitidos, como no snippet.
@@ -830,12 +824,12 @@ mod tests {
         i.script = "echo oi\u{7}".into();
         assert!(matches!(
             validate_integration(&i),
-            Err(MaestroError::ControlChars(_))
+            Err(OrbitError::ControlChars(_))
         ));
         i.script = "#".repeat(MAX_SCRIPT_BYTES + 1);
         assert_eq!(
             validate_integration(&i),
-            Err(MaestroError::ScriptTooLarge("i-1".into()))
+            Err(OrbitError::ScriptTooLarge("i-1".into()))
         );
     }
 
@@ -870,7 +864,7 @@ mod tests {
         ] {
             assert_eq!(
                 validate_graph(&with_file(bad), &[]),
-                Err(MaestroError::FileOutsideDir("nó p".into())),
+                Err(OrbitError::FileOutsideDir("nó p".into())),
                 "{bad}"
             );
         }
@@ -879,7 +873,7 @@ mod tests {
         i.file = Some("../../.ssh/id_ed25519".into());
         assert_eq!(
             validate_integration(&i),
-            Err(MaestroError::FileOutsideDir("integração i-1".into()))
+            Err(OrbitError::FileOutsideDir("integração i-1".into()))
         );
         let g = graph(
             vec![node(
@@ -893,7 +887,7 @@ mod tests {
         );
         assert!(matches!(
             validate_graph(&g, &[i]),
-            Err(MaestroError::FileOutsideDir(_))
+            Err(OrbitError::FileOutsideDir(_))
         ));
     }
 
@@ -920,7 +914,7 @@ mod tests {
         no_default.dir.clear();
         assert_eq!(
             validate_graph(&no_default, &[]),
-            Err(MaestroError::NodeDir("a".into()))
+            Err(OrbitError::NodeDir("a".into()))
         );
         // A pasta do nó cobre a falta da padrão; nota não tem pasta.
         no_default.nodes = vec![with_dir("/srv/outra"), note("n")];
@@ -931,17 +925,17 @@ mod tests {
             g.dir.clear();
             assert_eq!(
                 validate_graph(&g, &[]),
-                Err(MaestroError::NodeDir("a".into())),
+                Err(OrbitError::NodeDir("a".into())),
                 "{bad}"
             );
         }
         assert_eq!(
             validate_graph(&graph(vec![with_dir("relativa")], vec![]), &[]),
-            Err(MaestroError::NodeDir("a".into()))
+            Err(OrbitError::NodeDir("a".into()))
         );
         assert!(matches!(
             validate_graph(&graph(vec![with_dir("/tmp/x\u{1b}")], vec![]), &[]),
-            Err(MaestroError::ControlChars(_))
+            Err(OrbitError::ControlChars(_))
         ));
         // A estrutura não olha a pasta: é o que a importação usa.
         let mut g = graph(vec![with_dir("C:\\de\\outra\\maquina")], vec![]);
@@ -1052,7 +1046,7 @@ mod tests {
         ] {
             assert_eq!(
                 validate_graph(&graph(vec![browser("b", bad)], vec![]), &[]),
-                Err(MaestroError::NotLocalUrl("b".into())),
+                Err(OrbitError::NotLocalUrl("b".into())),
                 "{bad}"
             );
         }
@@ -1090,7 +1084,7 @@ mod tests {
                 }),
                 &[]
             ),
-            Err(MaestroError::InvalidContainer("s".into()))
+            Err(OrbitError::InvalidContainer("s".into()))
         );
         assert!(matches!(
             validate_graph(
@@ -1100,7 +1094,7 @@ mod tests {
                 }),
                 &[]
             ),
-            Err(MaestroError::ControlChars(_))
+            Err(OrbitError::ControlChars(_))
         ));
     }
 

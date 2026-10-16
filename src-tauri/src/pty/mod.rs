@@ -1674,7 +1674,7 @@ impl PtyPool {
 
     /// As últimas `max` linhas da tela renderizada, no tamanho real do PTY.
     ///
-    /// Para prévia (nó do Maestro fora do zoom 100%): reinterpretar o fluxo
+    /// Para prévia (nó do Orbit fora do zoom 100%): reinterpretar o fluxo
     /// num segundo emulador de outra largura embaralha TUI que move o cursor
     /// (o Claude redesenha linhas), e o `vt100` daqui já tem a tela certa.
     pub fn screen_lines(&self, id: PtyId, max: usize) -> Option<Vec<String>> {

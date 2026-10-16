@@ -130,7 +130,7 @@ mod boundary_tests {
     /// continuam sendo respostas sobre UMA ação — nenhum carrega dado do core
     /// para o agente além do motivo que o próprio core escreveu.
     ///
-    /// Orquestrador do Maestro (2026-10-15, quadro `MaestroOrquestrador`):
+    /// Orquestrador do Orbit (2026-10-15, quadro `OrbitOrquestrador`):
     /// `result` entrou de propósito e é a ÚNICA resposta que carrega dado. Ela
     /// só existe na sessão de um nó com orquestrar ligado, e o dado é o do run
     /// dele: o id do nó criado ou o estado de um nó do run (com o log

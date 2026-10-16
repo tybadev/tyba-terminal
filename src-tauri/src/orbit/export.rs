@@ -1,4 +1,5 @@
-//! Exportar e importar o grafo como arquivo `.tyba-maestro.toml`.
+//! Exportar e importar o grafo como arquivo `.tyba-orbit.toml` (a importação
+//! aceita também o `.tyba-maestro.toml` de antes do nome Orbit: mesmo formato).
 //!
 //! O TYBA não tem conta: o arquivo é o jeito de levar, versionar e
 //! compartilhar. Exportar zera variável com cara de segredo e aponta o segredo
@@ -14,7 +15,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use super::{validate_integration, validate_structure, Graph, Integration, MaestroError, NodeKind};
+use super::{validate_integration, validate_structure, Graph, Integration, NodeKind, OrbitError};
 use crate::session::redact::contains_secret;
 
 /// Teto do arquivo importado, em bytes.
@@ -27,7 +28,7 @@ pub const FORMAT_VERSION: u32 = 1;
 #[derive(Debug, thiserror::Error)]
 pub enum ExportError {
     #[error("{0}")]
-    Invalid(#[from] MaestroError),
+    Invalid(#[from] OrbitError),
     #[error("o grafo usa integração inexistente: {0}")]
     MissingIntegration(String),
     #[error("arquivo passa do teto de 1 MB")]
@@ -54,11 +55,11 @@ pub enum ExportError {
     Io(#[from] std::io::Error),
 }
 
-/// Conteúdo do `.tyba-maestro.toml`: o grafo inteiro e as integrações que ele
+/// Conteúdo do `.tyba-orbit.toml`: o grafo inteiro e as integrações que ele
 /// usa.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct MaestroFile {
+struct OrbitFile {
     version: u32,
     graph: Graph,
     #[serde(default)]
@@ -233,7 +234,7 @@ pub fn export_toml(
         cleared,
         secret_fields: secret_fields(&graph, &used),
     };
-    let file = MaestroFile {
+    let file = OrbitFile {
         version: FORMAT_VERSION,
         graph,
         integrations: used,
@@ -264,7 +265,7 @@ pub fn parse_import(bytes: &[u8]) -> Result<Imported, ExportError> {
     }
     let hash = sha256_hex(bytes);
     let text = std::str::from_utf8(bytes).map_err(|e| ExportError::Parse(e.to_string()))?;
-    let file: MaestroFile = toml::from_str(text).map_err(|e| ExportError::Parse(e.to_string()))?;
+    let file: OrbitFile = toml::from_str(text).map_err(|e| ExportError::Parse(e.to_string()))?;
     if file.version != FORMAT_VERSION {
         return Err(ExportError::UnsupportedVersion(file.version));
     }
@@ -408,7 +409,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
-    use crate::maestro::{
+    use crate::orbit::{
         validate_graph, Edge, EdgeKind, Node, OutputKind, Position, Runner, Size, Trigger,
     };
 
@@ -511,7 +512,7 @@ mod tests {
     }
 
     /// O orquestrador viaja no arquivo e volta na prévia: quem importa vê que
-    /// o nó vai ganhar as ferramentas do Maestro.
+    /// o nó vai ganhar as ferramentas do Orbit.
     #[test]
     fn orchestrate_flag_travels_in_the_file() {
         let (graph, integrations) = sample();
@@ -540,7 +541,7 @@ mod tests {
 
     #[test]
     fn round_trip_keeps_browser_and_service() {
-        use crate::maestro::ServiceSource;
+        use crate::orbit::ServiceSource;
         let (mut graph, integrations) = sample();
         graph.nodes.extend([
             node(
@@ -721,7 +722,7 @@ mod tests {
             dir.clone_from(&here_str);
         }
         if let Some(dir) = graph.nodes[1].kind.dir_mut() {
-            *dir = "/nao/existe/tyba-maestro-teste".into();
+            *dir = "/nao/existe/tyba-orbit-teste".into();
         }
         if let Some(dir) = graph.nodes[2].kind.dir_mut() {
             *dir = "relativa".into();
@@ -738,7 +739,7 @@ mod tests {
                 },
                 ImportDir {
                     node_id: "p".into(),
-                    dir: "/nao/existe/tyba-maestro-teste".into(),
+                    dir: "/nao/existe/tyba-orbit-teste".into(),
                     exists: false
                 },
                 ImportDir {
@@ -757,7 +758,7 @@ mod tests {
         let here_str = here.path().to_str().unwrap().to_string();
         let other = tempfile::tempdir().unwrap();
         let other_str = other.path().to_str().unwrap().to_string();
-        let missing = "/nao/existe/tyba-maestro-teste";
+        let missing = "/nao/existe/tyba-orbit-teste";
         for node in graph.nodes.iter_mut() {
             if let Some(dir) = node.kind.dir_mut() {
                 *dir = if node.id == "p" {
@@ -821,7 +822,7 @@ mod tests {
     fn confirm_with_other_hash_is_refused() {
         let (graph, integrations) = sample();
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("revisao.tyba-maestro.toml");
+        let path = dir.path().join("revisao.tyba-orbit.toml");
         export_to(&path, &graph, &integrations).unwrap();
         let preview = read_import(&path).unwrap();
         assert!(read_confirmed(&path, &preview.hash).is_ok());
@@ -837,6 +838,23 @@ mod tests {
         ));
     }
 
+    /// O arquivo de quando o recurso se chamava Maestro tem o mesmo formato:
+    /// `.tyba-maestro.toml` importa igual ao `.tyba-orbit.toml`.
+    #[test]
+    fn legacy_maestro_file_imports_like_orbit() {
+        let (graph, integrations) = sample();
+        let dir = tempfile::tempdir().unwrap();
+        let orbit = dir.path().join("revisao.tyba-orbit.toml");
+        export_to(&orbit, &graph, &integrations).unwrap();
+        let legacy = dir.path().join("revisao.tyba-maestro.toml");
+        std::fs::copy(&orbit, &legacy).unwrap();
+
+        let from_legacy = read_import(&legacy).unwrap();
+        assert_eq!(from_legacy, read_import(&orbit).unwrap());
+        assert_eq!(from_legacy.graph, graph);
+        assert!(read_confirmed(&legacy, &from_legacy.hash).is_ok());
+    }
+
     #[test]
     fn file_over_ceiling_is_refused() {
         let (graph, integrations) = sample();
@@ -846,7 +864,7 @@ mod tests {
         assert!(matches!(parse_import(&big), Err(ExportError::FileTooLarge)));
 
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("grande.tyba-maestro.toml");
+        let path = dir.path().join("grande.tyba-orbit.toml");
         std::fs::write(&path, &big).unwrap();
         assert!(matches!(read_import(&path), Err(ExportError::FileTooLarge)));
     }
@@ -860,7 +878,7 @@ mod tests {
         assert_ne!(bad, text);
         assert!(matches!(
             parse_import(bad.as_bytes()),
-            Err(ExportError::Invalid(MaestroError::ControlChars(_)))
+            Err(ExportError::Invalid(OrbitError::ControlChars(_)))
         ));
     }
 
@@ -874,7 +892,7 @@ mod tests {
                 i
             })
             .collect();
-        let file = MaestroFile {
+        let file = OrbitFile {
             version: FORMAT_VERSION,
             graph: graph.clone(),
             integrations: many,
@@ -885,7 +903,7 @@ mod tests {
             Err(ExportError::TooManyIntegrations(n)) if n == MAX_INTEGRATIONS + 1
         ));
 
-        let file = MaestroFile {
+        let file = OrbitFile {
             version: FORMAT_VERSION,
             graph,
             integrations: vec![integration(), integration()],
@@ -900,7 +918,7 @@ mod tests {
     #[test]
     fn graph_only_sees_integrations_from_the_file() {
         let (graph, _) = sample();
-        let file = MaestroFile {
+        let file = OrbitFile {
             version: FORMAT_VERSION,
             graph,
             integrations: vec![],
@@ -908,9 +926,7 @@ mod tests {
         let text = toml::to_string(&file).unwrap();
         assert!(matches!(
             parse_import(text.as_bytes()),
-            Err(ExportError::Invalid(
-                MaestroError::UnknownIntegration { .. }
-            ))
+            Err(ExportError::Invalid(OrbitError::UnknownIntegration { .. }))
         ));
     }
 

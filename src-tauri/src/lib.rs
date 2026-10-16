@@ -15,9 +15,9 @@ pub mod hook_ipc;
 pub mod launch_config;
 pub mod layout;
 pub mod lsp;
-pub mod maestro;
 pub mod menu;
 pub mod notifications;
+pub mod orbit;
 pub mod profile;
 pub mod pty;
 pub mod repo;
@@ -5972,7 +5972,7 @@ enum ServicesList {
 #[tauri::command]
 async fn services_list(app: AppHandle, id: Option<SessionId>) -> Result<ServicesList, AppError> {
     off_main(app, move |app, state| {
-        // Sem sessão (a tela aberta pelo Workspace/Maestro): a máquina local.
+        // Sem sessão (a tela aberta pelo Workspace/Orbit): a máquina local.
         if let Some((host_id, alias, _)) = id.and_then(|id| ssh_target(&state, id)) {
             let out = state
                 .host_queries
@@ -7688,7 +7688,7 @@ fn write_control(state: State<'_, AppState>, id: SessionId, bytes: String) -> Re
 
 /// Consulta o modo prompt em vez de esperar o evento: quem assina depois do
 /// primeiro prompt nunca receberia o `633;P` e ficaria sem a linha de comando.
-/// Prévia de texto de uma sessão (nó do Maestro fora do zoom 100%): as
+/// Prévia de texto de uma sessão (nó do Orbit fora do zoom 100%): as
 /// últimas linhas da tela renderizada pelo core, no tamanho real do PTY.
 #[tauri::command]
 fn session_screen_lines(state: State<'_, AppState>, id: SessionId, max: usize) -> Vec<String> {
@@ -8569,18 +8569,15 @@ fn delete_snippet(state: State<'_, AppState>, id: String) -> Result<(), String> 
 }
 
 #[tauri::command]
-fn maestro_list_graphs(state: State<'_, AppState>) -> Result<Vec<maestro::Graph>, String> {
-    state.store.list_maestro_graphs().map_err(|e| e.to_string())
+fn orbit_list_graphs(state: State<'_, AppState>) -> Result<Vec<orbit::Graph>, String> {
+    state.store.list_orbit_graphs().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn maestro_get_graph(
-    state: State<'_, AppState>,
-    id: String,
-) -> Result<Option<maestro::Graph>, String> {
+fn orbit_get_graph(state: State<'_, AppState>, id: String) -> Result<Option<orbit::Graph>, String> {
     Ok(state
         .store
-        .get_maestro_graph(&id)
+        .get_orbit_graph(&id)
         .map_err(|e| e.to_string())?
         .map(|stored| stored.value))
 }
@@ -8588,82 +8585,80 @@ fn maestro_get_graph(
 /// Valida no core antes de gravar: o front oferece só ligação válida, mas não
 /// é quem decide. Grafo salvo pelo dono é dele — fica consentido.
 #[tauri::command]
-fn maestro_save_graph(state: State<'_, AppState>, graph: maestro::Graph) -> Result<(), String> {
+fn orbit_save_graph(state: State<'_, AppState>, graph: orbit::Graph) -> Result<(), String> {
     let integrations = state
         .store
-        .list_maestro_integrations()
+        .list_orbit_integrations()
         .map_err(|e| e.to_string())?;
-    maestro::validate_graph(&graph, &integrations).map_err(|e| e.to_string())?;
+    orbit::validate_graph(&graph, &integrations).map_err(|e| e.to_string())?;
     state
         .store
-        .save_maestro_graph(&graph, true, None)
+        .save_orbit_graph(&graph, true, None)
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn maestro_delete_graph(state: State<'_, AppState>, id: String) -> Result<(), String> {
+fn orbit_delete_graph(state: State<'_, AppState>, id: String) -> Result<(), String> {
     state
         .store
-        .delete_maestro_graph(&id)
+        .delete_orbit_graph(&id)
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn maestro_list_integrations(
+fn orbit_list_integrations(state: State<'_, AppState>) -> Result<Vec<orbit::Integration>, String> {
+    state
+        .store
+        .list_orbit_integrations()
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn orbit_save_integration(
     state: State<'_, AppState>,
-) -> Result<Vec<maestro::Integration>, String> {
-    state
-        .store
-        .list_maestro_integrations()
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn maestro_save_integration(
-    state: State<'_, AppState>,
-    integration: maestro::Integration,
+    integration: orbit::Integration,
 ) -> Result<(), String> {
-    maestro::validate_integration(&integration).map_err(|e| e.to_string())?;
+    orbit::validate_integration(&integration).map_err(|e| e.to_string())?;
     state
         .store
-        .save_maestro_integration(&integration, true, None)
+        .save_orbit_integration(&integration, true, None)
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn maestro_delete_integration(state: State<'_, AppState>, id: String) -> Result<(), String> {
+fn orbit_delete_integration(state: State<'_, AppState>, id: String) -> Result<(), String> {
     state
         .store
-        .delete_maestro_integration(&id)
+        .delete_orbit_integration(&id)
         .map_err(|e| e.to_string())
 }
 
 /// ▶ Executar. Recusa no core grafo importado e não confirmado, e revalida o
 /// grafo antes de rodar — o banco não é prova de que ele ainda é válido.
 #[tauri::command]
-fn maestro_run_start(
+fn orbit_run_start(
     state: State<'_, AppState>,
-    runs: State<'_, maestro::run::SharedRuns>,
+    runs: State<'_, orbit::run::SharedRuns>,
     graph_id: String,
 ) -> Result<String, String> {
     let stored = state
         .store
-        .get_maestro_graph(&graph_id)
+        .get_orbit_graph(&graph_id)
         .map_err(|e| e.to_string())?
         .ok_or("grafo não encontrado")?;
-    let graph = maestro::run::startable(stored)?;
+    let graph = orbit::run::startable(stored)?;
     let integrations = state
         .store
-        .list_maestro_integrations()
+        .list_orbit_integrations()
         .map_err(|e| e.to_string())?;
-    maestro::validate_graph(&graph, &integrations).map_err(|e| e.to_string())?;
+    orbit::validate_graph(&graph, &integrations).map_err(|e| e.to_string())?;
     Ok(runs.start(graph, integrations)?.id)
 }
 
 /// O ▶ num nó de integração manual: ele roda assim que as entradas chegarem.
 #[tauri::command]
-fn maestro_run_node(
-    runs: State<'_, maestro::run::SharedRuns>,
+fn orbit_run_node(
+    runs: State<'_, orbit::run::SharedRuns>,
     run_id: String,
     node_id: String,
 ) -> Result<(), String> {
@@ -8674,22 +8669,22 @@ fn maestro_run_node(
 /// da última execução daquele nó. Mesmas barreiras do ▶ Executar: grafo e
 /// integração consentidos e válidos.
 #[tauri::command]
-fn maestro_integration_test(
+fn orbit_integration_test(
     state: State<'_, AppState>,
-    runs: State<'_, maestro::run::SharedRuns>,
+    runs: State<'_, orbit::run::SharedRuns>,
     integration_id: String,
     graph_id: String,
     node_id: String,
-) -> Result<maestro::run::Run, String> {
+) -> Result<orbit::run::Run, String> {
     let stored = state
         .store
-        .get_maestro_graph(&graph_id)
+        .get_orbit_graph(&graph_id)
         .map_err(|e| e.to_string())?
         .ok_or("grafo não encontrado")?;
-    let graph = maestro::run::startable(stored)?;
+    let graph = orbit::run::startable(stored)?;
     let integration = state
         .store
-        .get_maestro_integration(&integration_id)
+        .get_orbit_integration(&integration_id)
         .map_err(|e| e.to_string())?
         .ok_or("integração não encontrada")?;
     if !integration.consented {
@@ -8699,18 +8694,15 @@ fn maestro_integration_test(
     }
     let integrations = state
         .store
-        .list_maestro_integrations()
+        .list_orbit_integrations()
         .map_err(|e| e.to_string())?;
-    maestro::validate_graph(&graph, &integrations).map_err(|e| e.to_string())?;
-    maestro::validate_integration(&integration.value).map_err(|e| e.to_string())?;
+    orbit::validate_graph(&graph, &integrations).map_err(|e| e.to_string())?;
+    orbit::validate_integration(&integration.value).map_err(|e| e.to_string())?;
     runs.test_integration(graph, integration.value, &node_id)
 }
 
 #[tauri::command]
-fn maestro_run_stop(
-    runs: State<'_, maestro::run::SharedRuns>,
-    run_id: String,
-) -> Result<(), String> {
+fn orbit_run_stop(runs: State<'_, orbit::run::SharedRuns>, run_id: String) -> Result<(), String> {
     runs.stop(&run_id)
 }
 
@@ -8718,28 +8710,28 @@ fn maestro_run_stop(
 /// terminado, parado ou do histórico) entram no grafo salvo como nós normais. O front grava o que está no debounce antes;
 /// o grafo resultante passa pela mesma validação do salvar e volta para a tela.
 #[tauri::command]
-fn maestro_keep_created(
+fn orbit_keep_created(
     state: State<'_, AppState>,
-    runs: State<'_, maestro::run::SharedRuns>,
+    runs: State<'_, orbit::run::SharedRuns>,
     run_id: String,
-) -> Result<maestro::Graph, String> {
+) -> Result<orbit::Graph, String> {
     let created = runs.created_to_keep(&run_id)?;
     let graph_id = runs.get(&run_id).ok_or("execução não encontrada")?.graph_id;
     let mut graph = state
         .store
-        .get_maestro_graph(&graph_id)
+        .get_orbit_graph(&graph_id)
         .map_err(|e| e.to_string())?
         .ok_or("grafo não encontrado")?
         .value;
-    maestro::orchestrator::merge_kept(&mut graph, &created);
+    orbit::orchestrator::merge_kept(&mut graph, &created);
     let integrations = state
         .store
-        .list_maestro_integrations()
+        .list_orbit_integrations()
         .map_err(|e| e.to_string())?;
-    maestro::validate_graph(&graph, &integrations).map_err(|e| e.to_string())?;
+    orbit::validate_graph(&graph, &integrations).map_err(|e| e.to_string())?;
     state
         .store
-        .save_maestro_graph(&graph, true, None)
+        .save_orbit_graph(&graph, true, None)
         .map_err(|e| e.to_string())?;
     let ids: Vec<String> = created.into_iter().map(|c| c.node.id).collect();
     runs.mark_kept(&run_id, &ids);
@@ -8747,87 +8739,87 @@ fn maestro_keep_created(
 }
 
 #[tauri::command]
-fn maestro_run_get(
-    runs: State<'_, maestro::run::SharedRuns>,
+fn orbit_run_get(
+    runs: State<'_, orbit::run::SharedRuns>,
     run_id: String,
-) -> Result<Option<maestro::run::Run>, String> {
+) -> Result<Option<orbit::run::Run>, String> {
     Ok(runs.get(&run_id))
 }
 
 #[tauri::command]
-fn maestro_runs_list(
-    runs: State<'_, maestro::run::SharedRuns>,
+fn orbit_runs_list(
+    runs: State<'_, orbit::run::SharedRuns>,
     graph_id: String,
-) -> Vec<maestro::run::Run> {
+) -> Vec<orbit::run::Run> {
     runs.list(&graph_id)
 }
 
 /// Log ao vivo do contêiner no nó de serviço: liga (ou reaproveita) o
-/// seguidor do Maestro e devolve o que já foi lido. As linhas novas chegam em
-/// lote por `maestro-logs://<id>`.
+/// seguidor do Orbit e devolve o que já foi lido. As linhas novas chegam em
+/// lote por `orbit-logs://<id>`.
 #[tauri::command]
-async fn maestro_service_logs_start(
+async fn orbit_service_logs_start(
     app: AppHandle,
     container_id: String,
 ) -> Result<docker::logs::LogsSnapshot, String> {
-    docker_blocking(move || maestro::service::start_logs(&app, &container_id)).await?
+    docker_blocking(move || orbit::service::start_logs(&app, &container_id)).await?
 }
 
 /// Só sobrevive o seguidor de contêiner que algum nó de serviço do canvas
 /// mostra; o canvas fechado manda a lista vazia.
 #[tauri::command]
-fn maestro_service_logs_retain(
-    logs: State<'_, maestro::service::ServiceLogs>,
+fn orbit_service_logs_retain(
+    logs: State<'_, orbit::service::ServiceLogs>,
     container_ids: Vec<String>,
 ) {
     logs.0.retain(&container_ids.into_iter().collect());
 }
 
-/// Grava o `.tyba-maestro.toml` com o grafo e as integrações que ele usa.
+/// Grava o `.tyba-orbit.toml` com o grafo e as integrações que ele usa.
 /// Devolve as variáveis zeradas e os campos com segredo literal, para avisar.
 #[tauri::command]
-fn maestro_export(
+fn orbit_export(
     state: State<'_, AppState>,
     graph_id: String,
     path: String,
-) -> Result<maestro::export::ExportReport, String> {
+) -> Result<orbit::export::ExportReport, String> {
     let graph = state
         .store
-        .get_maestro_graph(&graph_id)
+        .get_orbit_graph(&graph_id)
         .map_err(|e| e.to_string())?
         .ok_or("grafo não encontrado")?
         .value;
     let integrations = state
         .store
-        .list_maestro_integrations()
+        .list_orbit_integrations()
         .map_err(|e| e.to_string())?;
-    maestro::export::export_to(std::path::Path::new(&path), &graph, &integrations)
+    orbit::export::export_to(std::path::Path::new(&path), &graph, &integrations)
         .map_err(|e| e.to_string())
 }
 
 /// Prévia da importação: lê e valida, devolve tudo que vai rodar e o hash.
 /// Não grava nada.
 #[tauri::command]
-fn maestro_import_preview(
+fn orbit_import_preview(
     state: State<'_, AppState>,
     path: String,
-) -> Result<maestro::export::ImportPreview, String> {
+) -> Result<orbit::export::ImportPreview, String> {
     let imported =
-        maestro::export::read_import(std::path::Path::new(&path)).map_err(|e| e.to_string())?;
+        orbit::export::read_import(std::path::Path::new(&path)).map_err(|e| e.to_string())?;
     let replaces_graph = state
         .store
-        .get_maestro_graph(&imported.graph.id)
+        .get_orbit_graph(&imported.graph.id)
         .map_err(|e| e.to_string())?
         .is_some();
     // Mesma regra do Confirmar, numa cópia: a prévia mostra o arquivo como veio.
-    let renamed_integrations = maestro::export::resolve_integration_ids(
+    let renamed_integrations = orbit::export::resolve_integration_ids(
         &mut imported.clone(),
-        |id| local_maestro_integration(&state, id),
+        |id| local_orbit_integration(&state, id),
         String::new,
     )?
     .renamed;
-    let dirs = maestro::export::import_dirs(&imported.graph);
-    Ok(maestro::export::ImportPreview {
+    let dirs = orbit::export::import_dirs(&imported.graph);
+    Ok(orbit::export::ImportPreview {
         imported,
         replaces_graph,
         renamed_integrations,
@@ -8835,13 +8827,13 @@ fn maestro_import_preview(
     })
 }
 
-fn local_maestro_integration(
+fn local_orbit_integration(
     state: &AppState,
     id: &str,
-) -> Result<Option<maestro::Integration>, String> {
+) -> Result<Option<orbit::Integration>, String> {
     Ok(state
         .store
-        .get_maestro_integration(id)
+        .get_orbit_integration(id)
         .map_err(|e| e.to_string())?
         .map(|stored| stored.value))
 }
@@ -8853,31 +8845,31 @@ fn local_maestro_integration(
 /// `dir` vira a pasta padrão do grafo. Integração local de mesmo id e outro
 /// conteúdo nunca é sobrescrita — a do arquivo entra com id novo.
 #[tauri::command]
-fn maestro_import_confirm(
+fn orbit_import_confirm(
     state: State<'_, AppState>,
     path: String,
     hash: String,
     dir: String,
     dirs: std::collections::HashMap<String, String>,
 ) -> Result<String, String> {
-    let mut imported = maestro::export::read_confirmed(std::path::Path::new(&path), &hash)
+    let mut imported = orbit::export::read_confirmed(std::path::Path::new(&path), &hash)
         .map_err(|e| e.to_string())?;
-    maestro::export::place_dirs(&mut imported, &dir, &dirs).map_err(|e| e.to_string())?;
-    let resolved = maestro::export::resolve_integration_ids(
+    orbit::export::place_dirs(&mut imported, &dir, &dirs).map_err(|e| e.to_string())?;
+    let resolved = orbit::export::resolve_integration_ids(
         &mut imported,
-        |id| local_maestro_integration(&state, id),
+        |id| local_orbit_integration(&state, id),
         || uuid::Uuid::new_v4().to_string(),
     )?;
-    maestro::validate_graph(&imported.graph, &imported.integrations).map_err(|e| e.to_string())?;
+    orbit::validate_graph(&imported.graph, &imported.integrations).map_err(|e| e.to_string())?;
     for integration in &resolved.to_save {
         state
             .store
-            .save_maestro_integration(integration, true, Some(&imported.hash))
+            .save_orbit_integration(integration, true, Some(&imported.hash))
             .map_err(|e| e.to_string())?;
     }
     state
         .store
-        .save_maestro_graph(&imported.graph, true, Some(&imported.hash))
+        .save_orbit_graph(&imported.graph, true, Some(&imported.hash))
         .map_err(|e| e.to_string())?;
     Ok(imported.graph.id)
 }
@@ -9454,13 +9446,13 @@ pub fn run() {
                 boot: Arc::clone(&boot_gate),
                 services: Arc::default(),
             });
-            let maestro_runs: maestro::run::SharedRuns = maestro::run::Runs::new(
-                maestro::run::TauriHost::new(app.handle().clone()),
+            let orbit_runs: orbit::run::SharedRuns = orbit::run::Runs::new(
+                orbit::run::TauriHost::new(app.handle().clone()),
                 Arc::clone(&store),
-                maestro::run::default_root(),
+                orbit::run::default_root(),
             );
-            app.manage(maestro_runs);
-            app.manage(maestro::service::ServiceLogs::default());
+            app.manage(orbit_runs);
+            app.manage(orbit::service::ServiceLogs::default());
 
             // O canal shim↔core (shim v2, passo 2, tech-spec §3/§4): socket por
             // usuário, ligado uma vez no boot, depois do `app.manage` acima —
@@ -9850,25 +9842,25 @@ pub fn run() {
             list_snippets,
             save_snippet,
             delete_snippet,
-            maestro_list_graphs,
-            maestro_get_graph,
-            maestro_save_graph,
-            maestro_delete_graph,
-            maestro_list_integrations,
-            maestro_save_integration,
-            maestro_delete_integration,
-            maestro_run_start,
-            maestro_run_node,
-            maestro_integration_test,
-            maestro_run_stop,
-            maestro_run_get,
-            maestro_keep_created,
-            maestro_runs_list,
-            maestro_service_logs_start,
-            maestro_service_logs_retain,
-            maestro_export,
-            maestro_import_preview,
-            maestro_import_confirm,
+            orbit_list_graphs,
+            orbit_get_graph,
+            orbit_save_graph,
+            orbit_delete_graph,
+            orbit_list_integrations,
+            orbit_save_integration,
+            orbit_delete_integration,
+            orbit_run_start,
+            orbit_run_node,
+            orbit_integration_test,
+            orbit_run_stop,
+            orbit_run_get,
+            orbit_keep_created,
+            orbit_runs_list,
+            orbit_service_logs_start,
+            orbit_service_logs_retain,
+            orbit_export,
+            orbit_import_preview,
+            orbit_import_confirm,
             snippet_placeholders,
             notifications_list,
             notifications_mark_read,
@@ -9961,7 +9953,7 @@ pub fn run() {
                     state.pty_pool.kill_all();
                     state.docker_logs.stop_all();
                 }
-                if let Some(logs) = app_handle.try_state::<maestro::service::ServiceLogs>() {
+                if let Some(logs) = app_handle.try_state::<orbit::service::ServiceLogs>() {
                     logs.0.stop_all();
                 }
             }

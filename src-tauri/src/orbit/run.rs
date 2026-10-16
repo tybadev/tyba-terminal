@@ -1,6 +1,6 @@
-//! Motor de execução do Maestro: processos, notas, agentes e integrações.
+//! Motor de execução do Orbit: processos, notas, agentes e integrações.
 //!
-//! ▶ Executar cria um [`Run`] e uma pasta `~/.tyba/maestro/runs/<run>/<nó>/
+//! ▶ Executar cria um [`Run`] e uma pasta `~/.tyba/orbit/runs/<run>/<nó>/
 //! {in,out}` (0700). Um nó começa quando todas as ligações que chegam nele já
 //! têm valor; independentes rodam em paralelo. Falha pula tudo que depende do
 //! nó; Parar mata o process group de cada nó rodando.
@@ -408,7 +408,7 @@ impl Scheduler {
         Ok(())
     }
 
-    /// Para um nó só (o `maestro_stop_node`): rodando vira `stopped`,
+    /// Para um nó só (o `orbit_stop_node`): rodando vira `stopped`,
     /// esperando vira `skipped`, e quem depende dele é pulado. Devolve a
     /// sessão a matar quando ele rodava.
     pub fn stop_node(&mut self, id: &str, now: u64) -> Option<String> {
@@ -638,7 +638,7 @@ pub fn process_argv(
     let mut args = vec![
         "-lc".into(),
         script,
-        "tyba-maestro".into(),
+        "tyba-orbit".into(),
         in_dir.to_string_lossy().into_owned(),
         out_dir.to_string_lossy().into_owned(),
     ];
@@ -714,7 +714,7 @@ pub struct AgentLaunch {
     pub prompt: String,
     pub in_dir: PathBuf,
     pub out_dir: PathBuf,
-    /// Só no nó com orquestrar ligado: as ferramentas do Maestro que o
+    /// Só no nó com orquestrar ligado: as ferramentas do Orbit que o
     /// servidor MCP da sessão chama pelo socket de hooks.
     pub tools: Option<ToolHandler>,
 }
@@ -748,7 +748,7 @@ pub trait RunHost: Send + Sync + 'static {
     fn resolve_service(&self, source: &ServiceSource) -> Result<ServiceReady, String>;
     /// A sessão ainda roda (não saiu nem foi morta).
     fn alive(&self, session_id: &str) -> bool;
-    /// `maestro://run/<run_id>` com o run inteiro.
+    /// `orbit://run/<run_id>` com o run inteiro.
     fn emit(&self, run: &Run);
 }
 
@@ -807,18 +807,18 @@ fn now() -> u64 {
 
 /// A varredura do boot (ver [`Runs::new`]).
 fn close_interrupted_runs(store: &Store) {
-    let open = match store.list_running_maestro_runs() {
+    let open = match store.list_running_orbit_runs() {
         Ok(runs) => runs,
         Err(e) => {
-            eprintln!("[maestro] ler execuções abertas: {e}");
+            eprintln!("[orbit] ler execuções abertas: {e}");
             return;
         }
     };
     let t = now();
     for mut run in open {
         run.close_interrupted(t);
-        if let Err(e) = store.save_maestro_run(&run) {
-            eprintln!("[maestro] fechar execução {}: {e}", run.id);
+        if let Err(e) = store.save_orbit_run(&run) {
+            eprintln!("[orbit] fechar execução {}: {e}", run.id);
         }
     }
 }
@@ -871,7 +871,7 @@ impl<H: RunHost> Runs<H> {
             .ok_or("sem pasta home para guardar as execuções")?;
         let previous = self
             .store
-            .list_maestro_runs(&graph.id, KEEP_RUNS)
+            .list_orbit_runs(&graph.id, KEEP_RUNS)
             .map_err(|e| e.to_string())?;
         let seed = super::integration::last_inputs(&previous, &root, node_id).ok_or(
             "este nó ainda não rodou: execute o grafo uma vez antes de testar com a última entrada",
@@ -967,7 +967,7 @@ impl<H: RunHost> Runs<H> {
         let mut run = match active {
             Some(run) => run,
             None => {
-                let mut run = self.store.get_maestro_run(run_id).ok().flatten()?;
+                let mut run = self.store.get_orbit_run(run_id).ok().flatten()?;
                 if run.status == RunStatus::Running {
                     run.status = RunStatus::Stopped;
                 }
@@ -995,7 +995,7 @@ impl<H: RunHost> Runs<H> {
     pub fn list(&self, graph_id: &str) -> Vec<Run> {
         let runs = self
             .store
-            .list_maestro_runs(graph_id, KEEP_RUNS)
+            .list_orbit_runs(graph_id, KEEP_RUNS)
             .unwrap_or_default();
         runs.into_iter()
             .map(|r| self.get(&r.id).unwrap_or(r))
@@ -1041,8 +1041,8 @@ impl<H: RunHost> Runs<H> {
     /// Grava e avisa o front, com os agentes vivos do run.
     fn publish(&self, mut run: Run) {
         run.live_agents = self.live_agents(&run.id);
-        if let Err(e) = self.store.save_maestro_run(&run) {
-            eprintln!("[maestro] gravar execução {}: {e}", run.id);
+        if let Err(e) = self.store.save_orbit_run(&run) {
+            eprintln!("[orbit] gravar execução {}: {e}", run.id);
         }
         self.host.emit(&run);
     }
@@ -1076,10 +1076,10 @@ impl<H: RunHost> Runs<H> {
                 protect.insert(id);
             }
         }
-        let removed = match self.store.prune_maestro_runs(graph_id, KEEP_RUNS, &protect) {
+        let removed = match self.store.prune_orbit_runs(graph_id, KEEP_RUNS, &protect) {
             Ok(ids) => ids,
             Err(e) => {
-                eprintln!("[maestro] podar execuções: {e}");
+                eprintln!("[orbit] podar execuções: {e}");
                 return;
             }
         };
@@ -1412,7 +1412,7 @@ impl<H: RunHost> Runs<H> {
         }))
     }
 
-    /// Uma ferramenta do Maestro pedida pela sessão do orquestrador
+    /// Uma ferramenta do Orbit pedida pela sessão do orquestrador
     /// `orchestrator` do run `run_id`.
     pub fn orchestrator_call(
         &self,
@@ -1422,7 +1422,7 @@ impl<H: RunHost> Runs<H> {
         args: &serde_json::Value,
     ) -> Result<serde_json::Value, String> {
         let call = orchestrator::parse_call(tool, args)?;
-        eprintln!("[maestro] orquestrador {orchestrator}: {tool}");
+        eprintln!("[orbit] orquestrador {orchestrator}: {tool}");
         match call {
             ToolCall::Create {
                 title,
@@ -1564,7 +1564,7 @@ impl<H: RunHost> Runs<H> {
         }))
     }
 
-    /// `maestro_stop_node`: só nó que este orquestrador criou. Mata o process
+    /// `orbit_stop_node`: só nó que este orquestrador criou. Mata o process
     /// group dele (e o agente criado que segue vivo depois do turno).
     pub fn stop_created(
         &self,
@@ -1637,7 +1637,7 @@ impl<H: RunHost> Runs<H> {
     /// ■ Parar no meio, que grava o retrato dele logo em seguida.
     fn stored_closed(&self, run_id: &str) -> Option<Run> {
         self.store
-            .get_maestro_run(run_id)
+            .get_orbit_run(run_id)
             .ok()
             .flatten()
             .filter(|r| r.status != RunStatus::Running)
@@ -1873,7 +1873,7 @@ fn agent_outputs(
         outputs.insert(EdgeKind::Diff, patch.to_string_lossy().into_owned());
     }
     eprintln!(
-        "[maestro] agente pronto: contexto {} bytes, diff {}",
+        "[orbit] agente pronto: contexto {} bytes, diff {}",
         body.len(),
         if snapshot.is_some() {
             "gravado"
@@ -1930,13 +1930,34 @@ fn prepare_start(a: &Active, id: &str) -> Option<Start> {
     })
 }
 
-/// Pasta das execuções no perfil: `~/.tyba/maestro/runs` (dev: `~/.tyba-dev`).
+/// Pasta das execuções no perfil: `~/.tyba/orbit/runs` (dev: `~/.tyba-dev`).
+/// A de quando o recurso se chamava Maestro (`~/.tyba/maestro/runs`) muda
+/// para cá na primeira chamada.
 pub fn default_root() -> Option<PathBuf> {
     crate::session::cwd::home().map(|h| {
-        h.join(crate::profile::HOME_DIR)
-            .join("maestro")
-            .join("runs")
+        let profile = h.join(crate::profile::HOME_DIR);
+        if let Err(e) = move_legacy_runs(&profile) {
+            eprintln!("[orbit] mover a pasta de execuções antiga: {e}");
+        }
+        profile.join("orbit").join("runs")
     })
+}
+
+/// `<perfil>/maestro/runs` → `<perfil>/orbit/runs`, só quando a nova ainda não
+/// existe (nunca mistura as duas). A `maestro/` vazia sai junto. Os caminhos
+/// gravados nos runs já foram trocados na migração do banco (degrau 15).
+fn move_legacy_runs(profile: &Path) -> std::io::Result<()> {
+    let legacy = profile.join("maestro");
+    let old = legacy.join("runs");
+    let new = profile.join("orbit").join("runs");
+    if !old.is_dir() || new.exists() {
+        return Ok(());
+    }
+    std::fs::create_dir_all(profile.join("orbit"))?;
+    std::fs::rename(&old, &new)?;
+    // Só se ficou vazia: o que mais houver lá não é desta migração.
+    let _ = std::fs::remove_dir(&legacy);
+    Ok(())
 }
 
 /// Host do app: sessão de comando pelo `SessionManager`, fora de qualquer
@@ -1975,7 +1996,7 @@ impl RunHost for TauriHost {
                 30,
                 crate::session::SessionKind::Shell,
                 // Sessão de nó é do run, não da grade: nunca vai ao banco.
-                crate::session::SessionOwner::Maestro,
+                crate::session::SessionOwner::Orbit,
                 move |id| {
                     let state = handle.state::<crate::AppState>();
                     state.sessions.set_status(
@@ -2025,7 +2046,7 @@ impl RunHost for TauriHost {
             ],
             cols: 100,
             rows: 30,
-            maestro_tools: launch.tools,
+            orbit_tools: launch.tools,
         };
         let handle = self.app.clone();
         let (session, tail) = crate::agent::session::spawn_free_agent(&ctx, spec, move |id| {
@@ -2094,14 +2115,45 @@ impl RunHost for TauriHost {
 
     fn emit(&self, run: &Run) {
         use tauri::Emitter;
-        let _ = self.app.emit(&format!("maestro://run/{}", run.id), run);
+        let _ = self.app.emit(&format!("orbit://run/{}", run.id), run);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::maestro::{Edge, Position, Runner, Size, Trigger};
+
+    #[test]
+    fn legacy_runs_folder_moves_to_orbit() {
+        let profile = tempfile::tempdir().unwrap();
+        let old = profile.path().join("maestro").join("runs").join("r1");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::write(old.join("log.txt"), "ok").unwrap();
+
+        move_legacy_runs(profile.path()).unwrap();
+
+        let moved = profile.path().join("orbit").join("runs").join("r1");
+        assert_eq!(
+            std::fs::read_to_string(moved.join("log.txt")).unwrap(),
+            "ok"
+        );
+        assert!(!profile.path().join("maestro").exists());
+        // Segunda chamada: nada a mover, nada quebra.
+        move_legacy_runs(profile.path()).unwrap();
+    }
+
+    #[test]
+    fn legacy_runs_folder_never_merges_into_an_existing_one() {
+        let profile = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(profile.path().join("maestro").join("runs").join("velho")).unwrap();
+        std::fs::create_dir_all(profile.path().join("orbit").join("runs").join("novo")).unwrap();
+
+        move_legacy_runs(profile.path()).unwrap();
+
+        assert!(profile.path().join("maestro/runs/velho").is_dir());
+        assert!(!profile.path().join("orbit/runs/velho").exists());
+    }
+    use crate::orbit::{Edge, Position, Runner, Size, Trigger};
     use std::collections::BTreeMap;
     use std::time::{Duration, Instant};
 
@@ -3148,7 +3200,7 @@ mod tests {
             versions.len(),
             "versão repetida: {versions:?}"
         );
-        let stored = runs.store.get_maestro_run(&run.id).unwrap().unwrap();
+        let stored = runs.store.get_orbit_run(&run.id).unwrap().unwrap();
         assert_eq!(stored.version, *sorted.last().unwrap());
         assert_eq!(stored.status, RunStatus::Done);
     }
@@ -3173,7 +3225,7 @@ mod tests {
         assert_eq!(got.status, RunStatus::Running);
         assert!(root.join(&waiting.id).join("m").is_dir(), "pasta podada");
         assert!(
-            runs.store.get_maestro_run(&waiting.id).unwrap().is_some(),
+            runs.store.get_orbit_run(&waiting.id).unwrap().is_some(),
             "linha podada"
         );
         // A poda segue valendo para os outros.
@@ -3332,7 +3384,7 @@ mod tests {
         let tools = tools_of(&host, "o");
         let created = tools
             .call(
-                "maestro_create_browser",
+                "orbit_create_browser",
                 &json!({"title": "b", "url": "http://localhost:1"}),
             )
             .unwrap()["node_id"]
@@ -3359,7 +3411,7 @@ mod tests {
         );
         let err = tools
             .call(
-                "maestro_create_browser",
+                "orbit_create_browser",
                 &json!({"title": "tarde", "url": "http://localhost:1"}),
             )
             .unwrap_err();
@@ -3389,7 +3441,7 @@ mod tests {
         assert_eq!(last.id, run.id);
         assert_eq!(last.status, RunStatus::Done);
         assert!(last.live_agents.is_empty(), "{last:?}");
-        let stored = runs.store.get_maestro_run(&run.id).unwrap().unwrap();
+        let stored = runs.store.get_orbit_run(&run.id).unwrap().unwrap();
         assert!(stored.live_agents.is_empty(), "{stored:?}");
     }
 
@@ -3413,7 +3465,7 @@ mod tests {
             vec![orchestrator("o"), agent("a", "x"), process("p", "sleep 30")],
             vec![],
         );
-        runs.store.save_maestro_graph(&g, true, None).unwrap();
+        runs.store.save_orbit_graph(&g, true, None).unwrap();
         let run = runs.start(g, vec![]).unwrap();
         wait_orchestrating(&runs, &run.id, "o");
         // Só o nó com orquestrar ligado recebe as ferramentas.
@@ -3429,7 +3481,7 @@ mod tests {
 
         let created = tools
             .call(
-                "maestro_create_process",
+                "orbit_create_process",
                 &json!({"title": "api", "command": "echo subiu; sleep 30", "dir": work}),
             )
             .unwrap();
@@ -3452,7 +3504,7 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(10);
         let status = loop {
             let st = tools
-                .call("maestro_node_status", &json!({"node_id": api}))
+                .call("orbit_node_status", &json!({"node_id": api}))
                 .unwrap();
             if st["log"].as_str().is_some_and(|l| l.contains("subiu")) || Instant::now() > deadline
             {
@@ -3469,27 +3521,27 @@ mod tests {
         // Validação do core: pasta inexistente, url não local, nó de outro.
         let err = tools
             .call(
-                "maestro_create_process",
+                "orbit_create_process",
                 &json!({"title": "x", "command": "true", "dir": "/nao/existe/tyba-orq"}),
             )
             .unwrap_err();
         assert!(err.contains("não existe"), "{err}");
         let err = tools
             .call(
-                "maestro_create_browser",
+                "orbit_create_browser",
                 &json!({"title": "x", "url": "https://example.com"}),
             )
             .unwrap_err();
         assert!(err.contains("só local"), "{err}");
         let err = tools
             .call(
-                "maestro_create_browser",
+                "orbit_create_browser",
                 &json!({"title": "x", "from_node": "a"}),
             )
             .unwrap_err();
         assert!(err.contains("não produz url"), "{err}");
         let err = tools
-            .call("maestro_stop_node", &json!({"node_id": "p"}))
+            .call("orbit_stop_node", &json!({"node_id": "p"}))
             .unwrap_err();
         assert!(err.contains("só para nó criado"), "{err}");
         assert_eq!(
@@ -3501,7 +3553,7 @@ mod tests {
         *host.ports.lock() = vec![5180];
         let code = tools
             .call(
-                "maestro_create_browser",
+                "orbit_create_browser",
                 &json!({"title": "code", "from_node": api}),
             )
             .unwrap()["node_id"]
@@ -3521,14 +3573,14 @@ mod tests {
         for i in 2..MAX_CREATED {
             tools
                 .call(
-                    "maestro_create_browser",
+                    "orbit_create_browser",
                     &json!({"title": format!("b{i}"), "url": "http://localhost:1"}),
                 )
                 .unwrap();
         }
         let err = tools
             .call(
-                "maestro_create_browser",
+                "orbit_create_browser",
                 &json!({"title": "demais", "url": "http://localhost:1"}),
             )
             .unwrap_err();
@@ -3540,7 +3592,7 @@ mod tests {
             .clone()
             .unwrap();
         tools
-            .call("maestro_stop_node", &json!({"node_id": api}))
+            .call("orbit_stop_node", &json!({"node_id": api}))
             .unwrap();
         assert!(host.killed.lock().contains(&session));
         let r = runs.get(&run.id).unwrap();
@@ -3557,13 +3609,13 @@ mod tests {
             .any(|c| c.node.id == api));
         let err = tools
             .call(
-                "maestro_create_process",
+                "orbit_create_process",
                 &json!({"title": "tarde", "command": "true", "dir": work}),
             )
             .unwrap_err();
         assert!(err.contains("já terminou"), "{err}");
         // O grafo salvo nunca recebeu os criados.
-        let saved = runs.store.get_maestro_graph("g-1").unwrap().unwrap().value;
+        let saved = runs.store.get_orbit_graph("g-1").unwrap().unwrap().value;
         assert_eq!(saved.nodes.len(), 3);
         assert_eq!(runs.get(&run.id).unwrap().status, RunStatus::Stopped);
     }
@@ -3584,7 +3636,7 @@ mod tests {
         let tools = tools_of(&host, "o");
         let rev = tools
             .call(
-                "maestro_create_agent",
+                "orbit_create_agent",
                 &json!({"title": "revisor", "runner": "claude", "prompt": "revise", "dir": repo}),
             )
             .unwrap()["node_id"]
@@ -3595,7 +3647,7 @@ mod tests {
         assert_eq!(r.nodes[&rev].status, NodeStatus::Done, "{r:?}");
 
         let st = tools
-            .call("maestro_node_status", &json!({"node_id": rev}))
+            .call("orbit_node_status", &json!({"node_id": rev}))
             .unwrap();
         let text = st["text"].as_str().expect("sem o texto do turno");
         assert!(text.starts_with("pronto, usei "), "{st}");
@@ -3620,13 +3672,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (runs, host, _app) = pty_runs(dir.path().join("runs"));
         let g = graph(vec![orchestrator("o"), process("p", "sleep 30")], vec![]);
-        runs.store.save_maestro_graph(&g, true, None).unwrap();
+        runs.store.save_orbit_graph(&g, true, None).unwrap();
         let run = runs.start(g.clone(), vec![]).unwrap();
         wait_orchestrating(&runs, &run.id, "o");
         let tools = tools_of(&host, "o");
         let web = tools
             .call(
-                "maestro_create_process",
+                "orbit_create_process",
                 &json!({"title": "web", "command": "sleep 30", "dir": dir.path()}),
             )
             .unwrap()["node_id"]
@@ -3635,7 +3687,7 @@ mod tests {
             .to_string();
         let page = tools
             .call(
-                "maestro_create_browser",
+                "orbit_create_browser",
                 &json!({"title": "page", "from_node": web}),
             )
             .unwrap()["node_id"]
@@ -3646,16 +3698,16 @@ mod tests {
         // O que o comando "Manter no grafo" faz.
         let keep = runs.created_to_keep(&run.id).unwrap();
         assert_eq!(keep.len(), 2);
-        let mut graph = runs.store.get_maestro_graph(&g.id).unwrap().unwrap().value;
+        let mut graph = runs.store.get_orbit_graph(&g.id).unwrap().unwrap().value;
         orchestrator::merge_kept(&mut graph, &keep);
-        crate::maestro::validate_graph(&graph, &[]).unwrap();
-        runs.store.save_maestro_graph(&graph, true, None).unwrap();
+        crate::orbit::validate_graph(&graph, &[]).unwrap();
+        runs.store.save_orbit_graph(&graph, true, None).unwrap();
         runs.mark_kept(
             &run.id,
             &keep.iter().map(|c| c.node.id.clone()).collect::<Vec<_>>(),
         );
 
-        let saved = runs.store.get_maestro_graph(&g.id).unwrap().unwrap().value;
+        let saved = runs.store.get_orbit_graph(&g.id).unwrap().unwrap().value;
         let ids: Vec<&str> = saved.nodes.iter().map(|n| n.id.as_str()).collect();
         assert_eq!(ids, vec!["o", "p", web.as_str(), page.as_str()]);
         // Nó normal: sem marca de criado no grafo; a ligação url vai junto.
@@ -3681,12 +3733,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (runs, host, _app) = pty_runs(dir.path().join("runs"));
         let g = graph(vec![orchestrator("o"), process("p", "sleep 30")], vec![]);
-        runs.store.save_maestro_graph(&g, true, None).unwrap();
+        runs.store.save_orbit_graph(&g, true, None).unwrap();
         let run = runs.start(g.clone(), vec![]).unwrap();
         wait_orchestrating(&runs, &run.id, "o");
         let page = tools_of(&host, "o")
             .call(
-                "maestro_create_browser",
+                "orbit_create_browser",
                 &json!({"title": "page", "url": "http://localhost:1"}),
             )
             .unwrap()["node_id"]
@@ -3698,12 +3750,12 @@ mod tests {
 
         let keep = runs.created_to_keep(&run.id).unwrap();
         assert_eq!(keep.len(), 1);
-        let mut graph = runs.store.get_maestro_graph(&g.id).unwrap().unwrap().value;
+        let mut graph = runs.store.get_orbit_graph(&g.id).unwrap().unwrap().value;
         orchestrator::merge_kept(&mut graph, &keep);
-        runs.store.save_maestro_graph(&graph, true, None).unwrap();
+        runs.store.save_orbit_graph(&graph, true, None).unwrap();
         runs.mark_kept(&run.id, std::slice::from_ref(&page));
 
-        let stored = runs.store.get_maestro_run(&run.id).unwrap().unwrap();
+        let stored = runs.store.get_orbit_run(&run.id).unwrap().unwrap();
         assert_eq!(stored.status, RunStatus::Stopped);
         assert!(stored.created.iter().all(|c| c.kept), "{stored:?}");
         let last = host.runs.lock().last().cloned().unwrap();
@@ -3727,16 +3779,16 @@ mod tests {
         assert!(s.finish("n", ok(), 3));
         let open = s.snapshot();
         assert_eq!(open.status, RunStatus::Running);
-        store.save_maestro_run(&open).unwrap();
+        store.save_orbit_run(&open).unwrap();
         let mut done = open.clone();
         done.id = "r-pronto".into();
         done.status = RunStatus::Done;
-        store.save_maestro_run(&done).unwrap();
+        store.save_orbit_run(&done).unwrap();
 
         let dir = tempfile::tempdir().unwrap();
         let (runs, _host, _app) = pty_runs_on(dir.path().join("runs"), Arc::clone(&store));
 
-        let r = store.get_maestro_run("r-aberto").unwrap().unwrap();
+        let r = store.get_orbit_run("r-aberto").unwrap().unwrap();
         assert_eq!(r.status, RunStatus::Stopped);
         assert!(r.finished_at.is_some());
         assert_eq!(r.nodes["p"].status, NodeStatus::Stopped);
@@ -3748,7 +3800,7 @@ mod tests {
         // O que o front lê é o mesmo retrato.
         assert_eq!(runs.get("r-aberto").unwrap().nodes["p"].session_id, None);
         // Run já fechado não muda.
-        assert_eq!(store.get_maestro_run("r-pronto").unwrap(), Some(done));
+        assert_eq!(store.get_orbit_run("r-pronto").unwrap(), Some(done));
     }
 
     #[test]

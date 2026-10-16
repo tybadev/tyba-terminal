@@ -1,11 +1,11 @@
 //! Orquestrador: o nó de agente com `orchestrate` cria nós no run ativo.
 //!
-//! O pedido chega do `tyba _maestro-mcp` ([`super::mcp`]) pelo socket de
+//! O pedido chega do `tyba _orbit-mcp` ([`super::mcp`]) pelo socket de
 //! hooks da sessão dele e cai em [`super::run::Runs::orchestrator_call`]. Aqui
 //! mora o que não depende do run: ler e validar os argumentos de cada
 //! ferramenta (mesma régua do salvar — pasta absoluta que existe, URL só
 //! local, sem caractere de controle), o nó que nasce deles, o retrato do log
-//! para o `maestro_node_status` e a junção dos nós mantidos no grafo.
+//! para o `orbit_node_status` e a junção dos nós mantidos no grafo.
 //!
 //! Nó criado é efêmero: vive no [`super::run::Run`] (`created`), nunca no
 //! grafo salvo, até o dono clicar "Manter no grafo".
@@ -22,11 +22,11 @@ use super::{
 
 /// Teto de nós criados por execução.
 pub const MAX_CREATED: usize = 30;
-/// Linhas do log no `maestro_node_status`.
+/// Linhas do log no `orbit_node_status`.
 pub const STATUS_LOG_LINES: usize = 40;
 /// Quanto do fim do `log.txt` se lê para achar as últimas linhas.
 const STATUS_LOG_TAIL_BYTES: u64 = 64 * 1024;
-/// Teto do texto do turno no `maestro_node_status`; o resto o agente lê
+/// Teto do texto do turno no `orbit_node_status`; o resto o agente lê
 /// pelo caminho do `context.md`.
 pub const STATUS_TEXT_MAX_CHARS: usize = 8_000;
 /// Arquivos listados no resumo do diff (os totais contam todos).
@@ -156,7 +156,7 @@ fn existing_dir(dir: &str) -> Result<(), String> {
 /// url, o teto, de quem é o nó parado) o run confere.
 pub fn parse_call(tool: &str, value: &Value) -> Result<ToolCall, String> {
     match tool {
-        "maestro_create_process" => {
+        "orbit_create_process" => {
             let a: ProcessArgs = args(tool, value)?;
             required("title", &a.title)?;
             required("command", &a.command)?;
@@ -176,7 +176,7 @@ pub fn parse_call(tool: &str, value: &Value) -> Result<ToolCall, String> {
                 from_node: None,
             })
         }
-        "maestro_create_agent" => {
+        "orbit_create_agent" => {
             let a: AgentArgs = args(tool, value)?;
             required("title", &a.title)?;
             required("prompt", &a.prompt)?;
@@ -194,7 +194,7 @@ pub fn parse_call(tool: &str, value: &Value) -> Result<ToolCall, String> {
                 from_node: None,
             })
         }
-        "maestro_create_browser" => {
+        "orbit_create_browser" => {
             let a: BrowserArgs = args(tool, value)?;
             required("title", &a.title)?;
             let url = a.url.unwrap_or_default().trim().to_string();
@@ -218,12 +218,12 @@ pub fn parse_call(tool: &str, value: &Value) -> Result<ToolCall, String> {
                 from_node,
             })
         }
-        "maestro_node_status" => {
+        "orbit_node_status" => {
             let a: NodeArgs = args(tool, value)?;
             required("node_id", &a.node_id)?;
             Ok(ToolCall::Status { node_id: a.node_id })
         }
-        "maestro_stop_node" => {
+        "orbit_stop_node" => {
             let a: NodeArgs = args(tool, value)?;
             required("node_id", &a.node_id)?;
             Ok(ToolCall::Stop { node_id: a.node_id })
@@ -447,7 +447,7 @@ mod tests {
     #[test]
     fn create_process_needs_an_existing_absolute_dir() {
         let ok = parse_call(
-            "maestro_create_process",
+            "orbit_create_process",
             &json!({"title": "api", "command": "bun run dev", "dir": dir()}),
         )
         .unwrap();
@@ -463,7 +463,7 @@ mod tests {
         ));
         for bad in ["relativa/x", "/nao/existe/mesmo/tyba-orq", ""] {
             let err = parse_call(
-                "maestro_create_process",
+                "orbit_create_process",
                 &json!({"title": "api", "command": "x", "dir": bad}),
             )
             .unwrap_err();
@@ -477,35 +477,35 @@ mod tests {
     #[test]
     fn control_chars_and_empty_fields_are_refused() {
         let err = parse_call(
-            "maestro_create_process",
+            "orbit_create_process",
             &json!({"title": "api", "command": "echo oi\rrm -rf ~", "dir": dir()}),
         )
         .unwrap_err();
         assert!(err.contains("controle"), "{err}");
         let err = parse_call(
-            "maestro_create_agent",
+            "orbit_create_agent",
             &json!({"title": "rev", "runner": "claude", "prompt": "oi\u{1b}[2J", "dir": dir()}),
         )
         .unwrap_err();
         assert!(err.contains("controle"), "{err}");
         assert!(parse_call(
-            "maestro_create_process",
+            "orbit_create_process",
             &json!({"title": "  ", "command": "x", "dir": dir()}),
         )
         .is_err());
         // Campo a mais, tipo errado, runner desconhecido, saída file.
         for (tool, args) in [
             (
-                "maestro_create_process",
+                "orbit_create_process",
                 json!({"title": "a", "command": "x", "dir": dir(), "sudo": true}),
             ),
-            ("maestro_create_process", json!({"title": 1})),
+            ("orbit_create_process", json!({"title": 1})),
             (
-                "maestro_create_agent",
+                "orbit_create_agent",
                 json!({"title": "a", "runner": "gpt", "prompt": "x", "dir": dir()}),
             ),
             (
-                "maestro_create_process",
+                "orbit_create_process",
                 json!({"title": "a", "command": "x", "dir": dir(), "output": "file"}),
             ),
         ] {
@@ -516,7 +516,7 @@ mod tests {
     #[test]
     fn created_agent_never_orchestrates() {
         let call = parse_call(
-            "maestro_create_agent",
+            "orbit_create_agent",
             &json!({"title": "rev", "runner": "codex", "prompt": "revise", "dir": dir()}),
         )
         .unwrap();
@@ -535,7 +535,7 @@ mod tests {
 
     #[test]
     fn browser_url_must_be_local_or_come_from_a_node() {
-        let ok = |args: Value| parse_call("maestro_create_browser", &args);
+        let ok = |args: Value| parse_call("orbit_create_browser", &args);
         assert!(ok(json!({"title": "code", "url": "http://localhost:5180"})).is_ok());
         assert!(ok(json!({"title": "code", "from_node": "orq-1"})).is_ok());
         for bad in [
@@ -557,7 +557,7 @@ mod tests {
 
     #[test]
     fn unknown_tool_is_refused() {
-        assert!(parse_call("maestro_delete_graph", &json!({})).is_err());
+        assert!(parse_call("orbit_delete_graph", &json!({})).is_err());
     }
 
     #[test]
@@ -723,7 +723,7 @@ Binary files a/logo.png and b/logo.png differ
     fn agent_and_process_start_with_working_size() {
         for kind in [
             NodeKind::Agent {
-                runner: crate::maestro::Runner::Claude,
+                runner: crate::orbit::Runner::Claude,
                 role: String::new(),
                 prompt: "subir o ambiente".into(),
                 dir: String::new(),

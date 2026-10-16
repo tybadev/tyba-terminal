@@ -2,7 +2,7 @@
 //! nó, com o mesmo wrapper e o mesmo env do nó de processo.
 //!
 //! Gatilho `manual` segura o nó em `waiting` até o ▶ do dono
-//! (`maestro_run_node`); `on_input` roda quando a entrada chega, como qualquer
+//! (`orbit_run_node`); `on_input` roda quando a entrada chega, como qualquer
 //! nó. "Testar com a última entrada" roda o script sozinho com o `in/` da
 //! última execução daquele nó.
 
@@ -75,8 +75,8 @@ pub fn test_graph(graph: &Graph, node_id: &str, integration_id: &str) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::maestro::run::{NodeRun, NodeStatus, RunStatus};
-    use crate::maestro::{EdgeKind, Node, OutputKind, Position, Size};
+    use crate::orbit::run::{NodeRun, NodeStatus, RunStatus};
+    use crate::orbit::{EdgeKind, Node, OutputKind, Position, Size};
     use std::collections::BTreeMap;
 
     fn integration(id: &str, trigger: Trigger) -> Integration {

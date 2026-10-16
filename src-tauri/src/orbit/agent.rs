@@ -1,4 +1,4 @@
-//! Nó de agente do Maestro: o CLI (Claude, Codex) sobe **livre e observado**,
+//! Nó de agente do Orbit: o CLI (Claude, Codex) sobe **livre e observado**,
 //! como o claude digitado, na pasta do nó — sem worktree, sem jaula.
 //!
 //! Aqui fica o que é do nó e não do spawn: o prompt com o bloco "Entradas",
@@ -224,7 +224,7 @@ pub fn snapshot(dir: &Path) -> Option<Snapshot> {
         "-c",
         "user.name=TYBA",
         "-c",
-        "user.email=maestro@tyba.invalid",
+        "user.email=orbit@tyba.invalid",
         "stash",
         "create",
     ]);

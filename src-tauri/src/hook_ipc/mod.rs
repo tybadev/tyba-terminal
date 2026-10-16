@@ -48,10 +48,10 @@ pub enum HookAction {
     Ask {
         reason: String,
     },
-    /// Resposta de uma ferramenta do Maestro (`tyba _maestro-mcp`): o nó
+    /// Resposta de uma ferramenta do Orbit (`tyba _orbit-mcp`): o nó
     /// criado, o estado de um nó. Só a sessão de um nó com orquestrar ligado
     /// chega aqui — nas outras o pedido é recusado (ver
-    /// `agent::session::on_maestro_tool`).
+    /// `agent::session::on_orbit_tool`).
     Result {
         value: serde_json::Value,
     },

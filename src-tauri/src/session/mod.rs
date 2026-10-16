@@ -44,13 +44,13 @@ pub enum SessionKind {
 }
 
 /// De quem é a sessão. A da grade vai ao banco e volta no boot; a de um nó
-/// do Maestro é do run: nunca vai ao banco, então nunca volta como shell ou
+/// do Orbit é do run: nunca vai ao banco, então nunca volta como shell ou
 /// agente morto na grade depois de o app fechar com ela viva.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SessionOwner {
     #[default]
     Grid,
-    Maestro,
+    Orbit,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1002,9 +1002,9 @@ impl SessionManager {
         session
     }
 
-    /// Grava a sessão no banco, salvo a do Maestro ([`SessionOwner`]).
+    /// Grava a sessão no banco, salvo a do Orbit ([`SessionOwner`]).
     fn persist(&self, s: &Session) {
-        if s.owner == SessionOwner::Maestro {
+        if s.owner == SessionOwner::Orbit {
             return;
         }
         let _ = self.store.upsert_session(s);
@@ -3565,11 +3565,11 @@ echo beta
         );
     }
 
-    /// Sessão de nó do Maestro muda de estado (Running → Idle → esperando)
+    /// Sessão de nó do Orbit muda de estado (Running → Idle → esperando)
     /// com o app aberto e nunca chega ao banco: fechar o app com ela viva não
     /// a traz de volta no boot como agente morto da grade. A da grade vai.
     #[test]
-    fn sessao_do_maestro_nunca_vai_ao_banco() {
+    fn sessao_do_orbit_nunca_vai_ao_banco() {
         let store = Arc::new(Store::open_in_memory().unwrap());
         let manager = SessionManager::new(Arc::clone(&store));
         let mut node = make(
@@ -3578,7 +3578,7 @@ echo beta
             },
             SessionStatus::Running,
         );
-        node.owner = SessionOwner::Maestro;
+        node.owner = SessionOwner::Orbit;
         let grid = make(SessionKind::Shell, SessionStatus::Running);
         let (node_id, grid_id) = (node.id, grid.id);
         manager.sessions.write().insert(node_id, node);

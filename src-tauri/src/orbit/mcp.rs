@@ -1,11 +1,11 @@
-//! `tyba _maestro-mcp`: o servidor MCP (stdio) do Orquestrador.
+//! `tyba _orbit-mcp`: o servidor MCP (stdio) do Orquestrador.
 //!
 //! O CLI do agente de um nó com orquestrar ligado sobe este modo do próprio
 //! binário (Claude: `--mcp-config=<arquivo>`; Codex: `--config
-//! mcp_servers.maestro.*`). Ele não decide nada: traduz `tools/call` num
-//! pedido `MaestroTool` pelo socket de hooks DA SESSÃO (`TYBA_HOOK_SOCKET`, o
+//! mcp_servers.orbit.*`). Ele não decide nada: traduz `tools/call` num
+//! pedido `OrbitTool` pelo socket de hooks DA SESSÃO (`TYBA_HOOK_SOCKET`, o
 //! mesmo canal dos hooks, na pasta 0700 dela) e devolve a resposta do core.
-//! Quem valida, cria e para nó é o core (`maestro::orchestrator`).
+//! Quem valida, cria e para nó é o core (`orbit::orchestrator`).
 //!
 //! Transporte medido no Claude Code 2.1.301: JSON-RPC 2.0, uma mensagem por
 //! linha (sem `Content-Length`), começando por `server/discover` (resposta
@@ -17,15 +17,15 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
 
-/// Argumento que liga este modo (`tyba _maestro-mcp`).
-pub const MODE: &str = "_maestro-mcp";
-/// Nome do servidor no CLI do agente (as ferramentas viram `mcp__maestro__*`
+/// Argumento que liga este modo (`tyba _orbit-mcp`).
+pub const MODE: &str = "_orbit-mcp";
+/// Nome do servidor no CLI do agente (as ferramentas viram `mcp__orbit__*`
 /// no Claude).
-pub const SERVER_NAME: &str = "maestro";
+pub const SERVER_NAME: &str = "orbit";
 /// `hook_event_name` do pedido de ferramenta no socket da sessão.
-pub const TOOL_EVENT: &str = "MaestroTool";
+pub const TOOL_EVENT: &str = "OrbitTool";
 /// Arquivo do `--mcp-config` do Claude, no runtime dir 0700 da sessão.
-pub const CLAUDE_CONFIG_FILE: &str = "maestro-mcp.json";
+pub const CLAUDE_CONFIG_FILE: &str = "orbit-mcp.json";
 
 /// Versões do protocolo que este servidor fala. Pedido com outra recebe a
 /// mais nova (o cliente decide se segue).
@@ -38,14 +38,14 @@ const INVALID_PARAMS: i64 = -32602;
 
 /// Nomes das ferramentas, na ordem do `tools/list`.
 pub const TOOLS: [&str; 5] = [
-    "maestro_create_process",
-    "maestro_create_agent",
-    "maestro_create_browser",
-    "maestro_node_status",
-    "maestro_stop_node",
+    "orbit_create_process",
+    "orbit_create_agent",
+    "orbit_create_browser",
+    "orbit_node_status",
+    "orbit_stop_node",
 ];
 
-pub fn maybe_run_maestro_mcp_mode() -> Option<i32> {
+pub fn maybe_run_orbit_mcp_mode() -> Option<i32> {
     if std::env::args().nth(1).as_deref() != Some(MODE) {
         return None;
     }
@@ -166,11 +166,11 @@ fn initialize_result(params: &Value) -> Value {
     json!({
         "protocolVersion": version,
         "capabilities": {"tools": {"listChanged": false}},
-        "serverInfo": {"name": "tyba-maestro", "version": env!("CARGO_PKG_VERSION")},
-        "instructions": "Ferramentas do Maestro do TYBA. Para subir servidor, \
+        "serverInfo": {"name": "tyba-orbit", "version": env!("CARGO_PKG_VERSION")},
+        "instructions": "Ferramentas do Orbit do TYBA. Para subir servidor, \
             processo longo ou outro agente, crie um nó com elas em vez de rodar \
             dentro da sua sessão: o dono vê e para cada nó no canvas. Página local \
-            vai num nó de navegador (maestro_create_browser), nunca no navegador \
+            vai num nó de navegador (orbit_create_browser), nunca no navegador \
             do sistema.",
     })
 }
@@ -215,8 +215,8 @@ pub fn tool_list() -> Vec<Value> {
     let dir = string_prop("Absolute path of an existing folder where it runs.");
     vec![
         json!({
-            "name": "maestro_create_process",
-            "description": "Create a Process node on the TYBA Maestro canvas and start it now, in \
+            "name": "orbit_create_process",
+            "description": "Create a Process node on the TYBA Orbit canvas and start it now, in \
                 its own terminal that the owner sees and can stop. Use it for servers, watchers \
                 and any long command instead of running them in your own shell. Returns the \
                 node_id.",
@@ -237,7 +237,7 @@ pub fn tool_list() -> Vec<Value> {
             }
         }),
         json!({
-            "name": "maestro_create_agent",
+            "name": "orbit_create_agent",
             "description": "Create an Agent node (Claude or Codex) on the canvas and start it now \
                 with the given task. Returns the node_id.",
             "inputSchema": {
@@ -253,7 +253,7 @@ pub fn tool_list() -> Vec<Value> {
             }
         }),
         json!({
-            "name": "maestro_create_browser",
+            "name": "orbit_create_browser",
             "description": format!(
                 "Create a Browser node that shows a local page on the canvas. Give url \
                  (http/https on {} only) or from_node: the node_id of a Process node, whose \
@@ -274,7 +274,7 @@ pub fn tool_list() -> Vec<Value> {
             }
         }),
         json!({
-            "name": "maestro_node_status",
+            "name": "orbit_node_status",
             "description": "State of a node of this run: status, url/port, exit code, the \
                 last lines of its log and, for an agent node, its final answer (text) and a \
                 summary of what it changed (diff: files and +/- lines); secrets redacted. \
@@ -287,7 +287,7 @@ pub fn tool_list() -> Vec<Value> {
             }
         }),
         json!({
-            "name": "maestro_stop_node",
+            "name": "orbit_stop_node",
             "description": "Stop a node that you created (kills its process group).",
             "inputSchema": {
                 "type": "object",
@@ -299,7 +299,7 @@ pub fn tool_list() -> Vec<Value> {
     ]
 }
 
-/// O `--mcp-config` do Claude: o servidor `maestro` é este binário no modo
+/// O `--mcp-config` do Claude: o servidor `orbit` é este binário no modo
 /// [`MODE`], com o socket da sessão no env (o CLI não repassa o env inteiro
 /// ao servidor stdio).
 pub fn claude_config(exe: &Path, socket: &Path) -> Value {
@@ -318,7 +318,7 @@ pub fn claude_config(exe: &Path, socket: &Path) -> Value {
 /// Os argumentos que declaram o servidor no CLI do agente. Claude: o arquivo
 /// do [`claude_config`] na forma `--mcp-config=<arquivo>` — a opção é variádica
 /// e, separada, comeria o prompt posicional que vem depois. Codex: as
-/// `--config mcp_servers.maestro.*` (medido no codex-cli 0.144.1 com `codex
+/// `--config mcp_servers.orbit.*` (medido no codex-cli 0.144.1 com `codex
 /// mcp get`).
 ///
 /// Os dois recebem a [`ORCHESTRATOR_PROMPT`]: o Claude por
@@ -366,15 +366,15 @@ pub fn agent_args(
 /// Sem ela o agente fazia o que faria num terminal qualquer: subia os
 /// serviços dentro da própria sessão e abria o Chrome pela extensão — nada
 /// aparecia no canvas (teste do dono, 16/10). Com as ferramentas à mão e
-/// esta regra, o caminho natural dele passa a ser o Maestro.
-pub const ORCHESTRATOR_PROMPT: &str = "Você é o orquestrador de um grafo no Maestro do TYBA. \
+/// esta regra, o caminho natural dele passa a ser o Orbit.
+pub const ORCHESTRATOR_PROMPT: &str = "Você é o orquestrador de um grafo no Orbit do TYBA. \
 O dono acompanha tudo pelo canvas, então trabalhe pelos nós: \
-para subir ou rodar um serviço, servidor de dev ou processo longo, use maestro_create_process \
+para subir ou rodar um serviço, servidor de dev ou processo longo, use orbit_create_process \
 (um nó por serviço, na pasta do projeto) em vez de rodar no seu próprio shell; \
-para abrir ou mostrar uma página (inclusive domínios .test e .localhost), use maestro_create_browser \
+para abrir ou mostrar uma página (inclusive domínios .test e .localhost), use orbit_create_browser \
 em vez de um navegador externo; \
-para trabalho de agente em outro repositório, use maestro_create_agent. \
-Use maestro_node_status para ler o estado e o log dos nós antes de concluir \
+para trabalho de agente em outro repositório, use orbit_create_agent. \
+Use orbit_node_status para ler o estado e o log dos nós antes de concluir \
 (de um agente criado, ele traz a resposta final e o que mudou). \
 Comandos curtos de leitura (ls, cat, git status) podem rodar no seu shell.";
 
@@ -401,7 +401,7 @@ mod tests {
         assert_eq!(r["jsonrpc"], "2.0");
         assert_eq!(r["result"]["protocolVersion"], "2025-11-25");
         assert_eq!(r["result"]["capabilities"]["tools"]["listChanged"], false);
-        assert_eq!(r["result"]["serverInfo"]["name"], "tyba-maestro");
+        assert_eq!(r["result"]["serverInfo"]["name"], "tyba-orbit");
         // Versão desconhecida: a mais nova que este servidor fala.
         let r = one(r#"{"jsonrpc":"2.0","id":"a","method":"initialize","params":{"protocolVersion":"1999-01-01"}}"#)
             .unwrap();
@@ -446,10 +446,10 @@ mod tests {
         // A regra de URL do navegador é a do core, domínios de dev inclusive.
         let browser = tools
             .iter()
-            .find(|t| t["name"] == "maestro_create_browser")
+            .find(|t| t["name"] == "orbit_create_browser")
             .unwrap();
         let description = browser["description"].as_str().unwrap();
-        assert!(description.contains(crate::maestro::service::LOCAL_HOSTS));
+        assert!(description.contains(crate::orbit::service::LOCAL_HOSTS));
         assert!(description.contains("*.test") && description.contains("*.localhost"));
     }
 
@@ -458,14 +458,14 @@ mod tests {
         let mut seen = Vec::new();
         let mut call = |tool: &str, args: &Value| {
             seen.push((tool.to_string(), args.clone()));
-            if tool == "maestro_stop_node" {
+            if tool == "orbit_stop_node" {
                 Err("só nós que você criou".to_string())
             } else {
                 Ok(json!({"nodeId": "orq-1"}))
             }
         };
         let r = handle_line(
-            r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"maestro_create_process","arguments":{"title":"api","command":"bun run dev","dir":"/tmp"}}}"#,
+            r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"orbit_create_process","arguments":{"title":"api","command":"bun run dev","dir":"/tmp"}}}"#,
             &mut call,
         )
         .unwrap();
@@ -479,7 +479,7 @@ mod tests {
 
         // Erro da ferramenta é resultado com isError, não erro de protocolo.
         let r = handle_line(
-            r#"{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"maestro_stop_node","arguments":{"node_id":"x"}}}"#,
+            r#"{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"orbit_stop_node","arguments":{"node_id":"x"}}}"#,
             &mut call,
         )
         .unwrap();
@@ -488,11 +488,11 @@ mod tests {
 
         // Sem arguments vira objeto vazio (o core recusa o que faltar).
         handle_line(
-            r#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"maestro_node_status"}}"#,
+            r#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"orbit_node_status"}}"#,
             &mut call,
         );
         assert_eq!(seen.len(), 3);
-        assert_eq!(seen[0].0, "maestro_create_process");
+        assert_eq!(seen[0].0, "orbit_create_process");
         assert_eq!(seen[0].1["command"], "bun run dev");
         assert_eq!(seen[2].1, json!({}));
     }
@@ -531,7 +531,7 @@ mod tests {
         for line in [
             r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rm_rf"}}"#,
             r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{}}"#,
-            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"maestro_stop_node","arguments":[1]}}"#,
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"orbit_stop_node","arguments":[1]}}"#,
         ] {
             assert_eq!(
                 one(line).unwrap()["error"]["code"],
@@ -566,7 +566,7 @@ mod tests {
         assert_eq!(second["id"], 1);
     }
 
-    /// Ida e volta pelo socket de verdade: o pedido sai como `MaestroTool`,
+    /// Ida e volta pelo socket de verdade: o pedido sai como `OrbitTool`,
     /// a resposta `result` vira valor e a recusa vira o motivo.
     #[cfg(unix)]
     #[test]
@@ -580,7 +580,7 @@ mod tests {
             Arc::new(|event| {
                 assert_eq!(event.hook_event_name, TOOL_EVENT);
                 match event.raw["tool"].as_str() {
-                    Some("maestro_node_status") => HookAction::Result {
+                    Some("orbit_node_status") => HookAction::Result {
                         value: json!({"status": "running", "args": event.raw["arguments"]}),
                     },
                     _ => HookAction::Deny {
@@ -592,39 +592,39 @@ mod tests {
         .unwrap();
         let got = call_core(
             Some(&socket),
-            "maestro_node_status",
+            "orbit_node_status",
             &json!({"node_id": "orq-1"}),
         )
         .unwrap();
         assert_eq!(got["status"], "running");
         assert_eq!(got["args"]["node_id"], "orq-1");
         assert_eq!(
-            call_core(Some(&socket), "maestro_stop_node", &json!({})).unwrap_err(),
+            call_core(Some(&socket), "orbit_stop_node", &json!({})).unwrap_err(),
             "só nós que você criou"
         );
-        assert!(call_core(None, "maestro_stop_node", &json!({})).is_err());
+        assert!(call_core(None, "orbit_stop_node", &json!({})).is_err());
     }
 
     #[test]
     fn agent_args_declare_the_server_per_cli() {
         let exe = Path::new("/Applications/TYBA.app/Contents/MacOS/tyba");
         let socket = Path::new("/tmp/tyba-abc/hook.sock");
-        let cfg = Path::new("/tmp/tyba-abc/maestro-mcp.json");
+        let cfg = Path::new("/tmp/tyba-abc/orbit-mcp.json");
         let claude = agent_args(
             &crate::session::AgentRunnerKind::ClaudeCode,
             exe,
             socket,
             cfg,
         );
-        assert_eq!(claude[0], "--mcp-config=/tmp/tyba-abc/maestro-mcp.json");
+        assert_eq!(claude[0], "--mcp-config=/tmp/tyba-abc/orbit-mcp.json");
         // Numa peça só, como o --mcp-config: separada, a opção comeria o prompt.
         assert!(claude[1].starts_with("--append-system-prompt=Você é o orquestrador"));
-        assert!(claude[1].contains("maestro_create_browser"));
+        assert!(claude[1].contains("orbit_create_browser"));
         assert_eq!(claude.len(), 2);
         let config = claude_config(exe, socket);
-        assert_eq!(config["mcpServers"]["maestro"]["args"], json!([MODE]));
+        assert_eq!(config["mcpServers"]["orbit"]["args"], json!([MODE]));
         assert_eq!(
-            config["mcpServers"]["maestro"]["env"]["TYBA_HOOK_SOCKET"],
+            config["mcpServers"]["orbit"]["env"]["TYBA_HOOK_SOCKET"],
             "/tmp/tyba-abc/hook.sock"
         );
 
@@ -643,7 +643,7 @@ mod tests {
         let doc: String = codex[..6]
             .iter()
             .filter(|a| *a != "--config")
-            .map(|a| a.replacen("mcp_servers.maestro.", "", 1))
+            .map(|a| a.replacen("mcp_servers.orbit.", "", 1))
             .collect::<Vec<_>>()
             .join("\n");
         let parsed: toml::Value = toml::from_str(&doc).unwrap();
