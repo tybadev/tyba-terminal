@@ -27,16 +27,16 @@ const TAURI_HOSTS: [&str; 2] = ["tauri.localhost", "ipc.localhost"];
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Decision {
     Allow,
-    /// O motivo, para o card e o console do nó (pt-BR, curto).
+    /// O código do motivo (o card traduz: `orbitBrowserRefused_<código>`).
     Deny(&'static str),
 }
 
-/// Motivo de recusa de endereço não local (o card mostra).
-pub const DENY_NOT_LOCAL: &str = "endereço não local recusado";
-/// Motivo de recusa dos hosts internos do Tauri.
-pub const DENY_TAURI_HOST: &str = "host interno do app recusado";
-/// Motivo de recusa de `file://` cru (só entra pelo `orbit-file`).
-pub const DENY_RAW_FILE: &str = "arquivo só abre pela pasta do nó";
+/// Recusa de endereço não local.
+pub const DENY_NOT_LOCAL: &str = "notLocal";
+/// Recusa dos hosts internos do Tauri.
+pub const DENY_TAURI_HOST: &str = "tauriHost";
+/// Recusa de `file://` cru (só entra pelo `orbit-file`).
+pub const DENY_RAW_FILE: &str = "rawFile";
 
 /// A regra de cada navegação, em qualquer frame.
 pub fn decide(url: &str) -> Decision {
@@ -81,6 +81,17 @@ pub enum FileRefusal {
 }
 
 impl FileRefusal {
+    /// O código que o card traduz (`orbitBrowserRefused_<código>`).
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::NotFileUrl => "notFileUrl",
+            Self::NotHtml => "notHtml",
+            Self::NotFound => "notFound",
+            Self::OutsideRoots => "outsideRoots",
+        }
+    }
+
+    /// O motivo em texto, para quem lê sem tradução (o agente).
     pub fn message(&self) -> &'static str {
         match self {
             Self::NotFileUrl => "não é um endereço file://",

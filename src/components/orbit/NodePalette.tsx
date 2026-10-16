@@ -73,6 +73,7 @@ export function NodePalette({
     <>
       <div aria-hidden onMouseDown={onClose} className="absolute inset-0 z-20" />
       <div
+        data-occludes
         className="absolute z-30 flex flex-col rounded-[10px] border border-tyba-border-strong bg-tyba-raised font-mono text-[12px] shadow-[var(--tyba-shadow-lg)]"
         style={{ left: at.x, top: at.y, width: PALETTE_W, height: PALETTE_H }}
       >

@@ -41,6 +41,7 @@ export function NodeFocus({ node, sessionId }: { node: OrbitNode; sessionId: str
   return (
     <div
       role="dialog"
+      data-occludes
       aria-label={node.title}
       className="nokey absolute inset-0 z-20 flex flex-col bg-tyba-bg font-mono"
     >

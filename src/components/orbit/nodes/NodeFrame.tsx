@@ -71,6 +71,8 @@ export interface CanvasActions {
   updateNode: (id: string, update: (node: OrbitNode) => OrbitNode) => void;
   /** Pasta padrão do grafo: vale para nó salvo antes da pasta por nó. */
   graphDir: string;
+  /** Id do grafo à vista (o navegador nativo é por grafo + nó). */
+  graphId: string;
   runNode: (nodeId: string) => void;
   setOpenSubagent: (nodeId: string | null) => void;
   setFocusNode: (nodeId: string | null) => void;
@@ -112,6 +114,7 @@ export const CanvasActionsContext = createContext<CanvasActions>({
   integrations: new Map(),
   updateNode: () => {},
   graphDir: "",
+  graphId: "",
   runNode: () => {},
   setOpenSubagent: () => {},
   setFocusNode: () => {},

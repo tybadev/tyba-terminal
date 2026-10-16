@@ -88,6 +88,7 @@ import {
   type OrbitNode,
   type Plan,
 } from "@/lib/orbit";
+import { browserRetain } from "@/lib/orbitBrowser";
 import { roomAgents } from "@/lib/orbitTalk";
 import { ImportDialog } from "./ImportDialog";
 import { IntegrationsPanel } from "./IntegrationsPanel";
@@ -711,6 +712,19 @@ function OrbitInner({
   }, [containers]);
   useEffect(() => () => void serviceLogsRetain([]).catch(() => {}), []);
 
+  // Navegador nativo (macOS): só vivem as views dos navegadores do grafo à
+  // vista; trocar de grafo ou fechar o Orbit destrói as outras.
+  const graphId = meta?.id ?? "";
+  const browserIds = viewGraph.nodes
+    .filter((n) => n.kind.type === "browser")
+    .map((n) => n.id)
+    .join(",");
+  useEffect(() => {
+    if (!graphId) return;
+    void browserRetain(graphId, browserIds ? browserIds.split(",") : []).catch(() => {});
+  }, [graphId, browserIds]);
+  useEffect(() => () => void browserRetain("", []).catch(() => {}), []);
+
   // "Abrir no navegador" do processo: o navegador que já recebe a url dele, ou
   // um novo ao lado, ligado pela url e já com o endereço.
   const viewGraphRef = useRef(viewGraph);
@@ -772,6 +786,7 @@ function OrbitInner({
       integrations: new Map(integrations.map((i) => [i.id, i])),
       updateNode,
       graphDir,
+      graphId,
       runNode: releaseNode,
       setOpenSubagent: setOpenSub,
       setFocusNode,
@@ -783,7 +798,7 @@ function OrbitInner({
           setError(t("orbitApprovalError", { error: String(e) })),
         ),
     }),
-    [integrations, updateNode, graphDir, releaseNode, openInBrowser, t],
+    [integrations, updateNode, graphDir, graphId, releaseNode, openInBrowser, t],
   );
   const room = roomAgents(viewGraph.edges);
   const ctx = useMemo(

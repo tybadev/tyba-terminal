@@ -94,7 +94,9 @@ pub struct BrowserState {
     pub live: bool,
     /// Quando o último print foi tirado (ms); o front busca a imagem.
     pub preview_at: Option<u64>,
-    /// A última navegação recusada, com o motivo.
+    /// A última navegação recusada: o código do motivo (`notLocal`,
+    /// `tauriHost`, `rawFile`, `notHtml`, `notFound`, `outsideRoots`,
+    /// `notFileUrl`), que o card traduz.
     pub refused: Option<String>,
     /// macOS 11–13: armazenamento não persistente (o login não fica salvo).
     pub ephemeral: bool,
@@ -268,7 +270,7 @@ impl BrowserViews {
             .get(..5)
             .is_some_and(|s| s.eq_ignore_ascii_case("file:"))
         {
-            policy::resolve_file(url, &roots).map_err(|r| r.message().to_string())
+            policy::resolve_file(url, &roots).map_err(|r| r.code().to_string())
         } else {
             match policy::decide(url) {
                 policy::Decision::Allow => Ok(url.trim().to_string()),
@@ -336,6 +338,10 @@ impl BrowserViews {
         let mut changed = Vec::new();
         {
             let mut entries = self.entries.lock();
+            // Esconder o que nem existe (card saindo depois do `retain`).
+            if rect.is_none() && !entries.contains_key(key) {
+                return;
+            }
             let entry = entries.entry(key.clone()).or_insert_with(|| Entry {
                 zoom: 1.0,
                 ..Entry::default()
