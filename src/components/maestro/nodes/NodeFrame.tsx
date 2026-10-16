@@ -65,6 +65,8 @@ export interface MaestroCtx {
   setFocusNode: (nodeId: string | null) => void;
   /** "Abrir no navegador" do processo: o navegador ligado nele, ou um novo. */
   openInBrowser: (fromId: string, url: string) => void;
+  /** Nós que um orquestrador criou no run à vista (efêmeros, fora do grafo salvo). */
+  createdIds: ReadonlySet<string>;
 }
 
 export const MaestroContext = createContext<MaestroCtx>({
@@ -83,6 +85,7 @@ export const MaestroContext = createContext<MaestroCtx>({
   focusNode: null,
   setFocusNode: () => {},
   openInBrowser: () => {},
+  createdIds: new Set(),
 });
 
 export const useMaestro = () => useContext(MaestroContext);
@@ -167,8 +170,11 @@ export function NodeFrame({
   children: ReactNode;
 }) {
   const { t } = useTranslation();
-  const { integrations, updateNode, run } = useMaestro();
+  const { integrations, updateNode, run, createdIds } = useMaestro();
   const nodeRun = run?.nodes[id];
+  // Criado pelo orquestrador neste run: tracejado violeta, sem editar nem apagar.
+  const created = createdIds.has(id);
+  const orchestrates = node.kind.type === "agent" && node.kind.orchestrate === true;
   const { deleteElements } = useReactFlow();
   const updateInternals = useUpdateNodeInternals();
 
@@ -191,9 +197,13 @@ export function NodeFrame({
   return (
     <div
       className={`group flex h-full w-full flex-col rounded-[10px] border bg-tyba-surface font-mono text-tyba-text ${
-        selected
-          ? "border-tyba-violet shadow-[0_0_0_1px_var(--tyba-violet),0_0_0_5px_color-mix(in_srgb,var(--tyba-violet)_18%,transparent)]"
-          : "border-tyba-border-strong shadow-[var(--tyba-shadow-md)]"
+        created
+          ? "border-dashed border-tyba-violet/70 shadow-[var(--tyba-shadow-md)]"
+          : selected
+            ? "border-tyba-violet shadow-[0_0_0_1px_var(--tyba-violet),0_0_0_5px_color-mix(in_srgb,var(--tyba-violet)_18%,transparent)]"
+            : orchestrates
+              ? "border-tyba-violet shadow-[var(--tyba-shadow-md)]"
+              : "border-tyba-border-strong shadow-[var(--tyba-shadow-md)]"
       }`}
     >
       <NodeResizer
@@ -221,6 +231,7 @@ export function NodeFrame({
           autoCorrect="off"
           autoCapitalize="off"
           value={node.title}
+          readOnly={created}
           onChange={(e) => {
             const title = e.target.value;
             updateNode(id, (n) => ({ ...n, title }));
@@ -232,15 +243,17 @@ export function NodeFrame({
         </span>
         {status ?? (nodeRun && <NodeStatusBadge nodeId={id} nodeRun={nodeRun} />)}
         {extra}
-        <button
-          type="button"
-          aria-label={t("maestroDeleteNode")}
-          title={t("maestroDeleteNode")}
-          onClick={() => void deleteElements({ nodes: [{ id }] })}
-          className="nodrag shrink-0 rounded-[4px] p-1 text-tyba-text-faint opacity-0 transition-opacity hover:text-tyba-red focus-visible:opacity-100 group-hover:opacity-100"
-        >
-          <Trash size={13} />
-        </button>
+        {!created && (
+          <button
+            type="button"
+            aria-label={t("maestroDeleteNode")}
+            title={t("maestroDeleteNode")}
+            onClick={() => void deleteElements({ nodes: [{ id }] })}
+            className="nodrag shrink-0 rounded-[4px] p-1 text-tyba-text-faint opacity-0 transition-opacity hover:text-tyba-red focus-visible:opacity-100 group-hover:opacity-100"
+          >
+            <Trash size={13} />
+          </button>
+        )}
       </div>
       {rows > 0 && (
         <div className="shrink-0 border-b border-tyba-border py-1.5">
@@ -298,6 +311,11 @@ export function NodeFrame({
       )}
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-b-[9px]">
         {children}
+        {created && (
+          <div className="shrink-0 border-t border-tyba-border px-3.5 py-1.5 text-[11.5px] text-tyba-violet">
+            {t("maestroCreatedBy")}
+          </div>
+        )}
       </div>
     </div>
   );

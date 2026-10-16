@@ -43,6 +43,10 @@ import {
   EMPTY_RUN_VIEW,
   INTEGRATION_DRAG_TYPE,
   browserFed,
+  createdDetail,
+  ephemeralCreated,
+  keepCreated,
+  shortDir,
   inHandle,
   isLocalUrl,
   outHandle,
@@ -75,6 +79,7 @@ import {
   selectedRun,
   stoppableRuns,
   toFlow,
+  type Created,
   type Graph,
   type ImportPreview,
   type Integration,
@@ -426,6 +431,21 @@ function MaestroInner() {
     }),
     [nodes, edges],
   );
+  // O que o canvas mostra: o grafo e, no run rodando, os nós que o
+  // orquestrador criou (efêmeros) com as ligações url deles.
+  const createdNow = useMemo(() => ephemeralCreated(run), [run]);
+  const createdIds = useMemo(() => new Set(createdNow.map((c) => c.node.id)), [createdNow]);
+  const viewGraph = useMemo(
+    () =>
+      createdNow.length === 0
+        ? graph
+        : {
+            nodes: [...graph.nodes, ...createdNow.map((c) => c.node)],
+            edges: [...graph.edges, ...createdNow.flatMap((c) => c.edges)],
+          },
+    [graph, createdNow],
+  );
+
   // Log ao vivo dos serviços: só o seguidor de contêiner que um nó mostra fica.
   const containers = serviceContainers(graph.nodes).join(",");
   useEffect(() => {
@@ -437,7 +457,7 @@ function MaestroInner() {
   // um novo ao lado, ligado pela url e já com o endereço.
   const openInBrowser = useCallback(
     (fromId: string, url: string) => {
-      const fed = browserFed(graph, fromId);
+      const fed = browserFed(viewGraph, fromId);
       if (fed) {
         setNodes((ns) => ns.map((n) => ({ ...n, selected: n.id === fed.id })));
         void fitView({ nodes: [{ id: fed.id }], padding: 0.2, maxZoom: 1, duration: 200 });
@@ -480,7 +500,7 @@ function MaestroInner() {
         },
       ]);
     },
-    [graph, nodes, t, fitView],
+    [graph, viewGraph, nodes, t, fitView],
   );
 
   const graphDir = meta?.dir ?? "";
@@ -490,7 +510,7 @@ function MaestroInner() {
     () => ({
       integrations: new Map(integrations.map((i) => [i.id, i])),
       updateNode,
-      graph,
+      graph: viewGraph,
       graphDir,
       run,
       live,
@@ -503,11 +523,12 @@ function MaestroInner() {
       focusNode,
       setFocusNode,
       openInBrowser,
+      createdIds,
     }),
     [
       integrations,
       updateNode,
-      graph,
+      viewGraph,
       graphDir,
       run,
       live,
@@ -519,8 +540,28 @@ function MaestroInner() {
       openSub,
       focusNode,
       openInBrowser,
+      createdIds,
     ],
   );
+
+  // "Manter no grafo": o core grava os criados no grafo e devolve o grafo
+  // inteiro, que passa a ser o da tela (o que estava no debounce vai antes).
+  const keep = async () => {
+    if (!run) return;
+    try {
+      await flush();
+      const kept = await keepCreated(run.id);
+      const flow = toFlow(kept);
+      lastSaved.current = JSON.stringify(fromFlow(kept, flow.nodes, flow.edges));
+      setNodes(flow.nodes as MaestroFlowNode[]);
+      setEdges(flow.edges);
+      const fresh = await runGet(run.id);
+      if (fresh) dispatchRun({ type: "update", run: fresh });
+    } catch (e) {
+      setError(t("maestroKeepError", { error: String(e) }));
+    }
+  };
+  const orchestrated = run?.status === "running" ? (run.created ?? []) : [];
 
   /** Troca de grafo: o que está no debounce vai antes para o banco. */
   const switchTo = (next: { id: string | null; fresh: boolean }) => {
@@ -790,6 +831,13 @@ function MaestroInner() {
               {error}
             </div>
           )}
+          {orchestrated.length > 0 && (
+            <OrchestratorPanel
+              created={orchestrated}
+              titleOf={(id) => viewGraph.nodes.find((n) => n.id === id)?.title}
+              onKeep={() => void keep()}
+            />
+          )}
           {opened && (
             <SubagentPanel
               sessionId={opened.sessionId}
@@ -844,7 +892,7 @@ function MaestroInner() {
         </div>
         {meta && (
           <RunTimeline
-            graph={graph}
+            graph={viewGraph}
             run={run}
             number={run ? runNumber(runView, run.id) : 0}
             now={now}
@@ -861,6 +909,84 @@ function MaestroInner() {
         />
       )}
     </MaestroContext.Provider>
+  );
+}
+
+/**
+ * "O que o Orquestrador fez" (quadro MaestroOrquestrador): cada nó criado no
+ * run (o quê, comando ou url, pasta, hora) e, no fim, "Manter no grafo" ou
+ * "Descartar ao parar" (o padrão: os criados somem no ■ Parar ou no fim).
+ */
+function OrchestratorPanel({
+  created,
+  titleOf,
+  onKeep,
+}: {
+  created: Created[];
+  titleOf: (id: string) => string | undefined;
+  onKeep: () => void;
+}) {
+  const { t, i18n } = useTranslation();
+  const pending = created.some((c) => !c.kept);
+  const btn =
+    "rounded-[6px] border px-2.5 py-1 text-[11px] disabled:cursor-not-allowed disabled:opacity-50";
+  return (
+    <aside
+      aria-label={t("maestroOrchestratorDid")}
+      className="flex w-[360px] shrink-0 flex-col border-l border-tyba-border bg-tyba-surface"
+    >
+      <div className="shrink-0 border-b border-tyba-border px-4 py-3 text-[13px] text-tyba-text">
+        {t("maestroOrchestratorDid")}
+      </div>
+      <div className="flex min-h-0 flex-col gap-3 overflow-y-auto px-4 py-3 text-[12px] leading-[1.5] text-tyba-text-muted">
+        {created.map((c) => {
+          const detail = createdDetail(c, titleOf);
+          const time = new Date(c.createdAt).toLocaleTimeString(i18n.language, {
+            hour: "2-digit",
+            minute: "2-digit",
+          });
+          const parts = [
+            detail.text,
+            detail.from && t("maestroCreatedFrom", { node: detail.from }),
+            detail.dir && shortDir(detail.dir),
+            time,
+          ].filter(Boolean);
+          return (
+            <div key={c.node.id} className="min-w-0">
+              <div className="truncate text-tyba-text">
+                {t("maestroCreatedItem", {
+                  kind: t(`maestroCreatedKind_${c.node.kind.type}`),
+                  title: c.node.title,
+                })}
+              </div>
+              <div className="truncate text-tyba-text-faint" title={parts.join(" · ")}>
+                {parts.join(" · ")}
+              </div>
+            </div>
+          );
+        })}
+        <div className="flex gap-2 pt-1">
+          <button
+            type="button"
+            disabled={!pending}
+            title={t("maestroKeepHint")}
+            onClick={onKeep}
+            className={`${btn} border-tyba-border-strong text-tyba-text hover:bg-tyba-raised`}
+          >
+            {t("maestroKeepInGraph")}
+          </button>
+          <button
+            type="button"
+            disabled={!pending}
+            aria-pressed={pending}
+            title={t("maestroDiscardHint")}
+            className={`${btn} border-tyba-border text-tyba-text-muted`}
+          >
+            {t("maestroDiscardOnStop")}
+          </button>
+        </div>
+      </div>
+    </aside>
   );
 }
 

@@ -30,7 +30,15 @@ export const OUTPUT_KINDS: readonly OutputKind[] = ["log", "json", "file", "diff
  * grafo salvo antes da pasta por nó: aí vale `Graph.dir`.
  */
 export type NodeKind =
-  | { type: "agent"; runner: Runner; role: string; prompt: string; dir: string }
+  | {
+      type: "agent";
+      runner: Runner;
+      role: string;
+      prompt: string;
+      dir: string;
+      /** Orquestrador: recebe as ferramentas do Maestro e cria nós no run. Ausente = não. */
+      orchestrate?: boolean;
+    }
   | { type: "process"; command: string; output: OutputKind; file: string | null; dir: string }
   | { type: "note"; markdown: string }
   | { type: "integration"; integrationId: string; dir: string }
@@ -273,6 +281,9 @@ export function connectionProblem(
 /** Porta de saída: uma por tipo que o nó produz. */
 export const outHandle = (kind: EdgeKind) => `out:${kind}`;
 
+/** Saída invisível do orquestrador: a ligação tracejada até o que ele criou (só desenho). */
+export const ORCHESTRATOR_HANDLE = "orchestrator";
+
 /** Porta de entrada livre, onde nasce uma ligação nova. */
 export const NEW_IN_HANDLE = "in";
 
@@ -477,6 +488,58 @@ export interface Run {
   test?: boolean;
   /** Sessões de agente do run ainda vivas — o run pode já ter fechado. */
   liveAgents?: string[];
+  /** Nós que um orquestrador criou neste run (efêmeros, fora do grafo salvo). */
+  created?: Created[];
+}
+
+/** Nó criado por um orquestrador durante o run (espelha `orchestrator::Created`). */
+export interface Created {
+  node: MaestroNode;
+  /** Id do nó orquestrador que o criou. */
+  createdBy: string;
+  createdAt: number;
+  /** Ligações que chegam nele (a `url` do `from_node`). */
+  edges: MaestroEdge[];
+  /** O dono clicou "Manter no grafo": já é nó do grafo salvo. */
+  kept: boolean;
+}
+
+/**
+ * Os criados que o canvas desenha como efêmeros: só no run rodando (no ■
+ * Parar ou no fim eles somem) e só os que ainda não foram para o grafo.
+ */
+export const ephemeralCreated = (run: Run | null): Created[] =>
+  run?.status === "running" ? (run.created ?? []).filter((c) => !c.kept) : [];
+
+/** "Manter no grafo": o core grava os criados no grafo e devolve o grafo inteiro. */
+export const keepCreated = (runId: string) =>
+  invoke<Graph>("maestro_keep_created", { runId });
+
+/**
+ * A segunda linha de cada criação no painel "O que o Orquestrador fez": o
+ * comando (ou a url, ou a origem dela) e a pasta.
+ */
+export function createdDetail(
+  created: Created,
+  titleOf: (id: string) => string | undefined,
+): { text: string | null; from: string | null; dir: string | null } {
+  const k = created.node.kind;
+  switch (k.type) {
+    case "process":
+      return { text: k.command, from: null, dir: k.dir || null };
+    case "agent":
+      return { text: k.prompt, from: null, dir: k.dir || null };
+    case "browser": {
+      const edge = created.edges.find((e) => e.kind === "url");
+      return {
+        text: k.url || null,
+        from: edge ? (titleOf(edge.from) ?? edge.from) : null,
+        dir: null,
+      };
+    }
+    default:
+      return { text: null, from: null, dir: null };
+  }
 }
 
 /** ▶ Executar: o core recusa grafo não consentido ou inválido. Antes de
@@ -868,7 +931,15 @@ export function revealHidden(text: string): string {
 
 /** Um item do que vai rodar, na ordem em que a tela de importação mostra. */
 export type ImportItem =
-  | { type: "agent"; node: MaestroNode; runner: Runner; role: string; prompt: string }
+  | {
+      type: "agent";
+      node: MaestroNode;
+      runner: Runner;
+      role: string;
+      prompt: string;
+      /** Vai ganhar as ferramentas do Maestro (cria nós no canvas). */
+      orchestrate: boolean;
+    }
   | {
       type: "process";
       node: MaestroNode;
@@ -892,7 +963,14 @@ export function importItems(preview: Pick<ImportPreview, "graph" | "integrations
     const k = node.kind;
     switch (k.type) {
       case "agent":
-        return { type: "agent", node, runner: k.runner, role: k.role, prompt: k.prompt };
+        return {
+          type: "agent",
+          node,
+          runner: k.runner,
+          role: k.role,
+          prompt: k.prompt,
+          orchestrate: k.orchestrate === true,
+        };
       case "process":
         return { type: "process", node, command: k.command, output: k.output, file: k.file };
       case "note":

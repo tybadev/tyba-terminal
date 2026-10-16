@@ -4,7 +4,7 @@ import { Handle, Position, type NodeProps } from "@xyflow/react";
 
 import { ClaudeIcon } from "@/components/icons/ClaudeIcon";
 import { OpenAIIcon } from "@/components/icons/OpenAIIcon";
-import type { NodeKind, Runner } from "@/lib/maestro";
+import { ORCHESTRATOR_HANDLE, type NodeKind, type Runner } from "@/lib/maestro";
 import { SUBAGENT_HANDLE, groupRounds, roundTally } from "@/lib/maestroSubagents";
 import {
   NodeDir,
@@ -32,6 +32,8 @@ export function AgentNode({ id, data, selected }: NodeProps<MaestroFlowNode>) {
   const set = (patch: Partial<AgentKind>) =>
     updateNode(id, (n) => ({ ...n, kind: { ...(n.kind as AgentKind), ...patch } }));
   const claude = kind.runner === "claude";
+  const orchestrates = kind.orchestrate === true;
+  const hidden = { opacity: 0, width: 1, height: 1, minWidth: 0, minHeight: 0, border: 0 };
 
   return (
     <NodeFrame
@@ -41,7 +43,18 @@ export function AgentNode({ id, data, selected }: NodeProps<MaestroFlowNode>) {
       mark={claude ? <ClaudeIcon size={14} /> : <OpenAIIcon size={14} />}
       markClass={claude ? "bg-tyba-amber-tint text-tyba-amber" : "bg-tyba-cyan-tint text-tyba-cyan"}
       label={kind.role || t("maestroKindAgent")}
-      extra={session ? <FocusButton nodeId={id} /> : undefined}
+      extra={
+        orchestrates || session ? (
+          <>
+            {orchestrates && (
+              <span className="shrink-0 rounded-[4px] border border-tyba-violet/50 px-1.5 text-[11px] leading-[18px] text-tyba-violet">
+                {t("maestroOrchestrates")}
+              </span>
+            )}
+            {session && <FocusButton nodeId={id} />}
+          </>
+        ) : undefined
+      }
       status={
         rounds && tally && tally.running > 0 ? (
           <span className="flex shrink-0 items-center gap-1.5 text-[11.5px] whitespace-nowrap text-tyba-blue">
@@ -57,8 +70,18 @@ export function AgentNode({ id, data, selected }: NodeProps<MaestroFlowNode>) {
         id={SUBAGENT_HANDLE}
         position={Position.Bottom}
         isConnectable={false}
-        style={{ opacity: 0, width: 1, height: 1, minWidth: 0, minHeight: 0, border: 0 }}
+        style={hidden}
       />
+      {/* Saída invisível das ligações tracejadas até os nós que ele criou. */}
+      {orchestrates && (
+        <Handle
+          type="source"
+          id={ORCHESTRATOR_HANDLE}
+          position={Position.Right}
+          isConnectable={false}
+          style={hidden}
+        />
+      )}
       <div className="flex shrink-0 items-center gap-1.5 border-b border-tyba-border px-3.5 py-1.5">
         <div className="nodrag flex rounded-[5px] border border-tyba-border p-px" role="group">
           {RUNNERS.map((r) => (
@@ -85,6 +108,19 @@ export function AgentNode({ id, data, selected }: NodeProps<MaestroFlowNode>) {
           onChange={(e) => set({ role: e.target.value })}
           className={`${fieldClass} min-w-0 flex-1`}
         />
+        <button
+          type="button"
+          aria-pressed={orchestrates}
+          title={t("maestroOrchestrateHint")}
+          onClick={() => set({ orchestrate: !orchestrates })}
+          className={`nodrag shrink-0 rounded-[4px] border px-1.5 text-[11px] leading-[20px] ${
+            orchestrates
+              ? "border-tyba-violet/50 bg-tyba-violet-tint text-tyba-violet"
+              : "border-tyba-border text-tyba-text-faint hover:text-tyba-text"
+          }`}
+        >
+          {t("maestroOrchestrate")}
+        </button>
         <NodeDir id={id} kind={kind} />
       </div>
       {session ? (

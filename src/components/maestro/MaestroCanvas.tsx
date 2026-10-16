@@ -48,12 +48,15 @@ import {
 } from "@/components/ui/dropdown-menu";
 import {
   NEW_IN_HANDLE,
+  ORCHESTRATOR_HANDLE,
   connectionProblem,
   edgeDetail,
   edgeHasValue,
+  ephemeralCreated,
   inHandle,
   kindOfOutHandle,
   newNode,
+  outHandle,
   type FlowEdgeData,
   type Integration,
   type NodeKind,
@@ -216,7 +219,12 @@ export function MaestroCanvas({
   // Nó no modo foco: só enquanto tem sessão viva. Sem ela (o processo acabou,
   // o nó sumiu, trocou o grafo) o foco fecha, para não reabrir sozinho depois.
   const focused = useMemo(() => {
-    const flow = focusNode ? nodes.find((n) => n.id === focusNode) : undefined;
+    const flow = focusNode
+      ? (nodes.find((n) => n.id === focusNode) ??
+        ephemeralCreated(run)
+          .map((c) => ({ id: c.node.id, data: { node: c.node } }))
+          .find((n) => n.id === focusNode))
+      : undefined;
     if (!flow) return null;
     const session = nodeSession(flow.data.node.kind, run?.nodes[flow.id], live);
     return session ? { node: flow.data.node, session } : null;
@@ -277,32 +285,89 @@ export function MaestroCanvas({
     }
     return { nodes: ns, edges: es };
   }, [nodes, subagents]);
+
+  // Nós que o orquestrador criou no run rodando: efêmeros como os
+  // subagentes (fora do state, nunca salvos), com o terminal/página de
+  // verdade, a ligação tracejada do criador e as ligações url deles.
+  const created = useMemo(() => {
+    const ns: MaestroFlowNode[] = [];
+    const es: Edge[] = [];
+    const ids = new Set<string>();
+    const list = ephemeralCreated(run);
+    for (const c of list) ids.add(c.node.id);
+    const exists = (id: string) => ids.has(id) || nodes.some((n) => n.id === id);
+    for (const c of list) {
+      const { node } = c;
+      ns.push({
+        id: node.id,
+        type: node.kind.type,
+        position: node.position,
+        width: node.size.w,
+        height: node.size.h,
+        measured: { width: node.size.w, height: node.size.h },
+        data: { node },
+        ...EPHEMERAL,
+      });
+      if (nodes.some((n) => n.id === c.createdBy)) {
+        es.push({
+          id: `${node.id}:by`,
+          source: c.createdBy,
+          sourceHandle: ORCHESTRATOR_HANDLE,
+          target: node.id,
+          targetHandle: NEW_IN_HANDLE,
+          style: SUB_EDGE_STYLE,
+          ...EPHEMERAL,
+        });
+      }
+      for (const e of c.edges) {
+        if (!exists(e.from)) continue;
+        es.push({
+          id: e.id,
+          type: "maestro",
+          source: e.from,
+          target: e.to,
+          sourceHandle: outHandle(e.kind),
+          targetHandle: inHandle(e.id),
+          data: { kind: e.kind },
+          ...EPHEMERAL,
+        });
+      }
+    }
+    return { nodes: ns, edges: es, ids: new Set([...ids, ...es.map((e) => e.id)]) };
+  }, [run, nodes]);
+
   const shownNodes = useMemo<CanvasNode[]>(
-    () => (ephemeral.nodes.length ? [...nodes, ...ephemeral.nodes] : nodes),
-    [nodes, ephemeral.nodes],
+    () =>
+      ephemeral.nodes.length || created.nodes.length
+        ? [...nodes, ...created.nodes, ...ephemeral.nodes]
+        : nodes,
+    [nodes, ephemeral.nodes, created.nodes],
   );
   const shownEdges = useMemo<Edge[]>(
-    () => (ephemeral.edges.length ? [...edges, ...ephemeral.edges] : edges),
-    [edges, ephemeral.edges],
+    () =>
+      ephemeral.edges.length || created.edges.length
+        ? [...edges, ...created.edges, ...ephemeral.edges]
+        : edges,
+    [edges, ephemeral.edges, created.edges],
   );
 
   const onNodesChange = useCallback(
     (changes: NodeChange<CanvasNode>[]) => {
       const mine = changes.filter(
-        (c) => !("id" in c) || !isSubagentNodeId(c.id),
+        (c) => !("id" in c) || (!isSubagentNodeId(c.id) && !created.ids.has(c.id)),
       ) as NodeChange<MaestroFlowNode>[];
       if (mine.length) setNodes((ns) => applyNodeChanges(mine, ns));
     },
-    [setNodes],
+    [setNodes, created.ids],
   );
   const onEdgesChange = useCallback(
     (changes: EdgeChange<Edge>[]) => {
       const mine = changes.filter(
-        (c) => !("id" in c) || !isSubagentNodeId(c.id),
+        (c) => !("id" in c) || (!isSubagentNodeId(c.id) && !created.ids.has(c.id)),
       ) as EdgeChange<MaestroFlowEdge>[];
       if (mine.length) setEdges((es) => applyEdgeChanges(mine, es));
     },
-    [setEdges],
+    [setEdges, created.ids],
   );
 
   const model = useMemo(
@@ -461,6 +526,7 @@ export function MaestroCanvas({
                     role: "",
                     prompt: "",
                     dir: newDir,
+                    orchestrate: false,
                   })
                 }
               >
@@ -475,6 +541,7 @@ export function MaestroCanvas({
                     role: "",
                     prompt: "",
                     dir: newDir,
+                    orchestrate: false,
                   })
                 }
               >
