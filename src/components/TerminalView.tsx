@@ -214,6 +214,9 @@ interface Props {
   visible: boolean;
   focused: boolean;
   rect: PaneRectStyle | null;
+  /** Sem WebGL: renderer DOM. Para quem está sob um transform de escala (o
+   * nó do grafo fora de 100%), onde a textura do WebGL sairia borrada. */
+  noWebgl?: boolean;
   /** Programa de tela cheia (nvim, hx, htop): o terminal vai de borda a borda,
    * sem a margem do bloco ao vivo — a margem virava moldura em volta do
    * editor. */
@@ -482,6 +485,7 @@ export function TerminalView({
   visible,
   focused,
   rect,
+  noWebgl = false,
   fullBleed = false,
   exited,
   reattaches,
@@ -551,6 +555,8 @@ export function TerminalView({
   reattachesRef.current = Boolean(reattaches);
   const visibleRef = useRef(visible);
   visibleRef.current = visible;
+  const noWebglRef = useRef(noWebgl);
+  noWebglRef.current = noWebgl;
   const syncWebglRef = useRef<(() => void) | null>(null);
   const onLiveRowsRef = useRef(onLiveRows);
   onLiveRowsRef.current = onLiveRows;
@@ -1033,7 +1039,7 @@ export function TerminalView({
     };
     const syncWebgl = () => {
       if (disposed || !opened) return;
-      if (visibleRef.current) {
+      if (visibleRef.current && !noWebglRef.current) {
         if (webglRef.current) return;
         webglRef.current = loadWebgl(term, () => {
           webglRef.current = null;
@@ -1129,6 +1135,10 @@ export function TerminalView({
     if (focused && visible && !readOnly && !hasApprovalPanel) term.focus();
     syncWebglRef.current?.();
   }, [focused, visible, readOnly, hasApprovalPanel]);
+
+  useEffect(() => {
+    syncWebglRef.current?.();
+  }, [noWebgl]);
 
   // Ao ficar visível (troca de aba), o container sai de `display:none` e ganha
   // tamanho, mas o canvas do xterm ainda está nas dimensões antigas — a CSS o

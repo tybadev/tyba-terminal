@@ -100,6 +100,7 @@ import { SubagentMark, subagentTone, useSubagentTime } from "./nodes/SubagentNod
 import { useNodeSubagents } from "./useNodeSubagents";
 import { SubagentTranscript } from "@/components/SubagentViewer";
 import type { SubagentRun } from "@/lib/ipc";
+import { nodeTerminalWebgl } from "@/lib/nodeTerminal";
 import {
   subagentKey,
   subagentNodeId,
@@ -434,7 +435,7 @@ function MaestroInner({ focusSession }: { focusSession: FocusSessionRequest | nu
   );
   const { zoomIn, zoomOut, zoomTo, fitView, screenToFlowPosition } = useReactFlow();
   const { zoom } = useViewport();
-  const actualSize = Math.round(zoom * 100) === 100;
+  const actualSize = nodeTerminalWebgl(zoom);
 
   const graph = useMemo(
     () => ({

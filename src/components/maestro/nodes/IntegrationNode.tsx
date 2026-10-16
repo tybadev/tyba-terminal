@@ -5,7 +5,7 @@ import type { NodeProps } from "@xyflow/react";
 
 import { nodeSession, type NodeKind } from "@/lib/maestro";
 import { NodeDir, NodeFrame, useMaestro, type MaestroFlowNode } from "./NodeFrame";
-import { NodeTerminal } from "./NodeTerminal";
+import { FocusButton, NodeTerminal } from "./NodeTerminal";
 
 /**
  * Nó de integração: aponta para um script salvo na biblioteca. Aqui só se
@@ -49,6 +49,8 @@ export function IntegrationNode({ id, data, selected }: NodeProps<MaestroFlowNod
           >
             <Play size={11} weight="fill" />
           </button>
+        ) : session ? (
+          <FocusButton nodeId={id} />
         ) : null
       }
     >

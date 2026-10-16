@@ -4,6 +4,7 @@ import { ArrowsOut } from "@phosphor-icons/react";
 
 import { TerminalView } from "@/components/TerminalView";
 import { sessionScreenLines } from "@/lib/ipc";
+import { nodeTerminalClass } from "@/lib/nodeTerminal";
 import { useMaestro } from "./NodeFrame";
 
 /** O terminal ocupa o nó inteiro: o wrapper é quem tem o tamanho. */
@@ -14,12 +15,13 @@ const PREVIEW_LINES = 14;
 const PREVIEW_POLL_MS = 400;
 
 /**
- * Terminal do nó. Em 100% é o `TerminalView` de verdade (o PTY tem um tamanho
- * só, e é o do nó); fora disso o canvas escala o nó e o xterm sairia borrado,
- * então vai a prévia das últimas linhas em texto. Com o nó aberto no modo foco
- * (`NodeFocus`) também vai a prévia: a sessão só monta o xterm em UM lugar.
- * Duplo clique na prévia abre o foco; no xterm de verdade o duplo clique fica
- * com ele (selecionar palavra), e o ⤢ do cabeçalho serve igual.
+ * Terminal do nó: o `TerminalView` de verdade em qualquer zoom — dá para
+ * digitar sem ir a 100%. Fora de 100% vai pelo renderer DOM (texto nítido sob
+ * o transform do canvas; ver `nodeTerminalWebgl`); o tamanho do PTY é o do nó
+ * e não muda com o zoom. Selecionar o nó (clicar nele) foca o xterm.
+ *
+ * Com o nó aberto no modo foco (`NodeFocus`) vai a prévia em texto: a sessão
+ * só monta o xterm em UM lugar. O ⤢ do cabeçalho abre o foco.
  */
 export function NodeTerminal({
   nodeId,
@@ -30,16 +32,19 @@ export function NodeTerminal({
   sessionId: string;
   focused: boolean;
 }) {
-  const { actualSize, focusNode, setFocusNode } = useMaestro();
+  const { actualSize, focusNode } = useMaestro();
   const inFocus = focusNode === nodeId;
   return (
-    <div className="nodrag nowheel nopan nokey relative min-h-0 flex-1 bg-tyba-sunken">
-      {actualSize && !inFocus ? (
-        <TerminalView sessionId={sessionId} visible focused={focused} rect={FULL} />
+    <div className={`${nodeTerminalClass(focused)} relative min-h-0 flex-1 bg-tyba-sunken`}>
+      {inFocus ? (
+        <TerminalPreview sessionId={sessionId} />
       ) : (
-        <TerminalPreview
+        <TerminalView
           sessionId={sessionId}
-          onOpen={inFocus ? undefined : () => setFocusNode(nodeId)}
+          visible
+          focused={focused}
+          rect={FULL}
+          noWebgl={!actualSize}
         />
       )}
     </div>
@@ -67,7 +72,7 @@ export function FocusButton({ nodeId }: { nodeId: string }) {
  * Últimas linhas da sessão, em texto. Quem interpreta os bytes é o próprio
  * xterm, sem abrir (sem DOM): a tela fica no buffer e daqui só se lê o texto.
  */
-function TerminalPreview({ sessionId, onOpen }: { sessionId: string; onOpen?: () => void }) {
+function TerminalPreview({ sessionId }: { sessionId: string }) {
   const [lines, setLines] = useState<string[]>([]);
 
   // As linhas vêm da tela que o core já renderiza no tamanho real do PTY
@@ -94,7 +99,6 @@ function TerminalPreview({ sessionId, onOpen }: { sessionId: string; onOpen?: ()
   return (
     <div
       role="log"
-      onDoubleClick={onOpen}
       className="absolute inset-0 flex flex-col justify-end overflow-hidden px-3.5 pt-2.5 pb-3 font-mono text-[11.5px] leading-[17px] text-tyba-text-muted"
     >
       {/* Cada linha com altura fixa e sem encolher. Item de flex encolhe por

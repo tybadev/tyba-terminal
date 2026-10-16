@@ -52,7 +52,7 @@ export interface MaestroCtx {
   /** O run à vista é o mais novo: os terminais vivos são dele. */
   live: boolean;
   now: number;
-  /** Zoom em 100%: terminal real no nó. Fora disso, prévia em texto. */
+  /** Zoom em 100%: o terminal do nó usa WebGL. Fora disso, renderer DOM. */
   actualSize: boolean;
   runNode: (nodeId: string) => void;
   /** Subagentes do claude de cada nó com sessão viva (por id de nó). */
