@@ -450,6 +450,23 @@ pub fn parse_call(tool: &str, value: &Value) -> Result<ToolCall, String> {
                 action: super::browser::AgentAction::Snapshot,
             })
         }
+        "orbit_browser_console" => {
+            let a: BrowserNodeArgs = args(tool, value)?;
+            Ok(ToolCall::Browser {
+                node: browser_node(a.node)?,
+                action: super::browser::AgentAction::Console,
+            })
+        }
+        "orbit_browser_screenshot" => {
+            let a: BrowserNodeArgs = args(tool, value)?;
+            // A pasta é a do run: o run preenche.
+            Ok(ToolCall::Browser {
+                node: browser_node(a.node)?,
+                action: super::browser::AgentAction::Screenshot {
+                    dir: std::path::PathBuf::new(),
+                },
+            })
+        }
         "orbit_browser_click" => {
             let a: BrowserClickArgs = args(tool, value)?;
             Ok(ToolCall::Browser {
@@ -1112,6 +1129,22 @@ mod tests {
         );
         assert!(snap(json!({"node": "b\u{1b}"})).is_err());
         assert!(snap(json!({"url": "http://localhost:1"})).is_err());
+        assert_eq!(
+            parse_call("orbit_browser_console", &json!({"node": "b"})),
+            Ok(ToolCall::Browser {
+                node: Some("b".into()),
+                action: AgentAction::Console
+            })
+        );
+        // A pasta do print é do run, nunca do agente.
+        assert!(parse_call("orbit_browser_screenshot", &json!({"dir": "/tmp"})).is_err());
+        assert!(matches!(
+            parse_call("orbit_browser_screenshot", &json!({})),
+            Ok(ToolCall::Browser {
+                node: None,
+                action: AgentAction::Screenshot { .. }
+            })
+        ));
     }
 
     #[test]

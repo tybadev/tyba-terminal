@@ -136,6 +136,13 @@ pub enum AgentAction {
         text: String,
         submit: bool,
     },
+    /// As últimas entradas de erro/aviso do console da página atual.
+    Console,
+    /// Print da página em PNG, gravado como `screenshot-<n>.png` na pasta
+    /// `dir` (a `out/` do nó no run, 0700; o arquivo, 0600).
+    Screenshot {
+        dir: PathBuf,
+    },
 }
 
 impl AgentAction {
@@ -145,13 +152,17 @@ impl AgentAction {
             AgentAction::Snapshot => "snapshot",
             AgentAction::Click { .. } => "click",
             AgentAction::Type { .. } => "type",
+            AgentAction::Console => "console",
+            AgentAction::Screenshot { .. } => "screenshot",
         }
     }
 
     /// Os argumentos da ação (JSON, vão como argumento do script).
     fn args(&self) -> Value {
         match self {
-            AgentAction::Snapshot => serde_json::json!({}),
+            AgentAction::Snapshot | AgentAction::Console | AgentAction::Screenshot { .. } => {
+                serde_json::json!({})
+            }
             AgentAction::Click { reference } => serde_json::json!({ "ref": reference }),
             AgentAction::Type {
                 reference,
@@ -165,6 +176,52 @@ impl AgentAction {
     pub fn acts(&self) -> bool {
         matches!(self, AgentAction::Click { .. } | AgentAction::Type { .. })
     }
+}
+
+/// Print da página para o agente.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Shot {
+    pub png: Vec<u8>,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// Largura máxima do print do agente (px).
+pub const MAX_SHOT_PX: f64 = 1600.0;
+/// Teto do arquivo do print do agente.
+pub const MAX_SHOT_BYTES: usize = 8 * 1024 * 1024;
+/// Prefixo dos prints na pasta do run.
+const SHOT_PREFIX: &str = "screenshot-";
+
+/// O próximo `screenshot-<n>.png` da pasta (o maior que existe + 1).
+pub fn next_shot_path(dir: &std::path::Path) -> PathBuf {
+    let last = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().into_string().ok()?;
+            name.strip_prefix(SHOT_PREFIX)?
+                .strip_suffix(".png")?
+                .parse::<u32>()
+                .ok()
+        })
+        .max()
+        .unwrap_or(0);
+    dir.join(format!("{SHOT_PREFIX}{}.png", last + 1))
+}
+
+/// Grava o print novo, 0600, sem sobrescrever nada.
+pub fn write_shot(path: &std::path::Path, png: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    opts.open(path)?.write_all(png)
 }
 
 /// Quanto tempo a ação do agente segura o foco "agente" no card.
@@ -228,6 +285,11 @@ pub enum Op {
         action: &'static str,
         args: String,
         reply: std::sync::mpsc::Sender<Result<String, String>>,
+    },
+    /// Print em PNG para o agente (até [`MAX_SHOT_PX`] de largura).
+    Capture {
+        key: ViewKey,
+        reply: std::sync::mpsc::Sender<Result<Shot, String>>,
     },
     /// Destrói toda view que não está na lista.
     Retain(Vec<ViewKey>),
@@ -865,6 +927,21 @@ impl BrowserViews {
             key.node,
             action.script()
         );
+        if let AgentAction::Screenshot { dir } = &action {
+            let shot = self.capture(app, key)?;
+            // O nome sai com a vez do nó: dois prints não disputam o número.
+            let path = next_shot_path(dir);
+            self.note_step(app, key, by, &action, None, None);
+            if shot.png.len() > MAX_SHOT_BYTES {
+                return Err("o print passou de 8 MB".to_string());
+            }
+            write_shot(&path, &shot.png).map_err(|e| format!("gravar o print: {e}"))?;
+            return Ok(serde_json::json!({
+                "path": path.to_string_lossy(),
+                "width": shot.width,
+                "height": shot.height,
+            }));
+        }
         let nav_before = self.nav_seq(key);
         if action.acts() {
             self.hold_agent_focus(app, key);
@@ -875,7 +952,7 @@ impl BrowserViews {
             .get("name")
             .and_then(Value::as_str)
             .map(|n| redact_line(n, 80));
-        self.note_step(app, key, by, &action, name.clone(), reply.errors);
+        self.note_step(app, key, by, &action, name.clone(), Some(reply.errors));
         if let Some(code) = &reply.error {
             return Err(snapshot::error_message(code, reply.detail.as_deref()));
         }
@@ -895,6 +972,13 @@ impl BrowserViews {
                 &reply.title,
                 &ok,
             ))),
+            AgentAction::Console => Ok(Value::String(snapshot::format_console(
+                &url,
+                &reply.title,
+                &ok,
+            ))),
+            // O print saiu antes, sem script.
+            AgentAction::Screenshot { .. } => Err("o print não passa pelo script".to_string()),
             AgentAction::Click { .. } | AgentAction::Type { .. } => {
                 let what = match &action {
                     AgentAction::Type { .. } => {
@@ -1062,6 +1146,25 @@ impl BrowserViews {
         snapshot::parse_reply(&raw)
     }
 
+    /// O print em PNG da view (escondida também).
+    fn capture(&self, app: &AppHandle, key: &ViewKey) -> Result<Shot, String> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        dispatch(
+            app,
+            Op::Capture {
+                key: key.clone(),
+                reply: tx,
+            },
+        );
+        match rx.recv_timeout(ACTION_TIMEOUT) {
+            Ok(r) => r,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                Err("o print não saiu em 5 s".to_string())
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(NOT_OPEN.to_string()),
+        }
+    }
+
     /// O passo do agente vira o rodapé do card.
     fn note_step(
         &self,
@@ -1070,7 +1173,7 @@ impl BrowserViews {
         by: &str,
         action: &AgentAction,
         target: Option<String>,
-        errors: u32,
+        errors: Option<u32>,
     ) {
         let step = AgentStep {
             by: snapshot::one_line(by, 120),
@@ -1080,7 +1183,9 @@ impl BrowserViews {
         };
         self.update(app, key, |e| {
             e.state.agent = Some(step);
-            e.state.console_errors = Some(errors);
+            if errors.is_some() {
+                e.state.console_errors = errors;
+            }
         });
     }
 }
@@ -1312,6 +1417,30 @@ mod tests {
         // O texto vai como valor JSON (argumento do script), intacto.
         assert_eq!(typed.args()["text"].as_str(), Some("a\"); alert(1); (\""));
         assert_eq!(typed.args()["submit"], true);
+    }
+
+    #[test]
+    fn screenshots_are_numbered_and_private() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = next_shot_path(dir.path());
+        assert_eq!(first, dir.path().join("screenshot-1.png"));
+        write_shot(&first, b"png").unwrap();
+        std::fs::write(dir.path().join("screenshot-7.png"), b"x").unwrap();
+        std::fs::write(dir.path().join("screenshot-x.png"), b"x").unwrap();
+        std::fs::write(dir.path().join("log.txt"), b"x").unwrap();
+        assert_eq!(
+            next_shot_path(dir.path()),
+            dir.path().join("screenshot-8.png")
+        );
+        // Nunca sobrescreve.
+        assert!(write_shot(&first, b"outro").is_err());
+        assert_eq!(std::fs::read(&first).unwrap(), b"png");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&first).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
     }
 
     #[test]

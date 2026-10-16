@@ -132,6 +132,12 @@ pub(super) fn apply(app: &AppHandle, op: Op) {
                 snapshot(app, &key, view);
             }
         }),
+        Op::Capture { key, reply } => VIEWS.with(|v| match v.borrow().get(&key) {
+            Some(view) => capture(view, reply),
+            None => {
+                let _ = reply.send(Err(super::NOT_OPEN.to_string()));
+            }
+        }),
         Op::Eval {
             key,
             action,
@@ -648,4 +654,67 @@ fn eval(
                 Some(&block),
             );
     }
+}
+
+/// O print do agente: `takeSnapshot` em PNG, na largura CSS da página (sem
+/// o zoom do canvas) e até [`super::MAX_SHOT_PX`] pixels. Funciona com a
+/// view escondida; o print **não** é redigido (fica na pasta do run, 0600).
+fn capture(view: &NativeView, reply: std::sync::mpsc::Sender<Result<super::Shot, String>>) {
+    use objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRep, NSImage};
+    use objc2_foundation::{NSDictionary, NSError, NSNumber};
+    use objc2_web_kit::WKSnapshotConfiguration;
+
+    let Some(mtm) = MainThreadMarker::new() else {
+        let _ = reply.send(Err("fora da main thread".into()));
+        return;
+    };
+    let frame = view.wk.frame().size.width;
+    // SAFETY: main thread; leitura de propriedade da view.
+    let zoom = unsafe { view.wk.pageZoom() };
+    let css = if zoom > 0.0 { frame / zoom } else { frame };
+    if css < 10.0 {
+        let _ = reply.send(Err(
+            "o navegador está escondido sem tamanho; abra o Orbit com o nó à vista".into(),
+        ));
+        return;
+    }
+    let scale = view
+        .wk
+        .window()
+        .map_or(2.0, |w| w.backingScaleFactor())
+        .max(1.0);
+    let width = css.min(super::MAX_SHOT_PX / scale);
+    // SAFETY: main thread; a configuração é nossa.
+    let config = unsafe { WKSnapshotConfiguration::new(mtm) };
+    let number = NSNumber::new_f64(width);
+    // SAFETY: `snapshotWidth` aceita um `NSNumber` em pontos.
+    unsafe { config.setSnapshotWidth(Some(&number)) };
+    let block = RcBlock::new(move |image: *mut NSImage, _error: *mut NSError| {
+        // SAFETY: o WebKit entrega imagem válida ou nula.
+        let out = (|| {
+            let image = unsafe { image.as_ref() }.ok_or("o print veio vazio")?;
+            let tiff = image.TIFFRepresentation().ok_or("o print veio vazio")?;
+            let rep = NSBitmapImageRep::imageRepWithData(&tiff).ok_or("o print veio vazio")?;
+            // SAFETY: sem propriedades; o tipo é a constante do AppKit.
+            let png = unsafe {
+                rep.representationUsingType_properties(
+                    NSBitmapImageFileType::PNG,
+                    &NSDictionary::new(),
+                )
+            }
+            .ok_or("o print não virou PNG")?;
+            Ok(super::Shot {
+                png: png.to_vec(),
+                width: rep.pixelsWide().max(0) as u32,
+                height: rep.pixelsHigh().max(0) as u32,
+            })
+        })()
+        .map_err(|e: &str| e.to_string());
+        let _ = reply.send(out);
+    });
+    // SAFETY: main thread; o bloco é copiado pelo WebKit.
+    unsafe {
+        view.wk
+            .takeSnapshotWithConfiguration_completionHandler(Some(&config), &block)
+    };
 }

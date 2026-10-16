@@ -2025,12 +2025,19 @@ impl<H: RunHost> Runs<H> {
         node: Option<&str>,
         action: AgentAction,
     ) -> Result<serde_json::Value, String> {
+        let mut action = action;
         let (graph_id, target, by) = {
             let active = self.active.lock();
             let a = active.get(run_id).ok_or(
                 "esta execução já terminou: ▶ Executar de novo para o agente usar o navegador",
             )?;
             let target = self.controlled_browser(a, agent, node)?;
+            // O print fica na pasta do run, na `out/` do navegador (0700),
+            // e é podado junto com o run.
+            if let AgentAction::Screenshot { dir } = &mut action {
+                *dir = a.dir.join(&target).join("out");
+                create_private_dir(dir).map_err(|e| format!("pasta do print: {e}"))?;
+            }
             let by = a
                 .graph
                 .nodes
@@ -5343,6 +5350,26 @@ mod tests {
             .unwrap_err();
         assert!(err.contains("nenhum navegador ligado"), "{err}");
         assert_eq!(host.browser.lock().len(), 3);
+
+        // O print vai para a `out/` do navegador na pasta do run, 0700.
+        g.edges = vec![edge("c1", "o", "b", EdgeKind::Control)];
+        runs.store.save_orbit_graph(&g, true, None).unwrap();
+        tools.call("orbit_browser_screenshot", &json!({})).unwrap();
+        let (node, _, action) = host.browser.lock().last().cloned().unwrap();
+        assert_eq!(node, "b");
+        let AgentAction::Screenshot { dir: out } = action else {
+            panic!("{action:?}")
+        };
+        assert_eq!(
+            out,
+            dir.path().join("runs").join(&run.id).join("b").join("out")
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&out).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o700);
+        }
     }
 
     #[cfg(unix)]
