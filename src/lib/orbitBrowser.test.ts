@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
 
 import {
+  AGENT_ACTIVE_MS,
+  agentActiveLeft,
+  agentStepKey,
+  type BrowserState,
   NATIVE_ZOOM_MAX,
   NATIVE_ZOOM_MIN,
   SETTLE_MS,
@@ -110,5 +114,43 @@ describe("geometria", () => {
   test("hora do print", () => {
     const at = new Date(2026, 9, 16, 9, 5).getTime();
     expect(previewTime(at)).toBe("09:05");
+  });
+});
+
+describe("agente usando", () => {
+  const state = (over: Partial<BrowserState>): BrowserState => ({
+    url: "http://localhost:5173/",
+    title: "",
+    loading: false,
+    focus: "none",
+    live: true,
+    previewAt: null,
+    refused: null,
+    ephemeral: false,
+    agent: null,
+    consoleErrors: null,
+    ...over,
+  });
+  const step = { by: "Dev da agenda", action: "click", target: "Semana", at: 10_000 };
+
+  test("sem passo de agente: não está ativo", () => {
+    expect(agentActiveLeft(null, 0)).toBe(0);
+    expect(agentActiveLeft(state({}), 0)).toBe(0);
+  });
+
+  test("ativo por um tempo depois do último passo, sem piscar entre passos", () => {
+    expect(agentActiveLeft(state({ agent: step }), 10_000)).toBe(AGENT_ACTIVE_MS);
+    expect(agentActiveLeft(state({ agent: step }), 10_000 + AGENT_ACTIVE_MS)).toBe(0);
+    // O core segurando o foco "agente" mantém ativo.
+    expect(
+      agentActiveLeft(state({ agent: step, focus: "agent" }), 10_000 + AGENT_ACTIVE_MS),
+    ).toBeGreaterThan(0);
+  });
+
+  test("a chave do passo", () => {
+    expect(agentStepKey(step)).toBe("orbitBrowserStep_click");
+    expect(agentStepKey({ ...step, action: "type", target: null })).toBe("orbitBrowserStep_typeBare");
+    expect(agentStepKey({ ...step, action: "snapshot", target: null })).toBe("orbitBrowserStep_snapshot");
+    expect(agentStepKey({ ...step, action: "outra" })).toBe("orbitBrowserStep_snapshot");
   });
 });

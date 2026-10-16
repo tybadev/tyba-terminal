@@ -16,6 +16,16 @@ export interface BrowserRect {
 
 export type BrowserFocus = "none" | "owner" | "agent";
 
+/** O que um agente fez por último na página (`orbit::browser::AgentStep`). */
+export interface AgentStep {
+  by: string;
+  /** `snapshot`, `click`, `type`, `console` ou `screenshot`. */
+  action: string;
+  /** O nome do elemento (clicar, digitar). */
+  target: string | null;
+  at: number;
+}
+
 /** Espelha `orbit::browser::BrowserState`. */
 export interface BrowserState {
   url: string;
@@ -26,6 +36,33 @@ export interface BrowserState {
   previewAt: number | null;
   refused: string | null;
   ephemeral: boolean;
+  agent: AgentStep | null;
+  consoleErrors: number | null;
+}
+
+/** Quanto tempo depois do último passo o card segue em "<agente> usando". */
+export const AGENT_ACTIVE_MS = 8000;
+
+/**
+ * Quanto falta do estado ativo "<agente> usando" (0: volta a "controlado
+ * por"). Vale enquanto o core segura o foco "agente" ou até
+ * {@link AGENT_ACTIVE_MS} depois do último passo — entre um passo e outro o
+ * card não pisca.
+ */
+export function agentActiveLeft(state: BrowserState | null, now: number): number {
+  if (!state?.agent) return 0;
+  const left = Math.max(0, state.agent.at + AGENT_ACTIVE_MS - now);
+  return state.focus === "agent" ? Math.max(left, 1) : left;
+}
+
+/** As ações que o rodapé conhece; outra cai em `snapshot`. */
+const STEP_ACTIONS = new Set(["snapshot", "click", "type", "console", "screenshot"]);
+
+/** A chave i18n do passo do agente ("clicou em “X”"). */
+export function agentStepKey(step: AgentStep): string {
+  const action = STEP_ACTIONS.has(step.action) ? step.action : "snapshot";
+  const bare = (action === "click" || action === "type") && !step.target;
+  return `orbitBrowserStep_${action}${bare ? "Bare" : ""}`;
 }
 
 /** Faixa de zoom do canvas em que a view fica viva (fora: só o print). */

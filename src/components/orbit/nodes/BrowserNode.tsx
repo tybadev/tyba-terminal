@@ -7,11 +7,14 @@ import { openExternalUrl } from "@/lib/clipboard";
 import { frameInUse } from "@/lib/graphKeys";
 import { browserRefusal, isLocalUrl, openedChipLeft, type NodeKind } from "@/lib/orbit";
 import {
+  agentActiveLeft,
+  agentStepKey,
   browserBack,
   browserNative,
   browserNavigate,
   browserReload,
   previewTime,
+  type BrowserState,
 } from "@/lib/orbitBrowser";
 import { browserControllers } from "@/lib/orbitTalk";
 import { NodeFrame, useOrbit, type OrbitFlowNode } from "./NodeFrame";
@@ -137,17 +140,27 @@ function Toolbar({
   );
 }
 
-/** O chip da cápsula: "você", "<agente> abriu" ou "controlado por X". */
+/**
+ * O chip da cápsula: "você", "<agente> usando" (o agente agindo na página,
+ * quadro MaestroCardsD), "<agente> abriu" ou "controlado por X".
+ */
 function statusChip(
   t: (k: string, o?: Record<string, string>) => string,
   inUse: boolean,
   openedBy: string | null,
   controllers: string[],
+  agentUsing: string | null = null,
 ): ReactNode {
   if (inUse)
     return (
       <span className="shrink-0 rounded-full bg-tyba-cyan/[.18] px-[9px] py-[2px] text-[11.5px] text-tyba-text">
         {t("orbitBrowserYou")}
+      </span>
+    );
+  if (agentUsing)
+    return (
+      <span className="max-w-[200px] shrink-0 truncate text-[11.5px] text-tyba-cyan">
+        {t("orbitBrowserAgentUsing", { name: agentUsing })}
       </span>
     );
   if (openedBy)
@@ -187,6 +200,33 @@ function useOpenedBy(id: string, kind: BrowserKind): string | null {
     // Só quando um agente abre de novo.
   }, [opened?.at]);
   return openedBy;
+}
+
+/**
+ * O agente agindo na página: o nome dele enquanto o estado ativo vale
+ * ({@link agentActiveLeft}); depois volta a "controlado por".
+ */
+function useAgentUsing(state: BrowserState | null): string | null {
+  const [, tick] = useState(0);
+  const left = agentActiveLeft(state, Date.now());
+  useEffect(() => {
+    if (left <= 0) return;
+    const timer = window.setTimeout(() => tick((n) => n + 1), Math.min(left, 1000));
+    return () => window.clearTimeout(timer);
+  });
+  return left > 0 ? (state?.agent?.by ?? null) : null;
+}
+
+/** O rodapé com o último passo do agente: "clicou em “Semana” · 0 erros no console". */
+function agentStepLine(
+  t: (k: string, o?: Record<string, unknown>) => string,
+  state: BrowserState | null,
+): string | null {
+  const step = state?.agent;
+  if (!step) return null;
+  const done = t(agentStepKey(step), { name: step.target ?? "" });
+  if (state.consoleErrors == null) return done;
+  return `${done} · ${t("orbitBrowserConsoleErrors", { count: state.consoleErrors })}`;
 }
 
 /**
@@ -253,13 +293,17 @@ function NativeBrowserNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
     if (isLocalUrl(url)) updateNode(id, (n) => ({ ...n, kind: { type: "browser", url } }));
   };
 
+  const agentUsing = useAgentUsing(state);
+  const step = agentStepLine(t, state);
   const meta = state?.refused
     ? t("orbitBrowserNavRefused", { why: t(`orbitBrowserRefused_${state.refused}`) })
     : owner
       ? t("orbitBrowserInUseNative")
-      : state?.ephemeral
-        ? t("orbitBrowserEphemeral")
-        : t("orbitBrowserLocalOnly");
+      : step
+        ? step
+        : state?.ephemeral
+          ? t("orbitBrowserEphemeral")
+          : t("orbitBrowserLocalOnly");
 
   return (
     <NodeFrame
@@ -269,7 +313,7 @@ function NativeBrowserNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
       mark={<Browser size={13} weight="bold" />}
       markTone="text-tyba-cyan"
       meta={meta}
-      status={statusChip(t, owner, openedBy, controllers)}
+      status={statusChip(t, owner, openedBy, controllers, agentUsing)}
       inUse={owner}
       details={[
         { label: t("orbitDetailUrl"), value: current },
