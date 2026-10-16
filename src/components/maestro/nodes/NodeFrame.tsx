@@ -106,8 +106,8 @@ export function NodeStatusBadge({ nodeId, nodeRun }: { nodeId: string; nodeRun: 
 }
 
 const handleStyle = (color: string, filled: boolean) => ({
-  width: 11,
-  height: 11,
+  width: 14,
+  height: 14,
   borderRadius: "50%",
   border: `2px solid ${color}`,
   background: filled ? color : "var(--tyba-bg)",

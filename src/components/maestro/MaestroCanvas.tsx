@@ -13,6 +13,7 @@ import {
   applyNodeChanges,
   getBezierPath,
   useReactFlow,
+  type FinalConnectionState,
   type Connection,
   type Edge,
   type EdgeChange,
@@ -20,6 +21,7 @@ import {
   type NodeChange,
 } from "@xyflow/react";
 import "@xyflow/react/dist/base.css";
+import { toastError } from "@/lib/toast";
 
 import {
   DropdownMenu,
@@ -206,6 +208,37 @@ export function MaestroCanvas({
     [setEdges],
   );
 
+  // Soltar a ligação em qualquer ponto do nó liga na entrada dele: acertar a
+  // bolinha de 11px era o único jeito, e soltar no corpo do nó não fazia
+  // nada. Ligação recusada diz por quê, em vez de sumir calada.
+  const onConnectEnd = useCallback(
+    (_: MouseEvent | TouchEvent, state: FinalConnectionState) => {
+      if (state.isValid || !state.toNode || !state.fromNode || !state.fromHandle) return;
+      if (state.fromHandle.type !== "source") return;
+      const kind = kindOfOutHandle(state.fromHandle.id);
+      if (!kind) return;
+      const problem = connectionProblem(
+        model.nodes,
+        model.edges,
+        byId,
+        state.fromNode.id,
+        state.toNode.id,
+        kind,
+      );
+      if (problem) {
+        if (problem !== "self") toastError(t(`maestroConnection_${problem}`));
+        return;
+      }
+      onConnect({
+        source: state.fromNode.id,
+        target: state.toNode.id,
+        sourceHandle: state.fromHandle.id ?? null,
+        targetHandle: NEW_IN_HANDLE,
+      });
+    },
+    [model, byId, onConnect, t],
+  );
+
   const addNode = (title: string, kind: NodeKind) => {
     const rect = wrapper.current?.getBoundingClientRect();
     const center = rect
@@ -242,7 +275,9 @@ export function MaestroCanvas({
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
+        onConnectEnd={onConnectEnd}
         isValidConnection={isValidConnection}
+        connectionRadius={36}
         deleteKeyCode={["Backspace", "Delete"]}
         minZoom={0.2}
         maxZoom={2}
