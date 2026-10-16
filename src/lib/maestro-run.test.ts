@@ -13,6 +13,7 @@ import {
   runProgress,
   runReducer,
   selectedRun,
+  stoppableRuns,
   timelineSteps,
   type Graph,
   type MaestroEdge,
@@ -59,6 +60,28 @@ const graph: Pick<Graph, "nodes" | "edges"> = {
   nodes: [agent("a", "Claude · API"), proc("d", "Dev server"), proc("t", "Testes"), agent("c", "Codex"), note],
   edges: [edge("a", "t", "diff"), edge("d", "t", "log"), edge("t", "c", "json"), edge("n", "c", "file")],
 };
+
+describe("stoppableRuns", () => {
+  test("Parar alcança o run rodando e o run fechado com agente vivo", () => {
+    const view = runReducer(EMPTY_RUN_VIEW, {
+      type: "history",
+      runs: [
+        run("rodando", 300, { a: nodeRun({ status: "running" }) }),
+        run("vivo", 200, { a: nodeRun({ status: "done" }) }, { status: "done", liveAgents: ["7"] }),
+        run("morto", 100, { a: nodeRun({ status: "done" }) }, { status: "done", liveAgents: [] }),
+      ],
+    });
+    expect(stoppableRuns(view).map((r) => r.id)).toEqual(["rodando", "vivo"]);
+  });
+
+  test("sem run rodando nem agente vivo, Parar fica desabilitado", () => {
+    const view = runReducer(EMPTY_RUN_VIEW, {
+      type: "history",
+      runs: [run("r", 100, { a: nodeRun({ status: "done" }) }, { status: "done" })],
+    });
+    expect(stoppableRuns(view)).toEqual([]);
+  });
+});
 
 describe("runReducer", () => {
   test("run novo entra no topo e vira o run à vista", () => {

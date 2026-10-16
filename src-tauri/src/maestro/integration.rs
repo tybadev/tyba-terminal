@@ -168,6 +168,9 @@ mod tests {
             finished_at: None,
             status: RunStatus::Done,
             nodes: HashMap::from([("m".to_string(), n)]),
+            version: 1,
+            test: false,
+            live_agents: Vec::new(),
         }
     }
 

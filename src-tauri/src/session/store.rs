@@ -2933,7 +2933,8 @@ impl Store {
         Ok(())
     }
 
-    /// Grava (ou substitui) o estado de uma execução do Maestro.
+    /// Grava (ou substitui) o estado de uma execução do Maestro. Retrato com
+    /// versão menor que a gravada é velho (chegou fora de ordem) e é ignorado.
     pub fn save_maestro_run(&self, run: &crate::maestro::run::Run) -> Result<(), StoreError> {
         let body = serde_json::to_string(run)?;
         let status = serde_json::to_value(run.status)?
@@ -2946,7 +2947,8 @@ impl Store {
                  (id, graph_id, started_at_ms, finished_at_ms, status, body_json)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)
              ON CONFLICT(id) DO UPDATE SET
-                 finished_at_ms = ?4, status = ?5, body_json = ?6",
+                 finished_at_ms = ?4, status = ?5, body_json = ?6
+             WHERE ?7 >= COALESCE(json_extract(maestro_run.body_json, '$.version'), 0)",
             params![
                 run.id,
                 run.graph_id,
@@ -2954,6 +2956,7 @@ impl Store {
                 run.finished_at.map(|t| t as i64),
                 status,
                 body,
+                run.version as i64,
             ],
         )?;
         Ok(())
@@ -2998,24 +3001,44 @@ impl Store {
     }
 
     /// Apaga as execuções além das `keep` mais recentes do grafo e devolve os
-    /// ids apagados — a pasta de cada uma sai junto, por quem chamou.
+    /// ids apagados — a pasta de cada uma sai junto, por quem chamou. Runs de
+    /// teste ("Testar com a última entrada") têm janela própria e não tiram
+    /// vaga dos runs de verdade; ids em `protect` (rodando, agente vivo) ficam.
     pub fn prune_maestro_runs(
         &self,
         graph_id: &str,
         keep: usize,
+        protect: &std::collections::HashSet<String>,
     ) -> Result<Vec<String>, StoreError> {
+        #[derive(serde::Deserialize)]
+        struct Flags {
+            #[serde(default)]
+            test: bool,
+        }
         let mut conn = self.conn.lock();
         let tx = conn.transaction()?;
         let ids = {
             let mut stmt = tx.prepare(
-                "SELECT id FROM maestro_run WHERE graph_id = ?1
-                 ORDER BY started_at_ms DESC, rowid DESC LIMIT -1 OFFSET ?2",
+                "SELECT id, body_json FROM maestro_run WHERE graph_id = ?1
+                 ORDER BY started_at_ms DESC, rowid DESC",
             )?;
-            let ids = stmt
-                .query_map(params![graph_id, keep as i64], |row| {
-                    row.get::<_, String>(0)
+            let rows = stmt
+                .query_map(params![graph_id], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
                 })?
                 .collect::<Result<Vec<_>, _>>()?;
+            // [runs de verdade, runs de teste]
+            let mut kept = [0usize; 2];
+            let mut ids = Vec::new();
+            for (id, body) in rows {
+                let flags: Flags = serde_json::from_str(&body)?;
+                let slot = &mut kept[usize::from(flags.test)];
+                if *slot < keep {
+                    *slot += 1;
+                } else if !protect.contains(&id) {
+                    ids.push(id);
+                }
+            }
             ids
         };
         for id in &ids {
@@ -6821,6 +6844,9 @@ mod tests {
             finished_at: None,
             status: RunStatus::Running,
             nodes: Default::default(),
+            version: 1,
+            test: false,
+            live_agents: Vec::new(),
         };
         for i in 0..5u64 {
             store
@@ -6832,10 +6858,13 @@ mod tests {
         let mut done = run("r4", "g-1", 4);
         done.status = RunStatus::Done;
         done.finished_at = Some(9);
+        done.version = 2;
         store.save_maestro_run(&done).unwrap();
         assert_eq!(store.get_maestro_run("r4").unwrap(), Some(done));
 
-        let mut pruned = store.prune_maestro_runs("g-1", 3).unwrap();
+        let mut pruned = store
+            .prune_maestro_runs("g-1", 3, &Default::default())
+            .unwrap();
         pruned.sort();
         assert_eq!(pruned, vec!["r0".to_string(), "r1".to_string()]);
         let left: Vec<String> = store
@@ -6846,6 +6875,73 @@ mod tests {
             .collect();
         assert_eq!(left, vec!["r4", "r3", "r2"]);
         assert!(store.get_maestro_run("outro").unwrap().is_some());
+    }
+
+    #[test]
+    fn maestro_run_older_snapshot_does_not_overwrite_newer() {
+        use crate::maestro::run::{Run, RunStatus};
+        let store = Store::open_in_memory().unwrap();
+        let snap = |version: u64, status: RunStatus| Run {
+            id: "r".into(),
+            graph_id: "g".into(),
+            started_at: 1,
+            finished_at: (status != RunStatus::Running).then_some(2),
+            status,
+            nodes: Default::default(),
+            version,
+            test: false,
+            live_agents: Vec::new(),
+        };
+        store
+            .save_maestro_run(&snap(1, RunStatus::Running))
+            .unwrap();
+        store.save_maestro_run(&snap(3, RunStatus::Done)).unwrap();
+        // O retrato 2 foi publicado depois do 3 (fora do lock): fica o 3.
+        store
+            .save_maestro_run(&snap(2, RunStatus::Running))
+            .unwrap();
+        let got = store.get_maestro_run("r").unwrap().unwrap();
+        assert_eq!(got.status, RunStatus::Done);
+        assert_eq!(got.version, 3);
+    }
+
+    #[test]
+    fn maestro_prune_keeps_protected_runs_and_ignores_test_runs() {
+        use crate::maestro::run::{Run, RunStatus};
+        let store = Store::open_in_memory().unwrap();
+        let run = |id: &str, at: u64, test: bool| Run {
+            id: id.into(),
+            graph_id: "g".into(),
+            started_at: at,
+            finished_at: Some(at),
+            status: RunStatus::Done,
+            nodes: Default::default(),
+            version: 1,
+            test,
+            live_agents: Vec::new(),
+        };
+        // r0 é o mais velho e está ativo; depois dele, 3 testes e 2 runs.
+        store.save_maestro_run(&run("r0", 0, false)).unwrap();
+        for i in 1..=3u64 {
+            store
+                .save_maestro_run(&run(&format!("t{i}"), i, true))
+                .unwrap();
+        }
+        store.save_maestro_run(&run("r1", 4, false)).unwrap();
+        store.save_maestro_run(&run("r2", 5, false)).unwrap();
+
+        let protect = std::collections::HashSet::from(["r0".to_string()]);
+        let mut pruned = store.prune_maestro_runs("g", 2, &protect).unwrap();
+        pruned.sort();
+        // Testes não tiram vaga dos runs (r1, r2 ficam na janela de 2); o r0
+        // passou da janela mas está protegido; dos testes, sai o mais velho.
+        assert_eq!(pruned, vec!["t1".to_string()]);
+        assert!(store.get_maestro_run("r0").unwrap().is_some());
+
+        let pruned = store
+            .prune_maestro_runs("g", 2, &Default::default())
+            .unwrap();
+        assert_eq!(pruned, vec!["r0".to_string()]);
     }
 
     #[test]

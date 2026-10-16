@@ -59,6 +59,17 @@ pub struct Run {
     pub finished_at: Option<u64>,
     pub status: RunStatus,
     pub nodes: HashMap<String, NodeRun>,
+    /// Cresce a cada retrato tirado do agendador. Retratos são publicados fora
+    /// do lock e podem chegar fora de ordem: a gravação ignora o mais velho.
+    #[serde(default)]
+    pub version: u64,
+    /// Run de "Testar com a última entrada": não ocupa vaga na poda dos runs.
+    #[serde(default)]
+    pub test: bool,
+    /// Sessões de agente do run ainda vivas (o run pode já ter fechado).
+    /// Calculado na leitura; o que fica gravado no banco não vale.
+    #[serde(default)]
+    pub live_agents: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -148,6 +159,9 @@ impl Scheduler {
                 .iter()
                 .map(|n| (n.id.clone(), NodeRun::waiting()))
                 .collect(),
+            version: 0,
+            test: false,
+            live_agents: Vec::new(),
         };
         if run.nodes.is_empty() {
             run.status = RunStatus::Done;
@@ -182,6 +196,13 @@ impl Scheduler {
 
     pub fn run(&self) -> &Run {
         &self.run
+    }
+
+    /// Retrato para publicar, com versão nova. Tirado com o lock na mão, a
+    /// ordem das versões é a ordem dos estados.
+    pub fn snapshot(&mut self) -> Run {
+        self.run.version += 1;
+        self.run.clone()
     }
 
     fn status(&self, id: &str) -> Option<NodeStatus> {
@@ -537,6 +558,8 @@ pub trait RunHost: Send + Sync + 'static {
     ) -> Result<String, String>;
     /// Mata o process group da sessão.
     fn kill(&self, session_id: &str);
+    /// A sessão ainda roda (não saiu nem foi morta).
+    fn alive(&self, session_id: &str) -> bool;
     /// `maestro://run/<run_id>` com o run inteiro.
     fn emit(&self, run: &Run);
 }
@@ -559,6 +582,7 @@ struct Start {
     graph_dir: PathBuf,
     /// A integração do nó, quando é de integração e ela existe.
     integration: Option<Integration>,
+    graph_id: String,
 }
 
 enum Launched {
@@ -572,9 +596,18 @@ pub struct Runs<H: RunHost> {
     root: Option<PathBuf>,
     active: Mutex<HashMap<String, Active>>,
     /// Sessões de agente de cada run: continuam vivas depois do nó pronto, e
-    /// o Parar as mata mesmo com o run já fechado.
-    agents: Mutex<HashMap<String, Vec<String>>>,
+    /// o Parar as mata mesmo com o run já fechado. Lock sempre depois de
+    /// `active` quando os dois são pegos juntos.
+    agents: Mutex<HashMap<String, RunAgents>>,
+    /// Runs que o dono parou: sessão que termina de subir depois disso morre
+    /// na hora. Lock sempre depois de `active`.
+    stopped: Mutex<HashSet<String>>,
     me: Weak<Runs<H>>,
+}
+
+struct RunAgents {
+    graph_id: String,
+    sessions: Vec<String>,
 }
 
 fn now() -> u64 {
@@ -589,12 +622,26 @@ impl<H: RunHost> Runs<H> {
             root,
             active: Mutex::new(HashMap::new()),
             agents: Mutex::new(HashMap::new()),
+            stopped: Mutex::new(HashSet::new()),
             me: me.clone(),
         })
     }
 
-    /// Começa o run. O grafo já passou por consentimento e validação.
+    /// Começa o run. O grafo já passou por consentimento e validação. Antes,
+    /// para os runs anteriores do mesmo grafo que ainda têm agente: um ▶ novo
+    /// não deixa o claude do run de antes vivo e fora de alcance.
     pub fn start(&self, graph: Graph, integrations: Vec<Integration>) -> Result<Run, String> {
+        let previous: Vec<String> = self
+            .agents
+            .lock()
+            .iter()
+            .filter(|(_, a)| a.graph_id == graph.id)
+            .map(|(id, _)| id.clone())
+            .collect();
+        for run_id in previous {
+            // Erro aqui é só "já não havia o que parar".
+            let _ = self.stop(&run_id);
+        }
         self.begin(graph, integrations, None)
     }
 
@@ -670,13 +717,14 @@ impl<H: RunHost> Runs<H> {
             .map(|i| (i.id.clone(), i))
             .collect();
         let mut sched = Scheduler::new(&graph, run_id.clone(), now());
+        sched.run.test = seed.is_some();
         if seed.is_none() {
             for id in super::integration::manual_nodes(&graph, &integrations) {
                 sched.hold(&id);
             }
         }
         let graph_id = graph.id.clone();
-        let snapshot = sched.run().clone();
+        let snapshot = sched.snapshot();
         if snapshot.status == RunStatus::Running {
             self.active.lock().insert(
                 run_id.clone(),
@@ -688,7 +736,7 @@ impl<H: RunHost> Runs<H> {
                 },
             );
         }
-        self.publish(&snapshot);
+        self.publish(snapshot.clone());
         self.prune(&graph_id);
         self.advance(&run_id);
         Ok(self.get(&run_id).unwrap_or(snapshot))
@@ -697,14 +745,37 @@ impl<H: RunHost> Runs<H> {
     /// Run em memória (rodando) ou do banco. Run que ficou `running` no banco
     /// sem estar ativo é de um app que fechou no meio: aparece parado.
     pub fn get(&self, run_id: &str) -> Option<Run> {
-        if let Some(a) = self.active.lock().get(run_id) {
-            return Some(a.sched.run().clone());
-        }
-        let mut run = self.store.get_maestro_run(run_id).ok().flatten()?;
-        if run.status == RunStatus::Running {
-            run.status = RunStatus::Stopped;
-        }
+        let active = self
+            .active
+            .lock()
+            .get(run_id)
+            .map(|a| a.sched.run().clone());
+        let mut run = match active {
+            Some(run) => run,
+            None => {
+                let mut run = self.store.get_maestro_run(run_id).ok().flatten()?;
+                if run.status == RunStatus::Running {
+                    run.status = RunStatus::Stopped;
+                }
+                run
+            }
+        };
+        run.live_agents = self.live_agents(run_id);
         Some(run)
+    }
+
+    /// Sessões de agente do run que ainda rodam.
+    fn live_agents(&self, run_id: &str) -> Vec<String> {
+        let sessions = self
+            .agents
+            .lock()
+            .get(run_id)
+            .map(|a| a.sessions.clone())
+            .unwrap_or_default();
+        sessions
+            .into_iter()
+            .filter(|s| self.host.alive(s))
+            .collect()
     }
 
     pub fn list(&self, graph_id: &str) -> Vec<Run> {
@@ -718,17 +789,29 @@ impl<H: RunHost> Runs<H> {
     }
 
     pub fn stop(&self, run_id: &str) -> Result<(), String> {
-        let stopped = self.active.lock().remove(run_id).map(|mut a| {
-            let kill = a.sched.stop(now());
-            (a.sched.run().clone(), kill)
-        });
-        let agents = self.agents.lock().remove(run_id).unwrap_or_default();
-        if stopped.is_none() && agents.is_empty() {
-            return Err("execução não está rodando".into());
-        }
+        // Tudo com `active` na mão: quem termina de subir uma sessão olha
+        // `active` e `stopped` sob o mesmo lock (ver `advance`).
+        let (stopped, agents) = {
+            let mut active = self.active.lock();
+            let stopped = active.remove(run_id).map(|mut a| {
+                let kill = a.sched.stop(now());
+                (a.sched.snapshot(), kill)
+            });
+            let agents = self
+                .agents
+                .lock()
+                .remove(run_id)
+                .map(|a| a.sessions)
+                .unwrap_or_default();
+            if stopped.is_none() && agents.is_empty() {
+                return Err("execução não está rodando".into());
+            }
+            self.stopped.lock().insert(run_id.to_string());
+            (stopped, agents)
+        };
         let mut kill: Vec<String> = Vec::new();
         if let Some((snapshot, sessions)) = stopped {
-            self.publish(&snapshot);
+            self.publish(snapshot);
             kill.extend(sessions);
         }
         kill.extend(agents);
@@ -741,26 +824,45 @@ impl<H: RunHost> Runs<H> {
         Ok(())
     }
 
-    /// Grava, avisa o front e, se o run fechou, tira da memória.
-    fn publish(&self, run: &Run) {
-        if let Err(e) = self.store.save_maestro_run(run) {
+    /// Grava e avisa o front, com os agentes vivos do run.
+    fn publish(&self, mut run: Run) {
+        run.live_agents = self.live_agents(&run.id);
+        if let Err(e) = self.store.save_maestro_run(&run) {
             eprintln!("[maestro] gravar execução {}: {e}", run.id);
         }
-        self.host.emit(run);
+        self.host.emit(&run);
     }
 
-    fn snapshot_and_retire(&self, run_id: &str) -> Option<Run> {
-        let mut active = self.active.lock();
-        let run = active.get(run_id)?.sched.run().clone();
-        if run.status != RunStatus::Running {
-            active.remove(run_id);
+    /// Retrato novo, gravado e avisado. Run fechado só sai da memória depois
+    /// de gravado: antes disso o `get` leria do banco um retrato mais velho.
+    fn publish_current(&self, run_id: &str) {
+        let Some(run) = self
+            .active
+            .lock()
+            .get_mut(run_id)
+            .map(|a| a.sched.snapshot())
+        else {
+            return;
+        };
+        let closed = run.status != RunStatus::Running;
+        self.publish(run);
+        if closed {
+            self.active.lock().remove(run_id);
         }
-        Some(run)
     }
 
+    /// Poda o histórico do grafo. Run rodando ou com agente vivo fica, mesmo
+    /// fora da janela: a pasta dele está em uso.
     fn prune(&self, graph_id: &str) {
         let Some(root) = &self.root else { return };
-        let removed = match self.store.prune_maestro_runs(graph_id, KEEP_RUNS) {
+        let mut protect: HashSet<String> = self.active.lock().keys().cloned().collect();
+        let with_agents: Vec<String> = self.agents.lock().keys().cloned().collect();
+        for id in with_agents {
+            if !self.live_agents(&id).is_empty() {
+                protect.insert(id);
+            }
+        }
+        let removed = match self.store.prune_maestro_runs(graph_id, KEEP_RUNS, &protect) {
             Ok(ids) => ids,
             Err(e) => {
                 eprintln!("[maestro] podar execuções: {e}");
@@ -768,6 +870,8 @@ impl<H: RunHost> Runs<H> {
             }
         };
         for id in removed {
+            self.agents.lock().remove(&id);
+            self.stopped.lock().remove(&id);
             if safe_component(&id) {
                 let _ = std::fs::remove_dir_all(root.join(id));
             }
@@ -795,27 +899,49 @@ impl<H: RunHost> Runs<H> {
             if starts.is_empty() {
                 return;
             }
-            if let Some(run) = self.snapshot_and_retire(run_id) {
-                self.publish(&run);
-            }
+            self.publish_current(run_id);
             for start in starts {
                 let node_id = start.node.id.clone();
+                let graph_id = start.graph_id.clone();
+                let is_agent = matches!(start.node.kind, NodeKind::Agent { .. });
                 let launched = self.launch(run_id, start);
-                {
+                // `active` na mão para decidir: o Parar marca `stopped` sob o
+                // mesmo lock, então ou ele já viu esta sessão no run, ou ela
+                // morre aqui.
+                let orphan = {
                     let mut active = self.active.lock();
-                    let Some(a) = active.get_mut(run_id) else {
-                        return;
-                    };
-                    match launched {
-                        Launched::Session(session) => a.sched.set_session(&node_id, session),
-                        Launched::Finished(outcome) => {
-                            a.sched.finish(&node_id, outcome, now());
+                    match (active.get_mut(run_id), launched) {
+                        (Some(a), Launched::Session(session)) => {
+                            a.sched.set_session(&node_id, session.clone());
+                            if is_agent {
+                                self.register_agent(run_id, &graph_id, session);
+                            }
+                            None
                         }
+                        (Some(a), Launched::Finished(outcome)) => {
+                            a.sched.finish(&node_id, outcome, now());
+                            None
+                        }
+                        (None, Launched::Session(session)) => {
+                            if self.stopped.lock().contains(run_id) {
+                                Some(session)
+                            } else {
+                                // O run fechou sozinho enquanto subia (o agente
+                                // fechou o turno antes): segue vivo e parável.
+                                if is_agent {
+                                    self.register_agent(run_id, &graph_id, session);
+                                }
+                                return;
+                            }
+                        }
+                        (None, Launched::Finished(_)) => return,
                     }
+                };
+                if let Some(session) = orphan {
+                    self.host.kill(&session);
+                    return;
                 }
-                if let Some(run) = self.snapshot_and_retire(run_id) {
-                    self.publish(&run);
-                }
+                self.publish_current(run_id);
             }
         }
     }
@@ -919,16 +1045,22 @@ impl<H: RunHost> Runs<H> {
             out_dir: start.out_dir.clone(),
         };
         match self.host.spawn_agent(launch, on_turn) {
-            Ok(session) => {
-                self.agents
-                    .lock()
-                    .entry(run_id.to_string())
-                    .or_default()
-                    .push(session.clone());
-                Launched::Session(session)
-            }
+            Ok(session) => Launched::Session(session),
             Err(e) => Launched::Finished(Outcome::failed(format!("subir o agente: {e}"))),
         }
+    }
+
+    /// Guarda a sessão de agente para o Parar. Chamado com `active` na mão.
+    fn register_agent(&self, run_id: &str, graph_id: &str, session: String) {
+        self.agents
+            .lock()
+            .entry(run_id.to_string())
+            .or_insert_with(|| RunAgents {
+                graph_id: graph_id.to_string(),
+                sessions: Vec::new(),
+            })
+            .sessions
+            .push(session);
     }
 
     /// O primeiro turno fechou: grava `context.md` (redigido) e `diff.patch`
@@ -958,9 +1090,7 @@ impl<H: RunHost> Runs<H> {
                 return;
             }
         }
-        if let Some(run) = self.snapshot_and_retire(run_id) {
-            self.publish(&run);
-        }
+        self.publish_current(run_id);
         self.advance(run_id);
     }
 
@@ -1013,9 +1143,7 @@ impl<H: RunHost> Runs<H> {
                 return;
             }
         }
-        if let Some(run) = self.snapshot_and_retire(run_id) {
-            self.publish(&run);
-        }
+        self.publish_current(run_id);
         self.advance(run_id);
     }
 }
@@ -1095,6 +1223,7 @@ fn prepare_start(a: &Active, id: &str) -> Option<Start> {
             .collect(),
         graph_dir: PathBuf::from(&a.graph.dir),
         integration,
+        graph_id: a.graph.id.clone(),
     })
 }
 
@@ -1227,6 +1356,21 @@ impl RunHost for TauriHost {
         let Ok(id) = session_id.parse() else { return };
         let state = self.app.state::<crate::AppState>();
         state.sessions.dispose(&state.pty_pool, id);
+    }
+
+    fn alive(&self, session_id: &str) -> bool {
+        use tauri::Manager;
+        let Ok(id) = session_id.parse() else {
+            return false;
+        };
+        let state = self.app.state::<crate::AppState>();
+        state.sessions.get(id).is_some_and(|s| {
+            !matches!(
+                s.status,
+                crate::session::SessionStatus::Exited { .. }
+                    | crate::session::SessionStatus::Failed { .. }
+            )
+        })
     }
 
     fn emit(&self, run: &Run) {
@@ -1464,6 +1608,11 @@ mod tests {
         /// Agentes de mentira: o que cada um recebeu e quem foi morto.
         agents: Mutex<Vec<AgentLaunch>>,
         killed: Mutex<Vec<String>>,
+        /// Sessões que o `spawn_agent` devolveu.
+        spawned: Mutex<Vec<String>>,
+        /// Quando presente, o próximo `spawn_agent` avisa que entrou e espera
+        /// a liberação antes de devolver — simula o spawn lento.
+        hold_spawn: Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
     }
 
     /// Fixture sintética: chave no formato `sk-` que a redação pega.
@@ -1480,6 +1629,11 @@ mod tests {
             on_turn: Box<dyn FnOnce(AgentTurn) + Send>,
         ) -> Result<String, String> {
             self.agents.lock().push(launch.clone());
+            let hold = self.hold_spawn.lock().take();
+            if let Some((entered, release)) = hold {
+                entered.send(()).unwrap();
+                release.recv().unwrap();
+            }
             std::thread::spawn(move || {
                 std::fs::write(launch.cwd.join(format!("{}.txt", launch.title)), "feito\n")
                     .unwrap();
@@ -1487,7 +1641,9 @@ mod tests {
                     text: Some(format!("pronto, usei {}", fake_key())),
                 });
             });
-            Ok(format!("agente-{}", uuid::Uuid::new_v4()))
+            let session = format!("agente-{}", uuid::Uuid::new_v4());
+            self.spawned.lock().push(session.clone());
+            Ok(session)
         }
 
         fn spawn_process(
@@ -1522,6 +1678,10 @@ mod tests {
             }
         }
 
+        fn alive(&self, session_id: &str) -> bool {
+            !self.killed.lock().iter().any(|k| k == session_id)
+        }
+
         fn emit(&self, run: &Run) {
             self.runs.lock().push(run.clone());
         }
@@ -1542,6 +1702,8 @@ mod tests {
             runs: Mutex::new(Vec::new()),
             agents: Mutex::new(Vec::new()),
             killed: Mutex::new(Vec::new()),
+            spawned: Mutex::new(Vec::new()),
+            hold_spawn: Mutex::new(None),
         });
         let store = Arc::new(Store::open_in_memory().unwrap());
         (Runs::new(Arc::clone(&host), store, Some(root)), host, app)
@@ -1872,6 +2034,8 @@ mod tests {
         };
         let test = runs.test_integration(g, edited, "m").unwrap();
         assert_ne!(test.id, run.id);
+        assert!(test.test, "run de teste marcado para a poda");
+        assert!(!run.test);
         assert_eq!(test.nodes.len(), 1);
         let test = wait_finished(&runs, &test.id);
         assert_eq!(test.status, RunStatus::Done, "{test:?}");
@@ -1906,6 +2070,122 @@ mod tests {
         assert_eq!(run.status, RunStatus::Done, "{run:?}");
         let diff = std::fs::read_to_string(&run.nodes["m"].outputs[&EdgeKind::Diff]).unwrap();
         assert!(diff.contains("gerado.txt"), "{diff}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stop_during_agent_spawn_kills_the_new_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let (runs, host, _app) = pty_runs(dir.path().join("runs"));
+        let (entered_tx, entered) = std::sync::mpsc::channel();
+        let (release, release_rx) = std::sync::mpsc::channel();
+        *host.hold_spawn.lock() = Some((entered_tx, release_rx));
+
+        let starter = {
+            let runs = Arc::clone(&runs);
+            std::thread::spawn(move || runs.start(graph(vec![agent("a", "x")], vec![]), vec![]))
+        };
+        entered.recv_timeout(Duration::from_secs(20)).unwrap();
+        // O spawn está no meio: o run já foi publicado, a sessão ainda não.
+        let run_id = host.runs.lock()[0].id.clone();
+        runs.stop(&run_id).unwrap();
+        release.send(()).unwrap();
+        starter.join().unwrap().unwrap();
+
+        let session = host.spawned.lock()[0].clone();
+        assert!(
+            host.killed.lock().contains(&session),
+            "sessão que subiu depois do Parar ficou viva"
+        );
+        let run = runs.get(&run_id).unwrap();
+        assert_eq!(run.status, RunStatus::Stopped);
+        assert!(run.live_agents.is_empty(), "{run:?}");
+        assert!(
+            runs.stop(&run_id).is_err(),
+            "agente órfão registrado no run"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn live_agent_keeps_run_stoppable_and_new_start_kills_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (runs, host, _app) = pty_runs(dir.path().join("runs"));
+        let g = graph(vec![agent("a", "x")], vec![]);
+
+        let first = runs.start(g.clone(), vec![]).unwrap();
+        let first = wait_finished(&runs, &first.id);
+        assert_eq!(first.status, RunStatus::Done, "{first:?}");
+        let session = host.spawned.lock()[0].clone();
+        // Run fechado, agente vivo: a tela sabe e o Parar segue valendo.
+        assert_eq!(first.live_agents, vec![session.clone()]);
+        assert_eq!(runs.list(&g.id)[0].live_agents, vec![session.clone()]);
+
+        // Novo ▶ do mesmo grafo: o claude do run anterior morre antes.
+        let second = runs.start(g.clone(), vec![]).unwrap();
+        assert!(host.killed.lock().contains(&session));
+        assert!(runs.get(&first.id).unwrap().live_agents.is_empty());
+        let second = wait_finished(&runs, &second.id);
+        let other = host.spawned.lock()[1].clone();
+        assert_eq!(second.live_agents, vec![other.clone()]);
+        assert!(!host.killed.lock().contains(&other));
+
+        // Outro grafo não mexe nos agentes deste.
+        let mut h = graph(vec![note("n")], vec![]);
+        h.id = "g-2".into();
+        runs.start(h, vec![]).unwrap();
+        assert!(!host.killed.lock().contains(&other));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn snapshot_versions_grow_and_store_keeps_the_last() {
+        let dir = tempfile::tempdir().unwrap();
+        let (runs, host, _app) = pty_runs(dir.path().join("runs"));
+        let run = runs
+            .start(graph(vec![process("p", "true"), note("n")], vec![]), vec![])
+            .unwrap();
+        let run = wait_finished(&runs, &run.id);
+        assert_eq!(run.status, RunStatus::Done, "{run:?}");
+        let versions: Vec<u64> = host.runs.lock().iter().map(|r| r.version).collect();
+        let mut sorted = versions.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(
+            sorted.len(),
+            versions.len(),
+            "versão repetida: {versions:?}"
+        );
+        let stored = runs.store.get_maestro_run(&run.id).unwrap().unwrap();
+        assert_eq!(stored.version, *sorted.last().unwrap());
+        assert_eq!(stored.status, RunStatus::Done);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prune_keeps_a_run_that_is_still_active() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("runs");
+        let (runs, _host, _app) = pty_runs(root.clone());
+        // Integração manual: o run fica rodando, esperando o ▶ do nó.
+        let waiting = runs
+            .start(
+                graph(vec![integration_node("m", "i")], vec![]),
+                vec![integration("i", "true", Trigger::Manual)],
+            )
+            .unwrap();
+        for _ in 0..KEEP_RUNS + 2 {
+            runs.start(graph(vec![note("n")], vec![]), vec![]).unwrap();
+        }
+        let got = runs.get(&waiting.id).unwrap();
+        assert_eq!(got.status, RunStatus::Running);
+        assert!(root.join(&waiting.id).join("m").is_dir(), "pasta podada");
+        assert!(
+            runs.store.get_maestro_run(&waiting.id).unwrap().is_some(),
+            "linha podada"
+        );
+        // A poda segue valendo para os outros.
+        assert_eq!(runs.list("g-1").len(), KEEP_RUNS);
     }
 
     #[test]

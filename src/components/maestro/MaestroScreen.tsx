@@ -60,6 +60,7 @@ import {
   runsList,
   saveGraph,
   selectedRun,
+  stoppableRuns,
   toFlow,
   type Graph,
   type ImportPreview,
@@ -250,9 +251,18 @@ function MaestroInner({
     }
   };
 
+  // Parar alcança também o run já fechado com agente vivo; depois relê o run
+  // para a tela saber que os agentes morreram.
+  const stoppable = stoppableRuns(runView);
   const stop = () => {
-    if (!running) return;
-    runStop(running.id).catch((e) => setError(t("maestroRunError", { error: String(e) })));
+    for (const r of stoppable) {
+      runStop(r.id)
+        .then(() => runGet(r.id))
+        .then((run) => {
+          if (run) dispatchRun({ type: "update", run });
+        })
+        .catch((e) => setError(t("maestroRunError", { error: String(e) })));
+    }
   };
 
   const releaseNode = useCallback(
@@ -459,7 +469,7 @@ function MaestroInner({
             <Play size={13} weight="fill" />
             {t("maestroRun")}
           </button>
-          <button type="button" disabled={!running} onClick={stop} className={tbtn}>
+          <button type="button" disabled={stoppable.length === 0} onClick={stop} className={tbtn}>
             <Stop size={13} weight="fill" />
             {t("maestroStop")}
           </button>

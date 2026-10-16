@@ -328,9 +328,16 @@ export interface Run {
   finishedAt: number | null;
   status: RunStatus;
   nodes: Record<string, NodeRun>;
+  /** Cresce a cada retrato do core. */
+  version?: number;
+  /** Run de "Testar com a última entrada". */
+  test?: boolean;
+  /** Sessões de agente do run ainda vivas — o run pode já ter fechado. */
+  liveAgents?: string[];
 }
 
-/** ▶ Executar: o core recusa grafo não consentido ou inválido. */
+/** ▶ Executar: o core recusa grafo não consentido ou inválido. Antes de
+ * começar, o core mata os agentes vivos dos runs anteriores do grafo. */
 export const runStart = (graphId: string) => invoke<string>("maestro_run_start", { graphId });
 
 /** ■ Parar: o core mata o process group de cada nó rodando. */
@@ -427,6 +434,10 @@ export function runReducer(view: RunView, action: RunAction): RunView {
         : view;
   }
 }
+
+/** O que o ■ Parar alcança: run rodando ou run com agente ainda vivo. */
+export const stoppableRuns = (view: RunView): Run[] =>
+  view.runs.filter((r) => r.status === "running" || (r.liveAgents?.length ?? 0) > 0);
 
 export const selectedRun = (view: RunView): Run | null =>
   view.runs.find((r) => r.id === view.selectedId) ?? null;
