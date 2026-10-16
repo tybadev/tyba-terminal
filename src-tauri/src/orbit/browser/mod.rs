@@ -189,6 +189,60 @@ pub fn pick_live(wanted: &[(ViewRect, bool)], center: (f64, f64), max: usize) ->
     order
 }
 
+/// A recusa a `click`/`type` de agente com o dono usando a página: na hora,
+/// sem esperar (o agente tenta de novo ou usa `orbit_wait`).
+pub const OWNER_BUSY: &str = "o dono está usando este navegador; tente de novo em alguns segundos";
+
+/// O agente pode agir (clicar, digitar) na página agora? Ler (snapshot,
+/// console, print) vale sempre; agir, só sem o dono usando.
+pub fn agent_may_act(focus: Focus) -> Result<(), &'static str> {
+    match focus {
+        Focus::Owner => Err(OWNER_BUSY),
+        Focus::None | Focus::Agent => Ok(()),
+    }
+}
+
+/// Para onde vai uma tecla com o teclado numa página de nó.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyRoute {
+    /// Segue para a página.
+    Page,
+    /// Esc: a tecla some e o foco volta ao app.
+    GiveBack,
+    /// Atalho do app (⌘W, ⌘K, ⌘L): o foco volta ao app e a tecla vai junto.
+    ToApp,
+}
+
+/// Código de tecla do Esc no macOS (`kVK_Escape`).
+pub const KEY_ESCAPE: u16 = 53;
+
+/// Modificadores de uma tecla.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Mods {
+    pub shift: bool,
+    pub control: bool,
+    pub option: bool,
+    pub command: bool,
+}
+
+/// Esc sozinho devolve o foco; ⇧Esc entrega um Esc à página (fechar o modal
+/// dela); ⌘W, ⌘K e ⌘L são do app; o resto (⌘C, ⌘V, ⌘A…) é da página.
+pub fn route_key(key_code: u16, mods: Mods, chars: &str) -> KeyRoute {
+    let only_command = mods.command && !mods.shift && !mods.control && !mods.option;
+    if key_code == KEY_ESCAPE {
+        let bare = !mods.shift && !mods.control && !mods.option && !mods.command;
+        return if bare {
+            KeyRoute::GiveBack
+        } else {
+            KeyRoute::Page
+        };
+    }
+    if only_command && matches!(chars.to_ascii_lowercase().as_str(), "w" | "k" | "l") {
+        return KeyRoute::ToApp;
+    }
+    KeyRoute::Page
+}
+
 /// O título como o card e o agente o veem: uma linha, sem controle, curto.
 pub fn clean_page_title(title: &str) -> String {
     title
@@ -448,6 +502,32 @@ impl BrowserViews {
         self.update(app, key, |e| e.state.refused = Some(why.to_string()));
     }
 
+    /// O dono clicou na página de `key` (ou, com `None`, fora de todas):
+    /// ela vira "você" e qualquer outra que estava com ele volta a ninguém.
+    pub fn set_owner(&self, app: &AppHandle, key: Option<&ViewKey>) {
+        let changed: Vec<(ViewKey, BrowserState)> = {
+            let mut entries = self.entries.lock();
+            let mut out = Vec::new();
+            for (k, e) in entries.iter_mut() {
+                let want = if Some(k) == key {
+                    Focus::Owner
+                } else if e.state.focus == Focus::Owner {
+                    Focus::None
+                } else {
+                    continue;
+                };
+                if e.state.focus != want {
+                    e.state.focus = want;
+                    out.push((k.clone(), e.state.clone()));
+                }
+            }
+            out
+        };
+        for (k, s) in &changed {
+            Self::emit(app, k, s);
+        }
+    }
+
     /// Quem está com a página agora.
     pub fn focus(&self, key: &ViewKey) -> Focus {
         self.entries
@@ -639,5 +719,39 @@ mod tests {
             .expect("Cargo.lock");
         let count = lock.lines().filter(|l| *l == "name = \"wry\"").count();
         assert_eq!(count, 1, "mais de um wry no Cargo.lock");
+    }
+
+    #[test]
+    fn agent_is_refused_while_the_owner_uses_the_page() {
+        assert_eq!(agent_may_act(Focus::Owner), Err(OWNER_BUSY));
+        assert_eq!(agent_may_act(Focus::None), Ok(()));
+        assert_eq!(agent_may_act(Focus::Agent), Ok(()));
+    }
+
+    #[test]
+    fn keys_route_escape_back_and_app_shortcuts_to_the_app() {
+        let none = Mods::default();
+        let shift = Mods {
+            shift: true,
+            ..none
+        };
+        let cmd = Mods {
+            command: true,
+            ..none
+        };
+        assert_eq!(route_key(KEY_ESCAPE, none, "\u{1b}"), KeyRoute::GiveBack);
+        assert_eq!(route_key(KEY_ESCAPE, shift, "\u{1b}"), KeyRoute::Page);
+        assert_eq!(route_key(KEY_ESCAPE, cmd, "\u{1b}"), KeyRoute::Page);
+        for c in ["w", "k", "l", "K"] {
+            assert_eq!(route_key(0, cmd, c), KeyRoute::ToApp, "{c}");
+        }
+        for c in ["c", "v", "a", "z"] {
+            assert_eq!(route_key(0, cmd, c), KeyRoute::Page, "{c}");
+        }
+        assert_eq!(
+            route_key(0, Mods { shift: true, ..cmd }, "w"),
+            KeyRoute::Page
+        );
+        assert_eq!(route_key(0, none, "w"), KeyRoute::Page);
     }
 }

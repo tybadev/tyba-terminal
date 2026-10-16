@@ -18,14 +18,16 @@ use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::ptr::null_mut;
+use std::ptr::{null_mut, NonNull};
 use std::sync::Arc;
 
-use block2::Block;
+use block2::{Block, RcBlock};
 use objc2::rc::Retained;
-use objc2::runtime::{NSObject, ProtocolObject};
+use objc2::runtime::{AnyObject, NSObject, ProtocolObject};
 use objc2::{define_class, msg_send, DefinedClass, MainThreadMarker, MainThreadOnly};
-use objc2_app_kit::{NSModalResponseOK, NSOpenPanel};
+use objc2_app_kit::{
+    NSEvent, NSEventMask, NSEventModifierFlags, NSModalResponseOK, NSOpenPanel, NSView, NSWindow,
+};
 use objc2_foundation::{NSArray, NSObjectProtocol, NSProcessInfo, NSURL};
 use objc2_web_kit::{
     WKFrameInfo, WKMediaCaptureType, WKNavigationAction, WKOpenPanelParameters,
@@ -38,7 +40,9 @@ use wry::dpi::{LogicalPosition, LogicalSize};
 use wry::http::{header::CONTENT_TYPE, Request, Response, StatusCode};
 use wry::{PageLoadEvent, Rect, WebViewBuilder, WebViewBuilderExtDarwin, WebViewExtMacOS};
 
-use super::{policy, store_identity, BrowserViews, Focus, Op, Place, ViewKey};
+use super::{
+    policy, route_key, store_identity, BrowserViews, Focus, KeyRoute, Mods, Op, Place, ViewKey,
+};
 
 /// Teto do arquivo servido pelo `orbit-file`.
 const MAX_FILE_BYTES: u64 = 32 * 1024 * 1024;
@@ -53,6 +57,8 @@ struct NativeView {
 
 thread_local! {
     static VIEWS: RefCell<HashMap<ViewKey, NativeView>> = RefCell::new(HashMap::new());
+    /// Os monitores de evento (clique e tecla), instalados uma vez.
+    static MONITORS: RefCell<Vec<Retained<AnyObject>>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Executa a operação (na main thread).
@@ -67,9 +73,12 @@ pub(super) fn apply(app: &AppHandle, op: Op) {
             let exists = VIEWS.with(|v| v.borrow().contains_key(&key));
             if !exists {
                 match create(app, &key) {
-                    Ok(view) => VIEWS.with(|v| {
-                        v.borrow_mut().insert(key.clone(), view);
-                    }),
+                    Ok(view) => {
+                        VIEWS.with(|v| {
+                            v.borrow_mut().insert(key.clone(), view);
+                        });
+                        install_monitors(app);
+                    }
                     Err(e) => {
                         eprintln!("[tyba] navegador do orbit: criar a view: {e}");
                         return;
@@ -126,6 +135,9 @@ fn set_place(view: &NativeView, place: &Place) {
         // `setPageZoom`: reescala o layout como o `transform` do canvas (o
         // `setMagnification` seria zoom de pinça e deslocaria o viewport).
         let _ = view.webview.zoom(place.zoom.clamp(0.25, 5.0));
+    }
+    if !visible {
+        give_back_if_inside(view);
     }
     let _ = view.webview.set_visible(visible);
 }
@@ -321,4 +333,142 @@ impl OrbitUiDelegate {
         // SAFETY: `init` do `NSObject`.
         unsafe { msg_send![super(this), init] }
     }
+}
+
+// ── foco e teclado ──────────────────────────────────────────────────────────
+
+/// A view do app (a webview do Tauri): a subview do `contentView` que não é
+/// de nenhum nó. É para ela que o foco volta.
+fn app_view(window: &NSWindow) -> Option<Retained<NSView>> {
+    let content = window.contentView()?;
+    let subviews = content.subviews();
+    VIEWS.with(|v| {
+        let v = v.borrow();
+        subviews.iter().find(|sub| {
+            !v.values().any(|n| {
+                let wk: &NSView = &n.wk;
+                std::ptr::eq(wk, &**sub)
+            })
+        })
+    })
+}
+
+/// Devolve o foco do teclado ao app.
+fn give_back(window: &NSWindow) {
+    if let Some(app) = app_view(window) {
+        window.makeFirstResponder(Some(&app));
+    }
+}
+
+/// A view vai sumir com o teclado nela: o foco volta ao app antes.
+fn give_back_if_inside(view: &NativeView) {
+    let Some(window) = view.wk.window() else {
+        return;
+    };
+    let inside = window
+        .firstResponder()
+        .and_then(|r| r.downcast::<NSView>().ok())
+        .is_some_and(|r| r.isDescendantOf(&view.wk));
+    if inside {
+        give_back(&window);
+    }
+}
+
+/// O nó cuja view contém `view` (ela mesma ou um descendente).
+fn node_of(view: &NSView) -> Option<ViewKey> {
+    VIEWS.with(|v| {
+        v.borrow()
+            .iter()
+            .find(|(_, n)| view.isDescendantOf(&n.wk))
+            .map(|(k, _)| k.clone())
+    })
+}
+
+fn is_main_window(app: &AppHandle, window: &NSWindow) -> bool {
+    app.get_webview_window("main")
+        .and_then(|w| w.ns_window().ok())
+        .is_some_and(|p| std::ptr::eq(p as *const NSWindow, window))
+}
+
+/// Monitores locais de clique e tecla (uma vez por app). O clique numa
+/// view de nó marca "você"; fora de todas, devolve. A tecla com o foco numa
+/// página passa por [`route_key`]: Esc devolve (e some), ⌘W/⌘K/⌘L vão ao
+/// app, o resto segue para a página. Uma tecla passa pelo app antes da
+/// página — é isso que deixa o Esc devolver.
+fn install_monitors(app: &AppHandle) {
+    if MONITORS.with(|m| !m.borrow().is_empty()) {
+        return;
+    }
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+
+    let click_app = app.clone();
+    let click = RcBlock::new(move |event: NonNull<NSEvent>| -> *mut NSEvent {
+        // SAFETY: o AppKit entrega um evento válido durante a chamada.
+        let ev = unsafe { event.as_ref() };
+        if let Some(window) = ev.window(mtm).filter(|w| is_main_window(&click_app, w)) {
+            let hit = window
+                .contentView()
+                .and_then(|c| c.hitTest(ev.locationInWindow()))
+                .and_then(|v| node_of(&v));
+            click_app
+                .state::<BrowserViews>()
+                .set_owner(&click_app, hit.as_ref());
+        }
+        event.as_ptr()
+    });
+
+    let key_app = app.clone();
+    let key = RcBlock::new(move |event: NonNull<NSEvent>| -> *mut NSEvent {
+        // SAFETY: o AppKit entrega um evento válido durante a chamada.
+        let ev = unsafe { event.as_ref() };
+        let Some(window) = ev.window(mtm).filter(|w| is_main_window(&key_app, w)) else {
+            return event.as_ptr();
+        };
+        let in_page = window
+            .firstResponder()
+            .and_then(|r| r.downcast::<NSView>().ok())
+            .and_then(|v| node_of(&v))
+            .is_some();
+        if !in_page {
+            return event.as_ptr();
+        }
+        let flags = ev.modifierFlags();
+        let mods = Mods {
+            shift: flags.contains(NSEventModifierFlags::Shift),
+            control: flags.contains(NSEventModifierFlags::Control),
+            option: flags.contains(NSEventModifierFlags::Option),
+            command: flags.contains(NSEventModifierFlags::Command),
+        };
+        let chars = ev
+            .charactersIgnoringModifiers()
+            .map(|c| c.to_string())
+            .unwrap_or_default();
+        match route_key(ev.keyCode(), mods, &chars) {
+            KeyRoute::Page => event.as_ptr(),
+            KeyRoute::GiveBack => {
+                give_back(&window);
+                key_app.state::<BrowserViews>().set_owner(&key_app, None);
+                null_mut()
+            }
+            KeyRoute::ToApp => {
+                give_back(&window);
+                key_app.state::<BrowserViews>().set_owner(&key_app, None);
+                event.as_ptr()
+            }
+        }
+    });
+
+    // SAFETY: os blocos devolvem o próprio evento (válido) ou nulo.
+    let monitors = unsafe {
+        [
+            NSEvent::addLocalMonitorForEventsMatchingMask_handler(
+                NSEventMask::LeftMouseDown | NSEventMask::RightMouseDown,
+                &click,
+            ),
+            NSEvent::addLocalMonitorForEventsMatchingMask_handler(NSEventMask::KeyDown, &key),
+        ]
+    };
+    MONITORS.with(|m| m.borrow_mut().extend(monitors.into_iter().flatten()));
 }
