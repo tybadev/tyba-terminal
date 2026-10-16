@@ -516,6 +516,78 @@ export interface Created {
 export const ephemeralCreated = (run: Run | null): Created[] =>
   run?.status === "running" ? (run.created ?? []).filter((c) => !c.kept) : [];
 
+/**
+ * Quem o orquestrador criou no run à vista: id do nó → id do criador. Vale
+ * para os efêmeros E para os mantidos, em qualquer estado do run: a marca e a
+ * ligação tracejada seguem enquanto esse run está à vista. Antes a origem
+ * saía só de {@link ephemeralCreated}, e "Manter no grafo" (ou o fim do run)
+ * a apagava na hora — no teste do dono os 3 agentes mantidos viraram nós
+ * comuns, sem marca, sem ligação e com o toggle "orquestrar".
+ */
+export function createdByOf(run: Run | null): Map<string, string> {
+  return new Map((run?.created ?? []).map((c) => [c.node.id, c.createdBy]));
+}
+
+/** O que o canvas desenha a partir dos criados do run à vista (sem DOM, testável). */
+export interface CreatedFlow {
+  /** Os efêmeros: fora do grafo salvo, montados a cada render. */
+  nodes: FlowNode[];
+  /** Ligação tracejada criador → criado (só desenho; não entra no agendamento). */
+  byEdges: { id: string; source: string; target: string; sourceHandle: string; targetHandle: string }[];
+  /** As ligações url dos efêmeros (as dos mantidos já estão no grafo). */
+  edges: FlowEdge[];
+}
+
+/**
+ * Nós e ligações dos criados. A tracejada só sai de um orquestrador do grafo
+ * (é ele que tem a porta {@link ORCHESTRATOR_HANDLE}) e só chega num nó que
+ * está desenhado — efêmero ou já mantido no grafo.
+ */
+export function createdFlow(run: Run | null, graphNodes: readonly MaestroNode[]): CreatedFlow {
+  const ephemeral = ephemeralCreated(run);
+  const inGraph = new Map(graphNodes.map((n) => [n.id, n]));
+  const drawn = new Set([...inGraph.keys(), ...ephemeral.map((c) => c.node.id)]);
+  const orchestrates = (id: string) => {
+    const k = inGraph.get(id)?.kind;
+    return k?.type === "agent" && k.orchestrate === true;
+  };
+  const byEdges: CreatedFlow["byEdges"] = [];
+  for (const c of run?.created ?? []) {
+    if (!drawn.has(c.node.id) || !orchestrates(c.createdBy)) continue;
+    byEdges.push({
+      id: `${c.node.id}:by`,
+      source: c.createdBy,
+      target: c.node.id,
+      sourceHandle: ORCHESTRATOR_HANDLE,
+      targetHandle: NEW_IN_HANDLE,
+    });
+  }
+  return {
+    nodes: ephemeral.map(({ node }) => ({
+      id: node.id,
+      type: node.kind.type,
+      position: node.position,
+      width: node.size.w,
+      height: node.size.h,
+      data: { node },
+    })),
+    byEdges,
+    edges: ephemeral.flatMap((c) =>
+      c.edges
+        .filter((e) => drawn.has(e.from))
+        .map((e) => ({
+          id: e.id,
+          type: "maestro" as const,
+          source: e.from,
+          target: e.to,
+          sourceHandle: outHandle(e.kind),
+          targetHandle: inHandle(e.id),
+          data: { kind: e.kind },
+        })),
+    ),
+  };
+}
+
 /** "Manter no grafo": o core grava os criados no grafo e devolve o grafo inteiro. */
 export const keepCreated = (runId: string) =>
   invoke<Graph>("maestro_keep_created", { runId });

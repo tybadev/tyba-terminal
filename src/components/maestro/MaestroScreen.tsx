@@ -44,6 +44,7 @@ import {
   INTEGRATION_DRAG_TYPE,
   browserFed,
   createdDetail,
+  createdByOf,
   ephemeralCreated,
   keepCreated,
   shortDir,
@@ -435,6 +436,7 @@ function MaestroInner() {
   // orquestrador criou (efêmeros) com as ligações url deles.
   const createdNow = useMemo(() => ephemeralCreated(run), [run]);
   const createdIds = useMemo(() => new Set(createdNow.map((c) => c.node.id)), [createdNow]);
+  const createdBy = useMemo(() => createdByOf(run), [run]);
   const viewGraph = useMemo(
     () =>
       createdNow.length === 0
@@ -524,6 +526,7 @@ function MaestroInner() {
       setFocusNode,
       openInBrowser,
       createdIds,
+      createdBy,
     }),
     [
       integrations,
@@ -541,6 +544,7 @@ function MaestroInner() {
       focusNode,
       openInBrowser,
       createdIds,
+      createdBy,
     ],
   );
 

@@ -113,8 +113,15 @@ function TerminalPreview({ sessionId, onOpen }: { sessionId: string; onOpen?: ()
       onDoubleClick={onOpen}
       className="absolute inset-0 flex flex-col justify-end overflow-hidden px-3.5 pt-2.5 pb-3 font-mono text-[11.5px] leading-[17px] text-tyba-text-muted"
     >
+      {/* Cada linha com altura fixa e sem encolher. Item de flex encolhe por
+          padrão, e com `overflow-hidden` o mínimo dele vira 0: no nó baixo as
+          14 linhas espremiam em poucos px cada, cada uma mostrando só uma
+          fatia do texto de 17px — as fatias empilhadas pareciam linhas umas
+          por cima das outras. Assim a pilha passa da altura, o `justify-end` empurra
+          o excesso para cima e o `overflow-hidden` do pai corta por cima —
+          ficam as últimas linhas inteiras. */}
       {lines.map((line, i) => (
-        <div key={i} className="overflow-hidden text-ellipsis whitespace-pre">
+        <div key={i} className="h-[17px] shrink-0 overflow-hidden text-ellipsis whitespace-pre">
           {line || " "}
         </div>
       ))}

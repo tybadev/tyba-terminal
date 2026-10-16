@@ -48,15 +48,14 @@ import {
 } from "@/components/ui/dropdown-menu";
 import {
   NEW_IN_HANDLE,
-  ORCHESTRATOR_HANDLE,
   connectionProblem,
   edgeDetail,
   edgeHasValue,
+  createdFlow,
   ephemeralCreated,
   inHandle,
   kindOfOutHandle,
   newNode,
-  outHandle,
   type FlowEdgeData,
   type Integration,
   type NodeKind,
@@ -289,51 +288,22 @@ export function MaestroCanvas({
   // Nós que o orquestrador criou no run rodando: efêmeros como os
   // subagentes (fora do state, nunca salvos), com o terminal/página de
   // verdade, a ligação tracejada do criador e as ligações url deles.
+  // Os mantidos já estão em `nodes`; daqui só sai a tracejada até eles.
   const created = useMemo(() => {
-    const ns: MaestroFlowNode[] = [];
-    const es: Edge[] = [];
-    const ids = new Set<string>();
-    const list = ephemeralCreated(run);
-    for (const c of list) ids.add(c.node.id);
-    const exists = (id: string) => ids.has(id) || nodes.some((n) => n.id === id);
-    for (const c of list) {
-      const { node } = c;
-      ns.push({
-        id: node.id,
-        type: node.kind.type,
-        position: node.position,
-        width: node.size.w,
-        height: node.size.h,
-        measured: { width: node.size.w, height: node.size.h },
-        data: { node },
-        ...EPHEMERAL,
-      });
-      if (nodes.some((n) => n.id === c.createdBy)) {
-        es.push({
-          id: `${node.id}:by`,
-          source: c.createdBy,
-          sourceHandle: ORCHESTRATOR_HANDLE,
-          target: node.id,
-          targetHandle: NEW_IN_HANDLE,
-          style: SUB_EDGE_STYLE,
-          ...EPHEMERAL,
-        });
-      }
-      for (const e of c.edges) {
-        if (!exists(e.from)) continue;
-        es.push({
-          id: e.id,
-          type: "maestro",
-          source: e.from,
-          target: e.to,
-          sourceHandle: outHandle(e.kind),
-          targetHandle: inHandle(e.id),
-          data: { kind: e.kind },
-          ...EPHEMERAL,
-        });
-      }
-    }
-    return { nodes: ns, edges: es, ids: new Set([...ids, ...es.map((e) => e.id)]) };
+    const flow = createdFlow(
+      run,
+      nodes.map((n) => n.data.node),
+    );
+    const ns: MaestroFlowNode[] = flow.nodes.map((n) => ({
+      ...n,
+      measured: { width: n.width, height: n.height },
+      ...EPHEMERAL,
+    }));
+    const es: Edge[] = [
+      ...flow.byEdges.map((e) => ({ ...e, style: SUB_EDGE_STYLE, ...EPHEMERAL })),
+      ...flow.edges.map((e) => ({ ...e, ...EPHEMERAL })),
+    ];
+    return { nodes: ns, edges: es, ids: new Set([...ns.map((n) => n.id), ...es.map((e) => e.id)]) };
   }, [run, nodes]);
 
   const shownNodes = useMemo<CanvasNode[]>(

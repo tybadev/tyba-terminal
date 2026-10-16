@@ -23,7 +23,7 @@ const RUNNERS: Runner[] = ["claude", "codex"];
 /** Nó de agente: Claude (âmbar) ou Codex (ciano), papel, pasta e a tarefa. */
 export function AgentNode({ id, data, selected }: NodeProps<MaestroFlowNode>) {
   const { t } = useTranslation();
-  const { updateNode, run, live, subagents } = useMaestro();
+  const { updateNode, run, live, subagents, createdBy } = useMaestro();
   const node = data.node;
   const kind = node.kind as AgentKind;
   const session = nodeSession(kind, run?.nodes[id], live);
@@ -32,7 +32,9 @@ export function AgentNode({ id, data, selected }: NodeProps<MaestroFlowNode>) {
   const set = (patch: Partial<AgentKind>) =>
     updateNode(id, (n) => ({ ...n, kind: { ...(n.kind as AgentKind), ...patch } }));
   const claude = kind.runner === "claude";
-  const orchestrates = kind.orchestrate === true;
+  // Agente criado pelo orquestrador nunca orquestra: sem toggle e sem selo.
+  const created = createdBy.has(id);
+  const orchestrates = !created && kind.orchestrate === true;
   const hidden = { opacity: 0, width: 1, height: 1, minWidth: 0, minHeight: 0, border: 0 };
 
   return (
@@ -108,19 +110,21 @@ export function AgentNode({ id, data, selected }: NodeProps<MaestroFlowNode>) {
           onChange={(e) => set({ role: e.target.value })}
           className={`${fieldClass} min-w-0 flex-1`}
         />
-        <button
-          type="button"
-          aria-pressed={orchestrates}
-          title={t("maestroOrchestrateHint")}
-          onClick={() => set({ orchestrate: !orchestrates })}
-          className={`nodrag shrink-0 rounded-[4px] border px-1.5 text-[11px] leading-[20px] ${
-            orchestrates
-              ? "border-tyba-violet/50 bg-tyba-violet-tint text-tyba-violet"
-              : "border-tyba-border text-tyba-text-faint hover:text-tyba-text"
-          }`}
-        >
-          {t("maestroOrchestrate")}
-        </button>
+        {!created && (
+          <button
+            type="button"
+            aria-pressed={orchestrates}
+            title={t("maestroOrchestrateHint")}
+            onClick={() => set({ orchestrate: !orchestrates })}
+            className={`nodrag shrink-0 rounded-[4px] border px-1.5 text-[11px] leading-[20px] ${
+              orchestrates
+                ? "border-tyba-violet/50 bg-tyba-violet-tint text-tyba-violet"
+                : "border-tyba-border text-tyba-text-faint hover:text-tyba-text"
+            }`}
+          >
+            {t("maestroOrchestrate")}
+          </button>
+        )}
         <NodeDir id={id} kind={kind} />
       </div>
       {session ? (

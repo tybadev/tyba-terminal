@@ -67,6 +67,8 @@ export interface MaestroCtx {
   openInBrowser: (fromId: string, url: string) => void;
   /** Nós que um orquestrador criou no run à vista (efêmeros, fora do grafo salvo). */
   createdIds: ReadonlySet<string>;
+  /** Quem o orquestrador criou no run à vista (efêmero ou mantido) → criador. */
+  createdBy: ReadonlyMap<string, string>;
 }
 
 export const MaestroContext = createContext<MaestroCtx>({
@@ -86,6 +88,7 @@ export const MaestroContext = createContext<MaestroCtx>({
   setFocusNode: () => {},
   openInBrowser: () => {},
   createdIds: new Set(),
+  createdBy: new Map(),
 });
 
 export const useMaestro = () => useContext(MaestroContext);
@@ -170,11 +173,14 @@ export function NodeFrame({
   children: ReactNode;
 }) {
   const { t } = useTranslation();
-  const { integrations, updateNode, run, createdIds } = useMaestro();
+  const { integrations, updateNode, run, createdIds, createdBy } = useMaestro();
   const nodeRun = run?.nodes[id];
-  // Criado pelo orquestrador neste run: tracejado violeta, sem editar nem apagar.
-  const created = createdIds.has(id);
-  const orchestrates = node.kind.type === "agent" && node.kind.orchestrate === true;
+  // Criado pelo orquestrador no run à vista: tracejado violeta e "criado pelo
+  // Orquestrador". Enquanto efêmero, também sem editar nem apagar; mantido no
+  // grafo, edita como qualquer nó.
+  const created = createdBy.has(id);
+  const locked = createdIds.has(id);
+  const orchestrates = !created && node.kind.type === "agent" && node.kind.orchestrate === true;
   const { deleteElements } = useReactFlow();
   const updateInternals = useUpdateNodeInternals();
 
@@ -189,7 +195,10 @@ export function NodeFrame({
 
   // Porta nova (ligação criada, tipo de saída trocado) só existe para o
   // xyflow depois de medida de novo.
-  const handleKey = `${incoming.map((i) => i.edgeId).join(",")}|${outputs.join(",")}|${takesInput}`;
+  // `orchestrates` entra porque ligar o toggle cria a porta do orquestrador sem
+  // mudar o tamanho do nó: sem medir de novo, o xyflow não acha a porta e
+  // descarta a ligação tracejada até os criados.
+  const handleKey = `${incoming.map((i) => i.edgeId).join(",")}|${outputs.join(",")}|${takesInput}|${orchestrates}`;
   useEffect(() => {
     updateInternals(id);
   }, [id, handleKey, updateInternals]);
@@ -231,7 +240,7 @@ export function NodeFrame({
           autoCorrect="off"
           autoCapitalize="off"
           value={node.title}
-          readOnly={created}
+          readOnly={locked}
           onChange={(e) => {
             const title = e.target.value;
             updateNode(id, (n) => ({ ...n, title }));
@@ -243,7 +252,7 @@ export function NodeFrame({
         </span>
         {status ?? (nodeRun && <NodeStatusBadge nodeId={id} nodeRun={nodeRun} />)}
         {extra}
-        {!created && (
+        {!locked && (
           <button
             type="button"
             aria-label={t("maestroDeleteNode")}
