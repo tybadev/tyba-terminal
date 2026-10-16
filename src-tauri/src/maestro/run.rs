@@ -609,26 +609,8 @@ fn bash_program() -> PathBuf {
     }
 }
 
-/// O shell que roda o comando de um nó de Processo: o do dono (`$SHELL`, o
-/// mesmo de um terminal digitado), quando ele entende o wrapper (bash ou
-/// zsh: `set -o pipefail`, posicionais no `-c`). Outro (fish, nu) cai no
-/// bash. Integração não passa por aqui: o script dela é bash por contrato.
-fn process_shell(owner_shell: &str) -> PathBuf {
-    let path = Path::new(owner_shell);
-    let posix = path.is_absolute()
-        && matches!(
-            path.file_name().and_then(|n| n.to_str()),
-            Some("bash" | "zsh")
-        )
-        && path.is_file();
-    if posix {
-        path.to_path_buf()
-    } else {
-        bash_program()
-    }
-}
-
-/// `<shell> -lc` com o wrapper de rules. `TYBA_IN`/`TYBA_OUT` (e o PATH)
+/// `bash -lc` com o wrapper de rules — o contrato do comando salvo, qualquer
+/// que seja o `$SHELL` do dono (glob sem match e divisão de palavras do bash). `TYBA_IN`/`TYBA_OUT` (e o PATH)
 /// chegam como argumentos posicionais e são exportados antes do comando —
 /// assim o caminho não passa por aspas montadas à mão. O `}` vai em linha
 /// própria para um comentário no fim do comando não engolir o fechamento.
@@ -638,7 +620,6 @@ fn process_shell(owner_shell: &str) -> PathBuf {
 /// onde moram o Homebrew, o bun e o nvm. Exportado depois do profile, vale o
 /// mesmo PATH de um terminal digitado.
 pub fn process_argv(
-    shell: &Path,
     path: Option<&str>,
     command: &str,
     in_dir: &Path,
@@ -662,7 +643,7 @@ pub fn process_argv(
         out_dir.to_string_lossy().into_owned(),
     ];
     args.extend(path.map(str::to_string));
-    (shell.to_path_buf(), args)
+    (bash_program(), args)
 }
 
 /// Exit gravado pelo wrapper. Sem `.exit` o processo morreu antes do fim.
@@ -1207,7 +1188,7 @@ impl<H: RunHost> Runs<H> {
                 }
             }
             NodeKind::Integration { .. } => match &start.integration {
-                Some(i) => self.launch_script(run_id, &start, &i.script, i.output, bash_program()),
+                Some(i) => self.launch_script(run_id, &start, &i.script, i.output),
                 None => Launched::Finished(Outcome::failed("integração não encontrada")),
             },
             NodeKind::Agent {
@@ -1218,13 +1199,7 @@ impl<H: RunHost> Runs<H> {
             } => self.launch_agent(run_id, &start, *runner, prompt, *orchestrate),
             NodeKind::Process {
                 command, output, ..
-            } => self.launch_script(
-                run_id,
-                &start,
-                command,
-                *output,
-                process_shell(&crate::session::default_shell()),
-            ),
+            } => self.launch_script(run_id, &start, command, *output),
             NodeKind::Browser { url } => Launched::Finished(browser_outcome(&start, url)),
             NodeKind::Service { source } => self.launch_service(run_id, &start, source.clone()),
         }
@@ -1302,14 +1277,13 @@ impl<H: RunHost> Runs<H> {
     }
 
     /// Processo e integração: o texto (com variáveis) no wrapper de rules,
-    /// rodado por `shell` com o PATH de login do dono, num PTY, na pasta do nó.
+    /// rodado em `bash -lc` com o PATH de login do dono, num PTY, na pasta do nó.
     fn launch_script(
         &self,
         run_id: &str,
         start: &Start,
         command: &str,
         output: OutputKind,
-        shell: PathBuf,
     ) -> Launched {
         if let Err(e) = materialize(&start.in_dir, &start.inputs) {
             return Launched::Finished(Outcome::failed(format!("preparar entradas: {e}")));
@@ -1317,7 +1291,6 @@ impl<H: RunHost> Runs<H> {
         let command = crate::snippet::render(command, &start.variables);
         let login_path = crate::shell_path::login_env().path;
         let (program, args) = process_argv(
-            &shell,
             login_path.as_deref(),
             &command,
             &start.in_dir,
@@ -2614,8 +2587,7 @@ mod tests {
 
     /// App aberto pelo Dock: o processo herda o PATH do launchd e o `-l` não
     /// lê o `.zshrc`. O comando que mora num bin do dono (fixture sintética)
-    /// só é achado com o PATH de login exportado pelo wrapper — no bash da
-    /// integração e no zsh do dono.
+    /// só é achado com o PATH de login exportado pelo wrapper.
     #[cfg(unix)]
     #[test]
     fn process_runs_with_the_owner_login_path_not_the_app_path() {
@@ -2628,50 +2600,43 @@ mod tests {
         std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
         let login_path = format!("{}:/usr/bin:/bin", bin.display());
 
-        let mut shells = vec![bash_program()];
-        if Path::new("/bin/zsh").is_file() {
-            shells.push(PathBuf::from("/bin/zsh"));
-        }
-        for shell in shells {
-            let (in_dir, out_dir) = (dir.path().join("in"), dir.path().join("out"));
-            let _ = std::fs::remove_dir_all(&out_dir);
-            create_private_dir(&in_dir).unwrap();
-            create_private_dir(&out_dir).unwrap();
-            let (program, args) = process_argv(
-                &shell,
-                Some(&login_path),
-                "tyba-fixture-tool",
-                &in_dir,
-                &out_dir,
-            );
-            assert_eq!(program, shell);
-            let status = std::process::Command::new(&program)
-                .args(&args)
-                .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
-                .env("HOME", dir.path())
-                .env("ZDOTDIR", dir.path())
-                .status()
-                .unwrap();
-            assert!(status.success(), "{shell:?}");
-            assert_eq!(read_exit(&out_dir), Some(0), "{shell:?}");
-            let log = std::fs::read_to_string(out_dir.join("log.txt")).unwrap();
-            assert_eq!(log.trim(), "achei", "{shell:?}");
-        }
+        let (in_dir, out_dir) = (dir.path().join("in"), dir.path().join("out"));
+        create_private_dir(&in_dir).unwrap();
+        create_private_dir(&out_dir).unwrap();
+        let (program, args) =
+            process_argv(Some(&login_path), "tyba-fixture-tool", &in_dir, &out_dir);
+        assert_eq!(program, bash_program());
+        let status = std::process::Command::new(&program)
+            .args(&args)
+            .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+            .env("HOME", dir.path())
+            .status()
+            .unwrap();
+        assert!(status.success());
+        assert_eq!(read_exit(&out_dir), Some(0));
+        let log = std::fs::read_to_string(out_dir.join("log.txt")).unwrap();
+        assert_eq!(log.trim(), "achei");
     }
 
+    /// O comando salvo roda em `bash -lc`, qualquer que seja o `$SHELL` do
+    /// dono: glob sem match fica literal (no zsh, NOMATCH derrubava o `rm`)
+    /// e variável sem aspas se divide em palavras.
+    #[cfg(unix)]
     #[test]
-    fn process_shell_is_the_owner_shell_when_it_speaks_the_wrapper() {
-        if Path::new("/bin/zsh").is_file() {
-            assert_eq!(process_shell("/bin/zsh"), PathBuf::from("/bin/zsh"));
-        }
-        if Path::new("/bin/bash").is_file() {
-            assert_eq!(process_shell("/bin/bash"), PathBuf::from("/bin/bash"));
-        }
-        // fish/nu não entendem o wrapper; relativo ou inexistente não roda.
-        assert_eq!(process_shell("/opt/homebrew/bin/fish"), bash_program());
-        assert_eq!(process_shell("zsh"), bash_program());
-        assert_eq!(process_shell("/nao/existe/zsh"), bash_program());
-        assert_eq!(process_shell(""), bash_program());
+    fn process_command_keeps_bash_semantics() {
+        let dir = tempfile::tempdir().unwrap();
+        let (runs, _host, _app) = pty_runs(dir.path().join("runs"));
+        let command = "rm -f dist/*.map; true\nf='a b'; for x in $f; do echo \"[$x]\"; done";
+        let run = runs
+            .start(graph(vec![process("p", command)], vec![]), vec![])
+            .unwrap();
+        let run = wait_finished(&runs, &run.id);
+        assert_eq!(run.status, RunStatus::Done, "{run:?}");
+        let p = &run.nodes["p"];
+        assert_eq!(p.exit_code, Some(0), "{run:?}");
+        let log = std::fs::read_to_string(&p.outputs[&EdgeKind::Log]).unwrap();
+        assert!(!log.contains("no matches"), "log: {log:?}");
+        assert!(log.contains("[a]") && log.contains("[b]"), "log: {log:?}");
     }
 
     #[cfg(unix)]
