@@ -1,4 +1,5 @@
 import {
+  Fragment,
   createContext,
   useCallback,
   useContext,
@@ -34,6 +35,7 @@ import {
 import "@xyflow/react/dist/base.css";
 import { toastError } from "@/lib/toast";
 import { clipBounds, copyNodes, pasteClip, type Clip } from "@/lib/graphClipboard";
+import { bundleEdges, unbundleEdgeChanges, type BundledEdgeData } from "@/lib/edgeBundle";
 import { canvasKey, enterTerminal, keyOwnedElsewhere } from "@/lib/graphKeys";
 import {
   freeSpot,
@@ -180,7 +182,9 @@ const EdgeActionsContext = createContext<EdgeActions>({
 /**
  * Ligação com a etiqueta do tipo no meio (quadro MaestroCanvasLiso:
  * "contexto ▾"). A etiqueta é menu: troca o tipo entre os que o par aceita e
- * remove a ligação — o tipo calculado ao ligar nunca fica preso.
+ * remove a ligação — o tipo calculado ao ligar nunca fica preso. Várias
+ * ligações do mesmo par (grafo de antes da porta única) chegam juntas
+ * (`bundleEdges`): uma curva só, "contexto + diff", cada tipo com o seu menu.
  */
 function MaestroEdgeView({
   id,
@@ -193,7 +197,7 @@ function MaestroEdgeView({
   targetPosition,
   data,
   selected,
-}: EdgeProps<MaestroFlowEdge>) {
+}: EdgeProps<Edge<BundledEdgeData>>) {
   const { t } = useTranslation();
   const [path, labelX, labelY] = getBezierPath({
     sourceX,
@@ -204,13 +208,14 @@ function MaestroEdgeView({
     targetPosition,
   });
   const { run } = useMaestro();
-  const kind = data?.kind;
-  const color = kind ? EDGE_COLOR[kind] : "var(--tyba-text-faint)";
+  const members = data ? (data.bundle ?? [{ id, kind: data.kind }]) : [];
+  // Juntas, a curva leva a cor neutra; cada tipo tem a sua na etiqueta.
+  const kind = members.length === 1 ? members[0].kind : undefined;
   const sourceRun = run?.nodes[source];
-  const detail = kind ? edgeDetail(kind, sourceRun) : null;
   // Quadro: tracejado enquanto o valor não saiu nesta execução.
   const pending =
-    sourceRun !== undefined && !(run && kind && edgeHasValue({ from: source, kind }, run));
+    sourceRun !== undefined &&
+    members.some((m) => !(run && edgeHasValue({ from: source, kind: m.kind }, run)));
   return (
     <>
       <BaseEdge
@@ -228,18 +233,33 @@ function MaestroEdgeView({
           strokeDasharray: pending ? "3 6" : undefined,
         }}
       />
-      {kind && (
+      {members.length > 0 && (
         <EdgeLabelRenderer>
           <div
             className="nodrag nopan pointer-events-auto absolute flex flex-col items-start gap-0.5 font-mono whitespace-nowrap"
             style={{ transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)` }}
           >
-            <EdgeLabel id={id} kind={kind} color={color} />
-            {detail && (
-              <span className="rounded-[4px] bg-tyba-bg/80 px-1 text-[10.5px] text-tyba-text-faint">
-                {t(detail.key, detail.params)}
-              </span>
-            )}
+            <span className="flex items-center gap-1">
+              {members.map((m, i) => (
+                <Fragment key={m.id}>
+                  {i > 0 && <span className="text-[11px] text-tyba-text-faint">+</span>}
+                  <EdgeLabel id={m.id} kind={m.kind} color={EDGE_COLOR[m.kind]} />
+                </Fragment>
+              ))}
+            </span>
+            {members.map((m) => {
+              const detail = edgeDetail(m.kind, sourceRun);
+              return (
+                detail && (
+                  <span
+                    key={m.id}
+                    className="rounded-[4px] bg-tyba-bg/80 px-1 text-[10.5px] text-tyba-text-faint"
+                  >
+                    {t(detail.key, detail.params)}
+                  </span>
+                )
+              );
+            })}
           </div>
         </EdgeLabelRenderer>
       )}
@@ -526,12 +546,14 @@ export function MaestroCanvas({
         : nodes,
     [nodes, ephemeral.nodes, created.nodes],
   );
+  // A mesma ligação do par desenhada uma vez (`bundleEdges`); o state segue com todas.
+  const bundled = useMemo(() => bundleEdges(edges), [edges]);
   const shownEdges = useMemo<Edge[]>(
     () =>
       ephemeral.edges.length || created.edges.length
-        ? [...edges, ...created.edges, ...ephemeral.edges]
-        : edges,
-    [edges, ephemeral.edges, created.edges],
+        ? [...bundled.edges, ...created.edges, ...ephemeral.edges]
+        : (bundled.edges as Edge[]),
+    [bundled.edges, ephemeral.edges, created.edges],
   );
 
   const onNodesChange = useCallback(
@@ -573,12 +595,15 @@ export function MaestroCanvas({
   );
   const onEdgesChange = useCallback(
     (changes: EdgeChange<Edge>[]) => {
-      const mine = changes.filter(
-        (c) => !("id" in c) || (!isSubagentNodeId(c.id) && !created.edgeIds.has(c.id)),
+      const mine = unbundleEdgeChanges(
+        changes.filter(
+          (c) => !("id" in c) || (!isSubagentNodeId(c.id) && !created.edgeIds.has(c.id)),
+        ),
+        bundled.members,
       ) as EdgeChange<MaestroFlowEdge>[];
       if (mine.length) setEdges((es) => applyEdgeChanges(mine, es));
     },
-    [setEdges, created.edgeIds],
+    [setEdges, created.edgeIds, bundled.members],
   );
 
   const model = useMemo(
