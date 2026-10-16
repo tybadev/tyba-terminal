@@ -78,6 +78,34 @@ pub struct Run {
     pub created: Vec<Created>,
 }
 
+/// Motivo do nó que rodava quando o app fechou.
+pub const APP_CLOSED: &str = "o TYBA fechou durante a execução";
+
+impl Run {
+    /// Fecha o retrato de um run que o app deixou aberto ao fechar: o PTY de
+    /// cada nó morreu junto (`kill_all` no quit). Rodando vira `stopped` com
+    /// [`APP_CLOSED`], esperando vira `skipped`, e nenhuma sessão fica — a
+    /// que estava aqui não existe mais. A versão sobe para a gravação valer.
+    fn close_interrupted(&mut self, now: u64) {
+        for n in self.nodes.values_mut() {
+            match n.status {
+                NodeStatus::Running => {
+                    n.status = NodeStatus::Stopped;
+                    n.finished_at = Some(now);
+                    n.reason = Some(APP_CLOSED.into());
+                }
+                NodeStatus::Waiting => n.status = NodeStatus::Skipped,
+                _ => {}
+            }
+            n.session_id = None;
+            n.orchestrating = false;
+        }
+        self.status = RunStatus::Stopped;
+        self.finished_at = Some(now);
+        self.version += 1;
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NodeRun {
@@ -762,8 +790,29 @@ fn now() -> u64 {
     crate::approvals::now_ms()
 }
 
+/// A varredura do boot (ver [`Runs::new`]).
+fn close_interrupted_runs(store: &Store) {
+    let open = match store.list_running_maestro_runs() {
+        Ok(runs) => runs,
+        Err(e) => {
+            eprintln!("[maestro] ler execuções abertas: {e}");
+            return;
+        }
+    };
+    let t = now();
+    for mut run in open {
+        run.close_interrupted(t);
+        if let Err(e) = store.save_maestro_run(&run) {
+            eprintln!("[maestro] fechar execução {}: {e}", run.id);
+        }
+    }
+}
+
 impl<H: RunHost> Runs<H> {
+    /// Uma por app, no boot. Nenhum run nasce ativo, então todo run gravado
+    /// como `running` é de um app que fechou no meio e é fechado aqui, uma vez.
     pub fn new(host: H, store: Arc<Store>, root: Option<PathBuf>) -> Arc<Self> {
+        close_interrupted_runs(&store);
         Arc::new_cyclic(|me| Self {
             host,
             store,
@@ -890,8 +939,10 @@ impl<H: RunHost> Runs<H> {
         Ok(self.get(&run_id).unwrap_or(snapshot))
     }
 
-    /// Run em memória (rodando) ou do banco. Run que ficou `running` no banco
-    /// sem estar ativo é de um app que fechou no meio: aparece parado.
+    /// Run em memória (rodando) ou do banco. Run `running` no banco sem estar
+    /// ativo é o que o ■ Parar acabou de tirar da memória e cujo retrato
+    /// parado ainda está sendo gravado: aparece parado. (O que o app fechado
+    /// deixou aberto a varredura do boot já fechou.)
     pub fn get(&self, run_id: &str) -> Option<Run> {
         let active = self
             .active
@@ -2417,6 +2468,11 @@ mod tests {
 
     /// O `App` volta junto para viver até o fim do teste.
     fn pty_runs(root: PathBuf) -> TestRuns {
+        pty_runs_on(root, Arc::new(Store::open_in_memory().unwrap()))
+    }
+
+    /// Como [`pty_runs`], sobre um banco que já tem dados (o boot).
+    fn pty_runs_on(root: PathBuf, store: Arc<Store>) -> TestRuns {
         let app = tauri::test::mock_app();
         let host = Arc::new(PtyHost {
             app: app.handle().clone(),
@@ -2431,7 +2487,6 @@ mod tests {
             exits: Mutex::new(HashMap::new()),
             gone: Mutex::new(Vec::new()),
         });
-        let store = Arc::new(Store::open_in_memory().unwrap());
         (Runs::new(Arc::clone(&host), store, Some(root)), host, app)
     }
 
@@ -3436,6 +3491,46 @@ mod tests {
         // Já mantidos: nada mais a manter.
         assert!(runs.created_to_keep(&run.id).unwrap().is_empty());
         runs.stop(&run.id).unwrap();
+    }
+
+    /// O app fechou no meio: o run gravado `running` tem nó rodando (com a
+    /// sessão que morreu no quit), nó esperando e nó pronto. O boot fecha.
+    #[test]
+    fn boot_closes_the_runs_the_app_left_open() {
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        let g = graph(
+            vec![process("p", "sleep 30"), note("n"), process("d", "true")],
+            vec![edge("e1", "p", "d", EdgeKind::Log)],
+        );
+        let mut s = Scheduler::new(&g, "r-aberto".into(), 1);
+        s.mark_running("p", 2);
+        s.set_session("p", "sessao-morta".into());
+        s.mark_running("n", 2);
+        assert!(s.finish("n", ok(), 3));
+        let open = s.snapshot();
+        assert_eq!(open.status, RunStatus::Running);
+        store.save_maestro_run(&open).unwrap();
+        let mut done = open.clone();
+        done.id = "r-pronto".into();
+        done.status = RunStatus::Done;
+        store.save_maestro_run(&done).unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let (runs, _host, _app) = pty_runs_on(dir.path().join("runs"), Arc::clone(&store));
+
+        let r = store.get_maestro_run("r-aberto").unwrap().unwrap();
+        assert_eq!(r.status, RunStatus::Stopped);
+        assert!(r.finished_at.is_some());
+        assert_eq!(r.nodes["p"].status, NodeStatus::Stopped);
+        assert_eq!(r.nodes["p"].reason.as_deref(), Some(APP_CLOSED));
+        assert!(r.nodes["p"].finished_at.is_some());
+        assert_eq!(r.nodes["d"].status, NodeStatus::Skipped);
+        assert_eq!(r.nodes["n"].status, NodeStatus::Done);
+        assert!(r.nodes.values().all(|n| n.session_id.is_none()), "{r:?}");
+        // O que o front lê é o mesmo retrato.
+        assert_eq!(runs.get("r-aberto").unwrap().nodes["p"].session_id, None);
+        // Run já fechado não muda.
+        assert_eq!(store.get_maestro_run("r-pronto").unwrap(), Some(done));
     }
 
     #[test]

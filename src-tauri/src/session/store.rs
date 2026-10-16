@@ -2978,6 +2978,21 @@ impl Store {
         Ok(body.map(|b| serde_json::from_str(&b)).transpose()?)
     }
 
+    /// Execuções gravadas como `running`, de qualquer grafo. No boot nenhuma
+    /// está viva: são as que o app deixou abertas ao fechar.
+    pub fn list_running_maestro_runs(&self) -> Result<Vec<crate::maestro::run::Run>, StoreError> {
+        let conn = self.conn.lock();
+        let mut stmt =
+            conn.prepare("SELECT body_json FROM maestro_run WHERE status = 'running'")?;
+        let bodies = stmt
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(bodies
+            .iter()
+            .map(|b| serde_json::from_str(b))
+            .collect::<Result<_, _>>()?)
+    }
+
     /// As `limit` execuções mais recentes do grafo, da mais nova para a mais velha.
     pub fn list_maestro_runs(
         &self,
