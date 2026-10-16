@@ -146,7 +146,7 @@ describe("tipos de ligação plano e controla", () => {
 
   test("controla só agente → navegador; plano só agente → nota", () => {
     expect(kinds(agent, nav)).toEqual(["control"]);
-    expect(kinds(agent, note)).toEqual(["plan", "memory"]);
+    expect(kinds(agent, note)).toEqual(["memory", "plan"]);
     expect(kinds(proc, nav)).toEqual(["url"]);
     expect(kinds(svc, nav)).toEqual(["url"]);
     expect(kinds(note, nav)).toEqual([]);

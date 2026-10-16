@@ -43,6 +43,8 @@ pub enum PeerState {
 /// Uma mensagem na fila do destino, já pela régua de [`message_text`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Message {
+    /// Id do nó de quem mandou: a etiqueta da conversa conta a fila do par.
+    pub sender: String,
     /// Título do nó de quem mandou, como o canvas o mostra.
     pub from: String,
     pub text: String,
@@ -75,6 +77,15 @@ impl Mailbox {
     /// Mensagens esperando por `to`.
     pub fn waiting(&self, to: &str) -> usize {
         self.queues.get(to).map_or(0, VecDeque::len)
+    }
+
+    /// Mensagens esperando por `to`, por id de quem mandou.
+    pub fn waiting_from(&self, to: &str) -> HashMap<String, usize> {
+        let mut out = HashMap::new();
+        for m in self.queues.get(to).into_iter().flatten() {
+            *out.entry(m.sender.clone()).or_insert(0) += 1;
+        }
+        out
     }
 
     /// O último estado visto de `node` (nenhum antes do primeiro aviso).
@@ -188,6 +199,7 @@ mod tests {
 
     fn msg(from: &str, text: &str) -> Message {
         Message {
+            sender: from.to_lowercase(),
             from: from.into(),
             text: text.into(),
         }
@@ -214,10 +226,16 @@ mod tests {
         assert_eq!(m.on_state("b", PeerState::Working, 0), None);
         assert_eq!(m.on_state("b", PeerState::Waiting, 1), None);
         assert_eq!(m.waiting("b"), 2);
+        // Por quem mandou: a etiqueta de cada conversa conta a dela.
+        assert_eq!(
+            m.waiting_from("b"),
+            HashMap::from([("revisor".to_string(), 1), ("front".to_string(), 1)])
+        );
         let block = m.on_state("b", PeerState::Ready, 2).unwrap();
         assert!(block.contains("mensagem de Revisor") && block.contains("> olhe o diff"));
         assert!(block.contains("mensagem de Front") && block.contains("> subi a porta 5173"));
         assert_eq!(m.waiting("b"), 0);
+        assert!(m.waiting_from("b").is_empty());
         assert_eq!(m.state("b"), Some(PeerState::Ready));
 
         // Ainda no mesmo Idle: a fila nova espera o turno seguinte fechar.

@@ -61,6 +61,23 @@ export function AgentNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
   // Quadro: "muriki-web · 2 subagentes · +42 −7".
   const meta = [dir ? shortDir(dir) : "", subTally, diffSummary(usage)].filter(Boolean).join(" · ");
   const nodeRun = run?.nodes[id];
+  // Conversa (quadro MaestroConversa): a fila esperando ele fechar o turno e
+  // a última mensagem que ele mandou.
+  const inbox = nodeRun?.inbox ?? 0;
+  const sent = nodeRun?.sent ?? null;
+  const footer = [
+    sent && (
+      <div key="sent" className="truncate">
+        <span className="text-tyba-amber">{t("orbitSentTo", { name: sent.to })}</span>{" "}
+        <span className="text-tyba-text-muted">“{sent.text}”</span>
+      </div>
+    ),
+    session && meta && (
+      <div key="meta" className="truncate">
+        {meta}
+      </div>
+    ),
+  ].filter(Boolean);
 
   return (
     <NodeFrame
@@ -69,7 +86,14 @@ export function AgentNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
       selected={selected}
       mark={claude ? <ClaudeIcon size={13} /> : <OpenAIIcon size={13} />}
       markTone={claude ? "text-tyba-amber" : "text-tyba-cyan"}
-      meta={session ? meta : undefined}
+      meta={footer.length > 0 ? footer : undefined}
+      extra={
+        inbox > 0 && (
+          <span className="shrink-0 text-[11.5px] whitespace-nowrap text-tyba-amber">
+            {t("orbitInboxWaiting", { count: inbox })}
+          </span>
+        )
+      }
       // Grade do quadro OrbitCardsD (o tempo entra na ordem dela).
       stateRows={false}
       details={agentDetailRows({

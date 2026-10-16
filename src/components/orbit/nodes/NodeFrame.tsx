@@ -195,8 +195,9 @@ export const EDGE_COLOR: Record<EdgeKind, string> = {
   url: "var(--tyba-cyan)",
   plan: "var(--tyba-violet)",
   control: "var(--tyba-amber)",
-  talk: "var(--tyba-green)",
-  memory: "var(--tyba-blue)",
+  // Quadro MaestroConversa: conversa âmbar, memória violeta.
+  talk: "var(--tyba-amber)",
+  memory: "var(--tyba-violet)",
 };
 
 /** Cor do texto e do ponto de cada estado (quadro: rodando verde, aguardando âmbar). */

@@ -125,7 +125,14 @@ export function applyPlans<
   return { nodes: outNodes, edges: outEdges };
 }
 
-/** A nota de plano é do Orquestrador (quem escreve e marca): só leitura na tela. */
-export function noteEditable(id: string, edges: readonly Pick<OrbitEdge, "to" | "kind">[]): boolean {
-  return !isPlanNote(id, edges);
+/**
+ * A nota de plano é do agente (quem escreve e marca): só leitura na tela. A
+ * nota com cadeado também, até o dono destrancar.
+ */
+export function noteEditable(
+  id: string,
+  edges: readonly Pick<OrbitEdge, "to" | "kind">[],
+  locked = false,
+): boolean {
+  return !locked && !isPlanNote(id, edges);
 }

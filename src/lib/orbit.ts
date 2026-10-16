@@ -347,12 +347,15 @@ export function connectionKinds(
 /**
  * Padrão por par quando a primeira saída da origem não é o que o par quer:
  * agente → processo/integração leva o que mudou (o processo testa, a
- * integração abre o PR). Nota → agente, agente → agente (contexto) e
+ * integração abre o PR), e agente → nota é memória. Nota → agente, agente → agente (contexto) e
  * processo/serviço → navegador (url) já saem da ordem do `produces`.
  */
 const PAIR_DEFAULT: Partial<Record<string, EdgeKind>> = {
   "agent>process": "diff",
   "agent>integration": "diff",
+  // Nota comum ligada a agente é memória dele (quadro MaestroConversa); a
+  // nota que já é plano continua plano (ver `pickConnection`).
+  "agent>note": "memory",
 };
 
 /**
@@ -371,9 +374,13 @@ export function pickConnection(
   const target = nodes.find((n) => n.id === to);
   if (!source || !target) return { problem: "unknownNode" };
   if (from === to) return { problem: "self" };
-  const kinds = connectionKinds(source.kind, target.kind, integrations);
+  let kinds = connectionKinds(source.kind, target.kind, integrations);
   if (kinds.length === 0) return { problem: "notAccepted" };
   if (edges.some((e) => e.from === from && e.to === to)) return { problem: "duplicate" };
+  // A nota que já recebe plano é plano; a comum, memória (o padrão do par).
+  if (kinds.includes("plan") && edges.some((e) => e.to === to && e.kind === "plan")) {
+    kinds = ["plan", ...kinds.filter((k) => k !== "plan")];
+  }
   const problem = connectionProblem(nodes, edges, integrations, from, to, kinds[0]);
   return problem ? { problem } : { kind: kinds[0] };
 }
@@ -400,6 +407,10 @@ export function edgeKindChoices(
       .filter((e) => e.id !== edgeId && e.from === edge.from && e.to === edge.to)
       .map((e) => e.kind),
   );
+  // Conversa vale nos dois sentidos: a de volta já ocupa o par.
+  if (edges.some((e) => e.id !== edgeId && e.kind === "talk" && e.from === edge.to && e.to === edge.from)) {
+    taken.add("talk");
+  }
   return connectionKinds(source.kind, target.kind, integrations).filter((k) => !taken.has(k));
 }
 
@@ -617,6 +628,8 @@ export interface NodeRun {
   opened?: BrowserOpened | null;
   /** Agente: mensagens de outros agentes esperando ele fechar o turno. */
   inbox?: number;
+  /** Agente: a mesma fila, por id do nó de quem mandou. */
+  inboxFrom?: Record<string, number>;
   /** Agente: a última mensagem que ele mandou (`orbit_send`), redigida. */
   sent?: SentMessage | null;
   /** Nota: a última escrita de um agente ligado por `memory`, com o texto novo. */

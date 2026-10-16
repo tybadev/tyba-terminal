@@ -140,6 +140,10 @@ pub struct NodeRun {
     /// Agente: mensagens de outros agentes esperando ele fechar o turno.
     #[serde(default)]
     pub inbox: usize,
+    /// Agente: a mesma fila, por id de quem mandou (a etiqueta da conversa
+    /// mostra "N mensagens na fila" do par).
+    #[serde(default)]
+    pub inbox_from: HashMap<String, usize>,
     /// Agente: a última mensagem que ele mandou (`orbit_send`), redigida.
     #[serde(default)]
     pub sent: Option<SentMessage>,
@@ -193,6 +197,7 @@ impl NodeRun {
             orchestrating: false,
             opened: None,
             inbox: 0,
+            inbox_from: HashMap::new(),
             sent: None,
             written: None,
         }
@@ -1619,13 +1624,16 @@ impl<H: RunHost> Runs<H> {
         let waiting = a.talk.push(
             to,
             talk::Message {
+                sender: agent.to_string(),
                 from,
                 text: text.to_string(),
             },
         )?;
         let at = now();
+        let from_each = a.talk.waiting_from(to);
         if let Some(n) = a.sched.run.nodes.get_mut(to) {
             n.inbox = waiting;
+            n.inbox_from = from_each;
         }
         if let Some(n) = a.sched.run.nodes.get_mut(agent) {
             n.sent = Some(SentMessage {
@@ -1654,6 +1662,7 @@ impl<H: RunHost> Runs<H> {
                 return;
             };
             n.inbox = 0;
+            n.inbox_from.clear();
             (n.session_id.clone(), block)
         };
         match session {
@@ -1728,15 +1737,9 @@ impl<H: RunHost> Runs<H> {
             .get_mut(run_id)
             .ok_or("esta execução já terminou: ▶ Executar de novo para escrever na nota")?;
         let note = Self::memory_note(a, agent, node)?;
-        let NodeKind::Note { markdown, locked } = &note.kind else {
+        let NodeKind::Note { markdown, .. } = &note.kind else {
             unreachable!("memory_note só devolve nota");
         };
-        if *locked {
-            return Err(format!(
-                "a nota {node} está com cadeado (só leitura): o dono não deixa agente \
-                 escrever nela"
-            ));
-        }
         let markdown = talk::note_text(markdown, text, append)?;
         let stored = self
             .store
@@ -1749,8 +1752,8 @@ impl<H: RunHost> Runs<H> {
             .iter_mut()
             .find(|n| n.id == node)
             .ok_or("a nota não está mais no grafo")?;
-        // O cadeado que vale é o do grafo salvo (o dono pode ter trancado
-        // depois do ▶).
+        // O cadeado que vale é o do grafo salvo: o dono tranca e destranca
+        // pela cápsula da nota, também depois do ▶.
         if matches!(saved.kind, NodeKind::Note { locked: true, .. }) {
             return Err(format!(
                 "a nota {node} está com cadeado (só leitura): o dono não deixa agente \
@@ -5245,6 +5248,10 @@ mod tests {
         assert!(host.inputs.lock().is_empty());
         let r = runs.get(&run.id).unwrap();
         assert_eq!(r.nodes["b"].inbox, 1);
+        assert_eq!(
+            r.nodes["b"].inbox_from,
+            HashMap::from([("a".to_string(), 1)])
+        );
         let sent = r.nodes["a"].sent.clone().unwrap();
         assert_eq!(sent.to, "Revisor");
         assert!(sent.text.starts_with("revise o login"));
@@ -5267,6 +5274,7 @@ mod tests {
         assert!(inputs[0].1.contains("> revise o login"));
         assert!(!inputs[0].1.contains(&fake_key()));
         assert_eq!(runs.get(&run.id).unwrap().nodes["b"].inbox, 0);
+        assert!(runs.get(&run.id).unwrap().nodes["b"].inbox_from.is_empty());
 
         // A volta pela mesma ligação.
         revisor
@@ -5404,6 +5412,21 @@ mod tests {
             .call("orbit_note_write", &json!({"node": "m", "text": "x"}))
             .unwrap_err();
         assert!(err.contains("cadeado"), "{err}");
+
+        // E destrancou a que veio trancada no ▶: o agente já escreve nela.
+        if let Some(n) = g.nodes.iter_mut().find(|n| n.id == "t") {
+            n.kind = NodeKind::Note {
+                markdown: "regras do dono".into(),
+                locked: false,
+            };
+        }
+        runs.store.save_orbit_graph(&g, true, None).unwrap();
+        front
+            .call(
+                "orbit_note_write",
+                &json!({"node": "t", "text": "liberada"}),
+            )
+            .unwrap();
         runs.stop(&run.id).unwrap();
     }
 }

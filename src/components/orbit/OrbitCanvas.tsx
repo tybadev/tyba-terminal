@@ -101,6 +101,7 @@ import {
   type OrbitEdge,
   type OrbitNode,
 } from "@/lib/orbit";
+import { talkQueued } from "@/lib/orbitTalk";
 import { keepIfSame } from "@/lib/stableItems";
 import { AgentNode } from "./nodes/AgentNode";
 import { BrowserNode } from "./nodes/BrowserNode";
@@ -207,6 +208,7 @@ const EdgeActionsContext = createContext<EdgeActions>({
 function OrbitEdgeView({
   id,
   source,
+  target,
   sourceX,
   sourceY,
   targetX,
@@ -270,7 +272,12 @@ function OrbitEdgeView({
               ))}
             </span>
             {members.map((m) => {
-              const detail = edgeDetail(m.kind, sourceRun);
+              // Conversa: a fila do par (quadro: "1 mensagem na fila").
+              const queued = m.kind === "talk" ? talkQueued({ from: source, to: target }, run) : 0;
+              const detail =
+                queued > 0
+                  ? { key: "orbitTalkQueued", params: { count: queued } }
+                  : edgeDetail(m.kind, sourceRun);
               return (
                 detail && (
                   <span

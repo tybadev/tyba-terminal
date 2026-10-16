@@ -264,10 +264,11 @@ describe("tipo da ligação calculado (canvas-3)", () => {
     expect(pick("a", "r")).toEqual({ kind: "context" });
     expect(pick("p", "b")).toEqual({ kind: "url" });
     expect(pick("a", "i")).toEqual({ kind: "diff" });
-    expect(pick("r", "n")).toEqual({ kind: "plan" });
-    // A nota já dá contexto ao a: o plano de volta não leva valor, então não
-    // fecha ciclo (espelha `check_acyclic`).
-    expect(pick("a", "n")).toEqual({ kind: "plan" });
+    // Nota comum ligada a agente é memória dele.
+    expect(pick("r", "n")).toEqual({ kind: "memory" });
+    // A nota já dá contexto ao a: a memória de volta não leva valor, então
+    // não fecha ciclo (espelha `check_acyclic`).
+    expect(pick("a", "n")).toEqual({ kind: "memory" });
     expect(pick("n", "b")).toEqual({ problem: "notAccepted" });
     expect(pick("a", "a")).toEqual({ problem: "self" });
     expect(pick("x", "a")).toEqual({ problem: "unknownNode" });
