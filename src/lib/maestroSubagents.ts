@@ -71,7 +71,7 @@ export function roundTally(runs: readonly SubagentRun[]): RoundTally {
   return tally;
 }
 
-interface Box {
+export interface Box {
   position: { x: number; y: number };
   width: number;
   height: number;
@@ -119,6 +119,54 @@ export function blockOrigin(
   occupied: readonly Rect[],
 ): { x: number; y: number } {
   return freeSpot(blockStart(parent), size, occupied, "right", SUB_GAP * 2);
+}
+
+/** Um nó que pode ter bloco: `size` nulo sem subagentes (só ocupa espaço). */
+export interface BlockParent {
+  id: string;
+  box: Box;
+  size: { w: number; h: number } | null;
+}
+
+/** Deslocamento de cada bloco em relação ao pai, do último cálculo. */
+export type BlockOffsets = ReadonlyMap<string, { dx: number; dy: number }>;
+
+/**
+ * Onde cai o bloco de cada pai com subagentes, e o deslocamento de cada um
+ * para o próximo quadro. O desvio (`blockOrigin`) varre todos os nós para
+ * cada pai — refeito a cada quadro de arrasto, O(n²). Durante o arrasto o
+ * bloco já posto segue o pai pelo deslocamento de antes; no fim do arrasto
+ * (`dragging` falso) recalcula o desvio de todos. Bloco novo no meio do
+ * arrasto calcula na hora.
+ */
+export function blockOrigins(
+  parents: readonly BlockParent[],
+  prev: BlockOffsets | null,
+  dragging: boolean,
+): { origins: Map<string, { x: number; y: number }>; offsets: BlockOffsets } {
+  const origins = new Map<string, { x: number; y: number }>();
+  const offsets = new Map<string, { dx: number; dy: number }>();
+  let occupied: Rect[] | null = null;
+  for (const p of parents) {
+    if (!p.size) continue;
+    const kept = dragging ? prev?.get(p.id) : undefined;
+    let origin: { x: number; y: number };
+    if (kept) {
+      origin = { x: p.box.position.x + kept.dx, y: p.box.position.y + kept.dy };
+    } else {
+      occupied ??= parents.map((q) => ({
+        x: q.box.position.x,
+        y: q.box.position.y,
+        w: q.box.width,
+        h: q.box.height,
+      }));
+      origin = blockOrigin(p.box, p.size, occupied);
+      occupied.push({ ...origin, ...p.size });
+    }
+    origins.set(p.id, origin);
+    offsets.set(p.id, { dx: origin.x - p.box.position.x, dy: origin.y - p.box.position.y });
+  }
+  return { origins, offsets };
 }
 
 /** Posição da i-ésima pílula sem ninguém no caminho. */

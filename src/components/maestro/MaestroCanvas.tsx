@@ -41,7 +41,6 @@ import {
   nodeRect,
   outsideView,
   rightOf,
-  type Rect,
 } from "@/lib/graphLayout";
 import { paletteEntries, recentDirs, type PaletteEntry } from "@/lib/graphPalette";
 import { listSnippets, type Snippet } from "@/lib/ipc";
@@ -55,7 +54,7 @@ import {
   SUB_GAP,
   SUB_ROUNDS_H,
   SUB_W,
-  blockOrigin,
+  blockOrigins,
   blockSize,
   groupRounds,
   isSubagentNodeId,
@@ -64,6 +63,7 @@ import {
   subagentKey,
   subagentNodeId,
   subagentRoundsNodeId,
+  type BlockOffsets,
 } from "@/lib/maestroSubagents";
 
 import {
@@ -452,22 +452,33 @@ export function MaestroCanvas({
   // isso nunca chegam ao modelo salvo. O bloco de pílulas cai embaixo do pai
   // num espaço livre (nos-8); a pílula que o dono arrastou fica onde ele a pôs.
   const [subView, setSubView] = useState<Record<string, { x: number; y: number }>>({});
+  // Deslocamento de cada bloco ao pai: durante o arrasto o bloco segue o pai
+  // sem refazer o desvio de todos a cada quadro (ver `blockOrigins`).
+  const blockOffsets = useRef<BlockOffsets | null>(null);
   const ephemeral = useMemo(() => {
     const ns: (SubagentFlowNode | SubagentRoundsFlowNode)[] = [];
     const es: Edge[] = [];
-    const parents = [...nodes, ...created.nodes];
-    const occupied: Rect[] = parents.map(nodeRect);
-    for (const parent of parents) {
+    const parents = [...nodes, ...created.nodes].map((parent) => {
       const rounds = groupRounds(subagents.get(parent.id) ?? []);
-      if (!rounds) continue;
-      const box = {
-        position: parent.position,
-        width: parent.width ?? parent.data.node.size.w,
-        height: parent.height ?? parent.data.node.size.h,
+      return {
+        id: parent.id,
+        rounds,
+        box: {
+          position: parent.position,
+          width: parent.width ?? parent.data.node.size.w,
+          height: parent.height ?? parent.data.node.size.h,
+        },
+        size: rounds ? blockSize(rounds.current.length, rounds.previous > 0) : null,
       };
-      const size = blockSize(rounds.current.length, rounds.previous > 0);
-      const origin = blockOrigin(box, size, occupied);
-      occupied.push({ ...origin, ...size });
+    });
+    const dragging =
+      nodes.some((n) => n.dragging) || created.nodes.some((n) => n.dragging);
+    const { origins, offsets } = blockOrigins(parents, blockOffsets.current, dragging);
+    blockOffsets.current = offsets;
+    for (const parent of parents) {
+      const rounds = parent.rounds;
+      const origin = origins.get(parent.id);
+      if (!rounds || !origin) continue;
       rounds.current.forEach((run, i) => {
         const id = subagentNodeId(parent.id, subagentKey(run));
         ns.push({

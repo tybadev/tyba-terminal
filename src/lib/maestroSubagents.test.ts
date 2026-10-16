@@ -9,6 +9,7 @@ import {
   SUB_TOP,
   SUB_W,
   blockOrigin,
+  blockOrigins,
   blockSize,
   formatSubagentTime,
   gridPosition,
@@ -107,6 +108,33 @@ describe("bloco de subagentes sem cobrir outro nó (nos-8)", () => {
     const at = blockOrigin(parent, blockSize(3, true), [dev]);
     expect(at.y).toBe(top);
     expect(at.x).toBeGreaterThanOrEqual(dev.x + dev.w);
+  });
+
+  test("arrastando: o bloco segue o pai sem refazer o desvio; no fim, refaz", () => {
+    const claude = { id: "claude", box: parent, size: blockSize(3, false) };
+    const dev = {
+      id: "dev",
+      box: { position: { x: 30, y: 430 }, width: 380, height: 300 },
+      size: null,
+    };
+    const first = blockOrigins([claude, dev], null, false);
+    const before = first.origins.get("claude")!;
+    expect(before.x).toBeGreaterThanOrEqual(30 + 380);
+
+    // O dono arrasta o Dev server para longe: no meio do arrasto o bloco
+    // fica onde estava (o desvio não é refeito a cada quadro).
+    const away = { ...dev, box: { ...dev.box, position: { x: 3000, y: 3000 } } };
+    const during = blockOrigins([claude, away], first.offsets, true);
+    expect(during.origins.get("claude")).toEqual(before);
+
+    // Arrastando o próprio Claude, o bloco vai junto, pelo mesmo deslocamento.
+    const moved = { ...claude, box: { ...parent, position: { x: 130, y: 90 } } };
+    const follow = blockOrigins([moved, dev], first.offsets, true);
+    expect(follow.origins.get("claude")).toEqual({ x: before.x + 100, y: before.y + 50 });
+
+    // Soltou: o desvio é refeito com o Dev server longe — logo abaixo do pai.
+    const after = blockOrigins([claude, away], during.offsets, false);
+    expect(after.origins.get("claude")).toEqual({ x: 30, y: top });
   });
 
   test("tamanho conta as pílulas e a linha da rodada anterior", () => {
