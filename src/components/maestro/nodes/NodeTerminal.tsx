@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 
+import { useStore } from "@xyflow/react";
+
 import { TerminalView } from "@/components/TerminalView";
 import { sessionScreenLines } from "@/lib/ipc";
 import { nodeTerminalClass } from "@/lib/nodeTerminal";
@@ -14,9 +16,11 @@ const PREVIEW_POLL_MS = 400;
 
 /**
  * Terminal do nó: o `TerminalView` de verdade em qualquer zoom — dá para
- * digitar sem ir a 100%. Fora de 100% vai pelo renderer DOM (texto nítido sob
- * o transform do canvas; ver `nodeTerminalWebgl`); o tamanho do PTY é o do nó
- * e não muda com o zoom. Selecionar o nó (clicar nele) foca o xterm.
+ * digitar sem ir a 100%. O xterm fica fora da escala do canvas (ver
+ * `nodeTerminal`): texto nítido no WebGL, mouse na célula certa, e o tamanho
+ * do PTY é o do nó em 100%, que não muda com o zoom.
+ *
+ * Selecionar o nó (clicar nele) foca o xterm.
  *
  * Com o nó aberto no modo foco (`NodeFocus`) vai a prévia em texto: a sessão
  * só monta o xterm em UM lugar. O "Abrir" do ⋯ do nó abre o foco.
@@ -24,26 +28,32 @@ const PREVIEW_POLL_MS = 400;
 export function NodeTerminal({
   nodeId,
   sessionId,
-  focused,
+  selected,
 }: {
   nodeId: string;
   sessionId: string;
-  focused: boolean;
+  selected: boolean;
 }) {
-  const { actualSize, focusNode } = useMaestro();
+  const { focusNode } = useMaestro();
+  const zoom = useStore((s) => s.transform[2]);
   const inFocus = focusNode === nodeId;
   return (
-    <div className={`${nodeTerminalClass(focused)} relative min-h-0 flex-1 bg-tyba-sunken`}>
+    <div className={`${nodeTerminalClass(selected)} relative min-h-0 flex-1 bg-tyba-sunken`}>
       {inFocus ? (
         <TerminalPreview sessionId={sessionId} />
       ) : (
-        <TerminalView
-          sessionId={sessionId}
-          visible
-          focused={focused}
-          rect={FULL}
-          noWebgl={!actualSize}
-        />
+        // A margem fica do lado de fora do invólucro de zoom: escala junto
+        // com o nó, como o resto do cartão.
+        <div className="absolute top-2 right-2.5 bottom-3 left-2.5">
+          <TerminalView
+            sessionId={sessionId}
+            visible
+            focused={selected}
+            rect={FULL}
+            zoom={zoom}
+            fullBleed
+          />
+        </div>
       )}
     </div>
   );

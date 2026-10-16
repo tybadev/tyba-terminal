@@ -88,7 +88,7 @@ export function ProcessNode({ id, data, selected }: NodeProps<MaestroFlowNode>) 
         </div>
       )}
       {session ? (
-        <NodeTerminal nodeId={id} sessionId={session} focused={selected} />
+        <NodeTerminal nodeId={id} sessionId={session} selected={selected} />
       ) : (
         <div className="flex min-h-0 flex-1 bg-tyba-sunken">
           <span className="select-none pt-2.5 pl-3.5 font-mono text-[11.5px] leading-[17px] text-tyba-green">

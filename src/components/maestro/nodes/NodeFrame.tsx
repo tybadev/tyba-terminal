@@ -75,8 +75,6 @@ export interface CanvasState {
   run: Run | null;
   /** O run à vista é o mais novo: os terminais vivos são dele. */
   live: boolean;
-  /** Zoom em 100%: o terminal do nó usa WebGL. Fora disso, renderer DOM. */
-  actualSize: boolean;
   /** Subagentes do claude de cada nó com sessão viva (por id de nó). */
   subagents: ReadonlyMap<string, SubagentRun[]>;
   /** Id do nó-filho aberto no painel, ou `null`. */
@@ -109,7 +107,6 @@ export const CanvasStateContext = createContext<CanvasState>({
   graph: { nodes: [], edges: [] },
   run: null,
   live: false,
-  actualSize: true,
   subagents: new Map(),
   openSubagent: null,
   focusNode: null,

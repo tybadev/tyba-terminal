@@ -106,7 +106,6 @@ import {
   type SubagentRun,
 } from "@/lib/ipc";
 import { nodeApproval, nodeApprovalIds } from "@/lib/maestroCard";
-import { nodeTerminalWebgl } from "@/lib/nodeTerminal";
 import { keepIfSame } from "@/lib/stableItems";
 import {
   EMPTY_HISTORY,
@@ -574,7 +573,6 @@ function MaestroInner({
   const { zoomIn, zoomOut, zoomTo, fitView, screenToFlowPosition } = useReactFlow();
   const { zoom } = useViewport();
   const mod = IS_MAC ? "⌘" : "Ctrl+";
-  const actualSize = nodeTerminalWebgl(zoom);
 
   const graph = useMemo(
     () => ({
@@ -706,7 +704,6 @@ function MaestroInner({
       graph: viewGraph,
       run,
       live,
-      actualSize,
       subagents,
       openSubagent: opened ? openSub : null,
       focusNode,
@@ -718,7 +715,6 @@ function MaestroInner({
       viewGraph,
       run,
       live,
-      actualSize,
       subagents,
       opened,
       openSub,

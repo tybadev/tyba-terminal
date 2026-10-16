@@ -146,7 +146,7 @@ export function AgentNode({ id, data, selected }: NodeProps<MaestroFlowNode>) {
         </div>
       )}
       {session ? (
-        <NodeTerminal nodeId={id} sessionId={session} focused={selected} />
+        <NodeTerminal nodeId={id} sessionId={session} selected={selected} />
       ) : (
         <textarea
           aria-label={t("maestroPrompt")}

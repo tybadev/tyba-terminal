@@ -80,7 +80,7 @@ export function IntegrationNode({ id, data, selected }: NodeProps<MaestroFlowNod
         </div>
       )}
       {session ? (
-        <NodeTerminal nodeId={id} sessionId={session} focused={selected} />
+        <NodeTerminal nodeId={id} sessionId={session} selected={selected} />
       ) : integration ? (
         <div className="flex min-h-0 flex-1 flex-col bg-tyba-sunken px-3.5 py-2.5 font-mono text-[11.5px] leading-[17px] text-tyba-text-muted">
           <span className="shrink-0 text-tyba-text-faint">{trigger}</span>
