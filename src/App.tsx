@@ -114,7 +114,7 @@ import {
   LaunchConfigScreen,
   type LaunchConfigDraftState,
 } from "./components/LaunchConfigScreen";
-import { MaestroScreen } from "./components/maestro/MaestroScreen";
+import { MaestroScreen, type FocusSessionRequest } from "./components/maestro/MaestroScreen";
 import { ShortcutsPanel } from "./components/ShortcutsPanel";
 import { ConnectionsView } from "./components/ConnectionsView";
 import {
@@ -500,6 +500,7 @@ import {
   parseBindings,
   bindingOverrides,
   BINDINGS_PREF_KEY,
+  allowedUnderMaestro,
   isTerminalAction,
   isPaneResizeChord,
   isTabDigitChord,
@@ -4283,6 +4284,8 @@ export default function App() {
   // Serviços e portas / Túneis abertos pelo Workspace: a tela da máquina,
   // sem sessão, por cima do Maestro (lá não há sessão à vista).
   const [machineScreen, setMachineScreen] = useState<ServicesSection | null>(null);
+  // "Ir para o terminal" de uma sessão de nó, pedido ao Maestro.
+  const [maestroFocus, setMaestroFocus] = useState<FocusSessionRequest | null>(null);
   const machineTunnels = useMemo(() => sshTunnelTargets(sessions, sshHosts), [sessions, sshHosts]);
   useEffect(() => {
     if (!activeId || gitScreenOpen || maestroOpen) return;
@@ -4686,7 +4689,11 @@ export default function App() {
         runMenuExtra(id);
         return;
       }
-      if ((KEY_ACTIONS as string[]).includes(id)) runAction(id as KeyAction);
+      if (!(KEY_ACTIONS as string[]).includes(id)) return;
+      // No macOS o acelerador do menu (⌘W, ⌘T…) chega por aqui, não pelo
+      // keydown: com o Maestro aberto vale a mesma regra do teclado.
+      if (maestroOpen && !allowedUnderMaestro(id as KeyAction)) return;
+      runAction(id as KeyAction);
     }).then((un) => {
       if (disposed) un();
       else unlisten = un;
@@ -4695,11 +4702,25 @@ export default function App() {
       disposed = true;
       unlisten?.();
     };
-  }, [runAction, runMenuExtra]);
+  }, [runAction, runMenuExtra, maestroOpen]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (captureState.active) return;
+      // Maestro aberto: o teclado é dele (o xterm do nó, os campos, o canvas).
+      // Atalho do app que mexeria na grade escondida embaixo não age nem
+      // consome a tecla.
+      if (maestroOpen) {
+        const combo = comboOf(e);
+        const action = combo
+          ? (Object.keys(bindings) as KeyAction[]).find((a) => bindings[a] === combo)
+          : undefined;
+        if (!action || !allowedUnderMaestro(action)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        if (!e.repeat) runAction(action);
+        return;
+      }
       // Esc só sai da seleção de blocos quando o teclado não é de um campo:
       // com o foco na caixa de comando, Esc é dela — fecha a sugestão.
       if (
@@ -4834,6 +4855,7 @@ export default function App() {
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
   }, [
+    maestroOpen,
     activeId,
     searchOpen,
     pasteFromClipboard,
@@ -5736,7 +5758,7 @@ export default function App() {
           {maestroOpen && (
             <div className="absolute inset-0 z-40 flex">
               <ErrorBoundary region="maestro">
-                <MaestroScreen />
+                <MaestroScreen focusSession={maestroFocus} />
               </ErrorBoundary>
               {machineScreen && (
                 <ServicesScreen
@@ -5753,8 +5775,15 @@ export default function App() {
                     return ws?.name ?? sessionById.get(id)?.title ?? null;
                   }}
                   onFocusSession={(id) => {
-                    setMaestroOpen(false);
-                    goToSession(id);
+                    // Sessão da grade: vai ao Terminal, na aba dela. Sessão de
+                    // nó do Maestro não está em layout nenhum: fica no
+                    // Workspace e vai ao nó.
+                    if (findSessionLocation(layout.workspaces, id)) {
+                      setMaestroOpen(false);
+                      goToSession(id);
+                      return;
+                    }
+                    setMaestroFocus((f) => ({ sessionId: id, nonce: (f?.nonce ?? 0) + 1 }));
                   }}
                   onClose={() => setMachineScreen(null)}
                 />

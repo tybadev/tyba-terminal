@@ -22,6 +22,7 @@ import {
   PTY_NEWLINE,
   ptyNewlineFor,
   tabDigitCombo,
+  allowedUnderMaestro,
   type Bindings,
 } from "./keys";
 
@@ -356,5 +357,23 @@ describe("tabBackRoute", () => {
     expect(tabBackRoute(TAB_BACK_EDITOR_COMBO, b, false)).toBeNull();
     expect(tabBackRoute(null, b, true)).toBeNull();
     expect(tabBackRoute(b.newTab, b, true)).toBeNull();
+  });
+});
+
+describe("nos-2: com o Maestro aberto, o teclado é dele", () => {
+  it("ações que mexem na grade escondida não valem (⌘W, ⌘L, ⌘T, abas, panes)", () => {
+    for (const a of ["closePane", "clear", "newTab", "nextTab", "splitRight", "paneLeft", "newSession"] as const) {
+      expect(allowedUnderMaestro(a)).toBe(false);
+    }
+  });
+
+  it("copiar, colar e selecionar ficam com o xterm do nó", () => {
+    for (const a of ["copy", "paste", "selectAll", "search"] as const) {
+      expect(allowedUnderMaestro(a)).toBe(false);
+    }
+  });
+
+  it("nova janela segue valendo", () => {
+    expect(allowedUnderMaestro("newWindow")).toBe(true);
   });
 });
