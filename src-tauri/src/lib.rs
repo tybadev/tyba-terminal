@@ -8835,8 +8835,8 @@ fn orbit_service_logs_retain(
     logs.0.retain(&container_ids.into_iter().collect());
 }
 
-/// Navegador nativo do nó (Fase 5): o nó existe neste sistema? Fora do
-/// macOS, por enquanto, o front segue no iframe.
+/// Navegador nativo do nó (Fase 5): o nó existe neste sistema? Sem ele, o
+/// front segue no iframe.
 #[tauri::command]
 fn orbit_browser_native() -> bool {
     orbit::browser::NATIVE

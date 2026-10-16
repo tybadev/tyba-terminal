@@ -8,14 +8,22 @@
 //! que o core emite em [`EVENT`].
 //!
 //! O webview nativo só existe na main thread: cada operação vira um [`Op`]
-//! entregue por `run_on_main_thread` ao módulo do sistema (`macos.rs`). Por
-//! enquanto só o macOS tem a view nativa; Windows e Linux seguem no iframe.
+//! entregue por `run_on_main_thread` ao módulo do sistema (`macos.rs` ou
+//! `windows.rs`, os dois com o mesmo `apply(app, op)`). O Linux segue no
+//! iframe.
 
 pub mod policy;
 pub mod snapshot;
 
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+mod native;
+
 #[cfg(target_os = "macos")]
-mod macos;
+#[path = "macos.rs"]
+mod os;
+#[cfg(target_os = "windows")]
+#[path = "windows.rs"]
+mod os;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -397,7 +405,7 @@ pub struct BrowserViews {
 }
 
 /// O navegador nativo existe neste sistema? (Senão o front usa o iframe.)
-pub const NATIVE: bool = cfg!(target_os = "macos");
+pub const NATIVE: bool = cfg!(any(target_os = "macos", target_os = "windows"));
 
 /// 16 bytes estáveis por nó para o armazenamento (cookies, localStorage):
 /// os mesmos entre aberturas, nunca os mesmos entre nós ou grafos.
@@ -411,6 +419,31 @@ pub fn store_identity(key: &ViewKey) -> [u8; 16] {
     let mut out = [0u8; 16];
     out.copy_from_slice(&digest[..16]);
     out
+}
+
+/// A pasta do armazenamento de um nó no Windows e no Linux (cookies,
+/// localStorage, cache): `<home>/<perfil>/orbit/browser/<identidade em hex>`.
+/// O macOS 14+ guarda pelo identificador, sem pasta nossa.
+pub fn store_dir(home: &std::path::Path, key: &ViewKey) -> PathBuf {
+    let id: String = store_identity(key)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    home.join(crate::profile::HOME_DIR)
+        .join("orbit")
+        .join("browser")
+        .join(id)
+}
+
+/// Cria a pasta do armazenamento só para o dono (0700 fora do Windows).
+pub fn ensure_store_dir(dir: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
 }
 
 /// Quais views ficam vivas: das que o front quer à vista, a do dono primeiro
@@ -502,8 +535,14 @@ pub struct Mods {
 /// Esc sozinho devolve o foco; ⇧Esc entrega um Esc à página (fechar o modal
 /// dela); ⌘W, ⌘K e ⌘L são do app; o resto (⌘C, ⌘V, ⌘A…) é da página.
 pub fn route_key(key_code: u16, mods: Mods, chars: &str) -> KeyRoute {
+    route(key_code == KEY_ESCAPE, mods, chars)
+}
+
+/// A mesma regra de [`route_key`] sem o código de tecla do macOS: no Windows
+/// e no Linux o Ctrl faz o papel do ⌘ (vem em `mods.command`).
+pub fn route(escape: bool, mods: Mods, chars: &str) -> KeyRoute {
     let only_command = mods.command && !mods.shift && !mods.control && !mods.option;
-    if key_code == KEY_ESCAPE {
+    if escape {
         let bare = !mods.shift && !mods.control && !mods.option && !mods.command;
         return if bare {
             KeyRoute::GiveBack
@@ -545,17 +584,31 @@ fn now_ms() -> u64 {
         .map_or(0, |d| d.as_millis() as u64)
 }
 
-/// Entrega a operação à main thread (no macOS); nos outros sistemas não há
-/// view nativa e nada acontece.
+/// O atalho do app (Ctrl+W/K/L) que a página do nó recebeu no Windows e no
+/// Linux, reemitido na webview do app depois de o foco voltar a ela. `None`
+/// para qualquer outra tecla: só essas três letras entram no script.
+pub fn forward_shortcut_js(chars: &str) -> Option<String> {
+    let key = chars.to_ascii_lowercase();
+    if !matches!(key.as_str(), "w" | "k" | "l") {
+        return None;
+    }
+    let code = format!("Key{}", key.to_ascii_uppercase());
+    Some(format!(
+        "window.dispatchEvent(new KeyboardEvent(\"keydown\", {{ key: \"{key}\", code: \"{code}\", ctrlKey: true, bubbles: true, cancelable: true }}));"
+    ))
+}
+
+/// Entrega a operação à main thread do sistema; sem view nativa (outro
+/// sistema), nada acontece.
 fn dispatch(app: &AppHandle, op: Op) {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     {
         let handle = app.clone();
-        if let Err(e) = app.run_on_main_thread(move || macos::apply(&handle, op)) {
+        if let Err(e) = app.run_on_main_thread(move || os::apply(&handle, op)) {
             eprintln!("[tyba] navegador do orbit: {e}");
         }
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     let _ = (app, op);
 }
 
@@ -912,7 +965,7 @@ impl BrowserViews {
         action: AgentAction,
     ) -> Result<Value, String> {
         if !NATIVE {
-            return Err("ler e usar o navegador pelo agente ainda só existe no macOS".to_string());
+            return Err("ler e usar o navegador pelo agente não existe neste sistema".to_string());
         }
         self.wait_ready(key)?;
         let _turn = self
@@ -1488,6 +1541,42 @@ mod tests {
             KeyRoute::Page
         );
         assert_eq!(route_key(0, none, "w"), KeyRoute::Page);
+        // Windows e Linux: Esc pelo próprio código, Ctrl no lugar do ⌘.
+        assert_eq!(route(true, none, ""), KeyRoute::GiveBack);
+        assert_eq!(route(true, shift, ""), KeyRoute::Page);
+        assert_eq!(route(false, cmd, "k"), KeyRoute::ToApp);
+        assert_eq!(route(false, cmd, "c"), KeyRoute::Page);
+    }
+
+    #[test]
+    fn only_the_three_app_shortcuts_are_forwarded() {
+        let js = forward_shortcut_js("K").unwrap();
+        assert!(js.contains(r#"key: "k""#) && js.contains(r#"code: "KeyK""#));
+        assert!(js.contains("ctrlKey: true"));
+        for c in ["c", "\"", "</script>", "kk", ""] {
+            assert_eq!(forward_shortcut_js(c), None, "{c}");
+        }
+    }
+
+    #[test]
+    fn store_dir_is_per_node_inside_the_profile() {
+        let home = std::path::Path::new("/home/eu");
+        let a = store_dir(home, &key("g", "b"));
+        assert!(a.starts_with(home.join(crate::profile::HOME_DIR).join("orbit/browser")));
+        assert_eq!(a.file_name().unwrap().len(), 32);
+        assert_eq!(a, store_dir(home, &key("g", "b")));
+        assert_ne!(a, store_dir(home, &key("g", "c")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn store_dir_is_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("a/b");
+        ensure_store_dir(&dir).unwrap();
+        let mode = std::fs::metadata(&dir).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700);
     }
 
     #[test]

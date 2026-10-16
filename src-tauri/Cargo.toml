@@ -64,7 +64,13 @@ wry = { version = "=0.55.1", default-features = false, features = ["protocol", "
 [target.'cfg(target_os = "linux")'.dependencies]
 seccompiler = "0.5"
 
+# Navegador nativo do Orbit no Windows (`orbit::browser::windows`): o mesmo
+# `wry` do Tauri e o WebView2 por baixo dele (permissões, frames internos,
+# teclado e o DevTools pela API para o mundo isolado). Versões já no lock.
 [target.'cfg(windows)'.dependencies]
+wry = { version = "=0.55.1", default-features = false, features = ["protocol", "os-webview"] }
+webview2-com = "0.38"
+windows = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_Input_KeyboardAndMouse"] }
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_Storage_FileSystem",

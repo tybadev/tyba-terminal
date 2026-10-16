@@ -5087,6 +5087,8 @@ dependencies = [
  "trash",
  "uuid",
  "vt100",
+ "webview2-com",
+ "windows 0.61.3",
  "windows-sys 0.59.0",
  "wry",
  "zip",

@@ -23,6 +23,56 @@ pub const FILE_SCHEME: &str = "orbit-file";
 /// webview do app não servem nada, mas o nome engana.
 const TAURI_HOSTS: [&str; 2] = ["tauri.localhost", "ipc.localhost"];
 
+/// O WebView2 só aceita esquema próprio na forma `http://<esquema>.<host>`:
+/// o wry intercepta esse endereço e entrega o pedido ao handler já de volta
+/// como `orbit-file://<host>/…` (nunca vai à rede).
+pub const WINDOWS_FILE_PREFIX: &str = "http://orbit-file.";
+
+/// `orbit-file://r0/x.html` → `http://orbit-file.r0/x.html` (o que o
+/// WebView2 carrega). Outra url passa igual.
+pub fn to_windows(url: &str) -> String {
+    match url.strip_prefix(&format!("{FILE_SCHEME}://")) {
+        Some(rest) => format!("{WINDOWS_FILE_PREFIX}{rest}"),
+        None => url.to_string(),
+    }
+}
+
+/// O inverso de [`to_windows`]: o endereço que o WebView2 informa volta a
+/// `orbit-file://`, para a política e a barra de endereço.
+pub fn from_windows(url: &str) -> String {
+    let head = url.get(..WINDOWS_FILE_PREFIX.len());
+    match head {
+        Some(h) if h.eq_ignore_ascii_case(WINDOWS_FILE_PREFIX) => {
+            format!("{FILE_SCHEME}://{}", &url[WINDOWS_FILE_PREFIX.len()..])
+        }
+        _ => url.to_string(),
+    }
+}
+
+/// O caminho de um `file://` no disco: no Windows `file:///C:/x` chega como
+/// `/C:/x`, e a barra antes da letra do disco sai.
+fn file_url_path(path: &str, windows: bool) -> &str {
+    let b = path.as_bytes();
+    if windows && b.len() >= 3 && b[0] == b'/' && b[1].is_ascii_alphabetic() && b[2] == b':' {
+        &path[1..]
+    } else {
+        path
+    }
+}
+
+/// A raiz como começo de `file://`: no Windows sem o `\\?\` do caminho
+/// canônico e com `/` (`file:///C:/ws`).
+fn file_url_root(root: &str, windows: bool) -> String {
+    if !windows {
+        return root.trim_end_matches('/').to_string();
+    }
+    let root = root
+        .strip_prefix(r"\\?\")
+        .unwrap_or(root)
+        .replace('\\', "/");
+    format!("/{}", root.trim_end_matches('/'))
+}
+
 /// O que a navegação pode fazer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Decision {
@@ -153,6 +203,7 @@ pub fn resolve_file(url: &str, roots: &[PathBuf]) -> Result<String, FileRefusal>
         return Err(FileRefusal::NotFileUrl);
     };
     let path = path.split(['?', '#']).next().unwrap_or("");
+    let path = file_url_path(path, cfg!(windows));
     let decoded = percent_decode_str(path)
         .decode_utf8()
         .map_err(|_| FileRefusal::NotFound)?;
@@ -220,6 +271,11 @@ pub fn serve_path(host: &str, path: &str, roots: &[PathBuf]) -> Option<PathBuf> 
 /// O `orbit-file://r<i>/<rel>` de volta ao `file://` que o dono reconhece
 /// (a barra de endereço mostra este). Outra url passa igual.
 pub fn display_url(url: &str, roots: &[PathBuf]) -> String {
+    let url = if cfg!(windows) {
+        from_windows(url)
+    } else {
+        url.to_string()
+    };
     let Some(rest) = url.strip_prefix(&format!("{FILE_SCHEME}://")) else {
         return url.to_string();
     };
@@ -232,8 +288,7 @@ pub fn display_url(url: &str, roots: &[PathBuf]) -> String {
     else {
         return url.to_string();
     };
-    let root = root.to_string_lossy();
-    let root = root.trim_end_matches('/');
+    let root = file_url_root(&root.to_string_lossy(), cfg!(windows));
     format!("file://{root}/{path}")
 }
 
@@ -433,6 +488,41 @@ mod tests {
             display_url("http://localhost:1/", &roots),
             "http://localhost:1/"
         );
+    }
+
+    #[test]
+    fn windows_form_of_orbit_file_round_trips() {
+        assert_eq!(
+            to_windows("orbit-file://r0/site/a%20b.html?x"),
+            "http://orbit-file.r0/site/a%20b.html?x"
+        );
+        assert_eq!(to_windows("http://localhost:1/"), "http://localhost:1/");
+        assert_eq!(
+            from_windows("HTTP://orbit-file.r2/x.html"),
+            "orbit-file://r2/x.html"
+        );
+        assert_eq!(from_windows("http://localhost:1/"), "http://localhost:1/");
+        // O host do wry não é local: só passa na política depois de voltar.
+        assert_eq!(
+            decide("http://orbit-file.r0/x.html"),
+            Decision::Deny(DENY_NOT_LOCAL)
+        );
+        assert_eq!(
+            decide(&from_windows("http://orbit-file.r0/x.html")),
+            Decision::Allow
+        );
+    }
+
+    #[test]
+    fn windows_file_paths_and_roots() {
+        assert_eq!(file_url_path("/C:/ws/x.html", true), "C:/ws/x.html");
+        assert_eq!(file_url_path("/C:/ws/x.html", false), "/C:/ws/x.html");
+        assert_eq!(file_url_path("/ws/x.html", true), "/ws/x.html");
+        assert_eq!(
+            file_url_root(r"\\?\C:\Users\eu\ws", true),
+            "/C:/Users/eu/ws"
+        );
+        assert_eq!(file_url_root("/Users/eu/ws/", false), "/Users/eu/ws");
     }
 
     #[test]

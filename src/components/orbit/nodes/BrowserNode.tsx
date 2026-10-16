@@ -57,9 +57,9 @@ function useNative(): boolean | null {
 
 /**
  * Nó de navegador (quadro OrbitNavegador): voltar, recarregar, endereço e
- * "Abrir fora". No macOS a página é uma view nativa do core por cima do card
- * (Fase 5: documento de topo, login fica salvo); nos outros sistemas, por
- * enquanto, um iframe com `sandbox`.
+ * "Abrir fora". Onde o core tem a view nativa (`orbit_browser_native`), a
+ * página fica por cima do card (Fase 5: documento de topo, login fica salvo);
+ * sem ela, um iframe com `sandbox`.
  */
 export function BrowserNode(props: NodeProps<OrbitFlowNode>) {
   const native = useNative();
@@ -230,7 +230,7 @@ function agentStepLine(
 }
 
 /**
- * macOS: a página numa view nativa do core, presa à janela por cima do card.
+ * View nativa (WKWebView, WebView2): a página presa à janela por cima do card.
  * O card desenha só o marcador (onde a view fica) e, quando ela some — pan,
  * zoom fora da faixa, menu por cima —, o último print. Clicar na página passa
  * o teclado para ela ("você"); o core devolve.

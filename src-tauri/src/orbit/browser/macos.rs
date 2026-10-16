@@ -14,7 +14,6 @@
 //!   navegação confere);
 //! - sem download, sem área de transferência por script, sem devtools.
 
-use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -37,30 +36,14 @@ use objc2_web_kit::{
 use parking_lot::Mutex;
 use tauri::{AppHandle, Manager};
 use wry::dpi::{LogicalPosition, LogicalSize};
-use wry::http::{header::CONTENT_TYPE, Request, Response, StatusCode};
 use wry::{PageLoadEvent, Rect, WebViewBuilder, WebViewBuilderExtDarwin, WebViewExtMacOS};
 
+use super::native::{
+    serve_file, HIDDEN_H, HIDDEN_W, ISOLATED_JS, PAGE_SHIM_JS, PREVIEW_MAX_W, RUN_JS, WORLD,
+};
 use super::{
     policy, route_key, store_identity, BrowserViews, Focus, KeyRoute, Mods, Op, Place, ViewKey,
 };
-
-/// Teto do arquivo servido pelo `orbit-file`.
-const MAX_FILE_BYTES: u64 = 32 * 1024 * 1024;
-/// Tamanho da view antes de o card mandar o retângulo (pontos).
-const HIDDEN_W: f64 = 1280.0;
-const HIDDEN_H: f64 = 800.0;
-
-/// O mundo isolado das ferramentas do agente.
-const WORLD: &str = "tyba-orbit";
-/// Refs, snapshot, ações e o buffer do console (mundo isolado).
-const ISOLATED_JS: &str = include_str!("scripts/isolated.js");
-/// Reemite `console.error/warn` para o buffer (mundo da página).
-const PAGE_SHIM_JS: &str = include_str!("scripts/page_shim.js");
-/// O corpo de cada ação: garante o `__orbit` (página que carregou antes do
-/// user script) e chama a ação com os argumentos — `action` e `args` são
-/// argumentos do `callAsyncJavaScript`, nunca interpolados.
-const RUN_JS: &str =
-    "return JSON.stringify(await globalThis.__orbit.run(action, JSON.parse(args)));";
 
 struct NativeView {
     webview: wry::WebView,
@@ -264,31 +247,6 @@ fn create(app: &AppHandle, key: &ViewKey) -> Result<NativeView, String> {
         _ui: ui,
         roots,
     })
-}
-
-/// `orbit-file://r<i>/<caminho>`: só arquivo de dentro da raiz `i`.
-fn serve_file(roots: &[PathBuf], request: &Request<Vec<u8>>) -> Response<Cow<'static, [u8]>> {
-    let uri = request.uri();
-    let host = uri.host().unwrap_or("");
-    let found = policy::serve_path(host, uri.path(), roots).and_then(|path| {
-        let meta = std::fs::metadata(&path).ok()?;
-        if meta.len() > MAX_FILE_BYTES {
-            return None;
-        }
-        let body = std::fs::read(&path).ok()?;
-        Some((policy::content_type(&path), body))
-    });
-    let response = match found {
-        Some((mime, body)) => Response::builder()
-            .status(StatusCode::OK)
-            .header(CONTENT_TYPE, mime)
-            .body(Cow::Owned(body)),
-        None => Response::builder()
-            .status(StatusCode::NOT_FOUND)
-            .header(CONTENT_TYPE, "text/plain; charset=utf-8")
-            .body(Cow::Borrowed(&b"nao encontrado"[..])),
-    };
-    response.unwrap_or_else(|_| Response::new(Cow::Borrowed(&b""[..])))
 }
 
 struct UiIvars {
@@ -519,9 +477,6 @@ fn install_monitors(app: &AppHandle) {
 }
 
 // ── print ───────────────────────────────────────────────────────────────────
-
-/// Largura máxima da prévia, em pontos.
-const PREVIEW_MAX_W: f64 = 640.0;
 
 /// `takeSnapshot` → JPEG (fator 0,7) em base64 → [`BrowserViews::on_snapshot`].
 /// Funciona com a view escondida (conferido no protótipo: o print sai com a
