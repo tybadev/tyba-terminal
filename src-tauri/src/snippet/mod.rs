@@ -152,9 +152,242 @@ pub fn validate(name: &str, command: &str) -> Result<(), SnippetError> {
     Ok(())
 }
 
+/// Por que um snippet chamado pelo nome não pôde virar comando.
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum AliasError {
+    #[error("{snippet}: falta o argumento {{{{{arg}}}}}")]
+    MissingArg { snippet: String, arg: String },
+    #[error("{snippet}: recebe {expected} argumento(s), vieram {got}")]
+    TooManyArgs {
+        snippet: String,
+        expected: usize,
+        got: usize,
+    },
+    #[error("{0}: snippet de várias linhas sai pela paleta (⌘⇧R), não pelo nome")]
+    Multiline(String),
+}
+
+/// As palavras de `rest`, cada uma com as aspas como foram digitadas: o valor
+/// entra no comando do jeito que o dono escreveu, e `"a b"` continua um
+/// argumento só para o shell.
+fn words(rest: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut start = None;
+    let mut quote: Option<char> = None;
+    for (i, c) in rest.char_indices() {
+        match (quote, c) {
+            (Some(q), c) if c == q => quote = None,
+            (Some(_), _) => {}
+            (None, '\'' | '"') => {
+                quote = Some(c);
+                start.get_or_insert(i);
+            }
+            (None, c) if c.is_whitespace() => {
+                if let Some(s) = start.take() {
+                    out.push(&rest[s..i]);
+                }
+            }
+            (None, _) => {
+                start.get_or_insert(i);
+            }
+        }
+    }
+    if let Some(s) = start {
+        out.push(&rest[s..]);
+    }
+    out
+}
+
+/// A linha começa pelo nome de um snippet? Então vira o comando dele.
+///
+/// O snippet como alias (S5): `vpn-x` + Enter roda o comando do `vpn-x`, e
+/// `vpn-x prod` preenche os `{{arg}}` por posição. Sem placeholder, o que vem
+/// depois do nome segue colado no fim, como num `alias` do shell.
+///
+/// - Snippet LOCAL ganha de qualquer comando com o mesmo nome: foi o dono que
+///   o criou com aquele nome.
+/// - Snippet de REPOSITÓRIO só vale pelo nome quando nada no shell atende por
+///   ele (`shadows`): um `.tyba/config.toml` consentido não pode, sozinho,
+///   sequestrar o `ls` ou o `git` de quem digita.
+/// - Linha que começa com espaço não expande: é o jeito de pedir o comando de
+///   verdade.
+pub fn expand_alias<'a>(
+    line: &str,
+    snippets: &'a [Snippet],
+    shadows: &dyn Fn(&str) -> bool,
+) -> Result<Option<(&'a Snippet, String)>, AliasError> {
+    if line.starts_with(char::is_whitespace) {
+        return Ok(None);
+    }
+    let (name, rest) = match line.split_once(char::is_whitespace) {
+        Some((name, rest)) => (name, rest.trim()),
+        None => (line, ""),
+    };
+    let found = snippets
+        .iter()
+        .filter(|s| s.name == name)
+        .find(|s| s.source == Source::Local)
+        .or_else(|| {
+            snippets
+                .iter()
+                .find(|s| s.name == name && s.source == Source::Repo && !shadows(name))
+        });
+    let Some(snippet) = found else {
+        return Ok(None);
+    };
+    let fields = placeholders(&snippet.command);
+    let command = if fields.is_empty() {
+        if rest.is_empty() {
+            snippet.command.clone()
+        } else {
+            format!("{} {rest}", snippet.command)
+        }
+    } else {
+        let args = words(rest);
+        if args.len() > fields.len() {
+            return Err(AliasError::TooManyArgs {
+                snippet: name.to_string(),
+                expected: fields.len(),
+                got: args.len(),
+            });
+        }
+        let mut values = Vec::with_capacity(fields.len());
+        for (i, field) in fields.iter().enumerate() {
+            let value = match (args.get(i), &field.default) {
+                (Some(arg), _) => (*arg).to_string(),
+                (None, Some(default)) => default.clone(),
+                (None, None) => {
+                    return Err(AliasError::MissingArg {
+                        snippet: name.to_string(),
+                        arg: field.name.clone(),
+                    })
+                }
+            };
+            values.push((field.name.clone(), value));
+        }
+        render(&snippet.command, &values)
+    };
+    if command.contains('\n') {
+        return Err(AliasError::Multiline(name.to_string()));
+    }
+    Ok(Some((snippet, command)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn snip(name: &str, command: &str, source: Source) -> Snippet {
+        Snippet {
+            id: name.into(),
+            name: name.into(),
+            command: command.into(),
+            description: None,
+            tags: Vec::new(),
+            source,
+        }
+    }
+
+    fn expand(
+        line: &str,
+        all: &[Snippet],
+        shadowed: &[&str],
+    ) -> Result<Option<String>, AliasError> {
+        expand_alias(line, all, &|n| shadowed.contains(&n)).map(|hit| hit.map(|(_, c)| c))
+    }
+
+    #[test]
+    fn alias_runs_the_snippet_by_name() {
+        let all = [snip("vpn-x", "sudo openfortivpn -c /etc/x", Source::Local)];
+        assert_eq!(
+            expand("vpn-x", &all, &[]).unwrap().as_deref(),
+            Some("sudo openfortivpn -c /etc/x")
+        );
+        assert_eq!(expand("vpn-xy", &all, &[]).unwrap(), None);
+        assert_eq!(expand("echo vpn-x", &all, &[]).unwrap(), None);
+        assert_eq!(
+            expand(" vpn-x", &all, &[]).unwrap(),
+            None,
+            "espaço na frente pede o comando real"
+        );
+    }
+
+    #[test]
+    fn alias_without_placeholders_appends_the_rest() {
+        let all = [snip("ll", "ls -la", Source::Local)];
+        assert_eq!(
+            expand("ll /tmp", &all, &[]).unwrap().as_deref(),
+            Some("ls -la /tmp")
+        );
+    }
+
+    #[test]
+    fn alias_fills_placeholders_by_position_keeping_quotes() {
+        let all = [snip(
+            "dep",
+            "deploy --env {{env}} --msg {{msg=ok}}",
+            Source::Local,
+        )];
+        assert_eq!(
+            expand("dep prod \"primeira vez\"", &all, &[])
+                .unwrap()
+                .as_deref(),
+            Some("deploy --env prod --msg \"primeira vez\"")
+        );
+        assert_eq!(
+            expand("dep prod", &all, &[]).unwrap().as_deref(),
+            Some("deploy --env prod --msg ok")
+        );
+        assert_eq!(
+            expand("dep", &all, &[]),
+            Err(AliasError::MissingArg {
+                snippet: "dep".into(),
+                arg: "env".into()
+            })
+        );
+        assert!(matches!(
+            expand("dep a b c", &all, &[]),
+            Err(AliasError::TooManyArgs { .. })
+        ));
+    }
+
+    #[test]
+    fn repo_snippet_never_shadows_a_real_command() {
+        let all = [
+            snip("ls", "rm -rf ~", Source::Repo),
+            snip("build", "make all", Source::Repo),
+        ];
+        assert_eq!(
+            expand("ls", &all, &["ls"]).unwrap(),
+            None,
+            "o ls de verdade ganha"
+        );
+        assert_eq!(
+            expand("build", &all, &["ls"]).unwrap().as_deref(),
+            Some("make all")
+        );
+    }
+
+    #[test]
+    fn local_snippet_wins_over_command_and_repo() {
+        let all = [
+            snip("gs", "repo", Source::Repo),
+            snip("gs", "git status", Source::Local),
+        ];
+        assert_eq!(
+            expand("gs", &all, &["gs"]).unwrap().as_deref(),
+            Some("git status")
+        );
+    }
+
+    #[test]
+    fn multiline_snippet_stays_in_the_palette() {
+        let all = [snip("two", "echo a\necho b", Source::Local)];
+        assert_eq!(
+            expand("two", &all, &[]),
+            Err(AliasError::Multiline("two".into()))
+        );
+    }
 
     fn names(command: &str) -> Vec<String> {
         placeholders(command).into_iter().map(|p| p.name).collect()
