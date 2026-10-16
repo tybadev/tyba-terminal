@@ -63,6 +63,13 @@ wry = { version = "=0.55.1", default-features = false, features = ["protocol", "
 
 [target.'cfg(target_os = "linux")'.dependencies]
 seccompiler = "0.5"
+# Navegador nativo do Orbit no Linux (`orbit::browser::linux`): o mesmo `wry`
+# do Tauri e o WebKitGTK por baixo dele (mundo isolado, permissões, teclado,
+# print). Versões iguais às do wry; `v2_40` o Tauri já liga (`linux-body`).
+wry = { version = "=0.55.1", default-features = false, features = ["protocol", "os-webview"] }
+webkit2gtk = { version = "=2.0.2", features = ["v2_40"] }
+javascriptcore-rs = "=1.1.2"
+gtk = "0.18"
 
 # Navegador nativo do Orbit no Windows (`orbit::browser::windows`): o mesmo
 # `wry` do Tauri e o WebView2 por baixo dele (permissões, frames internos,

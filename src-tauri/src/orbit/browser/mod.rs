@@ -8,14 +8,13 @@
 //! que o core emite em [`EVENT`].
 //!
 //! O webview nativo só existe na main thread: cada operação vira um [`Op`]
-//! entregue por `run_on_main_thread` ao módulo do sistema (`macos.rs` ou
-//! `windows.rs`, os dois com o mesmo `apply(app, op)`). O Linux segue no
-//! iframe.
+//! entregue por `run_on_main_thread` ao módulo do sistema (`macos.rs`,
+//! `windows.rs` ou `linux.rs`, todos com o mesmo `apply(app, op)`).
 
 pub mod policy;
 pub mod snapshot;
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 mod native;
 
 #[cfg(target_os = "macos")]
@@ -23,6 +22,9 @@ mod native;
 mod os;
 #[cfg(target_os = "windows")]
 #[path = "windows.rs"]
+mod os;
+#[cfg(target_os = "linux")]
+#[path = "linux.rs"]
 mod os;
 
 use std::collections::HashMap;
@@ -405,7 +407,11 @@ pub struct BrowserViews {
 }
 
 /// O navegador nativo existe neste sistema? (Senão o front usa o iframe.)
-pub const NATIVE: bool = cfg!(any(target_os = "macos", target_os = "windows"));
+pub const NATIVE: bool = cfg!(any(
+    target_os = "macos",
+    target_os = "windows",
+    target_os = "linux"
+));
 
 /// 16 bytes estáveis por nó para o armazenamento (cookies, localStorage):
 /// os mesmos entre aberturas, nunca os mesmos entre nós ou grafos.
@@ -601,14 +607,14 @@ pub fn forward_shortcut_js(chars: &str) -> Option<String> {
 /// Entrega a operação à main thread do sistema; sem view nativa (outro
 /// sistema), nada acontece.
 fn dispatch(app: &AppHandle, op: Op) {
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     {
         let handle = app.clone();
         if let Err(e) = app.run_on_main_thread(move || os::apply(&handle, op)) {
             eprintln!("[tyba] navegador do orbit: {e}");
         }
     }
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
     let _ = (app, op);
 }
 
