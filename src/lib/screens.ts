@@ -9,11 +9,14 @@ import type {
   DockerSection,
   FilesScreenState,
   FilesSection,
+  Host,
   ServicesSection,
+  Session,
   SessionId,
   Workspace,
   WorkspaceId,
 } from "./ipc";
+import { isFinishedStatus } from "./sessionStatus";
 import { parseSideView } from "./sidePanel";
 
 export type ScreenKind = "git" | "files" | "docker" | "services";
@@ -164,4 +167,21 @@ export function closeTarget(
 ): "file" | "screen" | "pane" {
   if (!screen) return "pane";
   return screen === "files" && activeFile ? "file" : "screen";
+}
+
+/**
+ * Túneis da tela de Serviços aberta pelo Workspace (Maestro), sem sessão à
+ * vista: os de cada sessão SSH viva, com o alias do Host dela. Sessão SSH de
+ * Host que sumiu da lista fica de fora (o túnel precisa do alias).
+ */
+export function sshTunnelTargets(
+  sessions: readonly Session[],
+  hosts: readonly Pick<Host, "id" | "alias">[],
+): { session: Session; alias: string }[] {
+  return sessions.flatMap((session) => {
+    const kind = session.kind;
+    if (kind.type !== "ssh" || isFinishedStatus(session.status)) return [];
+    const alias = hosts.find((h) => h.id === kind.host_id)?.alias;
+    return alias ? [{ session, alias }] : [];
+  });
 }

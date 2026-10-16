@@ -2,6 +2,7 @@ import type { ElementType } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
+  ArrowsLeftRight,
   CaretDown,
   CaretRight,
   Check,
@@ -17,6 +18,7 @@ import {
   HardDrives,
   Keyboard,
   MagnifyingGlass,
+  Plug,
   Plus,
   Prohibit,
   SidebarSimple,
@@ -145,7 +147,7 @@ import { GitHistoryView } from "./components/GitHistoryView";
 import { DockerScreen } from "./components/DockerScreen";
 import { ServicesScreen } from "./components/ServicesScreen";
 import { HistoryPanel } from "./components/HistoryPanel";
-import { SidePanelBar, type PanelTab } from "./components/SidePanelBar";
+import { PanelIcon, SidePanelBar, type PanelTab } from "./components/SidePanelBar";
 import {
   escClosesPanel,
   litPanel,
@@ -173,7 +175,7 @@ import {
 import { AgentsPanel } from "./components/AgentsPanel";
 import { PrListView } from "./components/PrListView";
 import { GitScreen } from "./components/GitScreen";
-import { activeFile, allScreenEditors, closeTarget, screenOf, sideSlotView } from "./lib/screens";
+import { activeFile, allScreenEditors, closeTarget, screenOf, sideSlotView, sshTunnelTargets } from "./lib/screens";
 import { openGitScreen } from "./lib/gitScreen";
 import { PrDetailView } from "./components/PrDetailView";
 import { SubagentViewer } from "./components/SubagentViewer";
@@ -307,6 +309,7 @@ import {
   type LayoutState,
   type Loaded,
   type RepoSnapshot,
+  type ServicesSection,
   type Session,
   type Tab,
   type SessionCommand,
@@ -669,11 +672,14 @@ function IconAction({
   label,
   shortcut,
   onClick,
+  disabled = false,
   children,
 }: {
   label: string;
   shortcut?: string;
   onClick?: () => void;
+  /** Sem efeito agora: `aria-disabled` (não `disabled`) para o tooltip seguir dizendo por quê. */
+  disabled?: boolean;
   children: React.ReactNode;
 }) {
   return (
@@ -682,9 +688,12 @@ function IconAction({
         <Button
           variant="ghost"
           size="icon"
-          onClick={onClick}
+          onClick={disabled ? undefined : onClick}
           aria-label={label}
-          className="h-7 w-[30px] rounded-[6px] text-tyba-text-faint hover:text-tyba-text"
+          aria-disabled={disabled || undefined}
+          className={`h-7 w-[30px] rounded-[6px] text-tyba-text-faint ${
+            disabled ? "cursor-not-allowed opacity-40 hover:bg-transparent" : "hover:text-tyba-text"
+          }`}
         >
           {children}
         </Button>
@@ -4271,6 +4280,10 @@ export default function App() {
     servicesScreenSession !== null;
   // O Maestro cobre a área inteira: o teclado é dele enquanto estiver aberto.
   const [maestroOpen, setMaestroOpen] = useState(false);
+  // Serviços e portas / Túneis abertos pelo Workspace: a tela da máquina,
+  // sem sessão, por cima do Maestro (lá não há sessão à vista).
+  const [machineScreen, setMachineScreen] = useState<ServicesSection | null>(null);
+  const machineTunnels = useMemo(() => sshTunnelTargets(sessions, sshHosts), [sessions, sshHosts]);
   useEffect(() => {
     if (!activeId || gitScreenOpen || maestroOpen) return;
     if (ownsCommandLine) {
@@ -5535,7 +5548,10 @@ export default function App() {
                   <button
                     aria-label={t("terminalView")}
                     aria-pressed={!maestroOpen}
-                    onClick={() => setMaestroOpen(false)}
+                    onClick={() => {
+                      setMaestroOpen(false);
+                      setMachineScreen(null);
+                    }}
                     className={`flex h-6 items-center gap-1.5 rounded-[6px] px-3 text-[13px] ${
                       maestroOpen
                         ? "text-tyba-text-faint hover:text-tyba-text-muted"
@@ -5580,40 +5596,70 @@ export default function App() {
 
           <div className="h-full flex-1" data-tauri-drag-region />
 
-          <SidePanelBar
-            tabs={panelTabs}
-            lit={
-              activeContent?.kind === "session-diff"
-                ? "diff"
-                : litPanel(sideView, fileSessionId)
-            }
-            onClick={onPanelClick}
-            onEscape={() => {
-              if (activeWorkspace) {
-                void closeSideView(activeWorkspace.id).catch(() => {});
-              }
-            }}
-          />
+          {maestroOpen ? (
+            // No Workspace não há sessão à vista: Serviços e Túneis abrem a
+            // tela da máquina por cima do Maestro; o que depende de sessão
+            // fica desabilitado dizendo onde funciona, em vez de não fazer nada.
+            <>
+              <IconAction label={t("servicesTitle")} onClick={() => setMachineScreen("ports")}>
+                <Plug size={16} />
+              </IconAction>
+              <IconAction label={t("tunnelsTitle")} onClick={() => setMachineScreen("tunnels")}>
+                <ArrowsLeftRight size={16} />
+              </IconAction>
+              {panelTabs
+                .filter((tab) => tab.kind !== "services")
+                .map((tab) => (
+                  <IconAction
+                    key={tab.kind}
+                    disabled
+                    label={t("openInTerminalHint", { what: tab.label })}
+                  >
+                    <PanelIcon kind={tab.kind} />
+                  </IconAction>
+                ))}
+              <IconAction disabled label={t("openInTerminalHint", { what: t("filesPanel") })}>
+                <FolderOpen size={16} />
+              </IconAction>
+            </>
+          ) : (
+            <>
+              <SidePanelBar
+                tabs={panelTabs}
+                lit={
+                  activeContent?.kind === "session-diff"
+                    ? "diff"
+                    : litPanel(sideView, fileSessionId)
+                }
+                onClick={onPanelClick}
+                onEscape={() => {
+                  if (activeWorkspace) {
+                    void closeSideView(activeWorkspace.id).catch(() => {});
+                  }
+                }}
+              />
 
-          <ErrorBoundary region="forge">
-            <ForgePanel
-              sessionId={activeId}
-              repoRoot={activeGitStatus?.root ?? null}
-            />
-          </ErrorBoundary>
+              <ErrorBoundary region="forge">
+                <ForgePanel
+                  sessionId={activeId}
+                  repoRoot={activeGitStatus?.root ?? null}
+                />
+              </ErrorBoundary>
 
-          {/* A pasta do header abre a tela de Arquivos da sessão (pedido do dono,
-              2026-10-14); "Abrir pasta do projeto" fica no menu, na paleta e no
-              atalho. */}
-          <IconAction
-            label={t("filesPanel")}
-            shortcut={bindings.files}
-            onClick={() => {
-              if (fileSessionId) void openFilesPanel(fileSessionId).catch(() => {});
-            }}
-          >
-            <FolderOpen size={16} />
-          </IconAction>
+              {/* A pasta do header abre a tela de Arquivos da sessão (pedido do dono,
+                  2026-10-14); "Abrir pasta do projeto" fica no menu, na paleta e no
+                  atalho. */}
+              <IconAction
+                label={t("filesPanel")}
+                shortcut={bindings.files}
+                onClick={() => {
+                  if (fileSessionId) void openFilesPanel(fileSessionId).catch(() => {});
+                }}
+              >
+                <FolderOpen size={16} />
+              </IconAction>
+            </>
+          )}
 
           <ErrorBoundary region="notificações">
             <NotificationsInbox
@@ -5692,6 +5738,27 @@ export default function App() {
               <ErrorBoundary region="maestro">
                 <MaestroScreen />
               </ErrorBoundary>
+              {machineScreen && (
+                <ServicesScreen
+                  key={machineScreen}
+                  session={null}
+                  workspaceId={null}
+                  state={{ section: machineScreen, only_mine: false, selected: null }}
+                  hostAlias={null}
+                  sshTunnels={machineTunnels}
+                  exiting={false}
+                  labelOf={(id) => {
+                    const loc = findSessionLocation(layout.workspaces, id);
+                    const ws = loc && layout.workspaces.find((w) => w.id === loc.workspaceId);
+                    return ws?.name ?? sessionById.get(id)?.title ?? null;
+                  }}
+                  onFocusSession={(id) => {
+                    setMaestroOpen(false);
+                    goToSession(id);
+                  }}
+                  onClose={() => setMachineScreen(null)}
+                />
+              )}
             </div>
           )}
           <>

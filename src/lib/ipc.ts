@@ -3669,7 +3669,8 @@ export interface KillOutcome {
   force_after_ms: number;
 }
 
-export const servicesList = (id: SessionId) => invoke<ServicesList>("services_list", { id });
+/** `null` = a máquina local, sem sessão (a tela aberta pelo Workspace). */
+export const servicesList = (id: SessionId | null) => invoke<ServicesList>("services_list", { id });
 
 export const servicesDetail = (pid: number) => invoke<ServiceDetail>("services_detail", { pid });
 

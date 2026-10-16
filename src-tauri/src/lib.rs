@@ -5968,9 +5968,10 @@ enum ServicesList {
 /// O que escuta na máquina da sessão: a local, ou o servidor numa sessão SSH
 /// (só leitura). Chamado a cada ~3 s com a tela aberta.
 #[tauri::command]
-async fn services_list(app: AppHandle, id: SessionId) -> Result<ServicesList, AppError> {
+async fn services_list(app: AppHandle, id: Option<SessionId>) -> Result<ServicesList, AppError> {
     off_main(app, move |app, state| {
-        if let Some((host_id, alias, _)) = ssh_target(&state, id) {
+        // Sem sessão (a tela aberta pelo Workspace/Maestro): a máquina local.
+        if let Some((host_id, alias, _)) = id.and_then(|id| ssh_target(&state, id)) {
             let out = state
                 .host_queries
                 .get(&host_id, &alias)
