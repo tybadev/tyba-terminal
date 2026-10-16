@@ -931,6 +931,10 @@ export const runStopNode = (runId: string, nodeId: string) =>
 
 export const runGet = (runId: string) => invoke<Run | null>("orbit_run_get", { runId });
 
+/** O fim do `log.txt` do nó (sem cor, redigido pelo core). */
+export const nodeLog = (runId: string, nodeId: string, lines: number) =>
+  invoke<string[]>("orbit_node_log", { runId, nodeId, lines });
+
 /** As 20 últimas execuções do grafo, mais nova primeiro. */
 export const runsList = (graphId: string) => invoke<Run[]>("orbit_runs_list", { graphId });
 

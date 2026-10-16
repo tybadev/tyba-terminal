@@ -8838,6 +8838,18 @@ fn orbit_run_get(
     Ok(runs.get(&run_id))
 }
 
+/// O fim do log de um nó do run (sem cor, redigido): o card do processo que
+/// já terminou mostra isto no lugar do terminal.
+#[tauri::command]
+fn orbit_node_log(
+    runs: State<'_, orbit::run::SharedRuns>,
+    run_id: String,
+    node_id: String,
+    lines: usize,
+) -> Result<Vec<String>, String> {
+    runs.node_log(&run_id, &node_id, lines)
+}
+
 #[tauri::command]
 fn orbit_runs_list(
     runs: State<'_, orbit::run::SharedRuns>,
@@ -10072,6 +10084,7 @@ pub fn run() {
             orbit_run_stop,
             orbit_run_stop_node,
             orbit_run_get,
+            orbit_node_log,
             orbit_keep_created,
             orbit_runs_list,
             orbit_service_logs_start,

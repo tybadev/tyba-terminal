@@ -397,8 +397,11 @@ pub fn tool_list(can_create: bool) -> Vec<Value> {
             "name": "orbit_create_process",
             "description": "Create a Process node on the TYBA Orbit canvas and start it now, in \
                 its own terminal that the owner sees and can stop. Use it for servers, watchers \
-                and any long command instead of running them in your own shell. Returns the \
-                node_id.",
+                and any long command instead of running them in your own shell. Waits up to \
+                3s: returns the node_id and the status (with the url once it opens a port). If \
+                the process dies before it is ready, the result has failed: true, the reason \
+                (e.g. \"porta 8765 em uso por Python (pid 17369)\") and the last log lines: stop \
+                that node with orbit_stop_node, fix it (another port) and create a new one.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -798,7 +801,10 @@ Comandos curtos de leitura (ls, cat, git status) podem rodar no seu shell.";
 pub const CREATE_PROMPT: &str = "Para subir ou rodar um serviço, servidor de dev ou processo \
 longo, use orbit_create_process (um nó por serviço, na pasta do projeto) em vez de rodar no \
 seu próprio shell; para abrir ou mostrar uma página (inclusive domínios .test e .localhost), \
-use orbit_create_browser em vez de um navegador externo; para navegador, ligue ao nó que serve \
+use orbit_create_browser em vez de um navegador externo; se um processo que você criou falha \
+(a resposta traz failed, o motivo e o fim do log), pare-o com orbit_stop_node e não deixe nó \
+quebrado ligado a navegador: corrija (outra porta, por exemplo), crie o novo e religue o \
+navegador a ele; para navegador, ligue ao nó que serve \
 o endereço com from_node; se o endereço é um host virtual (ex.: https://code.muriki.test \
 servido pelo Caddy), passe também a url; use só url quando nenhum nó do grafo serve aquele \
 endereço; para trabalho de agente em outro repositório, use orbit_create_agent.";

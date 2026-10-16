@@ -11,6 +11,7 @@
 pub mod agent;
 pub mod browser;
 pub mod export;
+pub mod failure;
 pub mod integration;
 pub mod mcp;
 pub mod orchestrator;

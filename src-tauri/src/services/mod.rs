@@ -56,6 +56,16 @@ pub(crate) fn run_bounded(
     args: &[&str],
     max_bytes: usize,
 ) -> Result<Vec<u8>, AppError> {
+    run_bounded_within(bin, args, max_bytes, RUN_TIMEOUT)
+}
+
+/// [`run_bounded`] com outro teto de tempo.
+pub(crate) fn run_bounded_within(
+    bin: &Path,
+    args: &[&str],
+    max_bytes: usize,
+    timeout: Duration,
+) -> Result<Vec<u8>, AppError> {
     let fail = |e: &dyn std::fmt::Display| {
         AppError::new("services.scan_failed").with("detail", e.to_string())
     };
@@ -78,7 +88,7 @@ pub(crate) fn run_bounded(
     loop {
         match child.try_wait().map_err(|e| fail(&e))? {
             Some(_) => break,
-            None if start.elapsed() >= RUN_TIMEOUT => {
+            None if start.elapsed() >= timeout => {
                 let _ = child.kill();
                 let _ = child.wait();
                 return Err(AppError::new("services.scan_timeout"));

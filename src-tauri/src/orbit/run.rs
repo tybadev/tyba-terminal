@@ -1556,7 +1556,11 @@ impl<H: RunHost> Runs<H> {
                 kind,
                 from_node,
             } => {
+                let process = matches!(kind, NodeKind::Process { .. });
                 let id = self.create_node(run_id, orchestrator, title, kind, from_node)?;
+                if process {
+                    return Ok(self.settle_process(run_id, &id));
+                }
                 Ok(serde_json::json!({ "node_id": id }))
             }
             ToolCall::Status { node_id } => self.node_status(run_id, orchestrator, &node_id),
@@ -1586,6 +1590,65 @@ impl<H: RunHost> Runs<H> {
                 Ok(serde_json::json!({ "node": node, "chars": chars }))
             }
         }
+    }
+
+    /// O processo recém-criado nos primeiros segundos. Caiu antes de ficar
+    /// pronto: o motivo (o mesmo do rodapé do card) e o fim do log, redigido,
+    /// para o agente reagir — trocar de porta, parar o nó quebrado. Abriu
+    /// porta: a url. Senão, o estado de agora. Espera fora de qualquer lock.
+    fn settle_process(&self, run_id: &str, id: &str) -> serde_json::Value {
+        let deadline = std::time::Instant::now() + PROCESS_SETTLE;
+        loop {
+            let Some(n) = self.get(run_id).and_then(|r| r.nodes.get(id).cloned()) else {
+                return serde_json::json!({ "node_id": id });
+            };
+            if n.status == NodeStatus::Failed {
+                let log = self.root.as_ref().and_then(|root| {
+                    let path = root.join(run_id).join(id).join("out").join("log.txt");
+                    orchestrator::log_tail(&path, SETTLE_LOG_LINES)
+                });
+                return serde_json::json!({
+                    "node_id": id,
+                    "status": n.status,
+                    "failed": true,
+                    "exit_code": n.exit_code,
+                    "reason": n.reason,
+                    "log": log,
+                    "next": "o processo caiu antes de ficar pronto: pare este nó com \
+                             orbit_stop_node, corrija (outra porta, por exemplo) e crie \
+                             um novo; navegador ligado a este nó, religue ao novo",
+                });
+            }
+            let settled = n.url.is_some() || n.status.is_terminal();
+            if settled || std::time::Instant::now() >= deadline {
+                return serde_json::json!({
+                    "node_id": id,
+                    "status": n.status,
+                    "url": n.url,
+                    "exit_code": n.exit_code,
+                });
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+
+    /// As últimas linhas do `log.txt` de um nó do run (sem cor, redigidas):
+    /// o card do processo que já terminou não tem mais sessão de onde ler.
+    pub fn node_log(
+        &self,
+        run_id: &str,
+        node_id: &str,
+        lines: usize,
+    ) -> Result<Vec<String>, String> {
+        let run = self.get(run_id).ok_or("execução não encontrada")?;
+        if !run.nodes.contains_key(node_id) {
+            return Err(format!("nó não existe neste run: {node_id}"));
+        }
+        let root = self.root.as_ref().ok_or("sem pasta para as execuções")?;
+        let path = root.join(run_id).join(node_id).join("out").join("log.txt");
+        Ok(orchestrator::log_tail(&path, lines.min(NODE_LOG_MAX_LINES))
+            .map(|t| t.lines().map(String::from).collect())
+            .unwrap_or_default())
     }
 
     /// Os agentes ligados a `agent` por `talk` (nos dois sentidos), com o
@@ -2687,13 +2750,17 @@ impl<H: RunHost> Runs<H> {
     /// O PTY do processo fechou: lê o `.exit` e segue o grafo. O diff (git)
     /// sai fora do lock.
     fn process_exited(&self, run_id: &str, node_id: &str, snapshot: Option<&Snapshot>) {
-        let (out_dir, node_dir, declared) = {
+        let (out_dir, node_dir, declared, command, title) = {
             let active = self.active.lock();
             let Some(a) = active.get(run_id) else {
                 return;
             };
             let Some(node) = a.graph.nodes.iter().find(|n| n.id == node_id) else {
                 return;
+            };
+            let command = match &node.kind {
+                NodeKind::Process { command, .. } => command.clone(),
+                _ => String::new(),
             };
             let declared = match &node.kind {
                 NodeKind::Process { output, file, .. } => Some((*output, file.clone())),
@@ -2707,9 +2774,19 @@ impl<H: RunHost> Runs<H> {
                 a.dir.join(node_id).join("out"),
                 PathBuf::from(a.graph.node_dir(node)),
                 declared,
+                command,
+                node.title.clone(),
             )
         };
         let exit = read_exit(&out_dir);
+        // Caiu: o porquê numa linha (porta ocupada e por quem, ou a última
+        // linha do log) para o rodapé do card e para o agente que criou. O
+        // `lsof` roda aqui, fora do lock e da main thread.
+        let reason = match exit {
+            None => Some("o processo terminou sem exit code".to_string()),
+            Some(0) => None,
+            Some(_) => super::failure::failure_reason(&out_dir.join("log.txt"), &command, &title),
+        };
         let outputs = match declared {
             Some((output, file)) => {
                 process_outputs(output, file.as_deref(), &out_dir, &node_dir, snapshot)
@@ -2725,9 +2802,7 @@ impl<H: RunHost> Runs<H> {
                 ok: exit == Some(0),
                 exit_code: exit,
                 outputs,
-                reason: exit
-                    .is_none()
-                    .then(|| "o processo terminou sem exit code".into()),
+                reason,
                 url: None,
             };
             if !a.sched.finish(node_id, outcome, now()) {
@@ -2738,6 +2813,15 @@ impl<H: RunHost> Runs<H> {
         self.advance(run_id);
     }
 }
+
+/// Quanto o `orbit_create_process` espera o processo cair ou abrir porta
+/// antes de responder: erro de subida (porta ocupada, módulo faltando) sai
+/// nisso.
+const PROCESS_SETTLE: std::time::Duration = std::time::Duration::from_secs(3);
+/// Linhas do log na resposta do processo que caiu.
+const SETTLE_LOG_LINES: usize = 20;
+/// Teto de linhas que o card pede do log.
+const NODE_LOG_MAX_LINES: usize = 200;
 
 /// De quanto em quanto o processo olha se a sessão abriu porta. O retrato das
 /// portas é o do poll de serviços (`services::CHIP_POLL`); isto só lê dele.
@@ -4634,6 +4718,70 @@ mod tests {
         let launches = host.agents.lock().clone();
         let launch = launches.iter().find(|l| l.title == title).unwrap();
         launch.tools.clone().expect("orquestrador sem ferramentas")
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn created_process_that_dies_returns_the_reason_and_the_log_tail() {
+        use serde_json::json;
+        let dir = tempfile::tempdir().unwrap();
+        let work = dir.path().join("api");
+        std::fs::create_dir(&work).unwrap();
+        let (runs, _host, _app) = pty_runs(dir.path().join("runs"));
+        let g = graph(vec![orchestrator("o"), process("p", "sleep 30")], vec![]);
+        runs.store.save_orbit_graph(&g, true, None).unwrap();
+        let run = runs.start(g, vec![]).unwrap();
+        wait_orchestrating(&runs, &run.id, "o");
+        let tools = tools_of(&_host, "o");
+        // A porta fica ocupada por este teste; o processo imita o Python que
+        // não consegue o bind (mensagem escrita à mão, sem a porta).
+        let busy = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = busy.local_addr().unwrap().port();
+        let command = format!(
+            "echo 'Traceback (most recent call last):' >&2; \
+             echo 'OSError: [Errno 48] Address already in use' >&2; exit 1 # http.server {port}"
+        );
+        let out = tools
+            .call(
+                "orbit_create_process",
+                &json!({"title": format!("resumo (:{port})"), "command": command, "dir": work}),
+            )
+            .unwrap();
+        assert_eq!(out["failed"], true, "{out}");
+        assert_eq!(out["status"], "failed", "{out}");
+        assert_eq!(out["exit_code"], 1, "{out}");
+        let reason = out["reason"].as_str().unwrap();
+        assert!(
+            reason.starts_with(&format!("porta {port} em uso")),
+            "{reason}"
+        );
+        #[cfg(target_os = "macos")]
+        assert!(
+            reason.ends_with(&format!("(pid {})", std::process::id())),
+            "{reason}"
+        );
+        assert!(
+            out["log"]
+                .as_str()
+                .unwrap()
+                .contains("Address already in use"),
+            "{out}"
+        );
+        assert!(out["next"].as_str().unwrap().contains("orbit_stop_node"));
+        // O card lê o mesmo fim do log com a sessão já morta.
+        let id = out["node_id"].as_str().unwrap();
+        let lines = runs.node_log(&run.id, id, 14).unwrap();
+        assert_eq!(
+            lines.last().unwrap(),
+            "OSError: [Errno 48] Address already in use"
+        );
+        assert!(runs.node_log(&run.id, "nada", 14).is_err());
+        // O nó quebrado se para sem erro.
+        tools
+            .call("orbit_stop_node", &json!({"node_id": id}))
+            .unwrap();
+        drop(busy);
+        runs.stop(&run.id).unwrap();
     }
 
     #[cfg(unix)]

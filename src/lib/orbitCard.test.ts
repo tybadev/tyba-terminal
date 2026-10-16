@@ -8,6 +8,7 @@ import {
   approvalLine,
   diffSummary,
   failureFooter,
+  showsFailureLog,
   nodeApproval,
   ringState,
   visibleCardApprovalIds,
@@ -178,5 +179,21 @@ describe("cards no quadro OrbitCardsD", () => {
     expect(failureFooter(process, failed)).toEqual({ exitCode: 1, reason: "", log: true });
     expect(failureFooter(agent("claude", ""), failed)?.log).toBe(false);
     expect(failureFooter(process, nodeRun({ status: "done" }))).toBeNull();
+  });
+});
+
+describe("showsFailureLog", () => {
+  const process = {
+    type: "process",
+    command: "python3 -m http.server 8765",
+    output: "log",
+    file: null,
+    dir: "",
+  } as const;
+  test("processo que rodou e caiu mostra o log; o resto não", () => {
+    expect(showsFailureLog(process, nodeRun({ status: "failed", exitCode: 1 }))).toBe(true);
+    expect(showsFailureLog(process, nodeRun({ status: "failed", sessionId: null }))).toBe(false);
+    expect(showsFailureLog(process, nodeRun({ status: "running" }))).toBe(false);
+    expect(showsFailureLog(process, undefined)).toBe(false);
   });
 });

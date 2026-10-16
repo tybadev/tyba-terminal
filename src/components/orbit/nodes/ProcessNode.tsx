@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ArrowClockwise, TerminalWindow } from "@phosphor-icons/react";
 import type { NodeProps } from "@xyflow/react";
@@ -6,6 +7,7 @@ import { Select } from "@/components/ui/select";
 import {
   OUTPUT_KINDS,
   nodeDir,
+  nodeLog,
   nodeSession,
   shortDir,
   urlPort,
@@ -13,6 +15,7 @@ import {
   type OutputKind,
 } from "@/lib/orbit";
 import { firstLine } from "@/lib/nodeSummary";
+import { showsFailureLog } from "@/lib/orbitCard";
 import {
   NodeDir,
   NodeFrame,
@@ -41,6 +44,7 @@ export function ProcessNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
   const dir = nodeDir(kind, graphDir);
   const command = firstLine(kind.command);
   const failed = run?.nodes[id]?.status === "failed";
+  const failureLog = run && showsFailureLog(kind, run.nodes[id]) ? run.id : null;
 
   return (
     <NodeFrame
@@ -110,6 +114,8 @@ export function ProcessNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
       )}
       {session ? (
         <NodeTerminal nodeId={id} sessionId={session} selected={selected} />
+      ) : failureLog ? (
+        <FailureLog runId={failureLog} nodeId={id} command={command} />
       ) : (
         <div className="flex min-h-0 flex-1 bg-tyba-sunken">
           <span className="select-none pt-2.5 pl-3.5 font-mono text-[11.5px] leading-[17px] text-tyba-green">
@@ -128,5 +134,41 @@ export function ProcessNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
         </div>
       )}
     </NodeFrame>
+  );
+}
+
+const FAILURE_LOG_LINES = 14;
+
+/**
+ * O processo que caiu: o comando e o fim do `log.txt`, lido do core (a sessão
+ * já morreu e o terminal saiu do card). Quem cai em 0s deixava só o comando
+ * à vista, sem o erro.
+ */
+function FailureLog({ runId, nodeId, command }: { runId: string; nodeId: string; command: string }) {
+  const [lines, setLines] = useState<string[]>([]);
+  useEffect(() => {
+    let disposed = false;
+    void nodeLog(runId, nodeId, FAILURE_LOG_LINES)
+      .then((rows) => {
+        if (!disposed) setLines(rows);
+      })
+      .catch(() => {});
+    return () => {
+      disposed = true;
+    };
+  }, [runId, nodeId]);
+
+  return (
+    <div
+      role="log"
+      className="relative flex min-h-0 flex-1 flex-col justify-end overflow-hidden bg-tyba-sunken px-3.5 pt-2.5 pb-3 font-mono text-[11.5px] leading-[17px] text-tyba-text-muted"
+    >
+      {/* Como a prévia do terminal: linhas de altura fixa, o excesso sai por cima. */}
+      {[`$ ${command}`, ...lines].map((line, i) => (
+        <div key={i} className="h-[17px] shrink-0 overflow-hidden text-ellipsis whitespace-pre">
+          {line || " "}
+        </div>
+      ))}
+    </div>
   );
 }
