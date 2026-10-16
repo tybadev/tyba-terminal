@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { Trash } from "@phosphor-icons/react";
+import { FolderSimple, Trash } from "@phosphor-icons/react";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
   Handle,
   NodeResizer,
@@ -21,6 +22,9 @@ import {
   nodeElapsed,
   nodeStatusLabel,
   produces,
+  nodeDir,
+  rememberDir,
+  shortDir,
   type EdgeKind,
   type FlowNodeData,
   type Graph,
@@ -42,6 +46,8 @@ export interface MaestroCtx {
   integrations: ReadonlyMap<string, Integration>;
   updateNode: (id: string, update: (node: MaestroNode) => MaestroNode) => void;
   graph: Pick<Graph, "nodes" | "edges">;
+  /** Pasta padrão do grafo: vale para nó salvo antes da pasta por nó. */
+  graphDir: string;
   run: Run | null;
   /** O run à vista é o mais novo: os terminais vivos são dele. */
   live: boolean;
@@ -60,6 +66,7 @@ export const MaestroContext = createContext<MaestroCtx>({
   integrations: new Map(),
   updateNode: () => {},
   graph: { nodes: [], edges: [] },
+  graphDir: "",
   run: null,
   live: false,
   now: 0,
@@ -293,3 +300,41 @@ export const termClass =
 
 export const fieldClass =
   "nodrag h-6 min-w-0 rounded-[4px] border border-tyba-border bg-tyba-text/[.02] px-1.5 font-mono text-[11px] text-tyba-text outline-none focus:border-tyba-border-strong";
+
+/**
+ * A pasta onde o nó roda, encurtada. Clicar abre o seletor de pasta; a
+ * escolhida vira a pasta do nó e a última usada (onde o próximo nó nasce).
+ */
+export function NodeDir({ id, kind }: { id: string; kind: MaestroNode["kind"] }) {
+  const { t } = useTranslation();
+  const { updateNode, graphDir } = useMaestro();
+  const dir = nodeDir(kind, graphDir);
+  if (dir === null) return null;
+  const pick = async () => {
+    const chosen = await openDialog({
+      directory: true,
+      multiple: false,
+      defaultPath: dir || undefined,
+      title: t("maestroNodeDirPick"),
+    }).catch(() => null);
+    if (typeof chosen !== "string") return;
+    rememberDir(chosen);
+    updateNode(id, (n) =>
+      n.kind.type === "note" ? n : { ...n, kind: { ...n.kind, dir: chosen } },
+    );
+  };
+  return (
+    <button
+      type="button"
+      onClick={() => void pick()}
+      title={dir ? t("maestroNodeDirTitle", { dir }) : t("maestroNodeDirPick")}
+      aria-label={t("maestroNodeDirPick")}
+      className={`nodrag inline-flex max-w-[45%] shrink-0 items-center gap-1 rounded-[4px] px-1 text-[11px] leading-[20px] hover:bg-tyba-raised hover:text-tyba-text ${
+        dir ? "text-tyba-text-faint" : "text-tyba-amber"
+      }`}
+    >
+      <FolderSimple size={12} className="shrink-0" />
+      <span className="truncate">{dir ? shortDir(dir) : t("maestroNodeDirNone")}</span>
+    </button>
+  );
+}

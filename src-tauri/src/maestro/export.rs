@@ -7,14 +7,14 @@
 //! só lê e valida, nunca grava nem roda; o consentimento vale para o hash do
 //! conteúdo que o dono viu.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use super::{validate_graph, validate_integration, Graph, Integration, MaestroError, NodeKind};
+use super::{validate_integration, validate_structure, Graph, Integration, MaestroError, NodeKind};
 use crate::session::redact::contains_secret;
 
 /// Teto do arquivo importado, em bytes.
@@ -44,6 +44,10 @@ pub enum ExportError {
     Parse(String),
     #[error("pasta de destino inválida: {0}")]
     InvalidDir(String),
+    #[error("nó {node}: a pasta {dir} não existe nesta máquina — escolha uma antes de confirmar")]
+    MissingDir { node: String, dir: String },
+    #[error("pasta escolhida para nó que não roda ou não existe no arquivo: {0}")]
+    UnknownDirNode(String),
     #[error("falha ao gerar o arquivo: {0}")]
     Serialize(String),
     #[error("{0}")]
@@ -67,8 +71,8 @@ struct MaestroFile {
 #[serde(rename_all = "camelCase")]
 pub struct Imported {
     pub hash: String,
-    /// Grafo inteiro: comandos, prompts e variáveis. O `dir` é o de quem
-    /// exportou — só informação; o Confirmar grava na pasta de destino.
+    /// Grafo inteiro: comandos, prompts, variáveis e a pasta de cada nó (a de
+    /// quem exportou; a que não existe aqui o dono escolhe antes de confirmar).
     pub graph: Graph,
     /// Integrações do arquivo, com o script inteiro.
     pub integrations: Vec<Integration>,
@@ -85,6 +89,41 @@ pub struct ImportPreview {
     /// Integrações do arquivo cujo id já existe aqui com outro conteúdo:
     /// entram com id novo e a local fica como está.
     pub renamed_integrations: Vec<String>,
+    /// A pasta de cada nó executável e se ela existe nesta máquina.
+    pub dirs: Vec<ImportDir>,
+}
+
+/// Pasta de um nó do arquivo importado.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportDir {
+    pub node_id: String,
+    /// A do nó ou, sem ela, a padrão do grafo — como veio no arquivo.
+    pub dir: String,
+    /// É uma pasta (absoluta) desta máquina.
+    pub exists: bool,
+}
+
+fn existing_dir(dir: &str) -> bool {
+    let path = Path::new(dir);
+    path.is_absolute() && path.is_dir()
+}
+
+/// A pasta de cada nó executável do arquivo, marcando a que não existe aqui.
+pub fn import_dirs(graph: &Graph) -> Vec<ImportDir> {
+    graph
+        .nodes
+        .iter()
+        .filter(|n| n.kind.dir().is_some())
+        .map(|n| {
+            let dir = graph.node_dir(n).to_string();
+            ImportDir {
+                node_id: n.id.clone(),
+                exists: existing_dir(&dir),
+                dir,
+            }
+        })
+        .collect()
 }
 
 /// De quem é o campo com cara de segredo.
@@ -158,6 +197,15 @@ pub fn export_toml(
     integrations: &[Integration],
 ) -> Result<(String, ExportReport), ExportError> {
     let mut graph = graph.clone();
+    // Cada nó sai com a própria pasta, mesmo o que herdava a padrão.
+    let fallback = graph.dir.clone();
+    for node in graph.nodes.iter_mut() {
+        if let Some(dir) = node.kind.dir_mut() {
+            if dir.is_empty() {
+                dir.clone_from(&fallback);
+            }
+        }
+    }
     let mut cleared = Vec::new();
     for (name, value) in graph.variables.iter_mut() {
         if contains_secret(name) || contains_secret(value) {
@@ -168,7 +216,7 @@ pub fn export_toml(
 
     let mut used: Vec<Integration> = Vec::new();
     for node in &graph.nodes {
-        if let NodeKind::Integration { integration_id } = &node.kind {
+        if let NodeKind::Integration { integration_id, .. } = &node.kind {
             if used.iter().any(|i| &i.id == integration_id) {
                 continue;
             }
@@ -230,8 +278,9 @@ pub fn parse_import(bytes: &[u8]) -> Result<Imported, ExportError> {
         validate_integration(integration)?;
     }
     // O grafo só enxerga as integrações do próprio arquivo: o que roda é o que
-    // está na prévia, não o que por acaso já existe no TYBA do dono.
-    validate_graph(&file.graph, &file.integrations)?;
+    // está na prévia, não o que por acaso já existe no TYBA do dono. A pasta
+    // é de outra máquina: só se confere no Confirmar, depois da escolha.
+    validate_structure(&file.graph, &file.integrations)?;
     Ok(Imported {
         hash,
         graph: file.graph,
@@ -248,14 +297,56 @@ pub fn read_import(path: &Path) -> Result<Imported, ExportError> {
     parse_import(&bytes)
 }
 
-/// O grafo importado roda na pasta de destino (a do workspace aberto), não no
-/// `dir` de quem exportou.
-pub fn place_in(imported: &mut Imported, dir: &str) -> Result<(), ExportError> {
-    let path = Path::new(dir);
-    if !path.is_absolute() || !path.is_dir() {
-        return Err(ExportError::InvalidDir(dir.to_string()));
+/// Põe cada nó executável numa pasta que existe nesta máquina: a escolhida
+/// pelo dono em `chosen` (id do nó → pasta) ou, sem escolha, a do arquivo se
+/// ela existe aqui. Pasta inexistente sem escolha recusa — nada é gravado com
+/// pasta que não existe. `default_dir` vira a pasta padrão do grafo.
+pub fn place_dirs(
+    imported: &mut Imported,
+    default_dir: &str,
+    chosen: &HashMap<String, String>,
+) -> Result<(), ExportError> {
+    if !existing_dir(default_dir) {
+        return Err(ExportError::InvalidDir(default_dir.to_string()));
     }
-    imported.graph.dir = dir.to_string();
+    let graph = &mut imported.graph;
+    for id in chosen.keys() {
+        if !graph
+            .nodes
+            .iter()
+            .any(|n| &n.id == id && n.kind.dir().is_some())
+        {
+            return Err(ExportError::UnknownDirNode(id.clone()));
+        }
+    }
+    let mut placed = Vec::new();
+    for node in &graph.nodes {
+        if node.kind.dir().is_none() {
+            continue;
+        }
+        let dir = match chosen.get(&node.id) {
+            Some(dir) if existing_dir(dir) => dir.clone(),
+            Some(dir) => return Err(ExportError::InvalidDir(dir.clone())),
+            None => {
+                let dir = graph.node_dir(node);
+                if !existing_dir(dir) {
+                    return Err(ExportError::MissingDir {
+                        node: node.id.clone(),
+                        dir: dir.to_string(),
+                    });
+                }
+                dir.to_string()
+            }
+        };
+        placed.push(dir);
+    }
+    let mut placed = placed.into_iter();
+    for node in graph.nodes.iter_mut() {
+        if let Some(dir) = node.kind.dir_mut() {
+            *dir = placed.next().expect("uma pasta por nó executável");
+        }
+    }
+    graph.dir = default_dir.to_string();
     Ok(())
 }
 
@@ -288,7 +379,7 @@ pub fn resolve_integration_ids<E>(
             Some(_) => {
                 let old = std::mem::replace(&mut integration.id, new_id());
                 for node in imported.graph.nodes.iter_mut() {
-                    if let NodeKind::Integration { integration_id } = &mut node.kind {
+                    if let NodeKind::Integration { integration_id, .. } = &mut node.kind {
                         if *integration_id == old {
                             integration_id.clone_from(&integration.id);
                         }
@@ -316,7 +407,9 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
-    use crate::maestro::{Edge, EdgeKind, Node, OutputKind, Position, Runner, Size, Trigger};
+    use crate::maestro::{
+        validate_graph, Edge, EdgeKind, Node, OutputKind, Position, Runner, Size, Trigger,
+    };
 
     fn node(id: &str, kind: NodeKind) -> Node {
         Node {
@@ -356,6 +449,7 @@ mod tests {
                         runner: Runner::Claude,
                         role: "revisor".into(),
                         prompt: "revise o diff contra {{alvo}}".into(),
+                        dir: "/tmp/repo".into(),
                     },
                 ),
                 node(
@@ -364,12 +458,14 @@ mod tests {
                         command: "cargo test".into(),
                         output: OutputKind::Log,
                         file: None,
+                        dir: "/tmp/repo".into(),
                     },
                 ),
                 node(
                     "i",
                     NodeKind::Integration {
                         integration_id: "i-1".into(),
+                        dir: "/tmp/repo".into(),
                     },
                 ),
                 node(
@@ -488,7 +584,8 @@ mod tests {
         assert_eq!(
             node.kind,
             NodeKind::Integration {
-                integration_id: "novo".into()
+                integration_id: "novo".into(),
+                dir: "/tmp/repo".into(),
             }
         );
         validate_graph(&imported.graph, &imported.integrations).unwrap();
@@ -508,27 +605,128 @@ mod tests {
     }
 
     #[test]
-    fn import_runs_in_destination_dir_not_exporter_dir() {
-        let (graph, integrations) = sample();
-        let (text, _) = export_toml(&graph, &integrations).unwrap();
-        let mut imported = parse_import(text.as_bytes()).unwrap();
-        assert_eq!(imported.graph.dir, "/tmp/repo");
-
-        let dest = tempfile::tempdir().unwrap();
-        let dest_str = dest.path().to_str().unwrap();
-        place_in(&mut imported, dest_str).unwrap();
-        assert_eq!(imported.graph.dir, dest_str);
-
-        for bad in ["", "relativa/pasta", "/nao/existe/tyba-maestro-teste"] {
-            assert!(matches!(
-                place_in(&mut imported, bad),
-                Err(ExportError::InvalidDir(_))
-            ));
+    fn export_carries_each_node_dir() {
+        let (mut graph, integrations) = sample();
+        // Nó salvo antes da pasta por nó: sai com a pasta padrão do grafo.
+        if let Some(dir) = graph.nodes[1].kind.dir_mut() {
+            dir.clear();
         }
-        let file = dest.path().join("arquivo.txt");
-        std::fs::write(&file, "x").unwrap();
-        assert!(place_in(&mut imported, file.to_str().unwrap()).is_err());
-        assert_eq!(imported.graph.dir, dest_str);
+        if let Some(dir) = graph.nodes[0].kind.dir_mut() {
+            *dir = "/tmp/outra".into();
+        }
+        let (text, _) = export_toml(&graph, &integrations).unwrap();
+        let imported = parse_import(text.as_bytes()).unwrap();
+        let dirs: Vec<(&str, Option<&str>)> = imported
+            .graph
+            .nodes
+            .iter()
+            .map(|n| (n.id.as_str(), n.kind.dir()))
+            .collect();
+        assert_eq!(
+            dirs,
+            vec![
+                ("a", Some("/tmp/outra")),
+                ("p", Some("/tmp/repo")),
+                ("i", Some("/tmp/repo")),
+                ("n", None),
+            ]
+        );
+    }
+
+    #[test]
+    fn import_lists_each_node_dir_and_marks_missing() {
+        let (mut graph, integrations) = sample();
+        let here = tempfile::tempdir().unwrap();
+        let here_str = here.path().to_str().unwrap().to_string();
+        if let Some(dir) = graph.nodes[0].kind.dir_mut() {
+            dir.clone_from(&here_str);
+        }
+        if let Some(dir) = graph.nodes[1].kind.dir_mut() {
+            *dir = "/nao/existe/tyba-maestro-teste".into();
+        }
+        if let Some(dir) = graph.nodes[2].kind.dir_mut() {
+            *dir = "relativa".into();
+        }
+        let (text, _) = export_toml(&graph, &integrations).unwrap();
+        let imported = parse_import(text.as_bytes()).unwrap();
+        assert_eq!(
+            import_dirs(&imported.graph),
+            vec![
+                ImportDir {
+                    node_id: "a".into(),
+                    dir: here_str,
+                    exists: true
+                },
+                ImportDir {
+                    node_id: "p".into(),
+                    dir: "/nao/existe/tyba-maestro-teste".into(),
+                    exists: false
+                },
+                ImportDir {
+                    node_id: "i".into(),
+                    dir: "relativa".into(),
+                    exists: false
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn import_with_missing_dir_is_refused_without_mapping() {
+        let (mut graph, integrations) = sample();
+        let here = tempfile::tempdir().unwrap();
+        let here_str = here.path().to_str().unwrap().to_string();
+        let other = tempfile::tempdir().unwrap();
+        let other_str = other.path().to_str().unwrap().to_string();
+        let missing = "/nao/existe/tyba-maestro-teste";
+        for node in graph.nodes.iter_mut() {
+            if let Some(dir) = node.kind.dir_mut() {
+                *dir = if node.id == "p" {
+                    missing.into()
+                } else {
+                    here_str.clone()
+                };
+            }
+        }
+        let (text, _) = export_toml(&graph, &integrations).unwrap();
+        let imported = parse_import(text.as_bytes()).unwrap();
+
+        // Sem escolher a pasta do nó p: recusa, nada muda.
+        let mut attempt = imported.clone();
+        assert!(matches!(
+            place_dirs(&mut attempt, &here_str, &HashMap::new()),
+            Err(ExportError::MissingDir { node, dir }) if node == "p" && dir == missing
+        ));
+        assert_eq!(attempt, imported);
+
+        // Escolha que também não existe, nó que não roda e padrão inexistente.
+        let to = |id: &str, dir: &str| HashMap::from([(id.to_string(), dir.to_string())]);
+        assert!(matches!(
+            place_dirs(
+                &mut imported.clone(),
+                &here_str,
+                &to("p", "/nao/existe/outra")
+            ),
+            Err(ExportError::InvalidDir(_))
+        ));
+        assert!(matches!(
+            place_dirs(&mut imported.clone(), &here_str, &to("n", &other_str)),
+            Err(ExportError::UnknownDirNode(id)) if id == "n"
+        ));
+        assert!(matches!(
+            place_dirs(&mut imported.clone(), missing, &to("p", &other_str)),
+            Err(ExportError::InvalidDir(_))
+        ));
+
+        // Com a pasta escolhida: o nó p vai para ela, o resto fica na do arquivo.
+        let mut placed = imported.clone();
+        place_dirs(&mut placed, &other_str, &to("p", &other_str)).unwrap();
+        let node = |id: &str| placed.graph.nodes.iter().find(|n| n.id == id).unwrap();
+        assert_eq!(node("p").kind.dir(), Some(other_str.as_str()));
+        assert_eq!(node("a").kind.dir(), Some(here_str.as_str()));
+        assert_eq!(node("i").kind.dir(), Some(here_str.as_str()));
+        assert_eq!(placed.graph.dir, other_str);
+        validate_graph(&placed.graph, &placed.integrations).unwrap();
     }
 
     #[test]

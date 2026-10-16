@@ -15,27 +15,35 @@ import {
   type Graph,
   type Integration,
   type MaestroNode,
+  lastDir,
+  lastGraphId,
+  missingImportDirs,
+  nodeDir,
+  pickGraph,
+  rememberDir,
+  rememberGraph,
+  shortDir,
 } from "./maestro";
 
 // Fixtures sintéticas: nada aqui veio de sessão real.
 const claude = newNode(
   "a",
   "Claude · API",
-  { type: "agent", runner: "claude", role: "implementador", prompt: "GET /saude" },
+  { type: "agent", runner: "claude", role: "implementador", prompt: "GET /saude", dir: "" },
   { x: 40, y: 40 },
 );
 const tests = newNode(
   "t",
   "Testes",
-  { type: "process", command: "bun test", output: "json", file: null },
+  { type: "process", command: "bun test", output: "json", file: null, dir: "" },
   { x: 540, y: 230 },
 );
 const note = newNode("n", "Decisões", { type: "note", markdown: "- UTC" }, { x: 540, y: 560 });
-const lint = newNode("i", "Lint", { type: "integration", integrationId: "lint" }, { x: 1040, y: 120 });
+const lint = newNode("i", "Lint", { type: "integration", integrationId: "lint", dir: "" }, { x: 1040, y: 120 });
 const manualHook = newNode(
   "m",
   "Avisar",
-  { type: "integration", integrationId: "avisar" },
+  { type: "integration", integrationId: "avisar", dir: "" },
   { x: 1040, y: 400 },
 );
 
@@ -85,7 +93,7 @@ describe("produces / accepts", () => {
   });
 
   test("integração apagada não produz nem aceita nada", () => {
-    const orphan = { type: "integration", integrationId: "sumiu" } as const;
+    const orphan = { type: "integration", integrationId: "sumiu", dir: "" } as const;
     expect(produces(orphan, integrations)).toEqual([]);
     expect(accepts(orphan, integrations)).toEqual([]);
   });
@@ -175,11 +183,60 @@ describe("toFlow / fromFlow", () => {
   });
 });
 
-test("emptyGraph usa o nome da pasta", () => {
-  expect(emptyGraph("g", "/Users/x/rota-saude/")).toMatchObject({
-    name: "rota-saude",
-    dir: "/Users/x/rota-saude/",
+test("emptyGraph leva nome e pasta padrão", () => {
+  expect(emptyGraph("g", "Revisão", "/Users/x/rota-saude")).toEqual({
+    id: "g",
+    name: "Revisão",
+    dir: "/Users/x/rota-saude",
     nodes: [],
     edges: [],
+    variables: {},
+  });
+});
+
+describe("pasta por nó", () => {
+  test("nodeDir: a do nó, a padrão sem ela, nada na nota", () => {
+    const own = { ...claude.kind, dir: "/srv/api" } as typeof claude.kind;
+    expect(nodeDir(own, "/srv/padrao")).toBe("/srv/api");
+    expect(nodeDir(claude.kind, "/srv/padrao")).toBe("/srv/padrao");
+    expect(nodeDir(note.kind, "/srv/padrao")).toBeNull();
+  });
+
+  test("shortDir mostra as duas últimas partes", () => {
+    expect(shortDir("/Users/x/projetos/api")).toBe("…/projetos/api");
+    expect(shortDir("C:\\Users\\x\\api")).toBe("…/x/api");
+    expect(shortDir("/srv/api")).toBe("/srv/api");
+  });
+
+  test("pickGraph abre o último usado, ou o mais recente", () => {
+    const a = { ...graph, id: "a" };
+    const b = { ...graph, id: "b" };
+    expect(pickGraph([a, b], "b")).toBe(b);
+    expect(pickGraph([a, b], "sumiu")).toBe(a);
+    expect(pickGraph([a, b], null)).toBe(a);
+    expect(pickGraph([], "b")).toBeNull();
+  });
+
+  test("missingImportDirs: só a pasta inexistente sem escolha segura o Confirmar", () => {
+    const dirs = [
+      { nodeId: "a", dir: "/aqui", exists: true },
+      { nodeId: "t", dir: "/de/outra/maquina", exists: false },
+      { nodeId: "i", dir: "C:\\x", exists: false },
+    ];
+    expect(missingImportDirs(dirs, {})).toEqual(["t", "i"]);
+    expect(missingImportDirs(dirs, { t: "/escolhida" })).toEqual(["i"]);
+    expect(missingImportDirs(dirs, { t: "/escolhida", i: "/outra" })).toEqual([]);
+  });
+
+  test("sem localStorage, a última pasta e o último grafo voltam vazios sem erro", () => {
+    expect(() => rememberDir("/srv/api")).not.toThrow();
+    expect(() => rememberGraph("g")).not.toThrow();
+    if (typeof localStorage === "undefined") {
+      expect(lastDir()).toBeNull();
+      expect(lastGraphId()).toBeNull();
+    } else {
+      expect(lastDir()).toBe("/srv/api");
+      expect(lastGraphId()).toBe("g");
+    }
   });
 });

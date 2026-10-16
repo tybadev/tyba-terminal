@@ -8759,10 +8759,12 @@ fn maestro_import_preview(
         String::new,
     )?
     .renamed;
+    let dirs = maestro::export::import_dirs(&imported.graph);
     Ok(maestro::export::ImportPreview {
         imported,
         replaces_graph,
         renamed_integrations,
+        dirs,
     })
 }
 
@@ -8779,19 +8781,21 @@ fn local_maestro_integration(
 
 /// Confirmar da importação: relê o arquivo e só grava se o hash for o mesmo
 /// que o dono viu na prévia. Grava consentido e com a origem (`imported_hash`).
-/// O grafo roda em `dir` (a pasta do workspace aberto), não na de quem
-/// exportou; integração local de mesmo id e outro conteúdo nunca é
-/// sobrescrita — a do arquivo entra com id novo.
+/// Cada nó roda na pasta que o dono escolheu em `dirs` (id do nó → pasta) ou
+/// na do arquivo, se ela existe aqui; pasta inexistente sem escolha recusa.
+/// `dir` vira a pasta padrão do grafo. Integração local de mesmo id e outro
+/// conteúdo nunca é sobrescrita — a do arquivo entra com id novo.
 #[tauri::command]
 fn maestro_import_confirm(
     state: State<'_, AppState>,
     path: String,
     hash: String,
     dir: String,
+    dirs: std::collections::HashMap<String, String>,
 ) -> Result<String, String> {
     let mut imported = maestro::export::read_confirmed(std::path::Path::new(&path), &hash)
         .map_err(|e| e.to_string())?;
-    maestro::export::place_in(&mut imported, &dir).map_err(|e| e.to_string())?;
+    maestro::export::place_dirs(&mut imported, &dir, &dirs).map_err(|e| e.to_string())?;
     let resolved = maestro::export::resolve_integration_ids(
         &mut imported,
         |id| local_maestro_integration(&state, id),

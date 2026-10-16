@@ -24,11 +24,15 @@ export const EDGE_KINDS: readonly EdgeKind[] = [
 
 export const OUTPUT_KINDS: readonly OutputKind[] = ["log", "json", "file", "diff"];
 
+/**
+ * Agente, processo e integração rodam em `dir` (a pasta do nó). Vazio só em
+ * grafo salvo antes da pasta por nó: aí vale `Graph.dir`.
+ */
 export type NodeKind =
-  | { type: "agent"; runner: Runner; role: string; prompt: string }
-  | { type: "process"; command: string; output: OutputKind; file: string | null }
+  | { type: "agent"; runner: Runner; role: string; prompt: string; dir: string }
+  | { type: "process"; command: string; output: OutputKind; file: string | null; dir: string }
   | { type: "note"; markdown: string }
-  | { type: "integration"; integrationId: string };
+  | { type: "integration"; integrationId: string; dir: string };
 
 export interface MaestroNode {
   id: string;
@@ -48,7 +52,7 @@ export interface MaestroEdge {
 export interface Graph {
   id: string;
   name: string;
-  /** Pasta do workspace. Todo nó roda nela. */
+  /** Pasta padrão: vale para nó sem `dir` próprio (grafos de antes da pasta por nó). */
   dir: string;
   nodes: MaestroNode[];
   edges: MaestroEdge[];
@@ -296,11 +300,55 @@ export function newNode(
   return { id, title, kind, position, size: { ...DEFAULT_SIZE[kind.type] } };
 }
 
-/** Grafo novo de uma pasta: vazio, com o nome da pasta. */
-export function emptyGraph(id: string, dir: string): Graph {
-  const name = dir.split(/[\\/]/).filter(Boolean).pop() ?? dir;
+/** Grafo novo: vazio, com nome e a pasta padrão dos nós. */
+export function emptyGraph(id: string, name: string, dir: string): Graph {
   return { id, name, dir, nodes: [], edges: [], variables: {} };
 }
+
+/** Onde o nó roda: a pasta dele, ou a padrão do grafo. `null` na nota. */
+export function nodeDir(kind: NodeKind, graphDir: string): string | null {
+  if (kind.type === "note") return null;
+  return kind.dir || graphDir;
+}
+
+/** "…/projetos/api": as duas últimas partes da pasta (o caminho inteiro vai no title). */
+export function shortDir(dir: string): string {
+  const parts = dir.split(/[\\/]/).filter(Boolean);
+  if (parts.length <= 2) return dir;
+  return `…/${parts.slice(-2).join("/")}`;
+}
+
+/** O grafo a abrir: o último usado, se ainda existe, ou o mais recente. */
+export function pickGraph(graphs: readonly Graph[], lastId: string | null): Graph | null {
+  return graphs.find((g) => g.id === lastId) ?? graphs[0] ?? null;
+}
+
+const LAST_DIR_KEY = "tyba.maestro.lastDir";
+const LAST_GRAPH_KEY = "tyba.maestro.lastGraph";
+
+// localStorage pode não existir ou recusar (modo privado, cota): é conveniência.
+function readKey(key: string): string | null {
+  try {
+    return localStorage.getItem(key) || null;
+  } catch {
+    return null;
+  }
+}
+
+function writeKey(key: string, value: string) {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // Sem armazenamento, o nó novo cai na home.
+  }
+}
+
+/** Última pasta escolhida num nó: é onde o nó novo nasce. */
+export const lastDir = () => readKey(LAST_DIR_KEY);
+export const rememberDir = (dir: string) => writeKey(LAST_DIR_KEY, dir);
+/** Último grafo aberto: é o que o Maestro abre. */
+export const lastGraphId = () => readKey(LAST_GRAPH_KEY);
+export const rememberGraph = (id: string) => writeKey(LAST_GRAPH_KEY, id);
 
 // ------------------------------------------------------------ execução
 
@@ -596,28 +644,50 @@ export interface ExportReport {
 export const exportGraph = (graphId: string, path: string) =>
   invoke<ExportReport>("maestro_export", { graphId, path });
 
+/** Pasta de um nó do arquivo importado. */
+export interface ImportDir {
+  nodeId: string;
+  /** Como veio no arquivo (a do nó ou a padrão do grafo). */
+  dir: string;
+  /** Existe nesta máquina. Se não, o dono escolhe outra antes de confirmar. */
+  exists: boolean;
+}
+
 /** O que o core leu e validou do arquivo. Nada foi gravado ainda. */
 export interface ImportPreview {
   /** SHA-256 do arquivo: o consentimento vale para este conteúdo. */
   hash: string;
-  /** `dir` é o de quem exportou: só informação. O grafo grava na pasta de destino. */
+  /** Pastas de cada nó são as de quem exportou: as que não existem aqui se escolhem. */
   graph: Graph;
   integrations: Integration[];
   /** Já existe um grafo com esse id: confirmar substitui. */
   replacesGraph: boolean;
   /** Ids que já existem aqui com outro conteúdo: a do arquivo entra com id novo, a local fica. */
   renamedIntegrations: string[];
+  /** A pasta de cada nó executável e se ela existe aqui. */
+  dirs: ImportDir[];
 }
 
 export const importPreview = (path: string) =>
   invoke<ImportPreview>("maestro_import_preview", { path });
 
 /**
- * Relê o arquivo e só grava se o hash for o da prévia. O grafo grava com
- * `dir` = pasta de destino (a do workspace aberto). Devolve o id do grafo.
+ * Relê o arquivo e só grava se o hash for o da prévia. `dirs` leva a pasta
+ * escolhida por id de nó (obrigatória para as que não existem aqui; o core
+ * recusa sem ela); `dir` vira a pasta padrão do grafo. Devolve o id do grafo.
  */
-export const importConfirm = (path: string, hash: string, dir: string) =>
-  invoke<string>("maestro_import_confirm", { path, hash, dir });
+export const importConfirm = (
+  path: string,
+  hash: string,
+  dir: string,
+  dirs: Record<string, string>,
+) => invoke<string>("maestro_import_confirm", { path, hash, dir, dirs });
+
+/** Nós cuja pasta não existe aqui e ainda não ganharam uma escolhida. Confirmar só com zero. */
+export const missingImportDirs = (
+  dirs: readonly ImportDir[],
+  chosen: Readonly<Record<string, string>>,
+): string[] => dirs.filter((d) => !d.exists && !chosen[d.nodeId]).map((d) => d.nodeId);
 
 /** Teto do script de uma integração, em bytes (espelha `MAX_SCRIPT_BYTES` do core). */
 export const MAX_SCRIPT_BYTES = 64 * 1024;

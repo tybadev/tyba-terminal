@@ -1,5 +1,5 @@
 //! Nó de integração: o script bash do dono, rodado como processo na pasta do
-//! workspace, com o mesmo wrapper e o mesmo env do nó de processo.
+//! nó, com o mesmo wrapper e o mesmo env do nó de processo.
 //!
 //! Gatilho `manual` segura o nó em `waiting` até o ▶ do dono
 //! (`maestro_run_node`); `on_input` roda quando a entrada chega, como qualquer
@@ -18,7 +18,7 @@ pub fn manual_nodes(graph: &Graph, integrations: &HashMap<String, Integration>) 
         .nodes
         .iter()
         .filter(|n| match &n.kind {
-            NodeKind::Integration { integration_id } => integrations
+            NodeKind::Integration { integration_id, .. } => integrations
                 .get(integration_id)
                 .is_some_and(|i| i.trigger == Trigger::Manual),
             _ => false,
@@ -52,16 +52,18 @@ pub fn copy_inputs(from: &Path, to: &Path) -> std::io::Result<usize> {
 }
 
 /// Grafo de um nó só para o teste: o nó com a integração pedida, sem ligação.
-/// Variáveis e pasta são as do grafo.
+/// Variáveis são as do grafo; a pasta é a do nó.
 pub fn test_graph(graph: &Graph, node_id: &str, integration_id: &str) -> Result<Graph, String> {
     let node = graph
         .nodes
         .iter()
         .find(|n| n.id == node_id)
         .ok_or("nó não encontrado no grafo")?;
+    let dir = graph.node_dir(node).to_string();
     let mut node = node.clone();
     node.kind = NodeKind::Integration {
         integration_id: integration_id.to_string(),
+        dir,
     };
     Ok(Graph {
         nodes: vec![node],
@@ -108,12 +110,14 @@ mod tests {
                     "m",
                     NodeKind::Integration {
                         integration_id: "manual".into(),
+                        dir: String::new(),
                     },
                 ),
                 node(
                     "a",
                     NodeKind::Integration {
                         integration_id: "auto".into(),
+                        dir: String::new(),
                     },
                 ),
                 node(
@@ -122,6 +126,7 @@ mod tests {
                         command: "true".into(),
                         output: OutputKind::Log,
                         file: None,
+                        dir: String::new(),
                     },
                 ),
             ],
@@ -196,7 +201,9 @@ mod tests {
         assert_eq!(
             g.nodes[0].kind,
             NodeKind::Integration {
-                integration_id: "manual".into()
+                integration_id: "manual".into(),
+                // A pasta do nó (aqui, a padrão do grafo) vai junto.
+                dir: "/tmp".into(),
             }
         );
         assert!(test_graph(&graph(), "x", "manual").is_err());

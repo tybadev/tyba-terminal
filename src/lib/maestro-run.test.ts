@@ -44,9 +44,9 @@ const run = (id: string, startedAt: number, nodes: Record<string, NodeRun>, patc
 });
 
 const agent = (id: string, title: string) =>
-  newNode(id, title, { type: "agent", runner: "claude", role: "", prompt: "" }, { x: 0, y: 0 });
+  newNode(id, title, { type: "agent", runner: "claude", role: "", prompt: "", dir: "" }, { x: 0, y: 0 });
 const proc = (id: string, title: string) =>
-  newNode(id, title, { type: "process", command: "bun test", output: "json", file: null }, { x: 0, y: 0 });
+  newNode(id, title, { type: "process", command: "bun test", output: "json", file: null, dir: "" }, { x: 0, y: 0 });
 const note = newNode("n", "Decisões", { type: "note", markdown: "- UTC" }, { x: 0, y: 0 });
 const edge = (from: string, to: string, kind: MaestroEdge["kind"]): MaestroEdge => ({
   id: `${from}-${to}-${kind}`,

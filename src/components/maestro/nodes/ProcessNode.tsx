@@ -4,12 +4,19 @@ import type { NodeProps } from "@xyflow/react";
 
 import { Select } from "@/components/ui/select";
 import { OUTPUT_KINDS, type NodeKind, type OutputKind } from "@/lib/maestro";
-import { NodeFrame, fieldClass, termClass, useMaestro, type MaestroFlowNode } from "./NodeFrame";
+import {
+  NodeDir,
+  NodeFrame,
+  fieldClass,
+  termClass,
+  useMaestro,
+  type MaestroFlowNode,
+} from "./NodeFrame";
 import { NodeTerminal, nodeSession } from "./NodeTerminal";
 
 type ProcessKind = Extract<NodeKind, { type: "process" }>;
 
-/** Nó de processo: um comando na pasta do workspace e o tipo da saída. */
+/** Nó de processo: um comando na pasta do nó e o tipo da saída. */
 export function ProcessNode({ id, data, selected }: NodeProps<MaestroFlowNode>) {
   const { t } = useTranslation();
   const { updateNode, run, live } = useMaestro();
@@ -47,9 +54,11 @@ export function ProcessNode({ id, data, selected }: NodeProps<MaestroFlowNode>) 
             autoCapitalize="off"
             value={kind.file ?? ""}
             onChange={(e) => set({ file: e.target.value || null })}
-            className={`${fieldClass} flex-1`}
+            className={`${fieldClass} min-w-0 flex-1`}
           />
         )}
+        <span className="flex-1" />
+        <NodeDir id={id} kind={kind} />
       </div>
       {session ? (
         <NodeTerminal sessionId={session} focused={selected} />

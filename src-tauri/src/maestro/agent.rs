@@ -1,5 +1,5 @@
 //! Nó de agente do Maestro: o CLI (Claude, Codex) sobe **livre e observado**,
-//! como o claude digitado, na pasta do workspace — sem worktree, sem jaula.
+//! como o claude digitado, na pasta do nó — sem worktree, sem jaula.
 //!
 //! Aqui fica o que é do nó e não do spawn: o prompt com o bloco "Entradas",
 //! o snapshot de diff na largada e o diff no fim, o `context` redigido e a

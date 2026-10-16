@@ -9,18 +9,20 @@ import {
 } from "react";
 import { useTranslation } from "react-i18next";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
+import { homeDir } from "@tauri-apps/api/path";
 import {
   BracketsCurly,
+  CaretDown,
+  Check,
   ClockCounterClockwise,
   CornersOut,
   FileArrowDown,
   FileArrowUp,
-  FolderSimple,
   GearSix,
-  GitBranch,
   MagnifyingGlassMinus,
   MagnifyingGlassPlus,
   MapTrifold,
+  PencilSimple,
   Play,
   PlugsConnected,
   Plus,
@@ -34,6 +36,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
@@ -47,10 +50,14 @@ import {
   importPreview,
   integrationTest,
   joinPath,
+  lastDir,
+  lastGraphId,
   listGraphs,
   listIntegrations,
   newNode,
   onRun,
+  pickGraph,
+  rememberGraph,
   runGet,
   runNode,
   runNumber,
@@ -85,8 +92,6 @@ import {
 
 const SAVE_DEBOUNCE_MS = 500;
 
-const baseName = (dir: string) => dir.split(/[\\/]/).filter(Boolean).pop() ?? dir;
-
 const tbtn =
   "inline-flex h-7 items-center gap-1.5 whitespace-nowrap rounded-[6px] border border-transparent px-2.5 font-mono text-[12px] text-tyba-text-muted hover:bg-tyba-raised hover:text-tyba-text disabled:cursor-not-allowed disabled:text-tyba-text-ghost disabled:hover:bg-transparent aria-pressed:border-tyba-border-strong aria-pressed:bg-tyba-raised aria-pressed:text-tyba-text";
 
@@ -94,35 +99,34 @@ const sep = <span aria-hidden className="mx-2 h-5 w-px bg-tyba-border-strong" />
 
 /**
  * O Maestro em tela cheia (quadro MaestroHarness): barra do grafo, canvas e,
- * quando aberto, o painel de variáveis. Um grafo por pasta de workspace; com
- * mais de uma pasta aberta, o chip da pasta vira seletor.
+ * quando aberto, o painel de variáveis. O grafo não é preso à pasta da
+ * sessão: escolhe-se pelo nome na barra, e cada nó tem a própria pasta.
  */
-export function MaestroScreen(props: {
-  dirs: string[];
-  activeDir: string | null;
-  branch: string | null;
-}) {
+export function MaestroScreen() {
   return (
     <ReactFlowProvider>
-      <MaestroInner {...props} />
+      <MaestroInner />
     </ReactFlowProvider>
   );
 }
 
-function MaestroInner({
-  dirs,
-  activeDir,
-  branch,
-}: {
-  dirs: string[];
-  activeDir: string | null;
-  branch: string | null;
-}) {
+function MaestroInner() {
   const { t, i18n } = useTranslation();
-  const [dir, setDir] = useState<string | null>(activeDir ?? dirs[0] ?? null);
+  // Home: onde nasce o nó quando ainda não há pasta usada. `null` = lendo.
+  const [home, setHome] = useState<string | null>(null);
   useEffect(() => {
-    if (dir === null && (activeDir ?? dirs[0])) setDir(activeDir ?? dirs[0]);
-  }, [dir, activeDir, dirs]);
+    homeDir()
+      .then(setHome)
+      .catch(() => setHome(""));
+  }, []);
+  // Qual grafo abrir: o último usado (ou o mais recente), ou um novo.
+  const [want, setWant] = useState<{ id: string | null; fresh: boolean }>(() => ({
+    id: lastGraphId(),
+    fresh: false,
+  }));
+  const [graphs, setGraphs] = useState<Graph[]>([]);
+  const nameInput = useRef<HTMLInputElement>(null);
+  const renaming = useRef(false);
 
   const [meta, setMeta] = useState<Pick<Graph, "id" | "name" | "dir" | "variables"> | null>(null);
   const [nodes, setNodes] = useState<MaestroFlowNode[]>([]);
@@ -138,26 +142,24 @@ function MaestroInner({
   const [notice, setNotice] = useState<{ text: string; warn: boolean } | null>(null);
   const [importing, setImporting] = useState<{
     path: string;
-    dir: string;
     preview: ImportPreview;
   } | null>(null);
-  // Depois de importar: qual grafo abrir na pasta (pode haver mais de um nela).
-  const [preferId, setPreferId] = useState<string | null>(null);
   const [reload, setReload] = useState(0);
 
-  // Carrega o grafo da pasta (ou começa um vazio, gravado na primeira edição).
+  // Carrega o grafo escolhido (ou começa um vazio, gravado na primeira edição).
   useEffect(() => {
-    if (!dir) return;
+    if (home === null) return;
     let alive = true;
     setMeta(null);
     dispatchRun({ type: "reset" });
     void Promise.all([listGraphs(), listIntegrations()])
-      .then(([graphs, ints]) => {
+      .then(([list, ints]) => {
         if (!alive) return;
-        const found =
-          graphs.find((g) => g.id === preferId && g.dir === dir) ??
-          graphs.find((g) => g.dir === dir);
-        const graph = found ?? emptyGraph(crypto.randomUUID(), dir);
+        setGraphs(list);
+        const found = want.fresh ? null : pickGraph(list, want.id);
+        const graph =
+          found ?? emptyGraph(crypto.randomUUID(), t("maestroNewGraphName"), lastDir() ?? home);
+        rememberGraph(graph.id);
         const flow = toFlow(graph);
         // Grafo novo e vazio conta como "salvo": só vai para o banco na
         // primeira edição, para não deixar grafo vazio de quem só espiou.
@@ -177,7 +179,7 @@ function MaestroInner({
     return () => {
       alive = false;
     };
-  }, [dir, t, preferId, reload]);
+  }, [home, want, t, reload]);
 
   const snapshot = useMemo(
     () => (meta ? JSON.stringify(fromFlow(meta, nodes, edges)) : null),
@@ -347,7 +349,6 @@ function MaestroInner({
   };
 
   const importFile = async () => {
-    if (!dir) return;
     try {
       const path = await openFileDialog({
         multiple: false,
@@ -356,16 +357,16 @@ function MaestroInner({
         filters: [{ name: "TYBA Maestro", extensions: ["toml"] }],
       });
       if (typeof path !== "string") return;
-      setImporting({ path, dir, preview: await importPreview(path) });
+      setImporting({ path, preview: await importPreview(path) });
     } catch (e) {
       setNotice({ text: t("maestroImportError", { error: String(e) }), warn: true });
     }
   };
 
-  // O Confirmar grava o grafo na pasta aberta: é nela que ele aparece.
+  // Depois do Confirmar, o grafo importado é o que fica aberto.
   const imported = (graphId: string) => {
     setImporting(null);
-    setPreferId(graphId);
+    setWant({ id: graphId, fresh: false });
     setReload((n) => n + 1);
     setNotice({ text: t("maestroImported"), warn: false });
   };
@@ -380,7 +381,7 @@ function MaestroInner({
     const node = newNode(
       crypto.randomUUID(),
       integration.name,
-      { type: "integration", integrationId },
+      { type: "integration", integrationId, dir: newDir },
       { x: 0, y: 0 },
     );
     node.position = { x: Math.round(at.x - node.size.w / 2), y: Math.round(at.y - 20) };
@@ -418,11 +419,15 @@ function MaestroInner({
     }),
     [nodes, edges],
   );
+  const graphDir = meta?.dir ?? "";
+  // Nó novo nasce na última pasta usada; sem ela, na home.
+  const newDir = lastDir() ?? (home || graphDir);
   const ctx = useMemo(
     () => ({
       integrations: new Map(integrations.map((i) => [i.id, i])),
       updateNode,
       graph,
+      graphDir,
       run,
       live,
       now,
@@ -436,6 +441,7 @@ function MaestroInner({
       integrations,
       updateNode,
       graph,
+      graphDir,
       run,
       live,
       now,
@@ -447,38 +453,25 @@ function MaestroInner({
     ],
   );
 
-  if (!dir) {
-    return (
-      <div className="flex flex-1 items-center justify-center bg-tyba-bg font-mono text-[13px] text-tyba-text-faint">
-        {t("maestroNoDir")}
-      </div>
-    );
-  }
-
-  const dirChip = (
-    <span className="inline-flex items-center gap-1.5 rounded-[5px] border border-tyba-border bg-tyba-raised px-2 py-[3px] text-[11px] text-tyba-text-muted">
-      <FolderSimple size={12} />
-      {baseName(dir)}
-      {branch && dir === activeDir && (
-        <>
-          <span className="text-tyba-text-faint">·</span>
-          <GitBranch size={12} className="text-tyba-blue" />
-          <span className="text-tyba-blue">{branch}</span>
-        </>
-      )}
-    </span>
-  );
+  /** Troca de grafo: o que está no debounce vai antes para o banco. */
+  const switchTo = (next: { id: string | null; fresh: boolean }) => {
+    void flush()
+      .catch(() => {})
+      .finally(() => setWant(next));
+  };
 
   return (
     <MaestroContext.Provider value={ctx}>
       <div className="flex min-w-0 flex-1 flex-col bg-tyba-bg font-mono">
         <div
           role="toolbar"
-          aria-label={meta?.name ?? baseName(dir)}
+          aria-label={meta?.name || t("maestroGraphUntitled")}
           className="flex h-12 shrink-0 items-center gap-1.5 border-b border-tyba-border bg-tyba-surface pr-3.5 pl-[18px]"
         >
           <input
+            ref={nameInput}
             aria-label={t("maestroGraphName")}
+            placeholder={t("maestroGraphUntitled")}
             spellCheck={false}
             autoCorrect="off"
             autoCapitalize="off"
@@ -488,29 +481,67 @@ function MaestroInner({
               const name = e.target.value;
               setMeta((m) => (m ? { ...m, name } : m));
             }}
-            style={{ width: `${Math.max(6, (meta?.name.length ?? 6) + 1)}ch` }}
-            className="mr-1 bg-transparent text-[14px] font-medium text-tyba-text outline-none"
+            style={{ width: `${Math.max(12, (meta?.name.length ?? 12) + 1)}ch` }}
+            className="bg-transparent text-[14px] font-medium text-tyba-text outline-none placeholder:text-tyba-text-ghost"
           />
-          {dirs.length > 1 ? (
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <button type="button" aria-label={t("maestroDir")} title={dir}>
-                  {dirChip}
-                </button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="start">
-                {dirs.map((d) => (
-                  <DropdownMenuItem key={d} className="text-xs" onSelect={() => setDir(d)}>
-                    <span className="truncate" title={d}>
-                      {d}
-                    </span>
-                  </DropdownMenuItem>
-                ))}
-              </DropdownMenuContent>
-            </DropdownMenu>
-          ) : (
-            <span title={dir}>{dirChip}</span>
-          )}
+          <DropdownMenu
+            onOpenChange={(open) => {
+              if (open) void listGraphs().then(setGraphs).catch(() => {});
+            }}
+          >
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                aria-label={t("maestroGraphs")}
+                title={t("maestroGraphs")}
+                className={`${tbtn} px-1.5`}
+              >
+                <CaretDown size={12} />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent
+              align="start"
+              className="w-64"
+              onCloseAutoFocus={(e) => {
+                if (!renaming.current) return;
+                renaming.current = false;
+                e.preventDefault();
+                nameInput.current?.select();
+              }}
+            >
+              {graphs.map((g) => (
+                <DropdownMenuItem
+                  key={g.id}
+                  className="gap-2 text-xs"
+                  onSelect={() => g.id !== meta?.id && switchTo({ id: g.id, fresh: false })}
+                >
+                  <Check
+                    size={12}
+                    className={g.id === meta?.id ? "shrink-0" : "invisible shrink-0"}
+                  />
+                  <span className="truncate">{g.name || t("maestroGraphUntitled")}</span>
+                </DropdownMenuItem>
+              ))}
+              {graphs.length > 0 && <DropdownMenuSeparator />}
+              <DropdownMenuItem
+                className="gap-2 text-xs"
+                onSelect={() => switchTo({ id: null, fresh: true })}
+              >
+                <Plus size={12} />
+                {t("maestroNewGraph")}
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                className="gap-2 text-xs"
+                disabled={!meta}
+                onSelect={() => {
+                  renaming.current = true;
+                }}
+              >
+                <PencilSimple size={12} />
+                {t("maestroRenameGraph")}
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
           {sep}
           <button
             type="button"
@@ -683,6 +714,7 @@ function MaestroInner({
               integrations={integrations}
               showMinimap={showMinimap}
               error={error}
+              newDir={newDir}
             />
           ) : (
             <div className="flex flex-1 items-center justify-center text-[12.5px] text-tyba-text-faint">
@@ -713,7 +745,6 @@ function MaestroInner({
               <IntegrationsPanel
                 integrations={integrations}
                 nodes={graph.nodes}
-                dirName={baseName(dir)}
                 onSaved={integrationSaved}
                 onTest={testIntegration}
                 onClose={() => setShowInts(false)}
@@ -754,7 +785,7 @@ function MaestroInner({
       {importing && (
         <ImportDialog
           path={importing.path}
-          targetDir={importing.dir}
+          defaultDir={newDir}
           preview={importing.preview}
           onCancel={() => setImporting(null)}
           onImported={imported}

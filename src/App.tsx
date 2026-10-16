@@ -2714,19 +2714,6 @@ export default function App() {
   const cwdKeyOf = (id: SessionId) =>
     sessionCwds[id]?.canonical ?? sessionCwds[id]?.cwd ?? null;
   const statusSessionRef = useRef<SessionId | null>(null);
-  // Pastas de workspace abertas para o Maestro: a da sessão ativa primeiro,
-  // depois as das outras sessões locais (SSH e container rodam em outra máquina).
-  const maestroActiveDir = activeGitStatus?.root ?? activeCwdKey;
-  const maestroDirs = useMemo(() => {
-    const dirs = new Set<string>();
-    if (maestroActiveDir) dirs.add(maestroActiveDir);
-    for (const s of sessions) {
-      if (s.kind.type !== "shell" && s.kind.type !== "agent") continue;
-      const dir = s.repo_root ?? sessionCwds[s.id]?.canonical ?? sessionCwds[s.id]?.cwd;
-      if (dir) dirs.add(dir);
-    }
-    return [...dirs];
-  }, [maestroActiveDir, sessions, sessionCwds]);
   useEffect(() => {
     if (!activeId) {
       setActiveGitStatus(null);
@@ -5703,11 +5690,7 @@ export default function App() {
           {maestroOpen && (
             <div className="absolute inset-0 z-40 flex">
               <ErrorBoundary region="maestro">
-                <MaestroScreen
-                  dirs={maestroDirs}
-                  activeDir={maestroActiveDir}
-                  branch={activeGitStatus?.branch ?? null}
-                />
+                <MaestroScreen />
               </ErrorBoundary>
             </div>
           )}

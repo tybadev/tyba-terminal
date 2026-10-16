@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { Warning } from "@phosphor-icons/react";
+import { FolderSimple, Warning } from "@phosphor-icons/react";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -13,8 +14,11 @@ import {
 import {
   importConfirm,
   importItems,
+  missingImportDirs,
+  rememberDir,
   revealHidden,
   unusedImportIntegrations,
+  type ImportDir,
   type ImportItem,
   type ImportPreview,
   type Integration,
@@ -61,7 +65,54 @@ function IntegrationBody({ integration }: { integration: Integration }) {
   );
 }
 
-function ItemView({ item }: { item: ImportItem }) {
+/**
+ * Onde o nó vai rodar: a pasta do arquivo, ou a escolhida. A que não existe
+ * nesta máquina fica em âmbar até o dono escolher uma.
+ */
+function DirRow({
+  info,
+  chosen,
+  onPick,
+}: {
+  info: ImportDir;
+  chosen: string | undefined;
+  onPick: (dir: string) => void;
+}) {
+  const { t } = useTranslation();
+  const missing = !info.exists && !chosen;
+  const pick = async () => {
+    const dir = await openDialog({
+      directory: true,
+      multiple: false,
+      title: t("maestroNodeDirPick"),
+    }).catch(() => null);
+    if (typeof dir === "string") onPick(dir);
+  };
+  return (
+    <span
+      className={`flex items-center gap-1.5 text-[11.5px] ${
+        missing ? "text-tyba-amber" : "text-tyba-text-muted"
+      }`}
+    >
+      <FolderSimple size={12} className="shrink-0" />
+      <span className="text-tyba-text-faint">{t("maestroImportDir")}</span>
+      <span className="min-w-0 break-all">
+        {chosen ?? revealHidden(info.dir || "—")}
+        {!info.exists && !chosen && ` · ${t("maestroImportDirMissing")}`}
+      </span>
+      <Button
+        variant="ghost"
+        size="sm"
+        onClick={() => void pick()}
+        className="ml-auto h-6 shrink-0 px-2 text-[11px]"
+      >
+        {missing ? t("maestroImportDirPick") : t("maestroImportDirChange")}
+      </Button>
+    </span>
+  );
+}
+
+function ItemView({ item, dir }: { item: ImportItem; dir: ReactNode }) {
   const { t } = useTranslation();
   const head = (kind: string, extra?: string) => (
     <span className="flex items-baseline gap-2 text-[12px] text-tyba-text">
@@ -77,6 +128,7 @@ function ItemView({ item }: { item: ImportItem }) {
       return (
         <div className="flex flex-col gap-1.5">
           {head(item.runner === "claude" ? "Claude" : "Codex", revealHidden(item.role))}
+          {dir}
           <Code>{item.prompt}</Code>
         </div>
       );
@@ -88,6 +140,7 @@ function ItemView({ item }: { item: ImportItem }) {
             `${t("maestroOutput")}: ${t(`maestroEdge_${item.output}`)}` +
               (item.file ? ` (${revealHidden(item.file)})` : ""),
           )}
+          {dir}
           <Code>{item.command}</Code>
         </div>
       );
@@ -102,6 +155,7 @@ function ItemView({ item }: { item: ImportItem }) {
       return (
         <div className="flex flex-col gap-1.5">
           {head(t("maestroKindIntegration"))}
+          {dir}
           {item.integration ? (
             <IntegrationBody integration={item.integration} />
           ) : (
@@ -114,20 +168,21 @@ function ItemView({ item }: { item: ImportItem }) {
 
 /**
  * A tela de importação é o consentimento: mostra TUDO o que o arquivo traz
- * para rodar — prompts, comandos, scripts inteiros, variáveis e a pasta — e
- * só grava no Confirmar. O core confere que o arquivo é o mesmo da prévia
- * (hash) e nada roda aqui. Roda em `targetDir` (a pasta aberta); o `dir` do
- * arquivo é só de onde veio.
+ * para rodar — prompts, comandos, scripts inteiros, variáveis e a pasta de
+ * cada nó — e só grava no Confirmar. O core confere que o arquivo é o mesmo
+ * da prévia (hash) e nada roda aqui. Pasta que não existe nesta máquina o
+ * dono escolhe antes: sem isso o Confirmar fica desligado (e o core recusa).
+ * `defaultDir` vira a pasta padrão do grafo.
  */
 export function ImportDialog({
   path,
-  targetDir,
+  defaultDir,
   preview,
   onCancel,
   onImported,
 }: {
   path: string;
-  targetDir: string;
+  defaultDir: string;
   preview: ImportPreview;
   onCancel: () => void;
   onImported: (graphId: string) => void;
@@ -139,11 +194,14 @@ export function ImportDialog({
   const items = importItems(preview);
   const unused = unusedImportIntegrations(preview);
   const variables = Object.entries(graph.variables);
+  const [chosen, setChosen] = useState<Record<string, string>>({});
+  const pending = missingImportDirs(preview.dirs, chosen);
+  const dirOf = new Map(preview.dirs.map((d) => [d.nodeId, d]));
 
   const confirm = async () => {
     setBusy(true);
     try {
-      onImported(await importConfirm(path, preview.hash, targetDir));
+      onImported(await importConfirm(path, preview.hash, defaultDir, chosen));
     } catch (e) {
       setError(String(e));
       setBusy(false);
@@ -164,10 +222,6 @@ export function ImportDialog({
             <dl className="grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1 text-[12px]">
               <dt className="text-tyba-text-faint">{t("maestroImportName")}</dt>
               <dd className="break-all text-tyba-text">{revealHidden(graph.name)}</dd>
-              <dt className="text-tyba-text-faint">{t("maestroImportDir")}</dt>
-              <dd className="break-all text-tyba-text">{targetDir}</dd>
-              <dt className="text-tyba-text-faint">{t("maestroImportOrigin")}</dt>
-              <dd className="break-all text-tyba-text-muted">{revealHidden(graph.dir)}</dd>
               <dt className="text-tyba-text-faint">{t("maestroImportFile")}</dt>
               <dd className="break-all text-tyba-text-muted">{path}</dd>
               <dt className="text-tyba-text-faint">SHA-256</dt>
@@ -209,9 +263,27 @@ export function ImportDialog({
           </Section>
 
           <Section title={t("maestroImportNodes", { count: items.length })}>
-            {items.map((item) => (
-              <ItemView key={item.node.id} item={item} />
-            ))}
+            {items.map((item) => {
+              const info = dirOf.get(item.node.id);
+              return (
+                <ItemView
+                  key={item.node.id}
+                  item={item}
+                  dir={
+                    info && (
+                      <DirRow
+                        info={info}
+                        chosen={chosen[info.nodeId]}
+                        onPick={(dir) => {
+                          rememberDir(dir);
+                          setChosen((c) => ({ ...c, [info.nodeId]: dir }));
+                        }}
+                      />
+                    )
+                  }
+                />
+              );
+            })}
           </Section>
 
           {unused.length > 0 && (
@@ -234,13 +306,23 @@ export function ImportDialog({
           </p>
         )}
         <div className="flex items-center justify-end gap-2 px-4 py-3">
-          <span className="mr-auto text-[11px] text-tyba-text-faint">
-            {t("maestroImportNothingRuns")}
+          <span
+            className={`mr-auto text-[11px] ${
+              pending.length > 0 ? "text-tyba-amber" : "text-tyba-text-faint"
+            }`}
+          >
+            {pending.length > 0
+              ? t("maestroImportDirsPending", { count: pending.length })
+              : t("maestroImportNothingRuns")}
           </span>
           <Button variant="ghost" size="sm" disabled={busy} onClick={onCancel}>
             {t("cancel")}
           </Button>
-          <Button size="sm" disabled={busy} onClick={() => void confirm()}>
+          <Button
+            size="sm"
+            disabled={busy || pending.length > 0}
+            onClick={() => void confirm()}
+          >
             {t("confirm")}
           </Button>
         </div>

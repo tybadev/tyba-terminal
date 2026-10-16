@@ -38,7 +38,6 @@ const parseTrigger = (value: string): Trigger =>
 export function IntegrationEditor({
   draft,
   onChange,
-  dirName,
   saving,
   dirty,
   testNodeTitle,
@@ -48,8 +47,6 @@ export function IntegrationEditor({
 }: {
   draft: Integration;
   onChange: (draft: Integration) => void;
-  /** Pasta do workspace onde o script roda. */
-  dirName: string;
   saving: boolean;
   dirty: boolean;
   /** Nó do canvas cujo `in/` o "Testar" usa; `null` se a integração não está no canvas. */
@@ -120,7 +117,7 @@ export function IntegrationEditor({
             {t("maestroIntScript")}
           </label>
           <span className="truncate text-[10.5px] text-tyba-text-faint">
-            {t("maestroIntRunsIn", { dir: dirName })}
+            {t("maestroIntRunsIn")}
           </span>
         </span>
         <div className="flex min-h-[150px] overflow-hidden rounded-[6px] border border-tyba-border-strong bg-tyba-sunken focus-within:border-tyba-text-faint">

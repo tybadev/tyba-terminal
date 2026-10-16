@@ -4,14 +4,21 @@ import { Handle, Position, type NodeProps } from "@xyflow/react";
 
 import type { NodeKind, Runner } from "@/lib/maestro";
 import { SUBAGENT_HANDLE, groupRounds, roundTally } from "@/lib/maestroSubagents";
-import { NodeFrame, fieldClass, termClass, useMaestro, type MaestroFlowNode } from "./NodeFrame";
+import {
+  NodeDir,
+  NodeFrame,
+  fieldClass,
+  termClass,
+  useMaestro,
+  type MaestroFlowNode,
+} from "./NodeFrame";
 import { NodeTerminal, nodeSession } from "./NodeTerminal";
 
 type AgentKind = Extract<NodeKind, { type: "agent" }>;
 
 const RUNNERS: Runner[] = ["claude", "codex"];
 
-/** Nó de agente: Claude (âmbar) ou Codex (ciano), papel e a tarefa. */
+/** Nó de agente: Claude (âmbar) ou Codex (ciano), papel, pasta e a tarefa. */
 export function AgentNode({ id, data, selected }: NodeProps<MaestroFlowNode>) {
   const { t } = useTranslation();
   const { updateNode, run, live, subagents } = useMaestro();
@@ -73,8 +80,9 @@ export function AgentNode({ id, data, selected }: NodeProps<MaestroFlowNode>) {
           autoCapitalize="off"
           value={kind.role}
           onChange={(e) => set({ role: e.target.value })}
-          className={`${fieldClass} flex-1`}
+          className={`${fieldClass} min-w-0 flex-1`}
         />
+        <NodeDir id={id} kind={kind} />
       </div>
       {session ? (
         <NodeTerminal sessionId={session} focused={selected} />

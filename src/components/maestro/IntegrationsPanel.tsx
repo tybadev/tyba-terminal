@@ -20,7 +20,6 @@ import { IntegrationEditor } from "./IntegrationEditor";
 export function IntegrationsPanel({
   integrations,
   nodes,
-  dirName,
   onSaved,
   onTest,
   onClose,
@@ -28,7 +27,6 @@ export function IntegrationsPanel({
   integrations: readonly Integration[];
   /** Nós do canvas: o "Testar" usa o `in/` do nó que tem a integração. */
   nodes: readonly MaestroNode[];
-  dirName: string;
   onSaved: (integration: Integration) => void;
   onTest: (integrationId: string, nodeId: string) => Promise<void>;
   onClose: () => void;
@@ -170,7 +168,6 @@ export function IntegrationsPanel({
             key={draft.id}
             draft={draft}
             onChange={setDraft}
-            dirName={dirName}
             saving={saving}
             dirty={dirty}
             testNodeTitle={testNode?.title ?? null}

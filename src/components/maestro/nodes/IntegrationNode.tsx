@@ -4,7 +4,7 @@ import { Play, PlugsConnected, Warning } from "@phosphor-icons/react";
 import type { NodeProps } from "@xyflow/react";
 
 import type { NodeKind } from "@/lib/maestro";
-import { NodeFrame, useMaestro, type MaestroFlowNode } from "./NodeFrame";
+import { NodeDir, NodeFrame, useMaestro, type MaestroFlowNode } from "./NodeFrame";
 import { NodeTerminal, nodeSession } from "./NodeTerminal";
 
 /**
@@ -52,6 +52,9 @@ export function IntegrationNode({ id, data, selected }: NodeProps<MaestroFlowNod
         ) : null
       }
     >
+      <div className="flex shrink-0 items-center border-b border-tyba-border px-3.5 py-1">
+        <NodeDir id={id} kind={kind} />
+      </div>
       {session ? (
         <NodeTerminal sessionId={session} focused={selected} />
       ) : integration ? (

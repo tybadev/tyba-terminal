@@ -1,8 +1,9 @@
 //! Maestro: o Workspace como harness de agentes.
 //!
 //! Um grafo de nós (agente, processo, nota, integração) ligados por ligações
-//! tipadas. Todo nó roda na pasta do workspace (`Graph::dir`) — não há
-//! worktree. O estado vive aqui no core; o front desenha e chama comandos.
+//! tipadas. Cada nó executável (agente, processo, integração) roda na própria
+//! pasta (`dir` do nó); `Graph::dir` é só o padrão para nó sem pasta (grafos
+//! salvos antes da pasta por nó). Não há worktree. O estado vive aqui no core; o front desenha e chama comandos.
 //!
 //! A validação deste módulo é a barreira: o front só oferece ligações válidas,
 //! mas quem decide é `validate_graph`, chamado antes de gravar.
@@ -26,7 +27,9 @@ pub const MAX_SCRIPT_BYTES: usize = 64 * 1024;
 pub struct Graph {
     pub id: String,
     pub name: String,
-    /// Pasta do workspace. Todo nó roda nela.
+    /// Pasta padrão: vale para nó executável sem `dir` próprio (grafos de
+    /// antes da pasta por nó) e é onde o front sugere a pasta de nó novo.
+    #[serde(default)]
     pub dir: String,
     #[serde(default)]
     pub nodes: Vec<Node>,
@@ -71,6 +74,9 @@ pub enum NodeKind {
         #[serde(default)]
         role: String,
         prompt: String,
+        /// Pasta onde o agente roda. Vazio: `Graph::dir`.
+        #[serde(default)]
+        dir: String,
     },
     Process {
         command: String,
@@ -78,13 +84,50 @@ pub enum NodeKind {
         output: OutputKind,
         #[serde(default)]
         file: Option<String>,
+        /// Pasta onde o comando roda e de onde `file` é lido. Vazio: `Graph::dir`.
+        #[serde(default)]
+        dir: String,
     },
     Note {
         markdown: String,
     },
     Integration {
         integration_id: String,
+        /// Pasta onde o script roda. Vazio: `Graph::dir`.
+        #[serde(default)]
+        dir: String,
     },
+}
+
+impl NodeKind {
+    /// A pasta própria do nó executável (pode estar vazia); `None` na nota.
+    pub fn dir(&self) -> Option<&str> {
+        match self {
+            NodeKind::Agent { dir, .. }
+            | NodeKind::Process { dir, .. }
+            | NodeKind::Integration { dir, .. } => Some(dir),
+            NodeKind::Note { .. } => None,
+        }
+    }
+
+    pub fn dir_mut(&mut self) -> Option<&mut String> {
+        match self {
+            NodeKind::Agent { dir, .. }
+            | NodeKind::Process { dir, .. }
+            | NodeKind::Integration { dir, .. } => Some(dir),
+            NodeKind::Note { .. } => None,
+        }
+    }
+}
+
+impl Graph {
+    /// Onde o nó roda: a pasta dele, ou a padrão do grafo se ele não tem.
+    pub fn node_dir<'a>(&'a self, node: &'a Node) -> &'a str {
+        match node.kind.dir() {
+            Some(dir) if !dir.is_empty() => dir,
+            _ => &self.dir,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -151,7 +194,7 @@ pub struct Edge {
 pub struct Integration {
     pub id: String,
     pub name: String,
-    /// Script bash do dono, rodado como processo na pasta do workspace.
+    /// Script bash do dono, rodado como processo na pasta do nó.
     pub script: String,
     pub trigger: Trigger,
     #[serde(default)]
@@ -218,6 +261,8 @@ pub enum MaestroError {
     ControlChars(String),
     #[error("{0}: o arquivo de saída tem que ficar dentro da pasta (sem caminho absoluto nem ..)")]
     FileOutsideDir(String),
+    #[error("nó {0}: escolha a pasta onde ele roda (caminho absoluto)")]
+    NodeDir(String),
 }
 
 /// Mesma regra de `snippet::validate`: `\n` e `\t` passam, o resto dos
@@ -235,7 +280,7 @@ fn check_text(what: impl FnOnce() -> String, text: &str) -> Result<(), MaestroEr
 }
 
 /// O `file` de saída é lido de `dir.join(file)`: absoluto ou com `..` lê
-/// fora da pasta do workspace. Barra e contrabarra contam como separador nos
+/// fora da pasta do nó. Barra e contrabarra contam como separador nos
 /// dois sistemas, e `C:` também é raiz.
 fn check_file(what: impl FnOnce() -> String, file: Option<&str>) -> Result<(), MaestroError> {
     let Some(file) = file else { return Ok(()) };
@@ -277,7 +322,7 @@ fn produces(kind: &NodeKind, integrations: &HashMap<&str, &Integration>) -> Vec<
         // O texto da nota entra no prompt de quem a recebe (context) ou como
         // arquivo para um processo ler (file).
         NodeKind::Note { .. } => vec![EdgeKind::Context, EdgeKind::File],
-        NodeKind::Integration { integration_id } => integrations
+        NodeKind::Integration { integration_id, .. } => integrations
             .get(integration_id.as_str())
             .map(|i| vec![i.output.into()])
             .unwrap_or_default(),
@@ -289,7 +334,7 @@ fn accepts(kind: &NodeKind, integrations: &HashMap<&str, &Integration>) -> Vec<E
     match kind {
         NodeKind::Agent { .. } | NodeKind::Process { .. } => EdgeKind::ALL.to_vec(),
         NodeKind::Note { .. } => Vec::new(),
-        NodeKind::Integration { integration_id } => {
+        NodeKind::Integration { integration_id, .. } => {
             match integrations.get(integration_id.as_str()).map(|i| i.trigger) {
                 Some(Trigger::OnInput { kind }) => vec![kind],
                 Some(Trigger::Manual) => EdgeKind::ALL.to_vec(),
@@ -299,10 +344,28 @@ fn accepts(kind: &NodeKind, integrations: &HashMap<&str, &Integration>) -> Vec<E
     }
 }
 
-/// Barreira do core antes de gravar um grafo: ids únicos, teto de nós,
-/// integrações existentes, ligações com tipo aceito, DAG e texto sem caractere
-/// de controle.
+/// Barreira do core antes de gravar ou rodar um grafo: a estrutura
+/// ([`validate_structure`]) e a pasta de cada nó executável — não vazia e
+/// absoluta (a do nó ou, sem ela, a padrão do grafo).
 pub fn validate_graph(graph: &Graph, integrations: &[Integration]) -> Result<(), MaestroError> {
+    validate_structure(graph, integrations)?;
+    for node in &graph.nodes {
+        if node.kind.dir().is_none() {
+            continue;
+        }
+        let dir = graph.node_dir(node);
+        if dir.trim().is_empty() || !std::path::Path::new(dir).is_absolute() {
+            return Err(MaestroError::NodeDir(node.id.clone()));
+        }
+    }
+    Ok(())
+}
+
+/// Ids únicos, teto de nós, integrações existentes, ligações com tipo aceito,
+/// DAG e texto (inclusive as pastas) sem caractere de controle. Não olha se a
+/// pasta existe nem se é absoluta: o arquivo importado traz a pasta de outra
+/// máquina, e a importação pede a pasta antes de gravar.
+pub fn validate_structure(graph: &Graph, integrations: &[Integration]) -> Result<(), MaestroError> {
     if graph.id.trim().is_empty() {
         return Err(MaestroError::EmptyGraphId);
     }
@@ -315,6 +378,7 @@ pub fn validate_graph(graph: &Graph, integrations: &[Integration]) -> Result<(),
         check_text(|| format!("variável {name}"), name)?;
         check_text(|| format!("variável {name}"), value)?;
     }
+    check_text(|| "pasta do grafo".to_string(), &graph.dir)?;
 
     let by_id: HashMap<&str, &Integration> =
         integrations.iter().map(|i| (i.id.as_str(), i)).collect();
@@ -328,6 +392,9 @@ pub fn validate_graph(graph: &Graph, integrations: &[Integration]) -> Result<(),
             return Err(MaestroError::DuplicateNode(node.id.clone()));
         }
         let what = || format!("nó {}", node.id);
+        if let Some(dir) = node.kind.dir() {
+            check_text(|| format!("pasta do nó {}", node.id), dir)?;
+        }
         match &node.kind {
             NodeKind::Agent { prompt, .. } => check_text(what, prompt)?,
             NodeKind::Process { command, file, .. } => {
@@ -335,7 +402,7 @@ pub fn validate_graph(graph: &Graph, integrations: &[Integration]) -> Result<(),
                 check_file(|| format!("nó {}", node.id), file.as_deref())?;
             }
             NodeKind::Note { markdown } => check_text(what, markdown)?,
-            NodeKind::Integration { integration_id } => {
+            NodeKind::Integration { integration_id, .. } => {
                 let integration = by_id.get(integration_id.as_str()).ok_or_else(|| {
                     MaestroError::UnknownIntegration {
                         node: node.id.clone(),
@@ -432,6 +499,7 @@ mod tests {
                 command: "cargo test".into(),
                 output,
                 file: None,
+                dir: String::new(),
             },
         )
     }
@@ -443,6 +511,7 @@ mod tests {
                 runner: Runner::Claude,
                 role: "revisor".into(),
                 prompt: "revise o diff".into(),
+                dir: String::new(),
             },
         )
     }
@@ -564,6 +633,7 @@ mod tests {
             "i",
             NodeKind::Integration {
                 integration_id: "i-1".into(),
+                dir: String::new(),
             },
         );
         let ok = graph(
@@ -589,6 +659,7 @@ mod tests {
                 "i",
                 NodeKind::Integration {
                     integration_id: "nao-existe".into(),
+                    dir: String::new(),
                 },
             )],
             vec![],
@@ -650,6 +721,7 @@ mod tests {
             command: "echo oi\rrm -rf ~".into(),
             output: OutputKind::Log,
             file: None,
+            dir: String::new(),
         };
         assert!(matches!(
             validate_graph(&graph(vec![p], vec![]), &[]),
@@ -661,6 +733,7 @@ mod tests {
             runner: Runner::Codex,
             role: String::new(),
             prompt: "oi\u{1b}[2J".into(),
+            dir: String::new(),
         };
         assert!(matches!(
             validate_graph(&graph(vec![a], vec![]), &[]),
@@ -707,6 +780,7 @@ mod tests {
                         command: "cargo test".into(),
                         output: OutputKind::File,
                         file: Some(file.into()),
+                        dir: String::new(),
                     },
                 )],
                 vec![],
@@ -743,6 +817,7 @@ mod tests {
                 "n",
                 NodeKind::Integration {
                     integration_id: "i-1".into(),
+                    dir: String::new(),
                 },
             )],
             vec![],
@@ -754,11 +829,81 @@ mod tests {
     }
 
     #[test]
+    fn executable_node_needs_an_absolute_dir() {
+        let with_dir = |dir: &str| {
+            let mut a = agent("a");
+            if let Some(d) = a.kind.dir_mut() {
+                *d = dir.into();
+            }
+            a
+        };
+        // Sem pasta própria, vale a padrão do grafo.
+        assert_eq!(
+            validate_graph(&graph(vec![agent("a")], vec![]), &[]),
+            Ok(())
+        );
+        assert_eq!(
+            validate_graph(&graph(vec![with_dir("/srv/outra")], vec![]), &[]),
+            Ok(())
+        );
+
+        let mut no_default = graph(vec![agent("a")], vec![]);
+        no_default.dir.clear();
+        assert_eq!(
+            validate_graph(&no_default, &[]),
+            Err(MaestroError::NodeDir("a".into()))
+        );
+        // A pasta do nó cobre a falta da padrão; nota não tem pasta.
+        no_default.nodes = vec![with_dir("/srv/outra"), note("n")];
+        assert_eq!(validate_graph(&no_default, &[]), Ok(()));
+
+        for bad in ["relativa", "./x", "  "] {
+            let mut g = graph(vec![with_dir(bad)], vec![]);
+            g.dir.clear();
+            assert_eq!(
+                validate_graph(&g, &[]),
+                Err(MaestroError::NodeDir("a".into())),
+                "{bad}"
+            );
+        }
+        assert_eq!(
+            validate_graph(&graph(vec![with_dir("relativa")], vec![]), &[]),
+            Err(MaestroError::NodeDir("a".into()))
+        );
+        assert!(matches!(
+            validate_graph(&graph(vec![with_dir("/tmp/x\u{1b}")], vec![]), &[]),
+            Err(MaestroError::ControlChars(_))
+        ));
+        // A estrutura não olha a pasta: é o que a importação usa.
+        let mut g = graph(vec![with_dir("C:\\de\\outra\\maquina")], vec![]);
+        g.dir.clear();
+        assert_eq!(validate_structure(&g, &[]), Ok(()));
+    }
+
+    #[test]
+    fn graph_saved_before_node_dir_still_loads() {
+        let json = serde_json::json!({
+            "id": "g", "name": "velho", "dir": "/tmp/repo",
+            "nodes": [{
+                "id": "p", "title": "p",
+                "kind": {"type": "process", "command": "make", "output": "log"},
+                "position": {"x": 0, "y": 0}, "size": {"w": 1, "h": 1}
+            }],
+            "edges": []
+        });
+        let g: Graph = serde_json::from_value(json).unwrap();
+        assert_eq!(g.nodes[0].kind.dir(), Some(""));
+        assert_eq!(g.node_dir(&g.nodes[0]), "/tmp/repo");
+        assert_eq!(validate_graph(&g, &[]), Ok(()));
+    }
+
+    #[test]
     fn serde_shape_is_camel_case_with_type_tag() {
         let n = node(
             "i",
             NodeKind::Integration {
                 integration_id: "i-1".into(),
+                dir: String::new(),
             },
         );
         let json = serde_json::to_value(&n).unwrap();

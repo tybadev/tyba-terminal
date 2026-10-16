@@ -83,11 +83,11 @@ describe("tela de importação", () => {
     variables: { ALVO: "staging" },
     edges: [],
     nodes: [
-      newNode("a", "Claude", { type: "agent", runner: "claude", role: "impl", prompt: "faça X" }, { x: 0, y: 0 }),
-      newNode("p", "Testes", { type: "process", command: "bun test", output: "json", file: null }, { x: 0, y: 0 }),
+      newNode("a", "Claude", { type: "agent", runner: "claude", role: "impl", prompt: "faça X", dir: "" }, { x: 0, y: 0 }),
+      newNode("p", "Testes", { type: "process", command: "bun test", output: "json", file: null, dir: "" }, { x: 0, y: 0 }),
       newNode("n", "Notas", { type: "note", markdown: "- UTC" }, { x: 0, y: 0 }),
-      newNode("i", "Lint", { type: "integration", integrationId: "lint" }, { x: 0, y: 0 }),
-      newNode("m", "Sumiu", { type: "integration", integrationId: "nao-existe" }, { x: 0, y: 0 }),
+      newNode("i", "Lint", { type: "integration", integrationId: "lint", dir: "" }, { x: 0, y: 0 }),
+      newNode("m", "Sumiu", { type: "integration", integrationId: "nao-existe", dir: "" }, { x: 0, y: 0 }),
     ],
   };
   const extra: Integration = { ...lint, id: "extra", name: "Extra", script: "curl evil" };
@@ -111,7 +111,7 @@ describe("tela de importação", () => {
     const withFile: Graph = {
       ...graph,
       nodes: [
-        newNode("p", "Relatório", { type: "process", command: "make", output: "file", file: "out/r.json" }, { x: 0, y: 0 }),
+        newNode("p", "Relatório", { type: "process", command: "make", output: "file", file: "out/r.json", dir: "" }, { x: 0, y: 0 }),
       ],
     };
     expect(importItems({ graph: withFile, integrations: [] })[0]).toMatchObject({

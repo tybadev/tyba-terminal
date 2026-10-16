@@ -7,7 +7,7 @@
 //!
 //! O agendador ([`Scheduler`]) é puro. Quem sobe processo, mata e avisa o front
 //! é o [`RunHost`] — no app, [`TauriHost`], que passa pelo `SessionManager`.
-//! Todo nó roda na pasta do workspace (`Graph::dir`), como o dono. Sem worktree.
+//! Cada nó roda na própria pasta (`Graph::node_dir`), como o dono. Sem worktree.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -485,13 +485,13 @@ fn process_outputs(
     output: OutputKind,
     file: Option<&str>,
     out_dir: &Path,
-    graph_dir: &Path,
+    node_dir: &Path,
     snapshot: Option<&Snapshot>,
 ) -> HashMap<EdgeKind, String> {
     let path = match output {
         OutputKind::Log => Some(out_dir.join("log.txt")),
         OutputKind::Json => Some(out_dir.join("out.json")),
-        OutputKind::File => file.map(|f| graph_dir.join(f)),
+        OutputKind::File => file.map(|f| node_dir.join(f)),
         OutputKind::Diff => snapshot.and_then(|snap| {
             let patch = out_dir.join("diff.patch");
             std::fs::write(&patch, super::agent::diff_since(snap))
@@ -579,7 +579,8 @@ struct Start {
     out_dir: PathBuf,
     inputs: Vec<Input>,
     variables: Vec<(String, String)>,
-    graph_dir: PathBuf,
+    /// Pasta onde o nó roda (a dele ou a padrão do grafo).
+    node_dir: PathBuf,
     /// A integração do nó, quando é de integração e ela existe.
     integration: Option<Integration>,
     graph_id: String,
@@ -980,7 +981,7 @@ impl<H: RunHost> Runs<H> {
     }
 
     /// Processo e integração: o texto (com variáveis) no wrapper de rules,
-    /// num PTY, na pasta do workspace.
+    /// num PTY, na pasta do nó.
     fn launch_script(
         &self,
         run_id: &str,
@@ -994,7 +995,7 @@ impl<H: RunHost> Runs<H> {
         let command = crate::snippet::render(command, &start.variables);
         let (program, args) = process_argv(&command, &start.in_dir, &start.out_dir);
         let snapshot = (output == OutputKind::Diff)
-            .then(|| super::agent::snapshot(&start.graph_dir))
+            .then(|| super::agent::snapshot(&start.node_dir))
             .flatten();
         let me = self.me.clone();
         let (run, node) = (run_id.to_string(), start.node.id.clone());
@@ -1005,7 +1006,7 @@ impl<H: RunHost> Runs<H> {
         });
         let launch = ProcessLaunch {
             title: start.node.title.clone(),
-            cwd: start.graph_dir.clone(),
+            cwd: start.node_dir.clone(),
             program,
             args,
         };
@@ -1016,7 +1017,7 @@ impl<H: RunHost> Runs<H> {
     }
 
     /// Entradas em `in/`, snapshot de diff na largada e o agente livre na
-    /// pasta do workspace.
+    /// pasta do nó.
     fn launch_agent(&self, run_id: &str, start: &Start, runner: Runner, prompt: &str) -> Launched {
         let written = match materialize(&start.in_dir, &start.inputs) {
             Ok(w) => w,
@@ -1033,7 +1034,7 @@ impl<H: RunHost> Runs<H> {
             .filter_map(|(_, path)| super::agent::read_context(path))
             .collect();
         let prompt = super::agent::build_prompt(&prompt, &contexts, &inputs);
-        let snapshot = super::agent::snapshot(&start.graph_dir);
+        let snapshot = super::agent::snapshot(&start.node_dir);
         let me = self.me.clone();
         let (run, node, out_dir) = (
             run_id.to_string(),
@@ -1047,7 +1048,7 @@ impl<H: RunHost> Runs<H> {
         });
         let launch = AgentLaunch {
             title: start.node.title.clone(),
-            cwd: start.graph_dir.clone(),
+            cwd: start.node_dir.clone(),
             runner,
             prompt,
             in_dir: start.in_dir.clone(),
@@ -1106,7 +1107,7 @@ impl<H: RunHost> Runs<H> {
     /// O PTY do processo fechou: lê o `.exit` e segue o grafo. O diff (git)
     /// sai fora do lock.
     fn process_exited(&self, run_id: &str, node_id: &str, snapshot: Option<&Snapshot>) {
-        let (out_dir, graph_dir, declared) = {
+        let (out_dir, node_dir, declared) = {
             let active = self.active.lock();
             let Some(a) = active.get(run_id) else {
                 return;
@@ -1116,7 +1117,7 @@ impl<H: RunHost> Runs<H> {
             };
             let declared = match &node.kind {
                 NodeKind::Process { output, file, .. } => Some((*output, file.clone())),
-                NodeKind::Integration { integration_id } => a
+                NodeKind::Integration { integration_id, .. } => a
                     .integrations
                     .get(integration_id)
                     .map(|i| (i.output, i.file.clone())),
@@ -1124,14 +1125,14 @@ impl<H: RunHost> Runs<H> {
             };
             (
                 a.dir.join(node_id).join("out"),
-                PathBuf::from(&a.graph.dir),
+                PathBuf::from(a.graph.node_dir(node)),
                 declared,
             )
         };
         let exit = read_exit(&out_dir);
         let outputs = match declared {
             Some((output, file)) => {
-                process_outputs(output, file.as_deref(), &out_dir, &graph_dir, snapshot)
+                process_outputs(output, file.as_deref(), &out_dir, &node_dir, snapshot)
             }
             None => HashMap::new(),
         };
@@ -1199,7 +1200,7 @@ fn agent_outputs(
 fn prepare_start(a: &Active, id: &str) -> Option<Start> {
     let node = a.graph.nodes.iter().find(|n| n.id == id)?.clone();
     let integration = match &node.kind {
-        NodeKind::Integration { integration_id } => a.integrations.get(integration_id).cloned(),
+        NodeKind::Integration { integration_id, .. } => a.integrations.get(integration_id).cloned(),
         _ => None,
     };
     let inputs = a
@@ -1218,11 +1219,12 @@ fn prepare_start(a: &Active, id: &str) -> Option<Start> {
                 .map(PathBuf::from),
         })
         .collect();
-    let node_dir = a.dir.join(id);
+    let run_dir = a.dir.join(id);
+    let node_dir = PathBuf::from(a.graph.node_dir(&node));
     Some(Start {
         node,
-        in_dir: node_dir.join("in"),
-        out_dir: node_dir.join("out"),
+        in_dir: run_dir.join("in"),
+        out_dir: run_dir.join("out"),
         inputs,
         variables: a
             .graph
@@ -1230,7 +1232,7 @@ fn prepare_start(a: &Active, id: &str) -> Option<Start> {
             .iter()
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect(),
-        graph_dir: PathBuf::from(&a.graph.dir),
+        node_dir,
         integration,
         graph_id: a.graph.id.clone(),
     })
@@ -1412,6 +1414,7 @@ mod tests {
                 command: command.into(),
                 output: OutputKind::Log,
                 file: None,
+                dir: String::new(),
             },
         )
     }
@@ -1774,6 +1777,7 @@ mod tests {
             "a",
             NodeKind::Integration {
                 integration_id: "i".into(),
+                dir: String::new(),
             },
         );
         let g = graph(
@@ -1822,6 +1826,7 @@ mod tests {
                 runner: Runner::Claude,
                 role: String::new(),
                 prompt: prompt.into(),
+                dir: String::new(),
             },
         )
     }
@@ -1906,6 +1911,96 @@ mod tests {
         assert!(runs.stop(&run.id).is_err());
     }
 
+    fn in_dir(mut n: Node, dir: &Path) -> Node {
+        *n.kind.dir_mut().expect("nó executável") = dir.to_string_lossy().into_owned();
+        n
+    }
+
+    fn init_repo(repo: &Path) {
+        std::fs::create_dir(repo).unwrap();
+        git(repo, &["init", "-q"]);
+        git(repo, &["config", "user.email", "t@example.com"]);
+        git(repo, &["config", "user.name", "t"]);
+        git(repo, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(repo.join("README.md"), "x\n").unwrap();
+        git(repo, &["add", "."]);
+        git(repo, &["commit", "-q", "-m", "init"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn nodes_of_one_graph_run_in_their_own_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        let (one, two, default) = (
+            dir.path().join("um"),
+            dir.path().join("dois"),
+            dir.path().join("padrao"),
+        );
+        for d in [&one, &two, &default] {
+            std::fs::create_dir(d).unwrap();
+        }
+        let (runs, _host, _app) = pty_runs(dir.path().join("runs"));
+        let mut file_out = in_dir(process("q", "echo segundo > saida.txt"), &two);
+        if let NodeKind::Process { output, file, .. } = &mut file_out.kind {
+            *output = OutputKind::File;
+            *file = Some("saida.txt".into());
+        }
+        let mut g = graph(
+            vec![
+                in_dir(process("p", "echo primeiro > aqui.txt"), &one),
+                file_out,
+                process("r", "echo padrao > aqui.txt"),
+            ],
+            vec![],
+        );
+        g.dir = default.to_string_lossy().into_owned();
+        let run = runs.start(g, vec![]).unwrap();
+        let run = wait_finished(&runs, &run.id);
+        assert_eq!(run.status, RunStatus::Done, "{run:?}");
+
+        assert_eq!(
+            std::fs::read_to_string(one.join("aqui.txt")).unwrap(),
+            "primeiro\n"
+        );
+        // O `file` relativo é lido da pasta do nó, não da padrão.
+        assert_eq!(
+            PathBuf::from(&run.nodes["q"].outputs[&EdgeKind::File]),
+            two.join("saida.txt")
+        );
+        assert!(!two.join("aqui.txt").exists());
+        // Nó sem pasta própria (grafo salvo antes) cai na padrão do grafo.
+        assert_eq!(
+            std::fs::read_to_string(default.join("aqui.txt")).unwrap(),
+            "padrao\n"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn agent_snapshot_and_diff_use_the_node_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mine, other) = (dir.path().join("meu"), dir.path().join("outro"));
+        init_repo(&mine);
+        init_repo(&other);
+        // A pasta padrão do grafo tem uma mudança que não é do agente.
+        std::fs::write(other.join("alheio.txt"), "nao\n").unwrap();
+
+        let (runs, host, _app) = pty_runs(dir.path().join("runs"));
+        let mut g = graph(vec![in_dir(agent("a", "faça"), &mine)], vec![]);
+        g.dir = other.to_string_lossy().into_owned();
+        let run = runs.start(g, vec![]).unwrap();
+        let run = wait_finished(&runs, &run.id);
+        assert_eq!(run.status, RunStatus::Done, "{run:?}");
+
+        let launch = host.agents.lock()[0].clone();
+        assert_eq!(launch.cwd, mine);
+        let diff = std::fs::read_to_string(&run.nodes["a"].outputs[&EdgeKind::Diff]).unwrap();
+        assert!(diff.contains("a.txt"), "{diff}");
+        assert!(!diff.contains("alheio.txt"), "{diff}");
+        assert!(!other.join("a.txt").exists());
+        runs.stop(&run.id).unwrap();
+    }
+
     fn integration(id: &str, script: &str, trigger: Trigger) -> Integration {
         Integration {
             id: id.into(),
@@ -1922,6 +2017,7 @@ mod tests {
             id,
             NodeKind::Integration {
                 integration_id: integration_id.into(),
+                dir: String::new(),
             },
         )
     }

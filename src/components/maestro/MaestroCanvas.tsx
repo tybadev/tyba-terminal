@@ -185,6 +185,7 @@ export function MaestroCanvas({
   integrations,
   showMinimap,
   error,
+  newDir,
 }: {
   nodes: MaestroFlowNode[];
   edges: MaestroFlowEdge[];
@@ -193,6 +194,8 @@ export function MaestroCanvas({
   integrations: readonly Integration[];
   showMinimap: boolean;
   error: string | null;
+  /** Pasta onde o nó novo nasce (a última usada, ou a home). */
+  newDir: string;
 }) {
   const { t } = useTranslation();
   const { screenToFlowPosition } = useReactFlow();
@@ -430,7 +433,13 @@ export function MaestroCanvas({
               <DropdownMenuItem
                 className="text-xs"
                 onSelect={() =>
-                  addNode("Claude", { type: "agent", runner: "claude", role: "", prompt: "" })
+                  addNode("Claude", {
+                    type: "agent",
+                    runner: "claude",
+                    role: "",
+                    prompt: "",
+                    dir: newDir,
+                  })
                 }
               >
                 Claude
@@ -438,7 +447,13 @@ export function MaestroCanvas({
               <DropdownMenuItem
                 className="text-xs"
                 onSelect={() =>
-                  addNode("Codex", { type: "agent", runner: "codex", role: "", prompt: "" })
+                  addNode("Codex", {
+                    type: "agent",
+                    runner: "codex",
+                    role: "",
+                    prompt: "",
+                    dir: newDir,
+                  })
                 }
               >
                 Codex
@@ -451,6 +466,7 @@ export function MaestroCanvas({
                     command: "",
                     output: "log",
                     file: null,
+                    dir: newDir,
                   })
                 }
               >
@@ -475,7 +491,9 @@ export function MaestroCanvas({
                 <DropdownMenuItem
                   key={i.id}
                   className="text-xs"
-                  onSelect={() => addNode(i.name, { type: "integration", integrationId: i.id })}
+                  onSelect={() =>
+                    addNode(i.name, { type: "integration", integrationId: i.id, dir: newDir })
+                  }
                 >
                   {i.name}
                 </DropdownMenuItem>
