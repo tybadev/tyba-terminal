@@ -12,15 +12,18 @@
 //! enquanto só o macOS tem a view nativa; Windows e Linux seguem no iframe.
 
 pub mod policy;
+pub mod snapshot;
 
 #[cfg(target_os = "macos")]
 mod macos;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::time::Duration;
 
-use parking_lot::Mutex;
+use parking_lot::{Condvar, Mutex};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -100,6 +103,43 @@ pub struct BrowserState {
     pub refused: Option<String>,
     /// macOS 11–13: armazenamento não persistente (o login não fica salvo).
     pub ephemeral: bool,
+    /// O último passo de um agente nesta página (o rodapé do card).
+    pub agent: Option<AgentStep>,
+    /// Erros no console da página atual, do último passo do agente.
+    pub console_errors: Option<u32>,
+}
+
+/// O que um agente fez por último na página: o card mostra "<agente>
+/// usando" e o passo ("clicou em “Entrar”"). `action` é o código
+/// (`snapshot`, `click`, `type`, `console`, `screenshot`), que o front traduz.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentStep {
+    pub by: String,
+    pub action: String,
+    /// O nome do elemento (clicar, digitar), uma linha, redigido.
+    pub target: Option<String>,
+    pub at: u64,
+}
+
+/// Uma ferramenta de agente no navegador (`orbit_browser_*`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum AgentAction {
+    Snapshot,
+}
+
+impl AgentAction {
+    /// O nome da ação no `isolated.js`.
+    fn script(&self) -> &'static str {
+        match self {
+            AgentAction::Snapshot => "snapshot",
+        }
+    }
+
+    /// Ler (snapshot, console, print) vale com o dono usando; agir, não.
+    pub fn acts(&self) -> bool {
+        false
+    }
 }
 
 #[derive(Clone, Serialize)]
@@ -135,6 +175,14 @@ pub enum Op {
     Reload(ViewKey),
     /// Tira o print da página (a prévia do card).
     Snapshot(ViewKey),
+    /// Roda a ação `action` do `isolated.js` no mundo isolado, com `args`
+    /// (JSON) como argumento; o JSON da resposta volta por `reply`.
+    Eval {
+        key: ViewKey,
+        action: &'static str,
+        args: String,
+        reply: std::sync::mpsc::Sender<Result<String, String>>,
+    },
     /// Destrói toda view que não está na lista.
     Retain(Vec<ViewKey>),
 }
@@ -151,6 +199,78 @@ struct Entry {
     /// A página mudou desde o último print (título, url, clique ou tecla).
     dirty: bool,
     last_shot: u64,
+    /// A view nativa já existe (o agente só lê/age numa view criada).
+    created: bool,
+}
+
+/// A vez de cada navegador: uma ação de agente em voo por nó, e até
+/// [`MAX_QUEUED`] esperando.
+#[derive(Default)]
+struct Lanes {
+    lanes: Mutex<HashMap<ViewKey, (bool, usize)>>,
+    freed: Condvar,
+}
+
+/// Quantas ações de agente esperam a vez num navegador; passando, "ocupado".
+pub const MAX_QUEUED: usize = 4;
+/// Teto de cada ação no script (e da espera pela vez).
+pub const ACTION_TIMEOUT: Duration = Duration::from_secs(5);
+/// Quanto o agente espera a view nascer e a página carregar.
+const READY_TIMEOUT: Duration = Duration::from_secs(5);
+/// Navegador ocupado com ações de agente.
+pub const BUSY: &str =
+    "o navegador está ocupado com outras ações; tente de novo em alguns segundos";
+/// Sem view nativa (o Orbit fechado, ou outro grafo à vista).
+pub const NOT_OPEN: &str = "o navegador não está aberto: o dono precisa abrir este grafo no Orbit";
+
+struct Turn<'a> {
+    lanes: &'a Lanes,
+    key: ViewKey,
+}
+
+impl Drop for Turn<'_> {
+    fn drop(&mut self) {
+        let mut lanes = self.lanes.lanes.lock();
+        if let Some(lane) = lanes.get_mut(&self.key) {
+            lane.0 = false;
+            if lane.1 == 0 {
+                lanes.remove(&self.key);
+            }
+        }
+        self.lanes.freed.notify_all();
+    }
+}
+
+impl Lanes {
+    /// Espera a vez em `key` (no máximo `wait`); fila cheia é "ocupado".
+    fn turn(&self, key: &ViewKey, wait: Duration) -> Result<Turn<'_>, &'static str> {
+        let deadline = std::time::Instant::now() + wait;
+        let mut lanes = self.lanes.lock();
+        let lane = lanes.entry(key.clone()).or_default();
+        if lane.0 {
+            if lane.1 >= MAX_QUEUED {
+                return Err(BUSY);
+            }
+            lane.1 += 1;
+            loop {
+                let timed_out = self.freed.wait_until(&mut lanes, deadline).timed_out();
+                let lane = lanes.entry(key.clone()).or_default();
+                if !lane.0 {
+                    lane.1 -= 1;
+                    break;
+                }
+                if timed_out {
+                    lane.1 -= 1;
+                    return Err(BUSY);
+                }
+            }
+        }
+        lanes.entry(key.clone()).or_default().0 = true;
+        Ok(Turn {
+            lanes: self,
+            key: key.clone(),
+        })
+    }
 }
 
 /// O registro dos navegadores nativos (estado no core).
@@ -161,6 +281,7 @@ pub struct BrowserViews {
     ticking: std::sync::atomic::AtomicBool,
     /// Centro da área do canvas (o mais perto dele fica vivo primeiro).
     center: Mutex<(f64, f64)>,
+    lanes: Lanes,
 }
 
 /// O navegador nativo existe neste sistema? (Senão o front usa o iframe.)
@@ -525,7 +646,10 @@ impl BrowserViews {
 
     /// A view nasceu: o armazenamento é não persistente neste macOS?
     pub fn on_created(&self, app: &AppHandle, key: &ViewKey, ephemeral: bool) {
-        self.update(app, key, |e| e.state.ephemeral = ephemeral);
+        self.update(app, key, |e| {
+            e.created = true;
+            e.state.ephemeral = ephemeral;
+        });
     }
 
     /// Começou (`finished = false`) ou terminou de carregar `url`.
@@ -653,6 +777,134 @@ impl BrowserViews {
             .lock()
             .get(key)
             .map_or(Focus::None, |e| e.state.focus)
+    }
+
+    // ── ferramentas do agente (`orbit_browser_*`) ────────────────────────
+
+    /// Uma ferramenta de agente na página de `key`, já com a permissão
+    /// conferida pelo run (ligação `controla` atual). Bloqueia: espera a
+    /// view existir e a página carregar, a vez do nó (uma ação em voo, fila
+    /// [`MAX_QUEUED`]) e a resposta do script ([`ACTION_TIMEOUT`]). Agir com
+    /// o dono usando a página é recusado na hora ([`OWNER_BUSY`]).
+    pub fn agent(
+        &self,
+        app: &AppHandle,
+        key: &ViewKey,
+        by: &str,
+        action: AgentAction,
+    ) -> Result<Value, String> {
+        if !NATIVE {
+            return Err("ler e usar o navegador pelo agente ainda só existe no macOS".to_string());
+        }
+        self.wait_ready(key)?;
+        let _turn = self
+            .lanes
+            .turn(key, ACTION_TIMEOUT)
+            .map_err(str::to_string)?;
+        if action.acts() {
+            agent_may_act(self.focus(key)).map_err(str::to_string)?;
+        }
+        eprintln!(
+            "[orbit] navegador {}: {} pelo agente",
+            key.node,
+            action.script()
+        );
+        let reply = self.eval(app, key, action.script(), serde_json::json!({}))?;
+        self.note_step(app, key, by, &action, None, reply.errors);
+        if let Some(code) = &reply.error {
+            return Err(snapshot::error_message(code, reply.detail.as_deref()));
+        }
+        let ok = reply.ok.clone().unwrap_or(Value::Null);
+        let roots = self.roots(key);
+        let url = policy::display_url(&reply.url, &roots);
+        match action {
+            AgentAction::Snapshot => Ok(Value::String(snapshot::format_snapshot(
+                &url,
+                &reply.title,
+                &ok,
+            ))),
+        }
+    }
+
+    fn roots(&self, key: &ViewKey) -> Vec<PathBuf> {
+        self.entries
+            .lock()
+            .get(key)
+            .map(|e| e.roots.clone())
+            .unwrap_or_default()
+    }
+
+    /// Espera a view nativa existir e a página terminar de carregar (no
+    /// máximo [`READY_TIMEOUT`]; página lenta segue mesmo carregando).
+    fn wait_ready(&self, key: &ViewKey) -> Result<(), String> {
+        let deadline = std::time::Instant::now() + READY_TIMEOUT;
+        loop {
+            let (created, loading) = self
+                .entries
+                .lock()
+                .get(key)
+                .map_or((false, false), |e| (e.created, e.state.loading));
+            let late = std::time::Instant::now() >= deadline;
+            if created && (!loading || late) {
+                return Ok(());
+            }
+            if late {
+                return Err(NOT_OPEN.to_string());
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    /// Roda a ação no mundo isolado e lê a resposta.
+    fn eval(
+        &self,
+        app: &AppHandle,
+        key: &ViewKey,
+        action: &'static str,
+        args: Value,
+    ) -> Result<snapshot::PageReply, String> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        dispatch(
+            app,
+            Op::Eval {
+                key: key.clone(),
+                action,
+                args: args.to_string(),
+                reply: tx,
+            },
+        );
+        let raw = match rx.recv_timeout(ACTION_TIMEOUT) {
+            Ok(r) => r?,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                return Err("a página não respondeu em 5 s".to_string())
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                return Err(NOT_OPEN.to_string())
+            }
+        };
+        snapshot::parse_reply(&raw)
+    }
+
+    /// O passo do agente vira o rodapé do card.
+    fn note_step(
+        &self,
+        app: &AppHandle,
+        key: &ViewKey,
+        by: &str,
+        action: &AgentAction,
+        target: Option<String>,
+        errors: u32,
+    ) {
+        let step = AgentStep {
+            by: snapshot::one_line(by, 120),
+            action: action.script().to_string(),
+            target,
+            at: now_ms(),
+        };
+        self.update(app, key, |e| {
+            e.state.agent = Some(step);
+            e.state.console_errors = Some(errors);
+        });
     }
 }
 
@@ -838,6 +1090,33 @@ mod tests {
             .expect("Cargo.lock");
         let count = lock.lines().filter(|l| *l == "name = \"wry\"").count();
         assert_eq!(count, 1, "mais de um wry no Cargo.lock");
+    }
+
+    #[test]
+    fn one_agent_action_at_a_time_and_a_short_queue() {
+        let lanes = std::sync::Arc::new(Lanes::default());
+        let k = key("g", "b");
+        let first = lanes.turn(&k, ACTION_TIMEOUT).unwrap();
+        // Outro nó não espera.
+        drop(lanes.turn(&key("g", "c"), ACTION_TIMEOUT).unwrap());
+        // Fila cheia: "ocupado" na hora.
+        lanes.lanes.lock().get_mut(&k).unwrap().1 = MAX_QUEUED;
+        assert_eq!(lanes.turn(&k, ACTION_TIMEOUT).err(), Some(BUSY));
+        lanes.lanes.lock().get_mut(&k).unwrap().1 = 0;
+        // Esperando a vez: passa quando a primeira termina.
+        let waiter = {
+            let lanes = lanes.clone();
+            let k = k.clone();
+            std::thread::spawn(move || lanes.turn(&k, ACTION_TIMEOUT).map(|_| ()))
+        };
+        std::thread::sleep(Duration::from_millis(50));
+        drop(first);
+        assert_eq!(waiter.join().unwrap(), Ok(()));
+        // E sem a vez dentro do prazo, "ocupado".
+        let held = lanes.turn(&k, ACTION_TIMEOUT).unwrap();
+        assert_eq!(lanes.turn(&k, Duration::from_millis(30)).err(), Some(BUSY));
+        drop(held);
+        assert!(lanes.lanes.lock().is_empty());
     }
 
     #[test]

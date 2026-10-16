@@ -57,7 +57,7 @@ rustix = { version = "1", features = ["fs"] }
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSData", "NSString", "NSArray", "NSURL", "NSURLRequest", "NSError", "NSGeometry", "NSProcessInfo", "NSValue", "NSDictionary"] }
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSResponder", "NSImage", "NSDockTile", "NSView", "NSWindow", "NSEvent", "NSOpenPanel", "NSSavePanel", "NSPanel", "NSBitmapImageRep", "NSImageRep", "NSGraphics", "block2"] }
-objc2-web-kit = { version = "0.3", default-features = false, features = ["std", "block2", "objc2-app-kit", "WKWebView", "WKUIDelegate", "WKFrameInfo", "WKSecurityOrigin", "WKOpenPanelParameters", "WKNavigationAction", "WKNavigation", "WKWindowFeatures", "WKWebViewConfiguration", "WKSnapshotConfiguration"] }
+objc2-web-kit = { version = "0.3", default-features = false, features = ["std", "block2", "objc2-app-kit", "WKWebView", "WKUIDelegate", "WKFrameInfo", "WKSecurityOrigin", "WKOpenPanelParameters", "WKNavigationAction", "WKNavigation", "WKWindowFeatures", "WKWebViewConfiguration", "WKSnapshotConfiguration", "WKContentWorld", "WKUserScript", "WKUserContentController"] }
 block2 = "0.6"
 wry = { version = "=0.55.1", default-features = false, features = ["protocol", "os-webview"] }
 

@@ -46,6 +46,21 @@ use super::{
 
 /// Teto do arquivo servido pelo `orbit-file`.
 const MAX_FILE_BYTES: u64 = 32 * 1024 * 1024;
+/// Tamanho da view antes de o card mandar o retângulo (pontos).
+const HIDDEN_W: f64 = 1280.0;
+const HIDDEN_H: f64 = 800.0;
+
+/// O mundo isolado das ferramentas do agente.
+const WORLD: &str = "tyba-orbit";
+/// Refs, snapshot, ações e o buffer do console (mundo isolado).
+const ISOLATED_JS: &str = include_str!("scripts/isolated.js");
+/// Reemite `console.error/warn` para o buffer (mundo da página).
+const PAGE_SHIM_JS: &str = include_str!("scripts/page_shim.js");
+/// O corpo de cada ação: garante o `__orbit` (página que carregou antes do
+/// user script) e chama a ação com os argumentos — `action` e `args` são
+/// argumentos do `callAsyncJavaScript`, nunca interpolados.
+const RUN_JS: &str =
+    "return JSON.stringify(await globalThis.__orbit.run(action, JSON.parse(args)));";
 
 struct NativeView {
     webview: wry::WebView,
@@ -117,6 +132,17 @@ pub(super) fn apply(app: &AppHandle, op: Op) {
                 snapshot(app, &key, view);
             }
         }),
+        Op::Eval {
+            key,
+            action,
+            args,
+            reply,
+        } => VIEWS.with(|v| match v.borrow().get(&key) {
+            Some(view) => eval(view, action, &args, reply),
+            None => {
+                let _ = reply.send(Err(super::NOT_OPEN.to_string()));
+            }
+        }),
         Op::Retain(keep) => {
             // Tira do registro antes de soltar: o `Drop` do wry tira a view
             // da janela e pode chamar delegates.
@@ -175,9 +201,11 @@ fn create(app: &AppHandle, key: &ViewKey) -> Result<NativeView, String> {
 
     let builder = WebViewBuilder::new()
         .with_visible(false)
+        // Escondida, mas com tamanho de página: o agente lê e clica nela
+        // antes de o card aparecer (o front manda o retângulo de verdade).
         .with_bounds(Rect {
             position: LogicalPosition::new(0.0, 0.0).into(),
-            size: LogicalSize::new(1.0, 1.0).into(),
+            size: LogicalSize::new(HIDDEN_W, HIDDEN_H).into(),
         })
         .with_clipboard(false)
         .with_devtools(false)
@@ -219,6 +247,7 @@ fn create(app: &AppHandle, key: &ViewKey) -> Result<NativeView, String> {
     let webview = builder.build_as_child(&window).map_err(|e| e.to_string())?;
     // SAFETY: o `WryWebView` do wry é subclasse de `WKWebView`.
     let wk: Retained<WKWebView> = unsafe { Retained::cast_unchecked(webview.webview()) };
+    install_scripts(mtm, &wk);
     let ui = OrbitUiDelegate::new(mtm, app.clone(), key.clone());
     // SAFETY: main thread; o delegate é segurado pela `NativeView`.
     unsafe { wk.setUIDelegate(Some(ProtocolObject::from_ref(&*ui))) };
@@ -544,4 +573,79 @@ fn snapshot(app: &AppHandle, key: &ViewKey, view: &NativeView) {
         view.wk
             .takeSnapshotWithConfiguration_completionHandler(Some(&config), &block)
     };
+}
+
+// ── mundo isolado ───────────────────────────────────────────────────────────
+
+/// Os dois user scripts, no início de cada documento do frame principal: o
+/// `isolated.js` no mundo `tyba-orbit` e o `page_shim.js` no da página.
+/// Nenhum message handler: o retorno é puxado pelo `callAsyncJavaScript`.
+fn install_scripts(mtm: MainThreadMarker, wk: &WKWebView) {
+    use objc2_foundation::NSString;
+    use objc2_web_kit::{WKContentWorld, WKUserScript, WKUserScriptInjectionTime};
+    // SAFETY: main thread; o controller é o da configuração desta view.
+    unsafe {
+        let controller = wk.configuration().userContentController();
+        let isolated = WKContentWorld::worldWithName(&NSString::from_str(WORLD), mtm);
+        let page = WKContentWorld::pageWorld(mtm);
+        for (source, world) in [(ISOLATED_JS, &isolated), (PAGE_SHIM_JS, &page)] {
+            let script = WKUserScript::initWithSource_injectionTime_forMainFrameOnly_inContentWorld(
+                mtm.alloc::<WKUserScript>(),
+                &NSString::from_str(source),
+                WKUserScriptInjectionTime::AtDocumentStart,
+                true,
+                world,
+            );
+            controller.addUserScript(&script);
+        }
+    }
+}
+
+/// `callAsyncJavaScript` no mundo isolado: o resultado (JSON em string) ou
+/// o erro volta por `reply`.
+fn eval(
+    view: &NativeView,
+    action: &str,
+    args: &str,
+    reply: std::sync::mpsc::Sender<Result<String, String>>,
+) {
+    use objc2_foundation::{NSDictionary, NSError, NSString};
+    use objc2_web_kit::WKContentWorld;
+    let Some(mtm) = MainThreadMarker::new() else {
+        let _ = reply.send(Err("fora da main thread".into()));
+        return;
+    };
+    let body = NSString::from_str(&format!("{ISOLATED_JS}\n{RUN_JS}"));
+    let keys = [NSString::from_str("action"), NSString::from_str("args")];
+    let values = [NSString::from_str(action), NSString::from_str(args)];
+    let k: [&NSString; 2] = [&keys[0], &keys[1]];
+    let v: [&AnyObject; 2] = [&values[0], &values[1]];
+    let arguments = NSDictionary::from_slices(&k, &v);
+    let block = RcBlock::new(move |result: *mut AnyObject, error: *mut NSError| {
+        // SAFETY: o WebKit entrega objetos válidos ou nulos.
+        let out = match (unsafe { result.as_ref() }, unsafe { error.as_ref() }) {
+            (_, Some(e)) => Err(format!(
+                "a página não aceitou a ação: {}",
+                super::snapshot::one_line(&e.localizedDescription().to_string(), 200)
+            )),
+            (Some(r), None) => r
+                .downcast_ref::<NSString>()
+                .map(|s| s.to_string())
+                .ok_or_else(|| "a página devolveu uma resposta ilegível".to_string()),
+            (None, None) => Err("a página devolveu uma resposta vazia".to_string()),
+        };
+        let _ = reply.send(out);
+    });
+    // SAFETY: main thread; o corpo é fixo e os argumentos vão no dicionário.
+    unsafe {
+        let world = WKContentWorld::worldWithName(&NSString::from_str(WORLD), mtm);
+        view.wk
+            .callAsyncJavaScript_arguments_inFrame_inContentWorld_completionHandler(
+                &body,
+                Some(&arguments),
+                None,
+                &world,
+                Some(&block),
+            );
+    }
 }

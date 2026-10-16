@@ -17,6 +17,7 @@ use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
 use super::agent::{AgentTurn, Snapshot};
+use super::browser::AgentAction;
 use super::orchestrator::{self, Created, Plan, PlanStep, ToolCall, ToolHandler, MAX_CREATED};
 use super::service::{self, ServiceReady, ServiceSource};
 use super::talk::{self, Mailbox, PeerState};
@@ -835,6 +836,16 @@ pub trait RunHost: Send + Sync + 'static {
     fn alive(&self, session_id: &str) -> bool;
     /// `orbit://run/<run_id>` com o run inteiro.
     fn emit(&self, run: &Run);
+    /// Uma ferramenta de agente na página do navegador `node_id` do grafo
+    /// `graph_id` (a permissão já conferida); `by` é o título do agente,
+    /// para o card. Bloqueia até a página responder.
+    fn browser(
+        &self,
+        graph_id: &str,
+        node_id: &str,
+        by: &str,
+        action: AgentAction,
+    ) -> Result<serde_json::Value, String>;
 }
 
 struct Active {
@@ -1561,6 +1572,9 @@ impl<H: RunHost> Runs<H> {
                 let id = self.open_browser(run_id, orchestrator, node.as_deref(), &url)?;
                 Ok(serde_json::json!({ "node_id": id, "url": url }))
             }
+            ToolCall::Browser { node, action } => {
+                self.browser_action(run_id, orchestrator, node.as_deref(), action)
+            }
             ToolCall::Peers => self.peers(run_id, orchestrator),
             ToolCall::Send { to, text } => {
                 let waiting = self.send_message(run_id, orchestrator, &to, &text)?;
@@ -1902,6 +1916,42 @@ impl<H: RunHost> Runs<H> {
         let a = active
             .get_mut(run_id)
             .ok_or("esta execução já terminou: ▶ Executar de novo para o agente abrir páginas")?;
+        let target = self.controlled_browser(a, agent, node)?;
+        let by = a
+            .graph
+            .nodes
+            .iter()
+            .find(|n| n.id == agent)
+            .map_or_else(|| agent.to_string(), |n| n.title.clone());
+        let kind = NodeKind::Browser {
+            url: url.to_string(),
+        };
+        if let Some(n) = a.graph.nodes.iter_mut().find(|n| n.id == target) {
+            n.kind = kind.clone();
+        }
+        match a.sched.run.created.iter_mut().find(|c| c.node.id == target) {
+            Some(c) => c.node.kind = kind.clone(),
+            None => self.save_browser_url(&a.graph.id, &target, &kind),
+        }
+        if let Some(n) = a.sched.run.nodes.get_mut(&target) {
+            n.url = Some(url.to_string());
+            n.opened = Some(BrowserOpened { by, at: now() });
+        }
+        drop(active);
+        self.publish_current(run_id);
+        Ok(target)
+    }
+
+    /// O navegador ligado por `controla` a `agent` agora (as ligações do
+    /// grafo salvo, mais as dos nós criados no run): `node` se ele é um
+    /// desses; sem `node`, o ligado mais recente — o último a abrir página ou
+    /// a ganhar a ligação.
+    fn controlled_browser(
+        &self,
+        a: &Active,
+        agent: &str,
+        node: Option<&str>,
+    ) -> Result<String, String> {
         // As ligações de agora: o dono liga e desliga no canvas durante o run.
         let saved = self.saved_graph(&a.graph.id)?;
         let linked: Vec<String> = current_edges(saved.as_ref(), &a.sched.run.created)
@@ -1916,14 +1966,12 @@ impl<H: RunHost> Runs<H> {
             })
             .map(|e| e.to)
             .collect();
-        let target = match node {
-            Some(n) if linked.iter().any(|l| l == n) => n.to_string(),
-            Some(n) => {
-                return Err(format!(
-                    "{n} não é um navegador ligado a você por controla: só abre página no \
-                     navegador que o dono ligou a você no canvas"
-                ))
-            }
+        match node {
+            Some(n) if linked.iter().any(|l| l == n) => Ok(n.to_string()),
+            Some(n) => Err(format!(
+                "{n} não é um navegador ligado a você por controla: só o navegador que o \
+                 dono ligou a você no canvas"
+            )),
             None => {
                 // A última vez que o navegador mudou para este agente: a
                 // página aberta, ou quando a ligação nasceu (a do grafo, no
@@ -1960,32 +2008,43 @@ impl<H: RunHost> Runs<H> {
                             "nenhum navegador ligado a você por controla ({hint}); o \
                              navegador do sistema não abre por aqui"
                         )
-                    })?
+                    })
             }
+        }
+    }
+
+    /// `orbit_browser_snapshot` e as outras: ler ou usar a página do
+    /// navegador ligado por `controla` a `agent` (a mesma régua do
+    /// `orbit_browser_open`, relida a cada chamada). Quem lê e age é o host
+    /// (a view nativa); o lock do run sai antes, porque a ação espera a
+    /// página.
+    pub fn browser_action(
+        &self,
+        run_id: &str,
+        agent: &str,
+        node: Option<&str>,
+        action: AgentAction,
+    ) -> Result<serde_json::Value, String> {
+        let (graph_id, target, by) = {
+            let active = self.active.lock();
+            let a = active.get(run_id).ok_or(
+                "esta execução já terminou: ▶ Executar de novo para o agente usar o navegador",
+            )?;
+            let target = self.controlled_browser(a, agent, node)?;
+            let by = a
+                .graph
+                .nodes
+                .iter()
+                .find(|n| n.id == agent)
+                .map_or_else(|| agent.to_string(), |n| n.title.clone());
+            (a.graph.id.clone(), target, by)
         };
-        let by = a
-            .graph
-            .nodes
-            .iter()
-            .find(|n| n.id == agent)
-            .map_or_else(|| agent.to_string(), |n| n.title.clone());
-        let kind = NodeKind::Browser {
-            url: url.to_string(),
-        };
-        if let Some(n) = a.graph.nodes.iter_mut().find(|n| n.id == target) {
-            n.kind = kind.clone();
+        let mut value = self.host.browser(&graph_id, &target, &by, action)?;
+        if let serde_json::Value::Object(map) = &mut value {
+            map.entry("node_id")
+                .or_insert_with(|| target.clone().into());
         }
-        match a.sched.run.created.iter_mut().find(|c| c.node.id == target) {
-            Some(c) => c.node.kind = kind.clone(),
-            None => self.save_browser_url(&a.graph.id, &target, &kind),
-        }
-        if let Some(n) = a.sched.run.nodes.get_mut(&target) {
-            n.url = Some(url.to_string());
-            n.opened = Some(BrowserOpened { by, at: now() });
-        }
-        drop(active);
-        self.publish_current(run_id);
-        Ok(target)
+        Ok(value)
     }
 
     /// A url nova do navegador do grafo do dono, no grafo salvo. Falha aqui
@@ -3089,6 +3148,23 @@ impl RunHost for TauriHost {
         use tauri::Emitter;
         let _ = self.app.emit(&format!("orbit://run/{}", run.id), run);
     }
+
+    fn browser(
+        &self,
+        graph_id: &str,
+        node_id: &str,
+        by: &str,
+        action: AgentAction,
+    ) -> Result<serde_json::Value, String> {
+        use tauri::Manager;
+        let key = crate::orbit::browser::ViewKey {
+            graph: graph_id.to_string(),
+            node: node_id.to_string(),
+        };
+        self.app
+            .state::<crate::orbit::browser::BrowserViews>()
+            .agent(&self.app, &key, by, action)
+    }
 }
 
 #[cfg(test)]
@@ -3457,6 +3533,8 @@ mod tests {
         multiline: Mutex<bool>,
         /// O teclado do dono em cada sessão.
         owner: talk::OwnerInput,
+        /// As ferramentas de navegador que chegaram ao host: (nó, quem, ação).
+        browser: Mutex<Vec<(String, String, AgentAction)>>,
     }
 
     impl PtyHost {
@@ -3593,6 +3671,19 @@ mod tests {
         fn owner_keys(&self, session_id: &str) -> talk::OwnerKeys {
             self.owner.get(session_id)
         }
+
+        fn browser(
+            &self,
+            _graph_id: &str,
+            node_id: &str,
+            by: &str,
+            action: AgentAction,
+        ) -> Result<serde_json::Value, String> {
+            self.browser
+                .lock()
+                .push((node_id.to_string(), by.to_string(), action));
+            Ok(serde_json::json!({ "ok": true }))
+        }
     }
 
     type TestRuns = (
@@ -3626,6 +3717,7 @@ mod tests {
             send_error: Mutex::new(None),
             multiline: Mutex::new(true),
             owner: talk::OwnerInput::default(),
+            browser: Mutex::new(Vec::new()),
         });
         (Runs::new(Arc::clone(&host), store, Some(root)), host, app)
     }
@@ -5169,6 +5261,62 @@ mod tests {
         );
         let saved = runs.store.get_orbit_graph("g-1").unwrap().unwrap();
         assert!(!saved.value.nodes.iter().any(|n| n.id == made));
+    }
+
+    /// `orbit_browser_snapshot` (e as outras do navegador): a régua do
+    /// `orbit_browser_open` — só o navegador ligado por `controla` agora,
+    /// sem `node` o ligado mais recente; tirar a ligação revoga na hora.
+    #[cfg(unix)]
+    #[test]
+    fn agent_reads_only_a_browser_linked_by_control_now() {
+        use serde_json::json;
+        let dir = tempfile::tempdir().unwrap();
+        let (runs, host, _app) = pty_runs(dir.path().join("runs"));
+        let mut o = orchestrator("o");
+        o.title = "Claude".into();
+        let mut g = graph(
+            vec![
+                o,
+                browser("b", "http://localhost:1"),
+                browser("solto", "http://localhost:2"),
+            ],
+            vec![edge("c1", "o", "b", EdgeKind::Control)],
+        );
+        runs.store.save_orbit_graph(&g, true, None).unwrap();
+        let run = runs.start(g.clone(), vec![]).unwrap();
+        wait_orchestrating(&runs, &run.id, "o");
+        let tools = tools_of(&host, "Claude");
+
+        let got = tools.call("orbit_browser_snapshot", &json!({})).unwrap();
+        assert_eq!(got["node_id"], "b");
+        let got = tools
+            .call("orbit_browser_snapshot", &json!({"node": "b"}))
+            .unwrap();
+        assert_eq!(got["node_id"], "b");
+        let err = tools
+            .call("orbit_browser_snapshot", &json!({"node": "solto"}))
+            .unwrap_err();
+        assert!(err.contains("controla"), "{err}");
+        assert_eq!(
+            host.browser.lock().clone(),
+            vec![
+                ("b".to_string(), "Claude".to_string(), AgentAction::Snapshot),
+                ("b".to_string(), "Claude".to_string(), AgentAction::Snapshot),
+            ]
+        );
+
+        // O dono tira a ligação no canvas: recusa na hora, sem ▶ de novo.
+        g.edges.clear();
+        runs.store.save_orbit_graph(&g, true, None).unwrap();
+        let err = tools
+            .call("orbit_browser_snapshot", &json!({"node": "b"}))
+            .unwrap_err();
+        assert!(err.contains("controla"), "{err}");
+        let err = tools
+            .call("orbit_browser_snapshot", &json!({}))
+            .unwrap_err();
+        assert!(err.contains("nenhum navegador ligado"), "{err}");
+        assert_eq!(host.browser.lock().len(), 2);
     }
 
     #[cfg(unix)]

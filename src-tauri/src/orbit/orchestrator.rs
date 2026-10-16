@@ -111,6 +111,12 @@ pub enum ToolCall {
         node: Option<String>,
         url: String,
     },
+    /// Ler ou usar a página do navegador ligado por `controla` (sem `node`,
+    /// o ligado mais recente): `orbit_browser_snapshot` e as outras.
+    Browser {
+        node: Option<String>,
+        action: super::browser::AgentAction,
+    },
     /// Os agentes ligados por `talk`.
     Peers,
     /// Texto (já pela régua de [`super::talk::message_text`]) para a fila de `to`.
@@ -202,6 +208,22 @@ struct BrowserOpenArgs {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct EmptyArgs {}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BrowserNodeArgs {
+    #[serde(default)]
+    node: Option<String>,
+}
+
+/// O `node` opcional das `orbit_browser_*`: vazio conta como ausente.
+fn browser_node(node: Option<String>) -> Result<Option<String>, String> {
+    let node = node.filter(|n| !n.trim().is_empty());
+    if let Some(n) = &node {
+        text("node", n)?;
+    }
+    Ok(node)
+}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -369,6 +391,13 @@ pub fn parse_call(tool: &str, value: &Value) -> Result<ToolCall, String> {
             Ok(ToolCall::BrowserOpen {
                 node: a.node.filter(|n| !n.trim().is_empty()),
                 url: browser_url(&url)?,
+            })
+        }
+        "orbit_browser_snapshot" => {
+            let a: BrowserNodeArgs = args(tool, value)?;
+            Ok(ToolCall::Browser {
+                node: browser_node(a.node)?,
+                action: super::browser::AgentAction::Snapshot,
             })
         }
         "orbit_peers" => {
@@ -983,6 +1012,36 @@ mod tests {
         assert!(open(json!({"url": "  "})).is_err());
         assert!(open(json!({"url": "http://localhost:1", "x": 1})).is_err());
         assert!(open(json!({"url": "http://localhost:1/\u{1b}[2J"})).is_err());
+    }
+
+    #[test]
+    fn browser_snapshot_takes_an_optional_node() {
+        use super::super::browser::AgentAction;
+        use serde_json::json;
+        let snap = |args: Value| parse_call("orbit_browser_snapshot", &args);
+        assert_eq!(
+            snap(json!({})),
+            Ok(ToolCall::Browser {
+                node: None,
+                action: AgentAction::Snapshot
+            })
+        );
+        assert_eq!(
+            snap(json!({"node": " "})),
+            Ok(ToolCall::Browser {
+                node: None,
+                action: AgentAction::Snapshot
+            })
+        );
+        assert_eq!(
+            snap(json!({"node": "b"})),
+            Ok(ToolCall::Browser {
+                node: Some("b".into()),
+                action: AgentAction::Snapshot
+            })
+        );
+        assert!(snap(json!({"node": "b\u{1b}"})).is_err());
+        assert!(snap(json!({"url": "http://localhost:1"})).is_err());
     }
 
     #[test]
