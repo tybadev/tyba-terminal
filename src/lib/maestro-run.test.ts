@@ -216,6 +216,14 @@ describe("agentes em paralelo", () => {
     expect(concurrentAgents(graph)).toBeNull();
   });
 
+  test("agentes em paralelo em pastas diferentes não avisam", () => {
+    const a = agent("a", "A");
+    const b = agent("b", "B");
+    if (a.kind.type === "agent") a.kind = { ...a.kind, dir: "/x" };
+    if (b.kind.type === "agent") b.kind = { ...b.kind, dir: "/y" };
+    expect(concurrentAgents({ nodes: [a, b], edges: [] })).toBeNull();
+  });
+
   test("dois agentes sem dependência entre si avisam", () => {
     const pair = concurrentAgents({ nodes: [agent("a", "A"), agent("b", "B")], edges: [] });
     expect(pair?.map((n) => n.id)).toEqual(["a", "b"]);

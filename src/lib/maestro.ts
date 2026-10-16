@@ -603,12 +603,17 @@ export function timelineSteps(graph: Pick<Graph, "nodes" | "edges">): string[][]
  * mesma pasta, um vê no diff o que o outro mudou — a tela avisa.
  */
 export function concurrentAgents(
-  graph: Pick<Graph, "nodes" | "edges">,
+  graph: Pick<Graph, "nodes" | "edges"> & { dir?: string },
 ): [MaestroNode, MaestroNode] | null {
   const agents = graph.nodes.filter((n) => n.kind.type === "agent");
+  // Só avisa quem divide a pasta: com pasta por nó, dois agentes em
+  // paralelo em pastas diferentes não veem o diff um do outro.
+  const dirOf = (n: MaestroNode) =>
+    (n.kind.type === "agent" && n.kind.dir) || graph.dir || "";
   for (let i = 0; i < agents.length; i++) {
     for (let j = i + 1; j < agents.length; j++) {
       const [a, b] = [agents[i], agents[j]];
+      if (dirOf(a) !== dirOf(b)) continue;
       if (!reaches(graph.edges, a.id, b.id) && !reaches(graph.edges, b.id, a.id)) {
         return [a, b];
       }
