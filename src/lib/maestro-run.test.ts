@@ -201,6 +201,20 @@ describe("linha da execução", () => {
     expect(nodeStatusLabel(graph, r, "x")).toBeNull();
   });
 
+  test("orquestrador que fechou o turno: orquestrando e já entrega as saídas", () => {
+    const r = run("r", 0, {
+      a: nodeRun({ status: "running", orchestrating: true, outputs: { diff: "/r/a/out/diff.patch" } }),
+      d: nodeRun({ status: "done" }),
+      t: nodeRun(),
+      c: nodeRun(),
+      n: nodeRun({ status: "done" }),
+    });
+    expect(nodeStatusLabel(graph, r, "a")).toEqual({ key: "maestroStatus_orchestrating" });
+    expect(nodeStatusLabel(graph, r, "t")).toEqual({ key: "maestroStatus_waiting" });
+    expect(edgeDetail("diff", r.nodes.a)).toEqual({ key: "maestroEdgeReady" });
+    expect(edgeDetail("context", r.nodes.a)).toEqual({ key: "maestroEdgeEmpty" });
+  });
+
   test("tempo do nó e formato", () => {
     expect(nodeElapsed(undefined, 10)).toBeNull();
     expect(nodeElapsed(nodeRun({ status: "running", startedAt: 1_000 }), 191_000)).toBe(190_000);

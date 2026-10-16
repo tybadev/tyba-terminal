@@ -97,6 +97,10 @@ pub struct NodeRun {
     /// que a sessão do processo abriu (aparece com o processo ainda rodando).
     #[serde(default)]
     pub url: Option<String>,
+    /// Orquestrador que fechou o primeiro turno: as saídas já valem para quem
+    /// depende dele, mas o nó segue rodando (e o run aberto) até a sessão sair.
+    #[serde(default)]
+    pub orchestrating: bool,
 }
 
 impl NodeRun {
@@ -110,6 +114,7 @@ impl NodeRun {
             outputs: HashMap::new(),
             reason: None,
             url: None,
+            orchestrating: false,
         }
     }
 }
@@ -223,14 +228,15 @@ impl Scheduler {
         self.run.nodes.get(id).map(|n| n.status)
     }
 
-    /// A ligação já tem valor: a origem terminou, ou é `url` e a origem (um
-    /// processo ainda rodando) já publicou a url.
+    /// A ligação já tem valor: a origem terminou, é um orquestrador que já
+    /// publicou o primeiro turno, ou é `url` e a origem (um processo ainda
+    /// rodando) já publicou a url.
     fn has_value(&self, source: &str, kind: EdgeKind) -> bool {
         self.run.nodes.get(source).is_some_and(|n| {
             n.status == NodeStatus::Done
-                || (kind == EdgeKind::Url
-                    && n.status == NodeStatus::Running
-                    && n.outputs.contains_key(&EdgeKind::Url))
+                || (n.status == NodeStatus::Running
+                    && (n.orchestrating
+                        || (kind == EdgeKind::Url && n.outputs.contains_key(&EdgeKind::Url))))
         })
     }
 
@@ -283,6 +289,28 @@ impl Scheduler {
         true
     }
 
+    /// O orquestrador fechou o primeiro turno: publica as saídas para quem
+    /// depende dele, mas o nó segue rodando até a sessão sair. Devolve `true`
+    /// se gravou.
+    pub fn orchestrate(&mut self, id: &str, outputs: HashMap<EdgeKind, String>) -> bool {
+        let Some(n) = self.run.nodes.get_mut(id) else {
+            return false;
+        };
+        if n.status != NodeStatus::Running || n.orchestrating {
+            return false;
+        }
+        n.outputs.extend(outputs);
+        n.orchestrating = true;
+        true
+    }
+
+    fn orchestrating(&self, id: &str) -> bool {
+        self.run
+            .nodes
+            .get(id)
+            .is_some_and(|n| n.status == NodeStatus::Running && n.orchestrating)
+    }
+
     /// Fecha um nó rodando. Falha pula, em cascata, tudo que depende dele.
     /// Devolve `false` quando o nó não estava rodando (ex.: já parado).
     pub fn finish(&mut self, id: &str, outcome: Outcome, now: u64) -> bool {
@@ -297,6 +325,7 @@ impl Scheduler {
         } else {
             NodeStatus::Failed
         };
+        n.orchestrating = false;
         n.finished_at = Some(now);
         n.exit_code = outcome.exit_code;
         // O que saiu antes do fim (url) fica.
@@ -651,11 +680,13 @@ pub struct AgentLaunch {
 pub trait RunHost: Send + Sync + 'static {
     /// Sobe o agente livre e devolve o id da sessão. `on_turn` roda uma vez,
     /// quando o primeiro turno fecha (ou o agente sai antes disso). O agente
-    /// segue vivo depois.
+    /// segue vivo depois; `on_exit`, quando presente, roda quando a sessão
+    /// sai depois do primeiro turno fechado.
     fn spawn_agent(
         &self,
         launch: AgentLaunch,
         on_turn: Box<dyn FnOnce(AgentTurn) + Send>,
+        on_exit: Option<Box<dyn FnOnce() + Send>>,
     ) -> Result<String, String>;
     /// Sobe o processo num PTY e devolve o id da sessão. `on_exit` roda quando
     /// o PTY fecha.
@@ -1260,10 +1291,28 @@ impl<H: RunHost> Runs<H> {
             start.node.id.clone(),
             start.out_dir.clone(),
         );
-        let on_turn = Box::new(move |turn: AgentTurn| {
-            if let Some(runs) = me.upgrade() {
-                runs.agent_turn_ended(&run, &node, &out_dir, snapshot.as_ref(), turn);
-            }
+        let on_turn = {
+            let (me, run, node) = (me.clone(), run.clone(), node.clone());
+            Box::new(move |turn: AgentTurn| {
+                if let Some(runs) = me.upgrade() {
+                    runs.agent_turn_ended(
+                        &run,
+                        &node,
+                        &out_dir,
+                        snapshot.as_ref(),
+                        turn,
+                        orchestrate,
+                    );
+                }
+            })
+        };
+        // O orquestrador segura o nó (e o run) até a sessão sair.
+        let on_exit = orchestrate.then(|| {
+            Box::new(move || {
+                if let Some(runs) = me.upgrade() {
+                    runs.orchestrator_exited(&run, &node);
+                }
+            }) as Box<dyn FnOnce() + Send>
         });
         let tools = orchestrate.then(|| self.tool_handler(run_id, &start.node.id));
         let launch = AgentLaunch {
@@ -1275,7 +1324,7 @@ impl<H: RunHost> Runs<H> {
             out_dir: start.out_dir.clone(),
             tools,
         };
-        match self.host.spawn_agent(launch, on_turn) {
+        match self.host.spawn_agent(launch, on_turn, on_exit) {
             Ok(session) => Launched::Session(session),
             Err(e) => Launched::Finished(Outcome::failed(format!("subir o agente: {e}"))),
         }
@@ -1512,7 +1561,8 @@ impl<H: RunHost> Runs<H> {
     }
 
     /// O primeiro turno fechou: grava `context.md` (redigido) e `diff.patch`
-    /// e segue o grafo. O agente continua vivo.
+    /// e segue o grafo. O agente continua vivo. O orquestrador publica as
+    /// saídas mas segue rodando até a sessão sair.
     fn agent_turn_ended(
         &self,
         run_id: &str,
@@ -1520,6 +1570,7 @@ impl<H: RunHost> Runs<H> {
         out_dir: &Path,
         snapshot: Option<&super::agent::Snapshot>,
         turn: AgentTurn,
+        orchestrate: bool,
     ) {
         if !self.active.lock().contains_key(run_id) {
             return;
@@ -1534,9 +1585,35 @@ impl<H: RunHost> Runs<H> {
             let Some(a) = active.get_mut(run_id) else {
                 return;
             };
-            if !a.sched.finish(node_id, outcome, now()) {
+            let changed = if orchestrate && outcome.ok {
+                a.sched.orchestrate(node_id, outcome.outputs)
+            } else {
+                a.sched.finish(node_id, outcome, now())
+            };
+            if !changed {
                 return;
             }
+        }
+        self.publish_current(run_id);
+        self.advance(run_id);
+    }
+
+    /// A sessão do orquestrador saiu depois do primeiro turno: o nó fica
+    /// pronto (com as saídas do turno) e o run fecha se nada mais roda.
+    fn orchestrator_exited(&self, run_id: &str, node_id: &str) {
+        {
+            let mut active = self.active.lock();
+            let Some(a) = active.get_mut(run_id) else {
+                return;
+            };
+            if !a.sched.orchestrating(node_id) {
+                return;
+            }
+            let ok = Outcome {
+                ok: true,
+                ..Outcome::default()
+            };
+            a.sched.finish(node_id, ok, now());
         }
         self.publish_current(run_id);
         self.advance(run_id);
@@ -1803,6 +1880,7 @@ impl RunHost for TauriHost {
         &self,
         launch: AgentLaunch,
         on_turn: Box<dyn FnOnce(AgentTurn) + Send>,
+        on_exit: Option<Box<dyn FnOnce() + Send>>,
     ) -> Result<String, String> {
         use tauri::Manager;
         let state = self.app.state::<crate::AppState>();
@@ -1848,7 +1926,12 @@ impl RunHost for TauriHost {
         let _ = state.store.remove_session(session.id);
         let sessions = Arc::clone(&state.sessions);
         let id = session.id;
-        super::agent::watch_first_turn(move || sessions.get(id).map(|s| s.status), tail, on_turn);
+        super::agent::watch_first_turn(
+            move || sessions.get(id).map(|s| s.status),
+            tail,
+            on_turn,
+            on_exit,
+        );
         Ok(session.id.to_string())
     }
 
@@ -1857,6 +1940,7 @@ impl RunHost for TauriHost {
         &self,
         _launch: AgentLaunch,
         _on_turn: Box<dyn FnOnce(AgentTurn) + Send>,
+        _on_exit: Option<Box<dyn FnOnce() + Send>>,
     ) -> Result<String, String> {
         Err("o nó de agente ainda não roda neste sistema".into())
     }
@@ -2217,6 +2301,22 @@ mod tests {
         ports: Mutex<Vec<u16>>,
         /// O que o `resolve_service` devolve.
         service: Mutex<Result<ServiceReady, String>>,
+        /// O `on_exit` de cada sessão de agente que o pediu (orquestrador).
+        exits: Mutex<HashMap<String, Box<dyn FnOnce() + Send>>>,
+        /// Sessões de agente que saíram sozinhas.
+        gone: Mutex<Vec<String>>,
+    }
+
+    impl PtyHost {
+        /// A sessão do agente sai (o dono fechou o claude): o mesmo aviso
+        /// que a sessão real dá ao cair.
+        fn exit_agent(&self, session: &str) {
+            self.gone.lock().push(session.to_string());
+            let exit = self.exits.lock().remove(session);
+            if let Some(exit) = exit {
+                exit();
+            }
+        }
     }
 
     /// Fixture sintética: chave no formato `sk-` que a redação pega.
@@ -2231,6 +2331,7 @@ mod tests {
             &self,
             launch: AgentLaunch,
             on_turn: Box<dyn FnOnce(AgentTurn) + Send>,
+            on_exit: Option<Box<dyn FnOnce() + Send>>,
         ) -> Result<String, String> {
             self.agents.lock().push(launch.clone());
             let hold = self.hold_spawn.lock().take();
@@ -2246,6 +2347,9 @@ mod tests {
                 });
             });
             let session = format!("agente-{}", uuid::Uuid::new_v4());
+            if let Some(exit) = on_exit {
+                self.exits.lock().insert(session.clone(), exit);
+            }
             self.spawned.lock().push(session.clone());
             Ok(session)
         }
@@ -2280,10 +2384,16 @@ mod tests {
             if let Ok(id) = session_id.parse() {
                 let _ = self.pool.kill(id);
             }
+            // A sessão morta sai como a real: o orquestrador avisa.
+            let exit = self.exits.lock().remove(session_id);
+            if let Some(exit) = exit {
+                exit();
+            }
         }
 
         fn alive(&self, session_id: &str) -> bool {
             !self.killed.lock().iter().any(|k| k == session_id)
+                && !self.gone.lock().iter().any(|k| k == session_id)
         }
 
         fn session_ports(&self, _session_id: &str) -> Vec<u16> {
@@ -2318,6 +2428,8 @@ mod tests {
             hold_spawn: Mutex::new(None),
             ports: Mutex::new(Vec::new()),
             service: Mutex::new(Err("sem serviço".into())),
+            exits: Mutex::new(HashMap::new()),
+            gone: Mutex::new(Vec::new()),
         });
         let store = Arc::new(Store::open_in_memory().unwrap());
         (Runs::new(Arc::clone(&host), store, Some(root)), host, app)
@@ -3014,6 +3126,89 @@ mod tests {
         )
     }
 
+    /// Espera o orquestrador fechar o primeiro turno (segue rodando).
+    fn wait_orchestrating(runs: &Runs<Arc<PtyHost>>, run: &str, node: &str) -> Run {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            let r = runs.get(run).unwrap();
+            if r.nodes[node].orchestrating || Instant::now() > deadline {
+                return r;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn orchestrator_keeps_the_run_open_until_its_session_exits() {
+        use serde_json::json;
+        let dir = tempfile::tempdir().unwrap();
+        let (runs, host, _app) = pty_runs(dir.path().join("runs"));
+        // Sem processo longo: só o orquestrador segura o run.
+        let g = graph(
+            vec![orchestrator("o"), agent("a", "x")],
+            vec![edge("e1", "o", "a", EdgeKind::Context)],
+        );
+        let run = runs.start(g, vec![]).unwrap();
+        wait_orchestrating(&runs, &run.id, "o");
+        // Quem depende dele recebe o contexto do turno e termina.
+        let r = wait_status(&runs, &run.id, "a", NodeStatus::Done);
+        assert_eq!(r.nodes["a"].status, NodeStatus::Done, "{r:?}");
+        assert_eq!(r.nodes["o"].status, NodeStatus::Running, "{r:?}");
+        assert!(r.nodes["o"].outputs.contains_key(&EdgeKind::Context));
+        assert_eq!(r.status, RunStatus::Running, "{r:?}");
+
+        // Run aberto: o orquestrador ainda cria nós.
+        let tools = tools_of(&host, "o");
+        let created = tools
+            .call(
+                "maestro_create_browser",
+                &json!({"title": "b", "url": "http://localhost:1"}),
+            )
+            .unwrap()["node_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let r = wait_status(&runs, &run.id, &created, NodeStatus::Done);
+        assert_eq!(r.nodes[&created].status, NodeStatus::Done, "{r:?}");
+        assert_eq!(r.status, RunStatus::Running);
+
+        // A sessão do orquestrador sai: o nó fica pronto e o run fecha.
+        let session = r.nodes["o"].session_id.clone().unwrap();
+        host.exit_agent(&session);
+        let r = wait_finished(&runs, &run.id);
+        assert_eq!(r.status, RunStatus::Done, "{r:?}");
+        assert_eq!(r.nodes["o"].status, NodeStatus::Done);
+        assert!(!r.nodes["o"].orchestrating);
+        assert!(r.nodes["o"].outputs.contains_key(&EdgeKind::Context));
+        // Fechado: criados descartados e nada mais se cria.
+        assert!(runs.created_to_keep(&run.id).is_err());
+        let err = tools
+            .call(
+                "maestro_create_browser",
+                &json!({"title": "tarde", "url": "http://localhost:1"}),
+            )
+            .unwrap_err();
+        assert!(err.contains("já terminou"), "{err}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn agent_without_orchestrate_closes_the_run_at_the_end_of_the_turn() {
+        let dir = tempfile::tempdir().unwrap();
+        let (runs, host, _app) = pty_runs(dir.path().join("runs"));
+        let run = runs
+            .start(graph(vec![agent("a", "x")], vec![]), vec![])
+            .unwrap();
+        let r = wait_finished(&runs, &run.id);
+        assert_eq!(r.status, RunStatus::Done, "{r:?}");
+        assert_eq!(r.nodes["a"].status, NodeStatus::Done);
+        assert!(!r.nodes["a"].orchestrating);
+        // Sessão viva depois do turno, como antes; sem aviso de saída.
+        assert_eq!(r.live_agents, vec![host.spawned.lock()[0].clone()]);
+        assert!(host.exits.lock().is_empty());
+    }
+
     /// As ferramentas que o run entregou à sessão do orquestrador.
     fn tools_of(host: &PtyHost, title: &str) -> ToolHandler {
         let launches = host.agents.lock().clone();
@@ -3036,7 +3231,7 @@ mod tests {
         );
         runs.store.save_maestro_graph(&g, true, None).unwrap();
         let run = runs.start(g, vec![]).unwrap();
-        wait_status(&runs, &run.id, "o", NodeStatus::Done);
+        wait_orchestrating(&runs, &run.id, "o");
         // Só o nó com orquestrar ligado recebe as ferramentas.
         assert!(host
             .agents
@@ -3193,7 +3388,7 @@ mod tests {
         let g = graph(vec![orchestrator("o"), process("p", "sleep 30")], vec![]);
         runs.store.save_maestro_graph(&g, true, None).unwrap();
         let run = runs.start(g.clone(), vec![]).unwrap();
-        wait_status(&runs, &run.id, "o", NodeStatus::Done);
+        wait_orchestrating(&runs, &run.id, "o");
         let tools = tools_of(&host, "o");
         let web = tools
             .call(

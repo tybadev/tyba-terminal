@@ -162,6 +162,7 @@ mod tests {
             outputs: HashMap::new(),
             reason: None,
             url: None,
+            orchestrating: false,
         };
         if started {
             n.status = NodeStatus::Done;

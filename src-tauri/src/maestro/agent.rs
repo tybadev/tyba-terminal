@@ -159,22 +159,32 @@ fn turn_from_tail(tail: &TurnTail) -> AgentTurn {
 }
 
 /// Espera o primeiro turno numa thread e chama `on_turn` uma vez. O agente
-/// continua vivo depois; isto só avisa o Run.
+/// continua vivo depois; isto só avisa o Run. Com `on_exit` (o orquestrador),
+/// segue olhando a sessão pelo mesmo estado e chama `on_exit` quando ela sai.
 pub fn watch_first_turn(
     status: impl Fn() -> Option<SessionStatus> + Send + 'static,
     tail: SharedTurnTail,
     on_turn: Box<dyn FnOnce(AgentTurn) + Send>,
+    on_exit: Option<Box<dyn FnOnce() + Send>>,
 ) {
-    std::thread::spawn(move || loop {
-        match turn_state(status().as_ref()) {
-            TurnState::Pending => std::thread::sleep(TURN_POLL),
-            TurnState::Gone => return on_turn(AgentTurn::Exited),
-            TurnState::Ended => {
-                std::thread::sleep(TURN_SETTLE);
-                let tail = tail.lock().expect("turn tail lock").clone();
-                return on_turn(turn_from_tail(&tail));
+    std::thread::spawn(move || {
+        loop {
+            match turn_state(status().as_ref()) {
+                TurnState::Pending => std::thread::sleep(TURN_POLL),
+                TurnState::Gone => return on_turn(AgentTurn::Exited),
+                TurnState::Ended => {
+                    std::thread::sleep(TURN_SETTLE);
+                    let tail = tail.lock().expect("turn tail lock").clone();
+                    on_turn(turn_from_tail(&tail));
+                    break;
+                }
             }
         }
+        let Some(on_exit) = on_exit else { return };
+        while turn_state(status().as_ref()) != TurnState::Gone {
+            std::thread::sleep(TURN_POLL);
+        }
+        on_exit();
     });
 }
 
@@ -381,6 +391,40 @@ mod tests {
             turn_from_tail(&failed),
             AgentTurn::Failed("API sobrecarregada".into())
         );
+    }
+
+    #[test]
+    fn watcher_reports_the_exit_after_the_first_turn_when_asked() {
+        use std::sync::{mpsc, Arc, Mutex};
+        // Turno fecha, outro turno roda, a sessão some.
+        let states = Arc::new(Mutex::new(vec![
+            None,
+            Some(SessionStatus::Idle { summary: None }),
+            Some(SessionStatus::Running),
+            Some(SessionStatus::Idle { summary: None }),
+        ]));
+        let status = {
+            let states = Arc::clone(&states);
+            move || {
+                let mut s = states.lock().unwrap();
+                if s.len() > 1 {
+                    s.pop().unwrap()
+                } else {
+                    s[0].clone()
+                }
+            }
+        };
+        let (tx, rx) = mpsc::channel();
+        let turn_tx = tx.clone();
+        watch_first_turn(
+            status,
+            Arc::new(Mutex::new(TurnTail::default())),
+            Box::new(move |turn| turn_tx.send(format!("{turn:?}")).unwrap()),
+            Some(Box::new(move || tx.send("saiu".into()).unwrap())),
+        );
+        let wait = Duration::from_secs(10);
+        assert!(rx.recv_timeout(wait).unwrap().starts_with("Done"));
+        assert_eq!(rx.recv_timeout(wait).unwrap(), "saiu");
     }
 
     fn git(dir: &Path, args: &[&str]) {

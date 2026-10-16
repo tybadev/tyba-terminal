@@ -473,6 +473,11 @@ export interface NodeRun {
    * a sessão do processo abriu (chega com o processo ainda rodando).
    */
   url?: string | null;
+  /**
+   * Orquestrador que fechou o primeiro turno: as saídas já valem, mas o nó
+   * segue rodando (e a execução aberta) até a sessão sair.
+   */
+  orchestrating?: boolean;
 }
 
 export interface Run {
@@ -683,8 +688,9 @@ const baseOf = (path: string) => path.split(/[\\/]/).filter(Boolean).pop() ?? pa
  */
 export function edgeDetail(kind: EdgeKind, source: NodeRun | undefined): Label | null {
   if (!source) return null;
-  // A url do processo sai antes do fim.
+  // A url do processo sai antes do fim; as saídas do orquestrador, no fim do turno.
   if (source.status === "running" && source.outputs[kind]) return { key: "maestroEdgeReady" };
+  if (source.status === "running" && source.orchestrating) return { key: "maestroEdgeEmpty" };
   switch (source.status) {
     case "waiting":
       return { key: "maestroEdgeWaiting" };
@@ -706,11 +712,15 @@ export function edgeDetail(kind: EdgeKind, source: NodeRun | undefined): Label |
   }
 }
 
-/** A ligação já tem valor: a origem terminou, ou a url do processo já saiu (espelha o core). */
+/**
+ * A ligação já tem valor: a origem terminou, o orquestrador fechou o primeiro
+ * turno, ou a url do processo já saiu (espelha o core).
+ */
 export function edgeHasValue(edge: Pick<MaestroEdge, "from" | "kind">, run: Run): boolean {
   const source = run.nodes[edge.from];
   if (!source) return false;
   if (source.status === "done") return true;
+  if (source.status === "running" && source.orchestrating) return true;
   return edge.kind === "url" && source.status === "running" && Boolean(source.outputs.url);
 }
 
@@ -722,6 +732,7 @@ export function nodeStatusLabel(
 ): Label | null {
   const n = run.nodes[nodeId];
   if (!n) return null;
+  if (n.status === "running" && n.orchestrating) return { key: "maestroStatus_orchestrating" };
   if (n.status !== "waiting") return { key: `maestroStatus_${n.status}` };
   if (run.status !== "running") return { key: "maestroStatus_waiting" };
   const pending = graph.edges.find((e) => e.to === nodeId && !edgeHasValue(e, run));
