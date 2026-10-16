@@ -278,8 +278,7 @@ pub fn tool_list() -> Vec<Value> {
             "description": "State of a node of this run: status, url/port, exit code, the \
                 last lines of its log and, for an agent node, its final answer (text) and a \
                 summary of what it changed (diff: files and +/- lines); secrets redacted. \
-                paths has the absolute paths of its outputs (context.md, diff.patch, \
-                log.txt) to read the rest.",
+                Raw output files are not exposed.",
             "inputSchema": {
                 "type": "object",
                 "properties": {"node_id": string_prop("The node_id.")},

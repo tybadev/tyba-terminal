@@ -1526,7 +1526,8 @@ impl<H: RunHost> Runs<H> {
     /// e, quando o nó tem, o resultado: o texto do turno (`context.md`, já
     /// redigido) e o resumo do diff — o agente criado não grava `log.txt`, e
     /// sem isto o orquestrador via `done` sem saber o que ele disse nem o que
-    /// mudou. `paths` leva os caminhos absolutos para ler o resto.
+    /// mudou. Só sai o que já é redigido: nada de caminho para a saída crua
+    /// (log, patch, nota, json) — o log inteiro vem por ferramenta que redige.
     pub fn node_status(&self, run_id: &str, node_id: &str) -> Result<serde_json::Value, String> {
         let run = self.get(run_id).ok_or("execução não encontrada")?;
         let n = run
@@ -1549,19 +1550,6 @@ impl<H: RunHost> Runs<H> {
             .get(&EdgeKind::Diff)
             .and_then(|p| std::fs::read_to_string(p).ok())
             .map(|patch| orchestrator::diff_summary(&patch));
-        let mut paths: serde_json::Map<String, serde_json::Value> = n
-            .outputs
-            .iter()
-            .filter_map(|(kind, path)| {
-                let key = serde_json::to_value(kind).ok()?.as_str()?.to_string();
-                Some((key, path.clone().into()))
-            })
-            .collect();
-        if let Some(p) = log_path.filter(|p| p.is_file()) {
-            paths
-                .entry("log")
-                .or_insert_with(|| p.to_string_lossy().into_owned().into());
-        }
         let port = n.url.as_deref().and_then(|u| {
             let authority = u.split("://").nth(1)?.split(['/', '?', '#']).next()?;
             authority.rsplit_once(':')?.1.parse::<u16>().ok()
@@ -1577,7 +1565,6 @@ impl<H: RunHost> Runs<H> {
             "text": turn.as_ref().map(|(t, _)| t),
             "text_truncated": turn.as_ref().is_some_and(|(_, cut)| *cut),
             "diff": diff,
-            "paths": paths,
         }))
     }
 
@@ -3537,7 +3524,7 @@ mod tests {
     }
 
     /// O orquestrador delega a um agente criado e lê o resultado: a fala
-    /// final (redigida), o que mudou na pasta e onde ler o resto.
+    /// final (redigida) e o resumo do que mudou na pasta — sem caminho cru.
     #[cfg(unix)]
     #[test]
     fn node_status_of_a_created_agent_brings_its_answer_and_diff() {
@@ -3574,14 +3561,10 @@ mod tests {
             st["diff"]["files"],
             json!([{"path": "revisor.txt", "added": 1, "removed": 0}])
         );
-        for kind in ["context", "diff"] {
-            let path = st["paths"][kind].as_str().unwrap();
-            assert!(
-                Path::new(path).is_absolute() && Path::new(path).is_file(),
-                "{st}"
-            );
-        }
-        assert!(st["paths"].get("log").is_none(), "agente não grava log.txt");
+        // Nenhum caminho para saída crua (patch, log, nota) sai da ferramenta.
+        assert!(st.get("paths").is_none(), "{st}");
+        let out = dir.path().join("runs");
+        assert!(!st.to_string().contains(&*out.to_string_lossy()), "{st}");
         runs.stop(&run.id).unwrap();
     }
 
