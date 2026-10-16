@@ -105,7 +105,7 @@ import {
   type ApprovalRequest,
   type SubagentRun,
 } from "@/lib/ipc";
-import { nodeApproval, nodeApprovalIds } from "@/lib/maestroCard";
+import { nodeApproval } from "@/lib/maestroCard";
 import { keepIfSame } from "@/lib/stableItems";
 import {
   EMPTY_HISTORY,
@@ -144,8 +144,11 @@ export function MaestroScreen({
   focusSession = null,
   approvals = [],
   onCardApprovals,
+  covered = false,
 }: {
   focusSession?: FocusSessionRequest | null;
+  /** Outra tela do app por cima do Maestro (Serviços e portas). */
+  covered?: boolean;
   /** Pedidos de aprovação pendentes (do core, via App). */
   approvals?: readonly ApprovalRequest[];
   /** Os ids que as cápsulas dos nós mostram agora: saem do toast. */
@@ -157,6 +160,7 @@ export function MaestroScreen({
         focusSession={focusSession}
         approvals={approvals}
         onCardApprovals={onCardApprovals}
+        covered={covered}
       />
     </ReactFlowProvider>
   );
@@ -175,10 +179,12 @@ function MaestroInner({
   focusSession,
   approvals,
   onCardApprovals,
+  covered,
 }: {
   focusSession: FocusSessionRequest | null;
   approvals: readonly ApprovalRequest[];
   onCardApprovals?: (ids: ReadonlySet<number>) => void;
+  covered: boolean;
 }) {
   const { t, i18n } = useTranslation();
   // Home: onde nasce o nó quando ainda não há pasta usada. `null` = lendo.
@@ -401,11 +407,10 @@ function MaestroInner({
     }
     return out;
   }, [agentSessions, approvals]);
-  const cardIdsKey = [...nodeApprovalIds(agentSessions.values(), approvals)].sort().join(",");
-  useEffect(() => {
-    onCardApprovals?.(new Set(cardIdsKey ? cardIdsKey.split(",").map(Number) : []));
-  }, [cardIdsKey, onCardApprovals]);
-  useEffect(() => () => onCardApprovals?.(new Set()), [onCardApprovals]);
+  const cardApprovals = useCallback(
+    (ids: ReadonlySet<number>) => onCardApprovals?.(ids),
+    [onCardApprovals],
+  );
   const [openSub, setOpenSub] = useState<string | null>(null);
   const [focusNode, setFocusNode] = useState<string | null>(null);
   const opened = useMemo(() => {
@@ -1087,6 +1092,8 @@ function MaestroInner({
               onRemoved={onRemoved}
               error={error}
               newDir={newDir}
+              foreground={!covered && !showInts && importing === null}
+              onCardApprovals={cardApprovals}
             />
           ) : (
             <div className="flex flex-1 items-center justify-center text-[12.5px] text-tyba-text-faint">

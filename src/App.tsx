@@ -5786,6 +5786,7 @@ export default function App() {
                   focusSession={maestroFocus}
                   approvals={approvals}
                   onCardApprovals={setNodeCardIds}
+                  covered={machineScreen !== null}
                 />
               </ErrorBoundary>
               {machineScreen && (

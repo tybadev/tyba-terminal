@@ -46,7 +46,7 @@ import {
 } from "@/lib/graphLayout";
 import { paletteEntries, recentDirs, type PaletteEntry } from "@/lib/graphPalette";
 import { listSnippets, type Snippet } from "@/lib/ipc";
-import { ringState } from "@/lib/maestroCard";
+import { ringState, visibleCardApprovalIds } from "@/lib/maestroCard";
 import { IS_MAC } from "@/lib/platform";
 import { getTerm } from "@/lib/termRegistry";
 import {
@@ -380,6 +380,8 @@ export function MaestroCanvas({
   onRemoved,
   error,
   newDir,
+  foreground,
+  onCardApprovals,
 }: {
   nodes: MaestroFlowNode[];
   edges: MaestroFlowEdge[];
@@ -400,6 +402,10 @@ export function MaestroCanvas({
   error: string | null;
   /** Pasta onde o nó novo nasce (a última usada, ou a home). */
   newDir: string;
+  /** Nada da tela cobre o canvas (Serviços, Integrações, importar). */
+  foreground: boolean;
+  /** Os pedidos que uma cápsula mostra na tela agora: saem do toast. */
+  onCardApprovals: (ids: ReadonlySet<number>) => void;
 }) {
   const { t } = useTranslation();
   const { screenToFlowPosition, zoomTo, fitView, setCenter } = useReactFlow();
@@ -885,6 +891,27 @@ export function MaestroCanvas({
     [shownNodes, transform, paneW, paneH],
   );
   useEffect(() => onOverflow(overflow), [overflow, onOverflow]);
+  // O toast do pedido só sai quando a cápsula do nó está à vista e o canvas
+  // em primeiro plano (o modo foco cobre o canvas inteiro).
+  const cardIdsKey = useMemo(
+    () =>
+      [
+        ...visibleCardApprovalIds({
+          cards: shownNodes.map((n) => ({ id: n.id, rect: nodeRect(n) })),
+          approvals,
+          view: { x: transform[0], y: transform[1], zoom: transform[2] },
+          pane: { w: paneW, h: paneH },
+          foreground: foreground && !focusNode,
+        }),
+      ]
+        .sort((a, b) => a - b)
+        .join(","),
+    [shownNodes, approvals, transform, paneW, paneH, foreground, focusNode],
+  );
+  useEffect(() => {
+    onCardApprovals(new Set(cardIdsKey ? cardIdsKey.split(",").map(Number) : []));
+  }, [cardIdsKey, onCardApprovals]);
+  useEffect(() => () => onCardApprovals(new Set()), [onCardApprovals]);
   const showMinimap = minimap ?? overflow;
   const nodeColor = useCallback(
     (n: CanvasNode) =>
