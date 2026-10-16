@@ -5048,6 +5048,7 @@ version = "0.8.1"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
+ "block2",
  "chrono",
  "ctor",
  "flate2",
@@ -5058,6 +5059,7 @@ dependencies = [
  "objc2",
  "objc2-app-kit",
  "objc2-foundation",
+ "objc2-web-kit",
  "parking_lot",
  "percent-encoding",
  "portable-pty",
@@ -5086,6 +5088,7 @@ dependencies = [
  "uuid",
  "vt100",
  "windows-sys 0.59.0",
+ "wry",
  "zip",
 ]
 

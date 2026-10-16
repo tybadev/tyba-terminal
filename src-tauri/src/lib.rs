@@ -8835,6 +8835,99 @@ fn orbit_service_logs_retain(
     logs.0.retain(&container_ids.into_iter().collect());
 }
 
+/// Navegador nativo do nó (Fase 5): o nó existe neste sistema? Fora do
+/// macOS, por enquanto, o front segue no iframe.
+#[tauri::command]
+fn orbit_browser_native() -> bool {
+    orbit::browser::NATIVE
+}
+
+fn browser_key(graph_id: String, node_id: String) -> orbit::browser::ViewKey {
+    orbit::browser::ViewKey {
+        graph: graph_id,
+        node: node_id,
+    }
+}
+
+/// Abre `url` no navegador nativo do nó. A regra é a do core
+/// (`orbit::browser::policy`): só local; `file://` só `.html` dentro da
+/// pasta do workspace ou de um nó ligado ao navegador.
+#[tauri::command]
+fn orbit_browser_navigate(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    views: State<'_, orbit::browser::BrowserViews>,
+    graph_id: String,
+    node_id: String,
+    url: String,
+) -> Result<(), String> {
+    let roots = state
+        .store
+        .get_orbit_graph(&graph_id)
+        .map_err(|e| e.to_string())?
+        .map(|g| orbit::browser::file_roots(&g.value, &node_id))
+        .unwrap_or_default();
+    views.navigate(&app, &browser_key(graph_id, node_id), &url, &roots)
+}
+
+/// A intenção de geometria do card: `rect` com o marcador inteiro à vista
+/// e nada por cima, ou `null` para esconder (o card mostra o print).
+#[tauri::command]
+fn orbit_browser_view(
+    app: AppHandle,
+    views: State<'_, orbit::browser::BrowserViews>,
+    graph_id: String,
+    node_id: String,
+    rect: Option<orbit::browser::ViewRect>,
+    zoom: f64,
+    center: Option<(f64, f64)>,
+) {
+    views.set_view(&app, &browser_key(graph_id, node_id), rect, zoom, center);
+}
+
+#[tauri::command]
+fn orbit_browser_back(
+    app: AppHandle,
+    views: State<'_, orbit::browser::BrowserViews>,
+    graph_id: String,
+    node_id: String,
+) {
+    views.back(&app, &browser_key(graph_id, node_id));
+}
+
+#[tauri::command]
+fn orbit_browser_reload(
+    app: AppHandle,
+    views: State<'_, orbit::browser::BrowserViews>,
+    graph_id: String,
+    node_id: String,
+) {
+    views.reload(&app, &browser_key(graph_id, node_id));
+}
+
+/// O estado atual de um navegador (o card remontado não perde o que já
+/// passou pelo evento).
+#[tauri::command]
+fn orbit_browser_state(
+    views: State<'_, orbit::browser::BrowserViews>,
+    graph_id: String,
+    node_id: String,
+) -> Option<orbit::browser::BrowserState> {
+    views.state(&browser_key(graph_id, node_id))
+}
+
+/// Só sobrevivem os navegadores que o canvas mostra; o Orbit fechado manda
+/// a lista vazia e toda view nativa é destruída.
+#[tauri::command]
+fn orbit_browser_retain(
+    app: AppHandle,
+    views: State<'_, orbit::browser::BrowserViews>,
+    graph_id: String,
+    node_ids: Vec<String>,
+) {
+    views.retain(&app, &graph_id, &node_ids);
+}
+
 /// Grava o `.tyba-orbit.toml` com o grafo e as integrações que ele usa.
 /// Devolve as variáveis zeradas e os campos com segredo literal, para avisar.
 #[tauri::command]
@@ -9514,6 +9607,7 @@ pub fn run() {
             );
             app.manage(orbit_runs);
             app.manage(orbit::service::ServiceLogs::default());
+            app.manage(orbit::browser::BrowserViews::default());
 
             // O canal shim↔core (shim v2, passo 2, tech-spec §3/§4): socket por
             // usuário, ligado uma vez no boot, depois do `app.manage` acima —
@@ -9919,6 +10013,13 @@ pub fn run() {
             orbit_keep_created,
             orbit_runs_list,
             orbit_service_logs_start,
+            orbit_browser_native,
+            orbit_browser_navigate,
+            orbit_browser_view,
+            orbit_browser_back,
+            orbit_browser_reload,
+            orbit_browser_state,
+            orbit_browser_retain,
             orbit_service_logs_retain,
             orbit_export,
             orbit_import_preview,
