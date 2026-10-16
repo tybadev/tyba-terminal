@@ -43,6 +43,16 @@ pub enum SessionKind {
     },
 }
 
+/// De quem é a sessão. A da grade vai ao banco e volta no boot; a de um nó
+/// do Maestro é do run: nunca vai ao banco, então nunca volta como shell ou
+/// agente morto na grade depois de o app fechar com ela viva.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SessionOwner {
+    #[default]
+    Grid,
+    Maestro,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentRunnerKind {
@@ -255,6 +265,9 @@ pub struct Session {
     /// vira `cd` depois de [`crate::agent::claude_resume_dir`].
     #[serde(skip)]
     pub agent_conversation_cwd: Option<PathBuf>,
+    /// Fixo na criação. Só memória: o que está no banco é sempre da grade.
+    #[serde(skip)]
+    pub owner: SessionOwner,
 }
 
 #[derive(Debug, Deserialize)]
@@ -571,6 +584,7 @@ impl SessionManager {
             opts.cols,
             opts.rows,
             opts.opened_by_gate,
+            SessionOwner::Grid,
             on_exit,
         );
         if result.is_ok() {
@@ -614,6 +628,7 @@ impl SessionManager {
         cols: u16,
         rows: u16,
         kind: SessionKind,
+        owner: SessionOwner,
         on_exit: impl FnOnce(SessionId) + Send + 'static,
     ) -> Result<Session, PtyError> {
         let id = Uuid::new_v4();
@@ -634,7 +649,8 @@ impl SessionManager {
             crate::ssh::command::apply_pty_env(&mut cmd);
         }
         self.spawn_session(
-            app, pty_pool, id, cmd, kind, title, None, None, None, cols, rows, false, on_exit,
+            app, pty_pool, id, cmd, kind, title, None, None, None, cols, rows, false, owner,
+            on_exit,
         )
     }
 
@@ -802,6 +818,7 @@ impl SessionManager {
             None,
             cwd,
             false,
+            SessionOwner::Grid,
             connection,
             connection_failure,
         );
@@ -838,6 +855,7 @@ impl SessionManager {
         cols: u16,
         rows: u16,
         opened_by_gate: bool,
+        owner: SessionOwner,
         on_exit: impl FnOnce(SessionId) + Send + 'static,
     ) -> Result<Session, PtyError> {
         let cwd = self.prepare_env(&mut cmd, id);
@@ -866,6 +884,7 @@ impl SessionManager {
             worktree,
             cwd,
             opened_by_gate,
+            owner,
             ConnectionState::Live,
             None,
         ))
@@ -941,6 +960,7 @@ impl SessionManager {
         worktree: Option<crate::worktree::Worktree>,
         cwd: Option<PathBuf>,
         opened_by_gate: bool,
+        owner: SessionOwner,
         connection: ConnectionState,
         connection_failure: Option<CanoFailure>,
     ) -> Session {
@@ -974,11 +994,20 @@ impl SessionManager {
             agent_usage: None,
             shell_resume_offer: false,
             agent_conversation_cwd: previous.and_then(|s| s.agent_conversation_cwd),
+            owner,
         };
         self.sessions.write().insert(id, session.clone());
-        let _ = self.store.upsert_session(&session);
+        self.persist(&session);
         emit_status(app, &session);
         session
+    }
+
+    /// Grava a sessão no banco, salvo a do Maestro ([`SessionOwner`]).
+    fn persist(&self, s: &Session) {
+        if s.owner == SessionOwner::Maestro {
+            return;
+        }
+        let _ = self.store.upsert_session(s);
     }
 
     pub fn list(&self) -> Vec<Session> {
@@ -1085,7 +1114,7 @@ impl SessionManager {
             s.subagents_working = false;
         }
         let prev = std::mem::replace(&mut s.status, status);
-        let _ = self.store.upsert_session(s);
+        self.persist(s);
         Some((prev, s.clone()))
     }
 
@@ -1146,7 +1175,7 @@ impl SessionManager {
         if !pair_conversation(s, conversation, cwd) {
             return;
         }
-        let _ = self.store.upsert_session(s);
+        self.persist(s);
         emit_status(app, s);
     }
 
@@ -2263,6 +2292,7 @@ mod tests {
             agent_usage: None,
             shell_resume_offer: false,
             agent_conversation_cwd: None,
+            owner: Default::default(),
         }
     }
 
@@ -3533,6 +3563,40 @@ echo beta
             depois.observed.unwrap().state,
             Some(ObservedState::AwaitingInput)
         );
+    }
+
+    /// Sessão de nó do Maestro muda de estado (Running → Idle → esperando)
+    /// com o app aberto e nunca chega ao banco: fechar o app com ela viva não
+    /// a traz de volta no boot como agente morto da grade. A da grade vai.
+    #[test]
+    fn sessao_do_maestro_nunca_vai_ao_banco() {
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        let manager = SessionManager::new(Arc::clone(&store));
+        let mut node = make(
+            SessionKind::Agent {
+                runner: AgentRunnerKind::ClaudeCode,
+            },
+            SessionStatus::Running,
+        );
+        node.owner = SessionOwner::Maestro;
+        let grid = make(SessionKind::Shell, SessionStatus::Running);
+        let (node_id, grid_id) = (node.id, grid.id);
+        manager.sessions.write().insert(node_id, node);
+        manager.sessions.write().insert(grid_id, grid);
+
+        manager.apply_status(node_id, SessionStatus::Idle { summary: None });
+        manager.apply_status(grid_id, SessionStatus::Idle { summary: None });
+
+        let ids: Vec<SessionId> = store
+            .load_sessions()
+            .unwrap()
+            .iter()
+            .map(|s| s.id)
+            .collect();
+        assert_eq!(ids, vec![grid_id]);
+        let reborn = SessionManager::new(Arc::clone(&store));
+        reborn.restore().unwrap();
+        assert!(reborn.get(node_id).is_none());
     }
 
     /// E o inverso: mexer no fato não apaga o palpite por efeito colateral.

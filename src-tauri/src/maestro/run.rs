@@ -1908,6 +1908,8 @@ impl RunHost for TauriHost {
                 100,
                 30,
                 crate::session::SessionKind::Shell,
+                // Sessão de nó é do run, não da grade: nunca vai ao banco.
+                crate::session::SessionOwner::Maestro,
                 move |id| {
                     let state = handle.state::<crate::AppState>();
                     state.sessions.set_status(
@@ -1915,14 +1917,10 @@ impl RunHost for TauriHost {
                         id,
                         crate::session::SessionStatus::Exited { code: -1 },
                     );
-                    // A linha no banco faria o boot reabrir este nó como shell.
-                    let _ = state.store.remove_session(id);
                     on_exit();
                 },
             )
             .map_err(|e| e.to_string())?;
-        // Sessão de nó não volta no boot: é do run, não da grade.
-        let _ = state.store.remove_session(session.id);
         Ok(session.id.to_string())
     }
 
@@ -1971,10 +1969,7 @@ impl RunHost for TauriHost {
                 id,
                 crate::session::SessionStatus::Exited { code: -1 },
             );
-            let _ = state.store.remove_session(id);
         })?;
-        // Sessão de nó não volta no boot: é do run, não da grade.
-        let _ = state.store.remove_session(session.id);
         let sessions = Arc::clone(&state.sessions);
         let id = session.id;
         super::agent::watch_first_turn(

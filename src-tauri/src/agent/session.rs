@@ -1916,6 +1916,8 @@ pub fn spawn_free_agent(
             spec.cols,
             spec.rows,
             false,
+            // O agente livre é sempre de um nó do Maestro: nunca vai ao banco.
+            crate::session::SessionOwner::Maestro,
             teardown,
         )
         .map_err(|e| {
@@ -2350,6 +2352,7 @@ fn spawn_prepared(
             opts.cols,
             opts.rows,
             opts.opened_by_gate,
+            crate::session::SessionOwner::Grid,
             on_exit,
         )
         .map_err(|e| {

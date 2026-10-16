@@ -195,6 +195,7 @@ mod tests {
             agent_usage: None,
             shell_resume_offer: false,
             agent_conversation_cwd: None,
+            owner: Default::default(),
         };
         store.upsert_session(&session).unwrap();
         id
@@ -514,6 +515,7 @@ mod tests {
                 agent_usage: None,
                 shell_resume_offer: false,
                 agent_conversation_cwd: None,
+                owner: Default::default(),
             })
             .unwrap();
         block(&store, shell, 1_000, 100);

@@ -675,6 +675,7 @@ mod tests {
             agent_usage: None,
             shell_resume_offer: false,
             agent_conversation_cwd: None,
+            owner: Default::default(),
         }
     }
 

@@ -5583,6 +5583,7 @@ fn open_container_tab(
                         host_id: Some(h.id.clone()),
                         container_id: container_id.to_string(),
                     },
+                    crate::session::SessionOwner::Grid,
                     move |id| session_exited(&handle, id),
                 )
                 .map_err(|e| e.to_string())?;
@@ -5709,6 +5710,7 @@ fn spawn_tab_session(
             100,
             30,
             kind,
+            crate::session::SessionOwner::Grid,
             move |id| session_exited(&handle, id),
         )
         .map_err(|e| e.to_string())?;
@@ -6374,6 +6376,7 @@ fn screen_container_session(
                 host_id,
                 container_id: container_id.to_string(),
             },
+            crate::session::SessionOwner::Grid,
             move |id| session_exited(&handle, id),
         )
         .map_err(|e| e.to_string())?;
@@ -10616,6 +10619,7 @@ mod tests {
             agent_usage: None,
             shell_resume_offer: false,
             agent_conversation_cwd: None,
+            owner: Default::default(),
         }
     }
 
@@ -11040,6 +11044,7 @@ mod tests {
             agent_usage: None,
             shell_resume_offer: false,
             agent_conversation_cwd: None,
+            owner: Default::default(),
             ..agent_session(uuid::Uuid::new_v4(), None)
         };
         assert!(!should_auto_close_gate_tab(&s));
