@@ -129,6 +129,48 @@ pub fn write_open_shim(runtime_dir: &Path, exe: &Path) -> Result<PathBuf, String
     Ok(path)
 }
 
+/// Pasta dos shims de comando no runtime dir (vai no início do PATH).
+pub const SHIM_BIN_DIR: &str = "bin";
+/// O `open` de verdade do macOS.
+pub const SYSTEM_OPEN: &str = "/usr/bin/open";
+
+/// O `open` do shim: só `open <url http(s)>` (um argumento, nada mais) cai
+/// no `tyba _orbit-open`, o mesmo caminho do `$BROWSER`. Qualquer outro uso
+/// (arquivo, `-a App`, `file://`, várias urls, opções) vai intacto para o
+/// `open` do sistema.
+pub fn open_cmd_script(exe: &Path, system_open: &Path) -> String {
+    let q = crate::agent::browser_bridge::shell_quote;
+    format!(
+        "#!/bin/sh\n\
+         if [ \"$#\" -eq 1 ]; then\n\
+         \x20 case \"$1\" in\n\
+         \x20   http://*|https://*|HTTP://*|HTTPS://*) exec {} {OPEN_MODE} \"$1\" ;;\n\
+         \x20 esac\n\
+         fi\n\
+         exec {} \"$@\"\n",
+        q(exe),
+        q(system_open)
+    )
+}
+
+/// Só no macOS: escreve `<runtime>/bin/open` (0500) e devolve a pasta, para
+/// ir no início do PATH da sessão. O `open` do macOS ignora `$BROWSER`.
+#[cfg(unix)]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn write_open_cmd_shim(runtime_dir: &Path, exe: &Path) -> Result<PathBuf, String> {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = runtime_dir.join(SHIM_BIN_DIR);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("pasta de shims do Orbit: {e}"))?;
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))
+        .map_err(|e| format!("permissão da pasta de shims do Orbit: {e}"))?;
+    let path = dir.join("open");
+    std::fs::write(&path, open_cmd_script(exe, Path::new(SYSTEM_OPEN)))
+        .map_err(|e| format!("escrita do open do Orbit: {e}"))?;
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o500))
+        .map_err(|e| format!("permissão do open do Orbit: {e}"))?;
+    Ok(dir)
+}
+
 /// Um pedido de ferramenta pelo socket da sessão. `result` traz o valor;
 /// `deny` traz o motivo (validação recusada, sessão fora do Orbit).
 fn call_core(socket: Option<&Path>, tool: &str, args: &Value) -> Result<Value, String> {
@@ -511,7 +553,8 @@ pub fn tool_list(can_create: bool) -> Vec<Value> {
                     "mode": {
                         "type": "string",
                         "enum": ["replace", "append"],
-                        "description": "replace (default) or append on a new line."
+                        "description": "replace (default) or append on a new line; each appended line is \
+                         signed \" (<your title>, HH:MM)\" by TYBA."
                     }
                 },
                 "required": ["node", "text"],
@@ -877,6 +920,72 @@ mod tests {
             "#!/bin/sh\nexec '/Applications/TYBA Dev.app/Contents/MacOS/tyba' _orbit-open \"$@\"\n"
         );
         let mode = std::fs::metadata(&shim).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o500);
+    }
+
+    /// O `open` do shim rodado de verdade com `sh`: o "tyba" e o "open do
+    /// sistema" são scripts falsos que só ecoam quem foi chamado e com quê.
+    #[cfg(unix)]
+    #[test]
+    fn open_cmd_shim_sends_only_a_lone_http_url_to_the_node() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let fake = |name: &str| {
+            let p = dir.path().join(name);
+            std::fs::write(&p, format!("#!/bin/sh\necho {name} \"$@\"\n")).unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o700)).unwrap();
+            p
+        };
+        let exe = fake("tyba");
+        let sys = fake("sysopen");
+        let shim = dir.path().join("open");
+        std::fs::write(&shim, open_cmd_script(&exe, &sys)).unwrap();
+        let run = |args: &[&str]| {
+            let out = std::process::Command::new("sh")
+                .arg(&shim)
+                .args(args)
+                .output()
+                .unwrap();
+            String::from_utf8(out.stdout).unwrap().trim().to_string()
+        };
+        assert_eq!(
+            run(&["http://localhost:5173"]),
+            "tyba _orbit-open http://localhost:5173"
+        );
+        assert_eq!(
+            run(&["https://a.test/x?y=1"]),
+            "tyba _orbit-open https://a.test/x?y=1"
+        );
+        assert_eq!(run(&["file:///etc/hosts"]), "sysopen file:///etc/hosts");
+        assert_eq!(run(&["README.md"]), "sysopen README.md");
+        assert_eq!(
+            run(&["-a", "Safari", "http://x.test"]),
+            "sysopen -a Safari http://x.test"
+        );
+        assert_eq!(
+            run(&["http://a.test", "http://b.test"]),
+            "sysopen http://a.test http://b.test"
+        );
+        assert_eq!(run(&[]), "sysopen");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn open_cmd_shim_is_0500_in_a_bin_dir() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let exe = Path::new("/Applications/TYBA Dev.app/Contents/MacOS/tyba");
+        let bin = write_open_cmd_shim(dir.path(), exe).unwrap();
+        assert_eq!(bin, dir.path().join(SHIM_BIN_DIR));
+        let body = std::fs::read_to_string(bin.join("open")).unwrap();
+        assert!(
+            body.contains("'/Applications/TYBA Dev.app/Contents/MacOS/tyba' _orbit-open \"$1\"")
+        );
+        assert!(body.ends_with("exec '/usr/bin/open' \"$@\"\n"));
+        let mode = std::fs::metadata(bin.join("open"))
+            .unwrap()
+            .permissions()
+            .mode();
         assert_eq!(mode & 0o777, 0o500);
     }
 

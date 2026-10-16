@@ -15,6 +15,7 @@ import {
   clockTime,
   freshWrite,
   inboxSenders,
+  lineAuthor,
   lastNoteWritten,
   memoryAgents,
   noteMemoryLabel,
@@ -213,5 +214,22 @@ describe("conversa e memória nos cards e na barra", () => {
     expect(roomAgents(edges)).toBe(2);
     expect(roomAgents([...edges, { id: "t2", from: "rev", to: "x", kind: "talk" }])).toBe(3);
     expect(roomAgents(edges.filter((e) => e.kind !== "talk"))).toBe(0);
+  });
+});
+
+describe("lineAuthor", () => {
+  test("separa o texto da autoria do append", () => {
+    expect(lineAuthor("- semana começa na segunda (dev, 14:22)")).toEqual({
+      text: "- semana começa na segunda",
+      author: "(dev, 14:22)",
+    });
+    expect(lineAuthor("ok (back api x, 09:05)")?.author).toBe("(back api x, 09:05)");
+  });
+  test("linha sem o padrão fica como está", () => {
+    expect(lineAuthor("- datas sempre em UTC no banco")).toBeNull();
+    expect(lineAuthor("(dev, 14:22)")).toBeNull();
+    expect(lineAuthor("x (dev, 1422)")).toBeNull();
+    expect(lineAuthor("x (dev, 14:22) depois")).toBeNull();
+    expect(lineAuthor("")).toBeNull();
   });
 });

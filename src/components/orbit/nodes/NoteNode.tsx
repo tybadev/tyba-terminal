@@ -5,7 +5,7 @@ import type { NodeProps } from "@xyflow/react";
 
 import type { NodeKind, StepState } from "@/lib/orbit";
 import { checklistCount, isPlanNote, noteEditable, parseChecklist } from "@/lib/orbitPlan";
-import { clockTime, freshWrite, memoryAgents, noteMemoryLabel, writeOnBlur } from "@/lib/orbitTalk";
+import { clockTime, freshWrite, lineAuthor, memoryAgents, noteMemoryLabel, writeOnBlur } from "@/lib/orbitTalk";
 import { NodeFrame, useCanvasActions, useOrbit, type OrbitFlowNode } from "./NodeFrame";
 
 /** Ícone e cor de cada estado do passo (quadro OrbitPlano). */
@@ -133,7 +133,7 @@ export function NoteNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
           })}
           className={`nodrag nowheel min-h-0 flex-1 overflow-y-auto px-4 pt-1 pb-3 font-sans text-[13px] leading-[1.45] text-tyba-text${editable ? " cursor-text" : ""}`}
         >
-          {!steps && <div className="whitespace-pre-wrap">{kind.markdown}</div>}
+          {!steps && <NoteText markdown={kind.markdown} />}
           {steps?.map((s, i) => (
             <div key={i}>
               <div className="flex items-start gap-2.5 py-1.5">
@@ -186,5 +186,33 @@ export function NoteNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
         />
       )}
     </NodeFrame>
+  );
+}
+
+/**
+ * O texto da nota. Linha escrita por agente (` (dev, 14:22)` no fim) fica em
+ * destaque com a autoria em cinza violeta; havendo alguma, as outras ficam
+ * apagadas (quadro MaestroConversa).
+ */
+function NoteText({ markdown }: { markdown: string }) {
+  const lines = markdown.split("\n").map((l) => ({ line: l, by: lineAuthor(l) }));
+  if (!lines.some((l) => l.by)) return <div className="whitespace-pre-wrap">{markdown}</div>;
+  return (
+    <div className="whitespace-pre-wrap text-tyba-text-muted">
+      {lines.map(({ line, by }, i) => (
+        <div key={i}>
+          {by ? (
+            <span className="text-tyba-text">
+              {by.text}{" "}
+              <span className="text-[color-mix(in_srgb,var(--tyba-violet)_45%,var(--tyba-text-faint))]">
+                {by.author}
+              </span>
+            </span>
+          ) : (
+            line || "\u00a0"
+          )}
+        </div>
+      ))}
+    </div>
   );
 }

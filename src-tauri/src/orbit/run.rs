@@ -1834,7 +1834,14 @@ impl<H: RunHost> Runs<H> {
                  escrever nela"
             ));
         }
-        let markdown = talk::note_text(markdown, text, append)?;
+        let by = a
+            .graph
+            .nodes
+            .iter()
+            .find(|n| n.id == agent)
+            .map_or_else(|| agent.to_string(), |n| n.title.clone());
+        let stamp = talk::author_stamp(&by, &chrono::Local::now().format("%H:%M").to_string());
+        let markdown = talk::note_text(markdown, text, append, &stamp)?;
         let kind = NodeKind::Note {
             markdown: markdown.clone(),
             locked: false,
@@ -1866,12 +1873,6 @@ impl<H: RunHost> Runs<H> {
         if let Some(n) = a.graph.nodes.iter_mut().find(|n| n.id == node) {
             n.kind = kind;
         }
-        let by = a
-            .graph
-            .nodes
-            .iter()
-            .find(|n| n.id == agent)
-            .map_or_else(|| agent.to_string(), |n| n.title.clone());
         let chars = markdown.chars().count();
         if let Some(n) = a.sched.run.nodes.get_mut(node) {
             n.written = Some(NoteWritten {
@@ -5557,7 +5558,13 @@ mod tests {
             panic!("nota");
         };
         assert!(markdown.starts_with("porta 5173, chave "), "{markdown}");
-        assert!(markdown.ends_with("\nlogin ok"), "{markdown}");
+        // O append marca a linha com quem escreveu e a hora local.
+        let last = markdown.rsplit('\n').next().unwrap();
+        let hhmm = last
+            .strip_prefix("login ok (Front, ")
+            .and_then(|r| r.strip_suffix(')'))
+            .unwrap_or_else(|| panic!("{markdown}"));
+        assert!(hhmm.len() == 5 && hhmm.as_bytes()[2] == b':', "{markdown}");
         assert!(!markdown.contains(&fake_key()), "{markdown}");
         assert!(!locked);
         let t = saved.nodes.iter().find(|n| n.id == "t").unwrap();
@@ -5649,13 +5656,11 @@ mod tests {
             )
             .unwrap();
         let saved = runs.store.get_orbit_graph("g-1").unwrap().unwrap().value;
-        assert_eq!(
-            saved.nodes[1].kind,
-            NodeKind::Note {
-                markdown: "do dono\ndo agente".into(),
-                locked: false,
-            }
-        );
+        let NodeKind::Note { markdown, locked } = &saved.nodes[1].kind else {
+            panic!("nota");
+        };
+        assert!(markdown.starts_with("do dono\ndo agente ("), "{markdown}");
+        assert!(!locked);
         runs.stop(&run.id).unwrap();
     }
 

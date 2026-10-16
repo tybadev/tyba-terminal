@@ -1814,6 +1814,17 @@ pub fn spawn_free_agent(
     if spec.orbit_tools.is_some() {
         let shim = crate::orbit::mcp::write_open_shim(&runtime, &exe)?;
         env.insert("BROWSER".into(), shim.to_string_lossy().into_owned());
+        // O `open` do macOS ignora `$BROWSER`: um `open` na frente do PATH
+        // manda `open <url>` para o mesmo caminho; o resto vai intacto.
+        #[cfg(target_os = "macos")]
+        {
+            let bin = crate::orbit::mcp::write_open_cmd_shim(&runtime, &exe)?;
+            let path = match env.get("PATH") {
+                Some(p) if !p.is_empty() => format!("{}:{p}", bin.display()),
+                _ => bin.display().to_string(),
+            };
+            env.insert("PATH".into(), path);
+        }
     }
     if matches!(runner.kind(), AgentRunnerKind::ClaudeCode) {
         let settings = observer_session_settings(

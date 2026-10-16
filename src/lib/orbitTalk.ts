@@ -122,3 +122,12 @@ export function undeliveredReason(undelivered: string): string {
 /** Agentes na sala: os que têm alguma ligação de conversa. */
 export const roomAgents = (edges: readonly Linked[]): number =>
   new Set(edges.filter((e) => e.kind === "talk").flatMap((e) => [e.from, e.to])).size;
+
+/**
+ * Uma linha da nota viva com a autoria que o core põe no `append`
+ * (` (dev, 14:22)`): o texto e o sufixo separados; sem o padrão, `null`.
+ */
+export function lineAuthor(line: string): { text: string; author: string } | null {
+  const m = /^(.*\S) (\([^()\n]+, \d{2}:\d{2}\))$/.exec(line);
+  return m ? { text: m[1], author: m[2] } : null;
+}

@@ -253,12 +253,27 @@ pub fn message_text(text: &str) -> Result<String, String> {
 
 /// O texto de `orbit_note_write`: sem caractere de controle além de `\n` e
 /// `\t` (a régua da nota), até [`MAX_NOTE_CHARS`] no resultado, e redigido.
-/// `append` junta ao texto atual numa linha nova.
-pub fn note_text(current: &str, text: &str, append: bool) -> Result<String, String> {
+/// `append` junta ao texto atual numa linha nova e marca cada linha nova não
+/// vazia com a autoria ` (<stamp>)` (ver [`author_stamp`]); `replace` não marca.
+pub fn note_text(current: &str, text: &str, append: bool, stamp: &str) -> Result<String, String> {
     if super::has_control_chars(text) {
         return Err("text contém caractere de controle".into());
     }
     let text = crate::session::redact::redact(text).into_owned();
+    let text = if append {
+        text.split('\n')
+            .map(|l| {
+                if l.trim().is_empty() {
+                    l.to_string()
+                } else {
+                    format!("{} ({stamp})", l.trim_end())
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    } else {
+        text
+    };
     let out = if append && !current.is_empty() {
         let sep = if current.ends_with('\n') { "" } else { "\n" };
         format!("{current}{sep}{text}")
@@ -272,6 +287,16 @@ pub fn note_text(current: &str, text: &str, append: bool) -> Result<String, Stri
         ));
     }
     Ok(out)
+}
+
+/// A autoria de uma linha da memória: `<título do agente>, HH:MM`. O título
+/// perde quebra, colchete e parêntese (não fecha o sufixo antes da hora).
+pub fn author_stamp(title: &str, hhmm: &str) -> String {
+    let title: String = clean_title(title)
+        .chars()
+        .filter(|c| !matches!(c, '(' | ')'))
+        .collect();
+    format!("{}, {hhmm}", title.trim())
 }
 
 /// O começo do texto para o retrato do run, em até [`SENT_PREVIEW_CHARS`].
@@ -514,18 +539,37 @@ mod tests {
     }
 
     #[test]
+    fn author_stamp_is_title_and_time_without_parens() {
+        assert_eq!(author_stamp("dev", "14:22"), "dev, 14:22");
+        assert_eq!(
+            author_stamp(" back (api)\n[x] ", "09:05"),
+            "back api x, 09:05"
+        );
+    }
+
+    #[test]
     fn note_text_appends_caps_and_redacts() {
-        assert_eq!(note_text("a", "b", true).unwrap(), "a\nb");
-        assert_eq!(note_text("a\n", "b", true).unwrap(), "a\nb");
-        assert_eq!(note_text("", "b", true).unwrap(), "b");
-        assert_eq!(note_text("a", "b", false).unwrap(), "b");
-        assert_eq!(note_text("x", "\tlinha", false).unwrap(), "\tlinha");
-        assert!(note_text("", "a\u{7}", false).is_err());
+        let st = "dev, 14:22";
+        assert_eq!(note_text("a", "b", true, st).unwrap(), "a\nb (dev, 14:22)");
+        assert_eq!(
+            note_text("a\n", "b", true, st).unwrap(),
+            "a\nb (dev, 14:22)"
+        );
+        assert_eq!(note_text("", "b", true, st).unwrap(), "b (dev, 14:22)");
+        // Cada linha nova não vazia ganha a autoria; vazia fica como está.
+        assert_eq!(
+            note_text("a", "- x  \n\n- y", true, st).unwrap(),
+            "a\n- x (dev, 14:22)\n\n- y (dev, 14:22)"
+        );
+        // replace não marca.
+        assert_eq!(note_text("a", "b", false, st).unwrap(), "b");
+        assert_eq!(note_text("x", "\tlinha", false, st).unwrap(), "\tlinha");
+        assert!(note_text("", "a\u{7}", false, st).is_err());
         let full = "x".repeat(MAX_NOTE_CHARS);
-        assert!(note_text("", &full, false).is_ok());
-        assert!(note_text(&full, "y", true).is_err());
+        assert!(note_text("", &full, false, st).is_ok());
+        assert!(note_text(&full, "y", true, st).is_err());
         let key = format!("sk-{}", "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6");
-        assert!(!note_text("", &key, false).unwrap().contains(&key));
+        assert!(!note_text("", &key, false, st).unwrap().contains(&key));
     }
 
     #[test]
