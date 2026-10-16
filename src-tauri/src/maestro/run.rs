@@ -1487,17 +1487,14 @@ impl<H: RunHost> Runs<H> {
                     kind: EdgeKind::Url,
                 });
             }
+            // Ao lado de quem dá a url (o navegador com `from_node`) ou do
+            // orquestrador, num espaço livre: o grafo do run já tem os nós do
+            // dono e os criados antes deste.
             let node = {
-                let siblings: Vec<&Node> = a
-                    .sched
-                    .run
-                    .created
-                    .iter()
-                    .filter(|c| c.created_by == orchestrator)
-                    .map(|c| &c.node)
-                    .collect();
-                let parent = a.graph.nodes.iter().find(|n| n.id == orchestrator);
-                orchestrator::new_node(id.clone(), title, kind, parent, &siblings)
+                let anchor_id = from_node.as_deref().unwrap_or(orchestrator);
+                let anchor = a.graph.nodes.iter().find(|n| n.id == anchor_id);
+                let occupied: Vec<&Node> = a.graph.nodes.iter().collect();
+                orchestrator::new_node(id.clone(), title, kind, anchor, &occupied)
             };
             for sub in ["in", "out"] {
                 create_private_dir(&root.join(run_id).join(&id).join(sub))

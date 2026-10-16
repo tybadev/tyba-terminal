@@ -242,27 +242,64 @@ fn default_size(kind: &NodeKind) -> Size {
     }
 }
 
-/// O nó novo, à direita do orquestrador, empilhado abaixo dos que ele já
-/// criou (quadro: uma coluna de nós tracejados).
+/// Folga mínima entre dois nós (a mesma `LAYOUT_GAP` do front).
+const LAYOUT_GAP: f64 = 40.0;
+
+fn overlaps(x: f64, y: f64, size: &Size, other: &Node) -> bool {
+    x < other.position.x + other.size.w + LAYOUT_GAP
+        && other.position.x < x + size.w + LAYOUT_GAP
+        && y < other.position.y + other.size.h + LAYOUT_GAP
+        && other.position.y < y + size.h + LAYOUT_GAP
+}
+
+/// A primeira posição livre a partir de `want` (achados canvas-6/nos-8): desce
+/// passando por baixo de quem estiver no caminho e, sem espaço na coluna,
+/// abre outra à direita. Espelha `freeSpot` (`src/lib/graphLayout.ts`).
+pub fn free_spot(want: Position, size: &Size, occupied: &[&Node]) -> Position {
+    const MAX_LANES: usize = 12;
+    const MAX_HOPS: usize = 60;
+    let mut last = want;
+    for lane in 0..MAX_LANES {
+        let x = want.x + lane as f64 * (size.w + LAYOUT_GAP);
+        let mut y = want.y;
+        for _ in 0..MAX_HOPS {
+            let Some(hit) = occupied.iter().find(|n| overlaps(x, y, size, n)) else {
+                return Position { x, y };
+            };
+            last = Position { x, y };
+            y = hit.position.y + hit.size.h + LAYOUT_GAP;
+            if y - want.y > 4000.0 {
+                break;
+            }
+        }
+    }
+    last
+}
+
+/// O nó novo, à direita de `anchor` (o orquestrador, ou o `from_node` do
+/// navegador) e num espaço livre: nunca cai em cima de um nó do grafo nem de
+/// outro criado (`occupied`).
 pub fn new_node(
     id: String,
     title: String,
     kind: NodeKind,
-    orchestrator: Option<&Node>,
-    siblings: &[&Node],
+    anchor: Option<&Node>,
+    occupied: &[&Node],
 ) -> Node {
     const GAP_X: f64 = 140.0;
-    const GAP_Y: f64 = 40.0;
     let size = default_size(&kind);
-    let (x, top) = orchestrator
-        .map(|o| (o.position.x + o.size.w + GAP_X, o.position.y))
-        .unwrap_or((0.0, 0.0));
-    let y = top + siblings.iter().map(|n| n.size.h + GAP_Y).sum::<f64>();
+    let want = anchor
+        .map(|o| Position {
+            x: o.position.x + o.size.w + GAP_X,
+            y: o.position.y,
+        })
+        .unwrap_or(Position { x: 0.0, y: 0.0 });
+    let position = free_spot(want, &size, occupied);
     Node {
         id,
         title,
         kind,
-        position: Position { x, y },
+        position,
         size,
     }
 }
@@ -616,23 +653,27 @@ Binary files a/logo.png and b/logo.png differ
         assert_eq!(turn_text(&tmp.path().join("nao")), None);
     }
 
-    #[test]
-    fn new_nodes_stack_to_the_right_of_the_orchestrator() {
-        let orch = Node {
-            id: "o".into(),
-            title: "Orquestrador".into(),
+    fn note(id: &str, x: f64, y: f64, w: f64, h: f64) -> Node {
+        Node {
+            id: id.into(),
+            title: id.into(),
             kind: NodeKind::Note {
                 markdown: String::new(),
             },
-            position: Position { x: 30.0, y: 40.0 },
-            size: Size { w: 370.0, h: 520.0 },
-        };
+            position: Position { x, y },
+            size: Size { w, h },
+        }
+    }
+
+    #[test]
+    fn new_nodes_stack_to_the_right_of_the_orchestrator() {
+        let orch = note("o", 30.0, 40.0, 370.0, 520.0);
         let first = new_node(
             "a".into(),
             "api".into(),
             NodeKind::Browser { url: String::new() },
             Some(&orch),
-            &[],
+            &[&orch],
         );
         assert_eq!(first.position, Position { x: 540.0, y: 40.0 });
         let second = new_node(
@@ -640,9 +681,42 @@ Binary files a/logo.png and b/logo.png differ
             "b".into(),
             NodeKind::Browser { url: String::new() },
             Some(&orch),
-            &[&first],
+            &[&orch, &first],
         );
-        assert_eq!(second.position.y, 40.0 + 420.0 + 40.0);
+        assert_eq!(
+            second.position,
+            Position {
+                x: 540.0,
+                y: 40.0 + 420.0 + 40.0
+            }
+        );
+    }
+
+    #[test]
+    fn new_node_never_lands_on_the_owners_nodes() {
+        let orch = note("o", 0.0, 0.0, 360.0, 250.0);
+        // O dono deixou um nó bem onde o criado cairia.
+        let mine = note("m", 480.0, 0.0, 400.0, 300.0);
+        let node = new_node(
+            "c".into(),
+            "c".into(),
+            NodeKind::Browser { url: String::new() },
+            Some(&orch),
+            &[&orch, &mine],
+        );
+        assert_eq!(node.position, Position { x: 500.0, y: 340.0 });
+        let size = node.size;
+        for other in [&orch, &mine] {
+            assert!(!overlaps(node.position.x, node.position.y, &size, other));
+        }
+    }
+
+    #[test]
+    fn free_spot_opens_a_new_column_when_this_one_is_full() {
+        let wall = note("w", 0.0, -100.0, 200.0, 10_000.0);
+        let size = Size { w: 100.0, h: 100.0 };
+        let at = free_spot(Position { x: 0.0, y: 0.0 }, &size, &[&wall]);
+        assert_eq!(at, Position { x: 280.0, y: 0.0 });
     }
 
     #[test]
