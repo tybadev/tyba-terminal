@@ -7684,6 +7684,16 @@ fn write_control(state: State<'_, AppState>, id: SessionId, bytes: String) -> Re
 
 /// Consulta o modo prompt em vez de esperar o evento: quem assina depois do
 /// primeiro prompt nunca receberia o `633;P` e ficaria sem a linha de comando.
+/// Prévia de texto de uma sessão (nó do Maestro fora do zoom 100%): as
+/// últimas linhas da tela renderizada pelo core, no tamanho real do PTY.
+#[tauri::command]
+fn session_screen_lines(state: State<'_, AppState>, id: SessionId, max: usize) -> Vec<String> {
+    state
+        .pty_pool
+        .screen_lines(id, max.min(200))
+        .unwrap_or_default()
+}
+
 /// Ctrl+L na linha de comando: limpa a lista de blocos da sessão, pelo mesmo
 /// caminho do `clear` (apaga do disco e avisa o front), sem rodar comando nem
 /// deixar bloco.
@@ -9789,6 +9799,7 @@ pub fn run() {
             session_line_echo,
             session_blocks,
             wipe_blocks,
+            session_screen_lines,
             search_command_history,
             scan_shell_history_sources,
             import_shell_history,

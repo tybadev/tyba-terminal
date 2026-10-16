@@ -1672,6 +1672,24 @@ impl PtyPool {
         Some(continuing)
     }
 
+    /// As últimas `max` linhas da tela renderizada, no tamanho real do PTY.
+    ///
+    /// Para prévia (nó do Maestro fora do zoom 100%): reinterpretar o fluxo
+    /// num segundo emulador de outra largura embaralha TUI que move o cursor
+    /// (o Claude redesenha linhas), e o `vt100` daqui já tem a tela certa.
+    pub fn screen_lines(&self, id: PtyId, max: usize) -> Option<Vec<String>> {
+        let screen = self.screen_of(id)?;
+        let state = screen.lock();
+        let s = state.parser.screen();
+        let (_, cols) = s.size();
+        let mut rows: Vec<String> = s.rows(0, cols).map(|r| r.trim_end().to_string()).collect();
+        while rows.last().is_some_and(|r| r.is_empty()) {
+            rows.pop();
+        }
+        let start = rows.len().saturating_sub(max);
+        Some(rows.split_off(start))
+    }
+
     pub fn bracketed_paste(&self, id: PtyId) -> Option<bool> {
         let screen = self.screen_of(id)?;
         let enabled = screen.lock().parser.screen().bracketed_paste();
