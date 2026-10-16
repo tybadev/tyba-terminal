@@ -93,7 +93,7 @@ import {
 } from "@/lib/maestro";
 import { ImportDialog } from "./ImportDialog";
 import { IntegrationsPanel } from "./IntegrationsPanel";
-import { MaestroCanvas, type MaestroFlowEdge } from "./MaestroCanvas";
+import { MaestroCanvas, type CreatedView, type MaestroFlowEdge } from "./MaestroCanvas";
 import { RunTimeline } from "./RunTimeline";
 import { CanvasProvider, STATUS_TONE, type MaestroFlowNode } from "./nodes/NodeFrame";
 import { SubagentMark, subagentTone, useSubagentTime } from "./nodes/SubagentNode";
@@ -109,12 +109,26 @@ import { nodeApproval, nodeApprovalIds } from "@/lib/maestroCard";
 import { nodeTerminalWebgl } from "@/lib/nodeTerminal";
 import { keepIfSame } from "@/lib/stableItems";
 import {
+  EMPTY_HISTORY,
+  graphShot,
+  record,
+  redo as redoShot,
+  restoreShot,
+  undo as undoShot,
+} from "@/lib/graphHistory";
+import { freeSpot, nodeRect, rightOf } from "@/lib/graphLayout";
+import { IS_MAC } from "@/lib/platform";
+import {
   subagentKey,
   subagentNodeId,
   subagentState,
 } from "@/lib/maestroSubagents";
 
 const SAVE_DEBOUNCE_MS = 500;
+/** Quanto tempo o canvas fica parado para a edição virar um passo do ⌘Z. */
+const HISTORY_SETTLE_MS = 400;
+/** Quanto o aviso "Nó apagado · Desfazer" fica à vista. */
+const UNDO_NOTICE_MS = 8000;
 
 const tbtn =
   "inline-flex h-7 items-center gap-1.5 whitespace-nowrap rounded-[6px] border border-transparent px-2.5 font-mono text-[12px] text-tyba-text-muted hover:bg-tyba-raised hover:text-tyba-text disabled:cursor-not-allowed disabled:text-tyba-text-ghost disabled:hover:bg-transparent aria-pressed:border-tyba-border-strong aria-pressed:bg-tyba-raised aria-pressed:text-tyba-text";
@@ -196,15 +210,22 @@ function MaestroInner({
   const nodesRef = useRef(nodes);
   nodesRef.current = nodes;
   const [edges, setEdges] = useState<MaestroFlowEdge[]>([]);
+  const edgesRef = useRef(edges);
+  edgesRef.current = edges;
   const [integrations, setIntegrations] = useState<Integration[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [showVars, setShowVars] = useState(false);
-  const [showMinimap, setShowMinimap] = useState(false);
+  // Minimapa: `null` = sozinho (liga quando o grafo passa da tela, canvas-10).
+  const [minimapPref, setMinimapPref] = useState<boolean | null>(null);
+  const [overflow, setOverflow] = useState(false);
+  const showMinimap = minimapPref ?? overflow;
   const lastSaved = useRef<string | null>(null);
   const [runView, dispatchRun] = useReducer(runReducer, EMPTY_RUN_VIEW);
   const [now, setNow] = useState(() => Date.now());
   const [showInts, setShowInts] = useState(false);
-  const [notice, setNotice] = useState<{ text: string; warn: boolean } | null>(null);
+  const [notice, setNotice] = useState<{ text: string; warn: boolean; undo?: boolean } | null>(
+    null,
+  );
   const [importing, setImporting] = useState<{
     path: string;
     preview: ImportPreview;
@@ -232,6 +253,9 @@ function MaestroInner({
         setIntegrations(ints);
         setNodes(flow.nodes as MaestroFlowNode[]);
         setEdges(flow.edges);
+        // Outro grafo: o ⌘Z começa do zero (o retrato dele entra no próximo assentar).
+        historyRef.current = EMPTY_HISTORY;
+        settledRef.current = null;
         setMeta({ id: graph.id, name: graph.name, dir: graph.dir, variables: graph.variables });
         setError(null);
         if (found) {
@@ -245,6 +269,62 @@ function MaestroInner({
       alive = false;
     };
   }, [home, want, t, reload]);
+
+  // Desfazer/refazer (canvas-5): o canvas parado por um instante vira um
+  // passo (arrasto e redimensionamento contam no fim; apagar, ligar e
+  // adicionar na hora). O retrato é o grafo inteiro; voltar troca o canvas
+  // por ele e o salvar com debounce leva ao core como qualquer edição.
+  const historyRef = useRef(EMPTY_HISTORY);
+  const settledRef = useRef<string | null>(null);
+  const settle = useCallback(() => {
+    const ns = nodesRef.current;
+    if (ns.some((n) => n.dragging || n.resizing)) return;
+    const now = graphShot(ns, edgesRef.current);
+    const prev = settledRef.current;
+    if (prev !== null && prev !== now) historyRef.current = record(historyRef.current, prev);
+    settledRef.current = now;
+  }, []);
+  useEffect(() => {
+    if (!meta) return;
+    const timer = setTimeout(settle, HISTORY_SETTLE_MS);
+    return () => clearTimeout(timer);
+  }, [nodes, edges, meta, settle]);
+  const applyShot = (shot: string) => {
+    const flow = restoreShot(shot);
+    settledRef.current = shot;
+    setNodes(flow.nodes as MaestroFlowNode[]);
+    setEdges(flow.edges);
+  };
+  const undo = () => {
+    settle();
+    const back = settledRef.current && undoShot(historyRef.current, settledRef.current);
+    if (!back) return;
+    historyRef.current = back.history;
+    applyShot(back.shot);
+    setNotice((n) => (n?.undo ? null : n));
+  };
+  const redo = () => {
+    settle();
+    const again = settledRef.current && redoShot(historyRef.current, settledRef.current);
+    if (!again) return;
+    historyRef.current = again.history;
+    applyShot(again.shot);
+  };
+  const onRemoved = useCallback(
+    (count: number) =>
+      setNotice({
+        text: count === 1 ? t("graphNodeDeleted") : t("graphNodesDeleted", { count }),
+        warn: false,
+        undo: true,
+      }),
+    [t],
+  );
+  const undoNotice = notice?.undo ? notice : null;
+  useEffect(() => {
+    if (!undoNotice) return;
+    const timer = setTimeout(() => setNotice((n) => (n === undoNotice ? null : n)), UNDO_NOTICE_MS);
+    return () => clearTimeout(timer);
+  }, [undoNotice]);
 
   const snapshot = useMemo(
     () => (meta ? JSON.stringify(fromFlow(meta, nodes, edges)) : null),
@@ -295,6 +375,11 @@ function MaestroInner({
   }, [runningIds]);
 
   const run = selectedRun(runView);
+  // Onde o dono deixou cada nó criado pelo orquestrador (vale enquanto esse
+  // run está à vista, e o "Manter no grafo" leva a posição junto).
+  const [createdView, setCreatedView] = useState<CreatedView>({});
+  const viewRunId = run?.id ?? null;
+  useEffect(() => setCreatedView({}), [viewRunId]);
   const latest = runView.runs[0] ?? null;
   const running = runView.runs.find((r) => r.status === "running") ?? null;
   const live = run !== null && run.id === latest?.id;
@@ -488,6 +573,7 @@ function MaestroInner({
   );
   const { zoomIn, zoomOut, zoomTo, fitView, screenToFlowPosition } = useReactFlow();
   const { zoom } = useViewport();
+  const mod = IS_MAC ? "⌘" : "Ctrl+";
   const actualSize = nodeTerminalWebgl(zoom);
 
   const graph = useMemo(
@@ -560,11 +646,10 @@ function MaestroInner({
         crypto.randomUUID(),
         t("maestroKindBrowser"),
         { type: "browser", url: isLocalUrl(url) ? url : "" },
-        {
-          x: Math.round(from.position.x + (from.width ?? from.data.node.size.w) + 120),
-          y: Math.round(from.position.y),
-        },
+        { x: 0, y: 0 },
       );
+      // Ao lado do processo, num espaço livre (canvas-6).
+      node.position = freeSpot(rightOf(nodeRect(from)), node.size, nodesRef.current.map(nodeRect));
       const edgeId = crypto.randomUUID();
       setNodes((ns) => [
         ...ns.map((n) => ({ ...n, selected: false })),
@@ -653,7 +738,22 @@ function MaestroInner({
       const kept = await keepCreated(run.id);
       const flow = toFlow(kept);
       lastSaved.current = JSON.stringify(fromFlow(kept, flow.nodes, flow.edges));
-      setNodes(flow.nodes as MaestroFlowNode[]);
+      // Onde o dono arrastou/redimensionou o criado vale no grafo: a posição
+      // da vista entra no nó mantido, e o salvar leva ao core.
+      const view = createdViewRef.current;
+      setNodes(
+        flow.nodes.map((n) => {
+          const v = view[n.id];
+          return v
+            ? {
+                ...n,
+                position: v.position,
+                width: v.width ?? n.width,
+                height: v.height ?? n.height,
+              }
+            : n;
+        }) as MaestroFlowNode[],
+      );
       setEdges(flow.edges);
       const fresh = await runGet(run.id);
       if (fresh) dispatchRun({ type: "update", run: fresh });
@@ -661,6 +761,8 @@ function MaestroInner({
       setError(t("maestroKeepError", { error: String(e) }));
     }
   };
+  const createdViewRef = useRef(createdView);
+  createdViewRef.current = createdView;
   // A cápsula do criado chama o "Manter" pela ação estável do contexto.
   const keepRef = useRef(keep);
   keepRef.current = keep;
@@ -718,7 +820,7 @@ function MaestroInner({
 
   return (
     <CanvasProvider actions={actions} state={ctx} now={now}>
-      <div className="flex min-w-0 flex-1 flex-col bg-tyba-bg font-mono">
+      <div data-graph-screen className="flex min-w-0 flex-1 flex-col bg-tyba-bg font-mono">
         <div
           role="toolbar"
           aria-label={meta?.name || t("maestroGraphUntitled")}
@@ -916,7 +1018,7 @@ function MaestroInner({
             </button>
             <button
               type="button"
-              title={t("maestroZoomActual")}
+              title={`${t("maestroZoomActual")} · ${mod}0`}
               onClick={() => void zoomTo(1, { duration: 150 })}
               className="min-w-[34px] px-1.5 text-center text-[11.5px] text-tyba-text"
             >
@@ -933,6 +1035,7 @@ function MaestroInner({
           </div>
           <button
             type="button"
+            title={`${t("maestroFit")} · ${mod}1`}
             onClick={() => void fitView({ padding: 0.15, maxZoom: 1, duration: 200 })}
             className={tbtn}
           >
@@ -944,7 +1047,7 @@ function MaestroInner({
             aria-label={t("maestroMinimap")}
             title={t("maestroMinimap")}
             aria-pressed={showMinimap}
-            onClick={() => setShowMinimap((v) => !v)}
+            onClick={() => setMinimapPref(!showMinimap)}
             className={tbtn}
           >
             <MapTrifold size={13} />
@@ -968,7 +1071,13 @@ function MaestroInner({
               setNodes={setNodes}
               setEdges={setEdges}
               integrations={integrations}
-              showMinimap={showMinimap}
+              minimap={minimapPref}
+              onOverflow={setOverflow}
+              createdView={createdView}
+              setCreatedView={setCreatedView}
+              onUndo={undo}
+              onRedo={redo}
+              onRemoved={onRemoved}
               error={error}
               newDir={newDir}
             />
@@ -1025,6 +1134,15 @@ function MaestroInner({
             >
               {notice.warn && <Warning size={14} className="mt-px shrink-0" />}
               <span className="break-all">{notice.text}</span>
+              {notice.undo && (
+                <button
+                  type="button"
+                  onClick={undo}
+                  className="shrink-0 font-medium text-tyba-text hover:underline"
+                >
+                  {t("graphUndo")}
+                </button>
+              )}
               <button
                 type="button"
                 aria-label={t("close")}

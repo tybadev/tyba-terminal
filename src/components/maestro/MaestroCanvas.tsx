@@ -10,7 +10,7 @@ import {
   type SetStateAction,
 } from "react";
 import { useTranslation } from "react-i18next";
-import { CaretDown, Check, Plus, Trash, Warning } from "@phosphor-icons/react";
+import { CaretDown, Check, Trash, Warning } from "@phosphor-icons/react";
 import {
   Background,
   BackgroundVariant,
@@ -23,6 +23,7 @@ import {
   applyNodeChanges,
   getBezierPath,
   useReactFlow,
+  useStore,
   type FinalConnectionState,
   type Connection,
   type Edge,
@@ -32,6 +33,20 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/base.css";
 import { toastError } from "@/lib/toast";
+import { clipBounds, copyNodes, pasteClip, type Clip } from "@/lib/graphClipboard";
+import { canvasKey, keyOwnedElsewhere } from "@/lib/graphKeys";
+import {
+  freeSpot,
+  minimapTone,
+  nodeRect,
+  outsideView,
+  rightOf,
+  type Rect,
+} from "@/lib/graphLayout";
+import { paletteEntries, recentDirs, type PaletteEntry } from "@/lib/graphPalette";
+import { listSnippets, type Snippet } from "@/lib/ipc";
+import { ringState } from "@/lib/maestroCard";
+import { IS_MAC } from "@/lib/platform";
 import {
   SUBAGENT_HANDLE,
   SUB_H,
@@ -39,10 +54,12 @@ import {
   SUB_GAP,
   SUB_ROUNDS_H,
   SUB_W,
-  gridPosition,
+  blockOrigin,
+  blockSize,
   groupRounds,
   isSubagentNodeId,
-  roundsPosition,
+  pillPosition,
+  roundsAt,
   subagentKey,
   subagentNodeId,
   subagentRoundsNodeId,
@@ -64,16 +81,19 @@ import {
   edgeKindChoices,
   createdFlow,
   ephemeralCreated,
+  lastDir,
   newNode,
   pickConnection,
   nodeSession,
   nodeUnderPointer,
+  produces,
+  rememberDir,
   routeNodeChanges,
   type EdgeKind,
   type FlowEdgeData,
   type Integration,
+  type MaestroEdge,
   type MaestroNode,
-  type NodeKind,
 } from "@/lib/maestro";
 import { keepIfSame } from "@/lib/stableItems";
 import { AgentNode } from "./nodes/AgentNode";
@@ -81,6 +101,7 @@ import { BrowserNode } from "./nodes/BrowserNode";
 import { IntegrationNode } from "./nodes/IntegrationNode";
 import { EDGE_COLOR, useMaestro, type MaestroFlowNode } from "./nodes/NodeFrame";
 import { NodeFocus } from "./nodes/NodeFocus";
+import { NodePalette, PALETTE_H, PALETTE_W } from "./NodePalette";
 import { NoteNode } from "./nodes/NoteNode";
 import { ProcessNode } from "./nodes/ProcessNode";
 import { ServiceNode } from "./nodes/ServiceNode";
@@ -122,6 +143,12 @@ const EPHEMERAL = {
 } as const;
 
 /**
+ * Pílula de subagente: arrasta (nos-8), com a posição na vista dela; não se
+ * seleciona, liga nem apaga — é do claude, não do grafo.
+ */
+const SUBAGENT = { ...EPHEMERAL, draggable: true } as const;
+
+/**
  * Nó criado pelo orquestrador: responde como qualquer nó (clicar, digitar no
  * terminal, arrastar, redimensionar, selecionar) — com o EPHEMERAL o xyflow
  * punha `pointer-events: none` nele e nada funcionava. Só não se apaga nem
@@ -130,7 +157,7 @@ const EPHEMERAL = {
 const CREATED = { connectable: false, deletable: false } as const;
 
 /** Onde o dono deixou cada criado no canvas (fora do grafo salvo). */
-type CreatedView = Record<
+export type CreatedView = Record<
   string,
   { position: { x: number; y: number }; width?: number; height?: number; selected?: boolean }
 >;
@@ -285,10 +312,37 @@ function EdgeLabel({ id, kind, color }: { id: string; kind: EdgeKind; color: str
 
 const edgeTypes = { maestro: MaestroEdgeView };
 
+/** Onde a paleta abriu: o canto dela no canvas, o ponto no grafo e de onde veio. */
+interface PaletteAt {
+  /** Canto da paleta, em px dentro do canvas. */
+  screen: { x: number; y: number };
+  /** O ponto no grafo onde o nó nasce. */
+  flow: { x: number; y: number };
+  /** Ligação solta no vazio: o nó de origem (o novo nasce ligado nele). */
+  from: string | null;
+  /** ⌘K ou "/": o nó novo nasce perto do selecionado, se houver. */
+  near: boolean;
+}
+
+/** O nó do canvas para um nó do modelo. */
+const flowNodeOf = (node: MaestroNode, selected: boolean): MaestroFlowNode => ({
+  id: node.id,
+  type: node.kind.type,
+  position: node.position,
+  width: node.size.w,
+  height: node.size.h,
+  selected,
+  data: { node },
+});
+
+const modKey = IS_MAC ? "⌘" : "Ctrl+";
+
 /**
  * O canvas do grafo. Nós e ligações vêm da tela (estado controlado); aqui
  * mora o que é do xyflow: arrastar, redimensionar, ligar e apagar. O front só
  * OFERECE ligação válida — quem decide é o `maestro_save_graph` no core.
+ * Nó novo nasce pela paleta (duplo clique, ⌘K, "/" ou ligação solta no
+ * vazio), sempre num espaço livre.
  */
 export function MaestroCanvas({
   nodes,
@@ -296,7 +350,13 @@ export function MaestroCanvas({
   setNodes,
   setEdges,
   integrations,
-  showMinimap,
+  minimap,
+  onOverflow,
+  createdView,
+  setCreatedView,
+  onUndo,
+  onRedo,
+  onRemoved,
   error,
   newDir,
 }: {
@@ -305,16 +365,26 @@ export function MaestroCanvas({
   setNodes: Dispatch<SetStateAction<MaestroFlowNode[]>>;
   setEdges: Dispatch<SetStateAction<MaestroFlowEdge[]>>;
   integrations: readonly Integration[];
-  showMinimap: boolean;
+  /** Minimapa: ligado/desligado pelo dono, ou `null` = sozinho (liga quando o grafo passa da tela). */
+  minimap: boolean | null;
+  /** Algum nó saiu da área visível (o minimapa automático segue isto). */
+  onOverflow: (overflow: boolean) => void;
+  /** Onde o dono deixou cada criado (vale enquanto o run está à vista). */
+  createdView: CreatedView;
+  setCreatedView: Dispatch<SetStateAction<CreatedView>>;
+  onUndo: () => void;
+  onRedo: () => void;
+  /** Nós do grafo apagados agora (o aviso "Nó apagado · Desfazer"). */
+  onRemoved: (count: number) => void;
   error: string | null;
   /** Pasta onde o nó novo nasce (a última usada, ou a home). */
   newDir: string;
 }) {
   const { t } = useTranslation();
-  const { screenToFlowPosition } = useReactFlow();
+  const { screenToFlowPosition, zoomTo, fitView, setCenter } = useReactFlow();
   const wrapper = useRef<HTMLDivElement>(null);
   const byId = useMemo(() => new Map(integrations.map((i) => [i.id, i])), [integrations]);
-  const { subagents, focusNode, setFocusNode, run, live } = useMaestro();
+  const { subagents, focusNode, setFocusNode, run, live, approvals, createdIds } = useMaestro();
 
   // Nó no modo foco: só enquanto tem sessão viva. Sem ela (o processo acabou,
   // o nó sumiu, trocou o grafo) o foco fecha, para não reabrir sozinho depois.
@@ -337,10 +407,7 @@ export function MaestroCanvas({
   // salvos), com o terminal/página de verdade, a ligação tracejada do criador
   // e as ligações url deles. Os mantidos já estão em `nodes`; daqui só sai a
   // tracejada até eles. Onde o dono os arrastou/redimensionou fica em
-  // `createdView`, que vale enquanto esse run está à vista.
-  const [createdView, setCreatedView] = useState<CreatedView>({});
-  const runId = run?.id ?? null;
-  useEffect(() => setCreatedView({}), [runId]);
+  // `createdView` (da tela, que leva a posição ao "Manter no grafo").
   // Os modelos dos nós ficam os mesmos durante o arrasto (canvas-7): os
   // criados não são refeitos a cada quadro.
   const modelsRef = useRef<readonly MaestroNode[] | null>(null);
@@ -381,11 +448,15 @@ export function MaestroCanvas({
 
   // Filhos efêmeros: montados a cada render a partir do nó do agente (do
   // grafo ou criado pelo orquestrador), fora do state `nodes`/`edges` — por
-  // isso nunca chegam ao modelo salvo.
+  // isso nunca chegam ao modelo salvo. O bloco de pílulas cai embaixo do pai
+  // num espaço livre (nos-8); a pílula que o dono arrastou fica onde ele a pôs.
+  const [subView, setSubView] = useState<Record<string, { x: number; y: number }>>({});
   const ephemeral = useMemo(() => {
     const ns: (SubagentFlowNode | SubagentRoundsFlowNode)[] = [];
     const es: Edge[] = [];
-    for (const parent of [...nodes, ...created.nodes]) {
+    const parents = [...nodes, ...created.nodes];
+    const occupied: Rect[] = parents.map(nodeRect);
+    for (const parent of parents) {
       const rounds = groupRounds(subagents.get(parent.id) ?? []);
       if (!rounds) continue;
       const box = {
@@ -393,12 +464,15 @@ export function MaestroCanvas({
         width: parent.width ?? parent.data.node.size.w,
         height: parent.height ?? parent.data.node.size.h,
       };
+      const size = blockSize(rounds.current.length, rounds.previous > 0);
+      const origin = blockOrigin(box, size, occupied);
+      occupied.push({ ...origin, ...size });
       rounds.current.forEach((run, i) => {
         const id = subagentNodeId(parent.id, subagentKey(run));
         ns.push({
           id,
           type: "subagent",
-          position: gridPosition(box, i),
+          position: subView[id] ?? pillPosition(origin, i),
           width: SUB_W,
           height: SUB_H,
           // Com `measured`, o xyflow guarda as portas já medidas quando o nó
@@ -406,7 +480,7 @@ export function MaestroCanvas({
           // efêmeros não voltam para o state).
           measured: { width: SUB_W, height: SUB_H },
           data: { run },
-          ...EPHEMERAL,
+          ...SUBAGENT,
         });
         es.push({
           id: `${id}:edge`,
@@ -421,7 +495,7 @@ export function MaestroCanvas({
         ns.push({
           id: subagentRoundsNodeId(parent.id),
           type: "subagentRounds",
-          position: roundsPosition(box, rounds.current.length),
+          position: roundsAt(origin, rounds.current.length),
           width: SUB_COLS * SUB_W + (SUB_COLS - 1) * SUB_GAP,
           height: SUB_ROUNDS_H,
           measured: { width: SUB_COLS * SUB_W + (SUB_COLS - 1) * SUB_GAP, height: SUB_ROUNDS_H },
@@ -431,7 +505,7 @@ export function MaestroCanvas({
       }
     }
     return { nodes: ns, edges: es };
-  }, [nodes, created.nodes, subagents]);
+  }, [nodes, created.nodes, subagents, subView]);
 
   const shownNodes = useMemo<CanvasNode[]>(
     () =>
@@ -453,6 +527,8 @@ export function MaestroCanvas({
       const routed = routeNodeChanges(changes, created.nodeIds, isSubagentNodeId);
       const graph = routed.graph as NodeChange<MaestroFlowNode>[];
       if (graph.length) setNodes((ns) => applyNodeChanges(graph, ns));
+      const removed = graph.filter((c) => c.type === "remove").length;
+      if (removed > 0) onRemoved(removed);
       if (routed.created.length) {
         const moved = applyNodeChanges(
           routed.created as NodeChange<MaestroFlowNode>[],
@@ -471,8 +547,17 @@ export function MaestroCanvas({
           return next;
         });
       }
+      if (routed.ephemeral.length) {
+        setSubView((view) => {
+          const next = { ...view };
+          for (const c of routed.ephemeral) {
+            if (c.type === "position" && c.position) next[c.id] = c.position;
+          }
+          return next;
+        });
+      }
     },
-    [setNodes, created.nodeIds, created.nodes],
+    [setNodes, created.nodeIds, created.nodes, setCreatedView, onRemoved],
   );
   const onEdgesChange = useCallback(
     (changes: EdgeChange<Edge>[]) => {
@@ -529,10 +614,93 @@ export function MaestroCanvas({
     [model, byId, link],
   );
 
+  // ---------------------------------------------------------- paleta
+
+  const [palette, setPalette] = useState<PaletteAt | null>(null);
+  const [snippets, setSnippets] = useState<Snippet[]>([]);
+  // Onde o ponteiro está no canvas (⌘K e "/" abrem a paleta ali).
+  const pointer = useRef<{ x: number; y: number } | null>(null);
+
+  const openPalette = useCallback(
+    (client: { x: number; y: number } | null, from: string | null, near: boolean) => {
+      const rect = wrapper.current?.getBoundingClientRect();
+      if (!rect) return;
+      const at = client ?? { x: rect.left + rect.width / 2, y: rect.top + rect.height / 3 };
+      const clamp = (v: number, max: number) => Math.max(8, Math.min(v, max - 8));
+      setPalette({
+        screen: {
+          x: clamp(at.x - rect.left, rect.width - PALETTE_W),
+          y: clamp(at.y - rect.top, rect.height - PALETTE_H),
+        },
+        flow: screenToFlowPosition(at),
+        from,
+        near,
+      });
+      void listSnippets(null)
+        .then(setSnippets)
+        .catch(() => {});
+    },
+    [screenToFlowPosition],
+  );
+
+  const entries = useMemo(
+    () =>
+      paletteEntries({
+        labels: {
+          claude: t("graphAgentClaude"),
+          codex: t("graphAgentCodex"),
+          process: t("maestroKindProcess"),
+          service: t("maestroKindService"),
+          browser: t("maestroKindBrowser"),
+          note: t("maestroKindNote"),
+        },
+        dir: newDir,
+        integrations,
+        snippets,
+        dirs: recentDirs(
+          lastDir(),
+          models.map((m) => m.kind),
+        ),
+      }),
+    [t, newDir, integrations, snippets, models],
+  );
+
+  const paletteSource = palette?.from ? model.nodes.find((n) => n.id === palette.from) : undefined;
+  const paletteLink = useMemo(
+    () => (paletteSource ? { source: paletteSource.kind, integrations: byId } : null),
+    [paletteSource, byId],
+  );
+
+  /** Todo retângulo à vista: o nó novo não cai em cima de nenhum. */
+  const occupied = useCallback(() => shownNodes.map(nodeRect), [shownNodes]);
+
+  const pick = (entry: PaletteEntry) => {
+    if (!palette) return;
+    const node = newNode(crypto.randomUUID(), entry.title, structuredClone(entry.kind), {
+      x: 0,
+      y: 0,
+    });
+    const selected = palette.near ? nodes.find((n) => n.selected) : undefined;
+    const want = selected
+      ? rightOf(nodeRect(selected), 80)
+      : palette.from
+        ? { x: palette.flow.x, y: palette.flow.y - 40 }
+        : { x: palette.flow.x - node.size.w / 2, y: palette.flow.y - 20 };
+    node.position = freeSpot(want, node.size, occupied());
+    if (entry.group === "folder" && "dir" in entry.kind) rememberDir(entry.kind.dir);
+    setNodes((ns) => [...ns.map((n) => ({ ...n, selected: false })), flowNodeOf(node, true)]);
+    if (palette.from) {
+      const made = pickConnection([...model.nodes, node], model.edges, byId, palette.from, node.id);
+      if ("kind" in made) link(palette.from, node.id, made.kind);
+    }
+    setPalette(null);
+  };
+
   // Soltar a ligação em qualquer ponto do nó liga nele: o xyflow só informa
   // o nó de destino com o ponteiro a até `connectionRadius` da entrada; no
   // corpo do nó o `toNode` vem nulo, e o nó sai do que está sob o ponteiro.
-  // Ligação recusada diz por quê, em vez de sumir calada.
+  // Ligação recusada diz por quê, em vez de sumir calada. Soltar no vazio
+  // abre a paleta ali, só com quem aceita a origem (canvas-8).
   const onConnectEnd = useCallback(
     (event: MouseEvent | TouchEvent, state: FinalConnectionState) => {
       if (state.isValid || !state.fromNode || state.fromHandle?.id !== OUT_HANDLE) return;
@@ -540,17 +708,23 @@ export function MaestroCanvas({
       const to =
         state.toNode?.id ??
         (point ? nodeUnderPointer(document.elementFromPoint(point.clientX, point.clientY)) : null);
-      // Canvas vazio, ou nó que não é do grafo (criado pelo orquestrador,
-      // subagente): não liga.
-      if (!to || !model.nodes.some((n) => n.id === to)) return;
-      const pick = pickConnection(model.nodes, model.edges, byId, state.fromNode.id, to);
+      const from = state.fromNode.id;
+      if (!to) {
+        if (point && model.nodes.some((n) => n.id === from)) {
+          openPalette({ x: point.clientX, y: point.clientY }, from, false);
+        }
+        return;
+      }
+      // Nó que não é do grafo (criado pelo orquestrador, subagente): não liga.
+      if (!model.nodes.some((n) => n.id === to)) return;
+      const pick = pickConnection(model.nodes, model.edges, byId, from, to);
       if ("problem" in pick) {
         if (pick.problem !== "self") toastError(t(`maestroConnection_${pick.problem}`));
         return;
       }
-      link(state.fromNode.id, to, pick.kind);
+      link(from, to, pick.kind);
     },
-    [model, byId, link, t],
+    [model, byId, link, t, openPalette],
   );
 
   const edgeActions = useMemo<EdgeActions>(
@@ -563,34 +737,125 @@ export function MaestroCanvas({
     [model, byId, setEdges],
   );
 
-  const addNode = (title: string, kind: NodeKind) => {
-    const rect = wrapper.current?.getBoundingClientRect();
-    const center = rect
-      ? screenToFlowPosition({ x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 })
-      : { x: 0, y: 0 };
-    // Cada nó novo desce um pouco, para não cair exatamente em cima do anterior.
-    const nudge = (nodes.length % 6) * 24;
-    const node = newNode(crypto.randomUUID(), title, kind, { x: 0, y: 0 });
-    node.position = {
-      x: Math.round(center.x - node.size.w / 2 + nudge),
-      y: Math.round(center.y - node.size.h / 2 + nudge),
-    };
+  // ---------------------------------------------------------- atalhos
+
+  // ⌘C guarda aqui (só no canvas: não é texto para a área de transferência).
+  const clipboard = useRef<Clip | null>(null);
+
+  /** A cópia ao lado do original, num espaço livre, já selecionada. */
+  const paste = (clip: Clip) => {
+    const box = clipBounds(clip);
+    if (!box) return;
+    const at = freeSpot(rightOf(box, 40), { w: box.w, h: box.h }, occupied());
+    const pasted = pasteClip(clip, at, () => crypto.randomUUID());
     setNodes((ns) => [
       ...ns.map((n) => ({ ...n, selected: false })),
-      {
-        id: node.id,
-        type: node.kind.type,
-        position: node.position,
-        width: node.size.w,
-        height: node.size.h,
-        selected: true,
-        data: { node },
-      },
+      ...pasted.nodes.map((n) => flowNodeOf(n, true)),
     ]);
+    setEdges((es) => [...es, ...pasted.edges.map(flowEdgeOf)]);
   };
 
+  const selection = () => {
+    const ids = new Set(nodes.filter((n) => n.selected).map((n) => n.id));
+    return ids.size > 0 ? copyNodes(model.nodes, model.edges, ids) : null;
+  };
+
+  const onKey = (e: KeyboardEvent) => {
+    if (e.defaultPrevented || palette || focusNode) return;
+    const action = canvasKey(e, IS_MAC);
+    if (!action) return;
+    if (keyOwnedElsewhere(document.activeElement) || keyOwnedElsewhere(e.target as Element)) {
+      return;
+    }
+    // Foco fora da tela do grafo (outra tela aberta por cima): não é do canvas.
+    const active = document.activeElement;
+    const screen = wrapper.current?.closest("[data-graph-screen]");
+    if (active && active !== document.body && !screen?.contains(active)) return;
+    // Texto destacado na página (uma nota, um painel): ⌘C é dele.
+    const text = window.getSelection();
+    if (action === "copy" && text && !text.isCollapsed) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.repeat && action !== "undo" && action !== "redo") return;
+    switch (action) {
+      case "undo":
+        return onUndo();
+      case "redo":
+        return onRedo();
+      case "duplicate": {
+        const clip = selection();
+        if (clip) paste(clip);
+        return;
+      }
+      case "copy":
+        clipboard.current = selection() ?? clipboard.current;
+        return;
+      case "paste":
+        if (clipboard.current) paste(clipboard.current);
+        return;
+      case "selectAll":
+        setNodes((ns) => ns.map((n) => ({ ...n, selected: true })));
+        return;
+      case "zoomActual":
+        void zoomTo(1, { duration: 150 });
+        return;
+      case "fit":
+        void fitView({ padding: 0.15, maxZoom: 1, duration: 200 });
+        return;
+      case "palette":
+        openPalette(pointer.current, null, true);
+        return;
+    }
+  };
+  const onKeyRef = useRef(onKey);
+  onKeyRef.current = onKey;
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => onKeyRef.current(e);
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, []);
+
+  // ---------------------------------------------------------- minimapa
+
+  // Liga sozinho quando algum nó sai da área visível (canvas-10).
+  const transform = useStore((s) => s.transform);
+  const paneW = useStore((s) => s.width);
+  const paneH = useStore((s) => s.height);
+  const overflow = useMemo(
+    () =>
+      outsideView(
+        shownNodes.map(nodeRect),
+        { x: transform[0], y: transform[1], zoom: transform[2] },
+        { w: paneW, h: paneH },
+      ),
+    [shownNodes, transform, paneW, paneH],
+  );
+  useEffect(() => onOverflow(overflow), [overflow, onOverflow]);
+  const showMinimap = minimap ?? overflow;
+  const nodeColor = useCallback(
+    (n: CanvasNode) =>
+      isSubagentNodeId(n.id)
+        ? "color-mix(in srgb, var(--tyba-violet) 50%, transparent)"
+        : minimapTone(ringState(run?.nodes[n.id], approvals.has(n.id)), createdIds.has(n.id)),
+    [run, approvals, createdIds],
+  );
+
   return (
-    <div ref={wrapper} className="relative min-h-0 flex-1 bg-tyba-bg">
+    <div
+      ref={wrapper}
+      className="relative min-h-0 flex-1 bg-tyba-bg"
+      onMouseMove={(e) => {
+        pointer.current = { x: e.clientX, y: e.clientY };
+      }}
+      onMouseLeave={() => {
+        pointer.current = null;
+      }}
+      onDoubleClick={(e) => {
+        // Só no vazio do canvas: duplo clique no nó, na ligação ou num painel é deles.
+        if (!(e.target as Element).classList?.contains("react-flow__pane")) return;
+        openPalette({ x: e.clientX, y: e.clientY }, null, false);
+      }}
+    >
       <EdgeActionsContext.Provider value={edgeActions}>
         <ReactFlow<CanvasNode, Edge>
           nodes={shownNodes}
@@ -604,6 +869,11 @@ export function MaestroCanvas({
           isValidConnection={isValidConnection}
           connectionRadius={36}
           deleteKeyCode={["Backspace", "Delete"]}
+          // Dois dedos movem o canvas; ⌘ + roda (ou pinça) dá zoom (canvas-9).
+          panOnScroll
+          zoomOnPinch
+          zoomActivationKeyCode={IS_MAC ? "Meta" : "Control"}
+          zoomOnDoubleClick={false}
           minZoom={0.2}
           maxZoom={2}
           fitView
@@ -619,117 +889,18 @@ export function MaestroCanvas({
             color="var(--tyba-border-strong)"
           />
           {showMinimap && (
-            <MiniMap
+            <MiniMap<CanvasNode>
               pannable
               zoomable
               bgColor="var(--tyba-surface)"
               maskColor="color-mix(in srgb, var(--tyba-bg) 70%, transparent)"
-              nodeColor="var(--tyba-border-strong)"
+              nodeColor={nodeColor}
+              onNodeClick={(_, n) => {
+                const r = nodeRect(n);
+                void setCenter(r.x + r.w / 2, r.y + r.h / 2, { duration: 200, zoom: 1 });
+              }}
             />
           )}
-          <Panel position="top-left">
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <button
-                  type="button"
-                  aria-label={t("maestroAddNode")}
-                  className="flex h-7 items-center gap-1.5 rounded-[6px] border border-tyba-border-strong bg-tyba-surface px-2.5 font-mono text-[12px] text-tyba-text-muted shadow-[var(--tyba-shadow-md)] hover:text-tyba-text"
-                >
-                  <Plus size={13} weight="bold" />
-                  {t("maestroNode")}
-                </button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="start" className="w-56">
-                <DropdownMenuItem
-                  className="text-xs"
-                  onSelect={() =>
-                    addNode("Claude", {
-                      type: "agent",
-                      runner: "claude",
-                      role: "",
-                      prompt: "",
-                      dir: newDir,
-                      orchestrate: false,
-                    })
-                  }
-                >
-                  Claude
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  className="text-xs"
-                  onSelect={() =>
-                    addNode("Codex", {
-                      type: "agent",
-                      runner: "codex",
-                      role: "",
-                      prompt: "",
-                      dir: newDir,
-                      orchestrate: false,
-                    })
-                  }
-                >
-                  Codex
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  className="text-xs"
-                  onSelect={() =>
-                    addNode(t("maestroKindProcess"), {
-                      type: "process",
-                      command: "",
-                      output: "log",
-                      file: null,
-                      dir: newDir,
-                    })
-                  }
-                >
-                  {t("maestroKindProcess")}
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  className="text-xs"
-                  onSelect={() => addNode(t("maestroKindNote"), { type: "note", markdown: "" })}
-                >
-                  {t("maestroKindNote")}
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  className="text-xs"
-                  onSelect={() => addNode(t("maestroKindBrowser"), { type: "browser", url: "" })}
-                >
-                  {t("maestroKindBrowser")}
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  className="text-xs"
-                  onSelect={() =>
-                    addNode(t("maestroKindService"), {
-                      type: "service",
-                      source: { type: "container", containerId: "", name: "" },
-                    })
-                  }
-                >
-                  {t("maestroKindService")}
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
-                <DropdownMenuLabel className="text-[11px] font-normal text-tyba-text-faint">
-                  {t("maestroIntegrations")}
-                </DropdownMenuLabel>
-                {integrations.length === 0 && (
-                  <DropdownMenuItem disabled className="text-xs">
-                    {t("maestroNoIntegrations")}
-                  </DropdownMenuItem>
-                )}
-                {integrations.map((i) => (
-                  <DropdownMenuItem
-                    key={i.id}
-                    className="text-xs"
-                    onSelect={() =>
-                      addNode(i.name, { type: "integration", integrationId: i.id, dir: newDir })
-                    }
-                  >
-                    {i.name}
-                  </DropdownMenuItem>
-                ))}
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </Panel>
           {error && (
             <Panel position="top-center">
               <div
@@ -743,12 +914,49 @@ export function MaestroCanvas({
           )}
           {nodes.length === 0 && (
             <Panel position="top-center" className="!top-1/3">
-              <p className="font-mono text-[12.5px] text-tyba-text-faint">{t("maestroEmpty")}</p>
+              <p className="font-mono text-[12.5px] text-tyba-text-faint">
+                {t("maestroEmpty", { mod: modKey })}
+              </p>
             </Panel>
           )}
+          <Panel position="bottom-left">
+            <p className="font-mono text-[11.5px] text-tyba-text-faint">
+              {t("graphHint", { mod: modKey })}
+            </p>
+          </Panel>
         </ReactFlow>
       </EdgeActionsContext.Provider>
+      {palette && (
+        <NodePalette
+          at={palette.screen}
+          entries={entries}
+          link={paletteLink}
+          linkLine={
+            paletteSource
+              ? t("graphPaletteAccepts", {
+                  kinds: produces(paletteSource.kind, byId)
+                    .map((k) => t(`maestroEdge_${k}`))
+                    .join(", "),
+                  node: paletteSource.title,
+                })
+              : null
+          }
+          onPick={pick}
+          onClose={() => setPalette(null)}
+        />
+      )}
       {focused && <NodeFocus node={focused.node} sessionId={focused.session} />}
     </div>
   );
 }
+
+/** A ligação do canvas para uma ligação do modelo. */
+const flowEdgeOf = (e: MaestroEdge): MaestroFlowEdge => ({
+  id: e.id,
+  type: "maestro",
+  source: e.from,
+  target: e.to,
+  sourceHandle: OUT_HANDLE,
+  targetHandle: NEW_IN_HANDLE,
+  data: { kind: e.kind },
+});

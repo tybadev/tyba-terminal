@@ -57,9 +57,9 @@ export function SubagentNode({ id, data }: NodeProps<SubagentFlowNode>) {
   const open = openSubagent === id;
   const description = run.description || t("maestroSubNoDescription");
 
-  // O nó efêmero não é selecionável nem arrastável, e o xyflow põe
-  // `pointer-events: none` nele: o clique só chega com a pílula pedindo de
-  // volta (`pointer-events-auto`), fora do arrastar/mover do canvas.
+  // A pílula arrasta (nos-8: o dono tira de cima de outro nó) e o clique sem
+  // mover abre o painel; não se seleciona. `pointer-events-auto` fica para a
+  // rodada anterior e qualquer efêmero sem arrasto, onde o xyflow põe `none`.
   return (
     <button
       type="button"
@@ -68,7 +68,7 @@ export function SubagentNode({ id, data }: NodeProps<SubagentFlowNode>) {
       title={[description, run.agent_type, line?.kind === "activity" ? line.text : ""]
         .filter(Boolean)
         .join(" · ")}
-      className={`nodrag nopan pointer-events-auto flex h-full w-full cursor-pointer items-center gap-2 rounded-full border bg-[color-mix(in_srgb,var(--tyba-text)_5%,var(--tyba-surface))] px-3 text-left font-mono text-[12px] ${
+      className={`nopan pointer-events-auto flex h-full w-full cursor-pointer items-center gap-2 rounded-full border bg-[color-mix(in_srgb,var(--tyba-text)_5%,var(--tyba-surface))] px-3 text-left font-mono text-[12px] ${
         open
           ? "border-tyba-violet shadow-[0_0_0_4px_color-mix(in_srgb,var(--tyba-violet)_15%,transparent)]"
           : "border-[color-mix(in_srgb,var(--tyba-text)_10%,transparent)] hover:border-tyba-text-faint"
