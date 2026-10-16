@@ -95,12 +95,13 @@ import { ImportDialog } from "./ImportDialog";
 import { IntegrationsPanel } from "./IntegrationsPanel";
 import { MaestroCanvas, type MaestroFlowEdge } from "./MaestroCanvas";
 import { RunTimeline } from "./RunTimeline";
-import { MaestroContext, STATUS_TONE, type MaestroFlowNode } from "./nodes/NodeFrame";
+import { CanvasProvider, STATUS_TONE, type MaestroFlowNode } from "./nodes/NodeFrame";
 import { SubagentMark, subagentTone, useSubagentTime } from "./nodes/SubagentNode";
 import { useNodeSubagents } from "./useNodeSubagents";
 import { SubagentTranscript } from "@/components/SubagentViewer";
 import type { SubagentRun } from "@/lib/ipc";
 import { nodeTerminalWebgl } from "@/lib/nodeTerminal";
+import { keepIfSame } from "@/lib/stableItems";
 import {
   subagentKey,
   subagentNodeId,
@@ -156,6 +157,16 @@ function MaestroInner({ focusSession }: { focusSession: FocusSessionRequest | nu
 
   const [meta, setMeta] = useState<Pick<Graph, "id" | "name" | "dir" | "variables"> | null>(null);
   const [nodes, setNodes] = useState<MaestroFlowNode[]>([]);
+  // O modelo de cada nó, sem a posição do xyflow: arrastar troca o objeto do
+  // nó a cada quadro, mas não o modelo, e esta lista fica a mesma (canvas-7).
+  const nodeModelsRef = useRef<readonly MaestroNode[] | null>(null);
+  const nodeModels = keepIfSame(
+    nodeModelsRef.current,
+    nodes.map((n) => n.data.node),
+  );
+  nodeModelsRef.current = nodeModels;
+  const nodesRef = useRef(nodes);
+  nodesRef.current = nodes;
   const [edges, setEdges] = useState<MaestroFlowEdge[]>([]);
   const [integrations, setIntegrations] = useState<Integration[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -263,13 +274,8 @@ function MaestroInner({ focusSession }: { focusSession: FocusSessionRequest | nu
   // Subagentes de cada nó de agente com terminal vivo no run à vista, os do
   // grafo e os que o orquestrador criou.
   const agentSessions = useMemo(
-    () =>
-      agentSessionsOf(
-        nodes.map((n) => n.data.node),
-        run,
-        live,
-      ),
-    [nodes, run, live],
+    () => agentSessionsOf(nodeModels, run, live),
+    [nodeModels, run, live],
   );
   const subagents = useNodeSubagents(agentSessions);
   const [openSub, setOpenSub] = useState<string | null>(null);
@@ -332,12 +338,16 @@ function MaestroInner({ focusSession }: { focusSession: FocusSessionRequest | nu
     }
   };
 
+  // Lido por ref: a ação fica a mesma enquanto a execução muda.
+  const runIdRef = useRef<string | null>(null);
+  runIdRef.current = run?.id ?? null;
   const releaseNode = useCallback(
     (nodeId: string) => {
-      if (!run) return;
-      runNode(run.id, nodeId).catch((e) => setError(t("maestroRunError", { error: String(e) })));
+      const runId = runIdRef.current;
+      if (!runId) return;
+      runNode(runId, nodeId).catch((e) => setError(t("maestroRunError", { error: String(e) })));
     },
-    [run, t],
+    [t],
   );
 
   const testIntegration = async (integrationId: string, nodeId: string) => {
@@ -439,12 +449,12 @@ function MaestroInner({ focusSession }: { focusSession: FocusSessionRequest | nu
 
   const graph = useMemo(
     () => ({
-      nodes: nodes.map((n) => n.data.node),
+      nodes: nodeModels as MaestroNode[],
       edges: edges.flatMap((e) =>
         e.data ? [{ id: e.id, from: e.source, to: e.target, kind: e.data.kind }] : [],
       ),
     }),
-    [nodes, edges],
+    [nodeModels, edges],
   );
   // O que o canvas mostra: o grafo e, no run rodando, os nós que o
   // orquestrador criou (efêmeros) com as ligações url deles.
@@ -491,15 +501,17 @@ function MaestroInner({ focusSession }: { focusSession: FocusSessionRequest | nu
 
   // "Abrir no navegador" do processo: o navegador que já recebe a url dele, ou
   // um novo ao lado, ligado pela url e já com o endereço.
+  const viewGraphRef = useRef(viewGraph);
+  viewGraphRef.current = viewGraph;
   const openInBrowser = useCallback(
     (fromId: string, url: string) => {
-      const fed = browserFed(viewGraph, fromId);
+      const fed = browserFed(viewGraphRef.current, fromId);
       if (fed) {
         setNodes((ns) => ns.map((n) => ({ ...n, selected: n.id === fed.id })));
         void fitView({ nodes: [{ id: fed.id }], padding: 0.2, maxZoom: 1, duration: 200 });
         return;
       }
-      const from = nodes.find((n) => n.id === fromId);
+      const from = nodesRef.current.find((n) => n.id === fromId);
       if (!from) return;
       const node = newNode(
         crypto.randomUUID(),
@@ -536,50 +548,39 @@ function MaestroInner({ focusSession }: { focusSession: FocusSessionRequest | nu
         },
       ]);
     },
-    [graph, viewGraph, nodes, t, fitView],
+    [t, fitView],
   );
 
   const graphDir = meta?.dir ?? "";
   // Nó novo nasce na última pasta usada; sem ela, na home.
   const newDir = lastDir() ?? (home || graphDir);
-  const ctx = useMemo(
+  // Estável (ações) × reativo (execução à vista) × relógio: arrastar não
+  // muda nenhum dos três, e o tique de 1 s só chega a quem mostra tempo.
+  const actions = useMemo(
     () => ({
       integrations: new Map(integrations.map((i) => [i.id, i])),
       updateNode,
-      graph: viewGraph,
       graphDir,
-      run,
-      live,
-      now,
-      actualSize,
       runNode: releaseNode,
-      subagents,
-      openSubagent: opened ? openSub : null,
       setOpenSubagent: setOpenSub,
-      focusNode,
       setFocusNode,
       openInBrowser,
+    }),
+    [integrations, updateNode, graphDir, releaseNode, openInBrowser],
+  );
+  const ctx = useMemo(
+    () => ({
+      graph: viewGraph,
+      run,
+      live,
+      actualSize,
+      subagents,
+      openSubagent: opened ? openSub : null,
+      focusNode,
       createdIds,
       createdBy,
     }),
-    [
-      integrations,
-      updateNode,
-      viewGraph,
-      graphDir,
-      run,
-      live,
-      now,
-      actualSize,
-      releaseNode,
-      subagents,
-      opened,
-      openSub,
-      focusNode,
-      openInBrowser,
-      createdIds,
-      createdBy,
-    ],
+    [viewGraph, run, live, actualSize, subagents, opened, openSub, focusNode, createdIds, createdBy],
   );
 
   // "Manter no grafo": o core grava os criados no grafo e devolve o grafo
@@ -652,7 +653,7 @@ function MaestroInner({ focusSession }: { focusSession: FocusSessionRequest | nu
   }, [goTo, meta, runView.runs, want.id, fitView]);
 
   return (
-    <MaestroContext.Provider value={ctx}>
+    <CanvasProvider actions={actions} state={ctx} now={now}>
       <div className="flex min-w-0 flex-1 flex-col bg-tyba-bg font-mono">
         <div
           role="toolbar"
@@ -989,7 +990,7 @@ function MaestroInner({ focusSession }: { focusSession: FocusSessionRequest | nu
           onImported={imported}
         />
       )}
-    </MaestroContext.Provider>
+    </CanvasProvider>
   );
 }
 

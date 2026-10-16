@@ -10,7 +10,7 @@ import {
   subagentState,
   type SubagentState,
 } from "@/lib/maestroSubagents";
-import { useMaestro } from "./NodeFrame";
+import { useClock, useMaestro } from "./NodeFrame";
 
 /** Nó-filho efêmero: nunca entra no grafo salvo. */
 export type SubagentFlowNode = Node<{ run: SubagentRun }, "subagent">;
@@ -35,7 +35,7 @@ export const subagentTone = (state: SubagentState) => TONE[state];
 /** Tempo do subagente no formato do quadro ("12s" rodando, "10,4s" pronto). */
 export function useSubagentTime(run: SubagentRun): string {
   const { i18n } = useTranslation();
-  const { now } = useMaestro();
+  const now = useClock();
   return formatSubagentTime(
     subagentElapsed(run, Math.max(now, run.started_at_ms)),
     run.ended_at_ms !== null,

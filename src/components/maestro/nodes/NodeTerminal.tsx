@@ -5,7 +5,7 @@ import { ArrowsOut } from "@phosphor-icons/react";
 import { TerminalView } from "@/components/TerminalView";
 import { sessionScreenLines } from "@/lib/ipc";
 import { nodeTerminalClass } from "@/lib/nodeTerminal";
-import { useMaestro } from "./NodeFrame";
+import { useCanvasActions, useMaestro } from "./NodeFrame";
 
 /** O terminal ocupa o nó inteiro: o wrapper é quem tem o tamanho. */
 export const FULL = { left: 0, top: 0, width: 100, height: 100 };
@@ -54,7 +54,7 @@ export function NodeTerminal({
 /** ⤢ do cabeçalho: abre o terminal do nó em tamanho real. */
 export function FocusButton({ nodeId }: { nodeId: string }) {
   const { t } = useTranslation();
-  const { setFocusNode } = useMaestro();
+  const { setFocusNode } = useCanvasActions();
   return (
     <button
       type="button"

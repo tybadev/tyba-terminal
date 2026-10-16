@@ -39,59 +39,97 @@ import type { SubagentRun } from "@/lib/ipc";
 export type MaestroFlowNode = Node<FlowNodeData>;
 
 /**
- * O que os nós precisam da tela: integrações salvas, como mudar o próprio nó
- * e a execução à vista (estado que veio do core, só desenhado aqui).
+ * O que os nós precisam da tela, em três partes (canvas-7): as ações e o que
+ * quase nunca muda (estável), a execução à vista (reativa, estado que veio do
+ * core, só desenhado aqui) e o relógio (só o badge de tempo lê). Arrastar um
+ * nó não muda nenhuma delas, e o tique de 1 s só redesenha quem mostra tempo.
  */
-export interface MaestroCtx {
+export interface CanvasActions {
   integrations: ReadonlyMap<string, Integration>;
   updateNode: (id: string, update: (node: MaestroNode) => MaestroNode) => void;
-  graph: Pick<Graph, "nodes" | "edges">;
   /** Pasta padrão do grafo: vale para nó salvo antes da pasta por nó. */
   graphDir: string;
+  runNode: (nodeId: string) => void;
+  setOpenSubagent: (nodeId: string | null) => void;
+  setFocusNode: (nodeId: string | null) => void;
+  /** "Abrir no navegador" do processo: o navegador ligado nele, ou um novo. */
+  openInBrowser: (fromId: string, url: string) => void;
+}
+
+export interface CanvasState {
+  graph: Pick<Graph, "nodes" | "edges">;
   run: Run | null;
   /** O run à vista é o mais novo: os terminais vivos são dele. */
   live: boolean;
-  now: number;
   /** Zoom em 100%: o terminal do nó usa WebGL. Fora disso, renderer DOM. */
   actualSize: boolean;
-  runNode: (nodeId: string) => void;
   /** Subagentes do claude de cada nó com sessão viva (por id de nó). */
   subagents: ReadonlyMap<string, SubagentRun[]>;
   /** Id do nó-filho aberto no painel, ou `null`. */
   openSubagent: string | null;
-  setOpenSubagent: (nodeId: string | null) => void;
   /** Nó aberto no modo foco (terminal em tamanho real por cima do canvas), ou `null`. */
   focusNode: string | null;
-  setFocusNode: (nodeId: string | null) => void;
-  /** "Abrir no navegador" do processo: o navegador ligado nele, ou um novo. */
-  openInBrowser: (fromId: string, url: string) => void;
   /** Nós que um orquestrador criou no run à vista (efêmeros, fora do grafo salvo). */
   createdIds: ReadonlySet<string>;
   /** Quem o orquestrador criou no run à vista (efêmero ou mantido) → criador. */
   createdBy: ReadonlyMap<string, string>;
 }
 
-export const MaestroContext = createContext<MaestroCtx>({
+export type MaestroCtx = CanvasActions & CanvasState;
+
+export const CanvasActionsContext = createContext<CanvasActions>({
   integrations: new Map(),
   updateNode: () => {},
-  graph: { nodes: [], edges: [] },
   graphDir: "",
-  run: null,
-  live: false,
-  now: 0,
-  actualSize: true,
   runNode: () => {},
-  subagents: new Map(),
-  openSubagent: null,
   setOpenSubagent: () => {},
-  focusNode: null,
   setFocusNode: () => {},
   openInBrowser: () => {},
+});
+
+export const CanvasStateContext = createContext<CanvasState>({
+  graph: { nodes: [], edges: [] },
+  run: null,
+  live: false,
+  actualSize: true,
+  subagents: new Map(),
+  openSubagent: null,
+  focusNode: null,
   createdIds: new Set(),
   createdBy: new Map(),
 });
 
-export const useMaestro = () => useContext(MaestroContext);
+/** Relógio dos tempos (ms); só anda enquanto algo roda. */
+export const ClockContext = createContext(0);
+
+/** As três partes do contexto do canvas, de fora para dentro. */
+export function CanvasProvider({
+  actions,
+  state,
+  now,
+  children,
+}: {
+  actions: CanvasActions;
+  state: CanvasState;
+  now: number;
+  children: ReactNode;
+}) {
+  return (
+    <CanvasActionsContext.Provider value={actions}>
+      <CanvasStateContext.Provider value={state}>
+        <ClockContext.Provider value={now}>{children}</ClockContext.Provider>
+      </CanvasStateContext.Provider>
+    </CanvasActionsContext.Provider>
+  );
+}
+
+/** Só as ações: quem usa isto não redesenha quando a execução muda. */
+export const useCanvasActions = () => useContext(CanvasActionsContext);
+export const useClock = () => useContext(ClockContext);
+export const useMaestro = (): MaestroCtx => ({
+  ...useContext(CanvasActionsContext),
+  ...useContext(CanvasStateContext),
+});
 
 /** Cor de cada tipo de ligação (quadro MaestroHarness). */
 export const EDGE_COLOR: Record<EdgeKind, string> = {
@@ -116,7 +154,8 @@ export const STATUS_TONE: Record<NodeStatus, { text: string; dot: string }> = {
 /** Estado e tempo do nó na execução à vista. */
 export function NodeStatusBadge({ nodeId, nodeRun }: { nodeId: string; nodeRun: NodeRun }) {
   const { t } = useTranslation();
-  const { graph, run, now } = useMaestro();
+  const { graph, run } = useMaestro();
+  const now = useClock();
   const label = run ? nodeStatusLabel(graph, run, nodeId) : null;
   const elapsed = nodeElapsed(nodeRun, now);
   const tone = STATUS_TONE[nodeRun.status];
@@ -343,7 +382,7 @@ export const fieldClass =
  */
 export function NodeDir({ id, kind }: { id: string; kind: MaestroNode["kind"] }) {
   const { t } = useTranslation();
-  const { updateNode, graphDir } = useMaestro();
+  const { updateNode, graphDir } = useCanvasActions();
   const dir = nodeDir(kind, graphDir);
   if (dir === null) return null;
   const pick = async () => {

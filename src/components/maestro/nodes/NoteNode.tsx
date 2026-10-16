@@ -3,12 +3,12 @@ import { NotePencil } from "@phosphor-icons/react";
 import type { NodeProps } from "@xyflow/react";
 
 import type { NodeKind } from "@/lib/maestro";
-import { NodeFrame, termClass, useMaestro, type MaestroFlowNode } from "./NodeFrame";
+import { NodeFrame, termClass, useCanvasActions, type MaestroFlowNode } from "./NodeFrame";
 
 /** Nota em Markdown: vira arquivo para quem estiver ligado nela. */
 export function NoteNode({ id, data, selected }: NodeProps<MaestroFlowNode>) {
   const { t } = useTranslation();
-  const { updateNode } = useMaestro();
+  const { updateNode } = useCanvasActions();
   const node = data.node;
   const kind = node.kind as Extract<NodeKind, { type: "note" }>;
 

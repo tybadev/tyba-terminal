@@ -69,8 +69,10 @@ import {
   routeNodeChanges,
   type FlowEdgeData,
   type Integration,
+  type MaestroNode,
   type NodeKind,
 } from "@/lib/maestro";
+import { keepIfSame } from "@/lib/stableItems";
 import { AgentNode } from "./nodes/AgentNode";
 import { BrowserNode } from "./nodes/BrowserNode";
 import { IntegrationNode } from "./nodes/IntegrationNode";
@@ -264,11 +266,16 @@ export function MaestroCanvas({
   const [createdView, setCreatedView] = useState<CreatedView>({});
   const runId = run?.id ?? null;
   useEffect(() => setCreatedView({}), [runId]);
+  // Os modelos dos nós ficam os mesmos durante o arrasto (canvas-7): os
+  // criados não são refeitos a cada quadro.
+  const modelsRef = useRef<readonly MaestroNode[] | null>(null);
+  const models = keepIfSame(
+    modelsRef.current,
+    nodes.map((n) => n.data.node),
+  );
+  modelsRef.current = models;
   const created = useMemo(() => {
-    const flow = createdFlow(
-      run,
-      nodes.map((n) => n.data.node),
-    );
+    const flow = createdFlow(run, models);
     const ns: MaestroFlowNode[] = flow.nodes.map((n) => {
       const view = createdView[n.id];
       const width = view?.width ?? n.width;
@@ -295,7 +302,7 @@ export function MaestroCanvas({
       nodeIds: new Set(ns.map((n) => n.id)),
       edgeIds: new Set(es.map((e) => e.id)),
     };
-  }, [run, nodes, createdView]);
+  }, [run, models, createdView]);
 
   // Filhos efêmeros: montados a cada render a partir do nó do agente (do
   // grafo ou criado pelo orquestrador), fora do state `nodes`/`edges` — por
