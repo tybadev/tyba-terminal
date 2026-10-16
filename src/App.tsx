@@ -4286,6 +4286,23 @@ export default function App() {
   const [machineScreen, setMachineScreen] = useState<ServicesSection | null>(null);
   // "Ir para o terminal" de uma sessão de nó, pedido ao Maestro.
   const [maestroFocus, setMaestroFocus] = useState<FocusSessionRequest | null>(null);
+  // "Ir para o terminal" de Serviços e portas, no Terminal ou no Workspace.
+  // Sessão da grade: vai ao Terminal, na aba dela. Sessão de nó do Maestro
+  // não está em layout nenhum: abre o Workspace e vai ao nó.
+  const focusSessionOrNode = useCallback(
+    (id: SessionId) => {
+      if (findSessionLocation(layout.workspaces, id)) {
+        setMaestroOpen(false);
+        goToSession(id);
+        return;
+      }
+      // O terminal de baixo não fica com o foco (ver o botão Workspace).
+      (document.activeElement as HTMLElement | null)?.blur();
+      setMaestroOpen(true);
+      setMaestroFocus((f) => ({ sessionId: id, nonce: (f?.nonce ?? 0) + 1 }));
+    },
+    [layout.workspaces, goToSession],
+  );
   const machineTunnels = useMemo(() => sshTunnelTargets(sessions, sshHosts), [sessions, sshHosts]);
   useEffect(() => {
     if (!activeId || gitScreenOpen || maestroOpen) return;
@@ -5774,17 +5791,7 @@ export default function App() {
                     const ws = loc && layout.workspaces.find((w) => w.id === loc.workspaceId);
                     return ws?.name ?? sessionById.get(id)?.title ?? null;
                   }}
-                  onFocusSession={(id) => {
-                    // Sessão da grade: vai ao Terminal, na aba dela. Sessão de
-                    // nó do Maestro não está em layout nenhum: fica no
-                    // Workspace e vai ao nó.
-                    if (findSessionLocation(layout.workspaces, id)) {
-                      setMaestroOpen(false);
-                      goToSession(id);
-                      return;
-                    }
-                    setMaestroFocus((f) => ({ sessionId: id, nonce: (f?.nonce ?? 0) + 1 }));
-                  }}
+                  onFocusSession={focusSessionOrNode}
                   onClose={() => setMachineScreen(null)}
                 />
               )}
@@ -6132,7 +6139,7 @@ export default function App() {
                       const ws = loc && layout.workspaces.find((w) => w.id === loc.workspaceId);
                       return ws?.name ?? sessionById.get(id)?.title ?? null;
                     }}
-                    onFocusSession={goToSession}
+                    onFocusSession={focusSessionOrNode}
                     onClose={() => void closeSideView(activeWorkspace.id).catch(() => {})}
                   />
                 )}
