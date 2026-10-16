@@ -9,19 +9,26 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 export type Runner = "claude" | "codex";
 
 /** Tipo do valor que uma ligação leva. */
-export type EdgeKind = "context" | "diff" | "file" | "log" | "json" | "url";
+export type DataKind = "context" | "diff" | "file" | "log" | "json" | "url";
+
+/**
+ * Tipo da ligação (espelha `EdgeKind` do core): um valor, ou `plan` (agente →
+ * a nota de plano dele) e `control` (agente → navegador que ele controla),
+ * que não levam valor — só dizem quem é de quem.
+ */
+export type EdgeKind = DataKind | "plan" | "control";
 
 /** Saída declarada de processo ou integração. `context` só o agente produz. */
 export type OutputKind = "log" | "json" | "file" | "diff";
 
-export const EDGE_KINDS: readonly EdgeKind[] = [
-  "context",
-  "diff",
-  "file",
-  "log",
-  "json",
-  "url",
-];
+/** Os tipos que levam valor (o que processo, agente e integração manual aceitam). */
+export const DATA_KINDS: readonly DataKind[] = ["context", "diff", "file", "log", "json", "url"];
+
+export const EDGE_KINDS: readonly EdgeKind[] = [...DATA_KINDS, "plan", "control"];
+
+/** Leva valor na execução (espelha `carries_data`): `plan` e `control` não seguram ninguém. */
+export const carriesData = (kind: EdgeKind): kind is DataKind =>
+  kind !== "plan" && kind !== "control";
 
 export const OUTPUT_KINDS: readonly OutputKind[] = ["log", "json", "file", "diff"];
 
@@ -203,7 +210,7 @@ export const integrationsById = (list: readonly Integration[]): IntegrationsById
 export function produces(kind: NodeKind, integrations: IntegrationsById): EdgeKind[] {
   switch (kind.type) {
     case "agent":
-      return ["context", "diff"];
+      return ["context", "diff", "plan", "control"];
     case "process":
       // A url só fica disponível quando a sessão do processo abre porta.
       return [kind.output, "url"];
@@ -225,16 +232,18 @@ export function accepts(kind: NodeKind, integrations: IntegrationsById): EdgeKin
   switch (kind.type) {
     case "agent":
     case "process":
-      return [...EDGE_KINDS];
+      return [...DATA_KINDS];
     case "note":
+      return ["plan"];
     case "service":
       return [];
     case "browser":
-      return ["url"];
+      return ["url", "control"];
     case "integration": {
       const trigger = integrations.get(kind.integrationId)?.trigger;
       if (!trigger) return [];
-      return trigger.type === "manual" ? [...EDGE_KINDS] : [trigger.kind];
+      if (trigger.type === "manual") return [...DATA_KINDS];
+      return carriesData(trigger.kind) ? [trigger.kind] : [];
     }
   }
 }
@@ -354,7 +363,8 @@ export function edgeKindChoices(
   edgeId: string,
 ): EdgeKind[] {
   const edge = edges.find((e) => e.id === edgeId);
-  if (!edge) return [];
+  // A ligação de plano é do Orquestrador (quadro OrbitPlano: "plano", sem ▾).
+  if (!edge || edge.kind === "plan") return [];
   const source = nodes.find((n) => n.id === edge.from);
   const target = nodes.find((n) => n.id === edge.to);
   if (!source || !target) return [];
@@ -564,7 +574,7 @@ export interface NodeRun {
   finishedAt: number | null;
   exitCode: number | null;
   /** Tipo da saída → caminho do arquivo com o valor. */
-  outputs: Partial<Record<EdgeKind, string>>;
+  outputs: Partial<Record<DataKind, string>>;
   reason: string | null;
   /**
    * URL local do nó: a que o navegador mostra, a do serviço, ou a porta que
@@ -593,6 +603,20 @@ export interface Run {
   liveAgents?: string[];
   /** Nós que um orquestrador criou neste run (efêmeros, fora do grafo salvo). */
   created?: Created[];
+  /** A nota de plano de cada orquestrador do run (`orbit_plan`), como está no grafo salvo. */
+  plans?: Plan[];
+}
+
+/** Estado de um passo do plano (espelha `orchestrator::StepState`). */
+export type StepState = "todo" | "doing" | "done" | "failed";
+
+/** A nota de plano de um orquestrador (espelha `orchestrator::Plan`). */
+export interface Plan {
+  orchestrator: string;
+  note: OrbitNode;
+  edge: OrbitEdge;
+  steps: { text: string; state: StepState; made?: string }[];
+  updatedAt: number;
 }
 
 /** Nó criado por um orquestrador durante o run (espelha `orchestrator::Created`). */
@@ -814,36 +838,13 @@ export function nodeUnderPointer(
   return el?.closest(".react-flow__node")?.getAttribute("data-id") ?? null;
 }
 
-/** "Manter no grafo": o core grava os criados no grafo e devolve o grafo inteiro. */
-export const keepCreated = (runId: string) =>
-  invoke<Graph>("orbit_keep_created", { runId });
-
 /**
- * A segunda linha de cada criação no painel "O que o Orquestrador fez": o
- * comando (ou a url, ou a origem dela) e a pasta.
+ * "Manter": o core grava no grafo o criado `nodeId` (o "Manter" do nó) ou,
+ * sem ele, todos os do run (o "Manter tudo" do ⋯ do orquestrador) e devolve
+ * o grafo inteiro.
  */
-export function createdDetail(
-  created: Created,
-  titleOf: (id: string) => string | undefined,
-): { text: string | null; from: string | null; dir: string | null } {
-  const k = created.node.kind;
-  switch (k.type) {
-    case "process":
-      return { text: k.command, from: null, dir: k.dir || null };
-    case "agent":
-      return { text: k.prompt, from: null, dir: k.dir || null };
-    case "browser": {
-      const edge = created.edges.find((e) => e.kind === "url");
-      return {
-        text: k.url || null,
-        from: edge ? (titleOf(edge.from) ?? edge.from) : null,
-        dir: null,
-      };
-    }
-    default:
-      return { text: null, from: null, dir: null };
-  }
-}
+export const keepCreated = (runId: string, nodeId: string | null = null) =>
+  invoke<Graph>("orbit_keep_created", { runId, nodeId });
 
 /** ▶ Executar: o core recusa grafo não consentido ou inválido. Antes de
  * começar, o core mata os agentes vivos dos runs anteriores do grafo. */
@@ -985,7 +986,7 @@ const baseOf = (path: string) => path.split(/[\\/]/).filter(Boolean).pop() ?? pa
  * a partir do estado do nó de origem na execução à vista.
  */
 export function edgeDetail(kind: EdgeKind, source: NodeRun | undefined): Label | null {
-  if (!source) return null;
+  if (!source || !carriesData(kind)) return null;
   // A url do processo sai antes do fim; as saídas do orquestrador, no fim do turno.
   if (source.status === "running" && source.outputs[kind]) return { key: "orbitEdgeReady" };
   if (source.status === "running" && source.orchestrating) return { key: "orbitEdgeEmpty" };
@@ -1015,6 +1016,7 @@ export function edgeDetail(kind: EdgeKind, source: NodeRun | undefined): Label |
  * turno, ou a url do processo já saiu (espelha o core).
  */
 export function edgeHasValue(edge: Pick<OrbitEdge, "from" | "kind">, run: Run): boolean {
+  if (!carriesData(edge.kind)) return true;
   const source = run.nodes[edge.from];
   if (!source) return false;
   if (source.status === "done") return true;
@@ -1057,7 +1059,9 @@ export function timelineSteps(graph: Pick<Graph, "nodes" | "edges">): string[][]
     guard.add(id);
     const d = Math.max(
       0,
-      ...graph.edges.filter((e) => e.to === id).map((e) => visit(e.from, guard) + 1),
+      ...graph.edges
+        .filter((e) => e.to === id && carriesData(e.kind))
+        .map((e) => visit(e.from, guard) + 1),
     );
     guard.delete(id);
     depth.set(id, d);

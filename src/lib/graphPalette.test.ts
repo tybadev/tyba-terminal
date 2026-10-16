@@ -115,7 +115,8 @@ describe("filterPalette", () => {
     const source: NodeKind = { type: "agent", runner: "claude", role: "", prompt: "", dir: "" };
     const link = { source, integrations: new Map([[integration.id, integration]]) };
     expect(labelsOf(filterPalette(entries, "abrir", link))[0]).toBe("Abrir PR");
-    expect(labelsOf(filterPalette(entries, "", link))).not.toContain("Navegador");
+    // O agente também liga no navegador (controla) e na nota (plano).
+    expect(labelsOf(filterPalette(entries, "", link))).toContain("Navegador");
   });
 });
 

@@ -84,11 +84,11 @@ const graph: Graph = {
 
 describe("produces / accepts", () => {
   test("seguem a tabela de rules", () => {
-    expect(produces(claude.kind, integrations)).toEqual(["context", "diff"]);
+    expect(produces(claude.kind, integrations)).toEqual(["context", "diff", "plan", "control"]);
     expect(produces(tests.kind, integrations)).toEqual(["json", "url"]);
     expect(produces(note.kind, integrations)).toEqual(["context", "file"]);
     expect(produces(lint.kind, integrations)).toEqual(["log"]);
-    expect(accepts(note.kind, integrations)).toEqual([]);
+    expect(accepts(note.kind, integrations)).toEqual(["plan"]);
     expect(accepts(claude.kind, integrations)).toHaveLength(6);
     expect(accepts(lint.kind, integrations)).toEqual(["diff"]);
     expect(accepts(manualHook.kind, integrations)).toHaveLength(6);
@@ -234,8 +234,8 @@ describe("tipo da ligação calculado (canvas-3)", () => {
   });
 
   test("par sem tipo em comum não liga", () => {
-    expect(kinds(claude, note)).toEqual([]);
-    expect(kinds(claude, browser)).toEqual([]);
+    expect(kinds(note, browser)).toEqual([]);
+    expect(kinds(note, note)).toEqual([]);
     // Integração por gatilho de diff: só o diff do agente.
     expect(kinds(claude, lint)).toEqual(["diff"]);
     expect(kinds(note, lint)).toEqual([]);
@@ -248,7 +248,10 @@ describe("tipo da ligação calculado (canvas-3)", () => {
     expect(pick("a", "r")).toEqual({ kind: "context" });
     expect(pick("p", "b")).toEqual({ kind: "url" });
     expect(pick("a", "i")).toEqual({ kind: "diff" });
-    expect(pick("a", "n")).toEqual({ problem: "notAccepted" });
+    expect(pick("r", "n")).toEqual({ kind: "plan" });
+    // A nota já dá contexto ao a: o plano de volta fecharia o ciclo.
+    expect(pick("a", "n")).toEqual({ problem: "cycle" });
+    expect(pick("n", "b")).toEqual({ problem: "notAccepted" });
     expect(pick("a", "a")).toEqual({ problem: "self" });
     expect(pick("x", "a")).toEqual({ problem: "unknownNode" });
     // Uma ligação por par: a → t já existe (diff); troca-se pela etiqueta.

@@ -30,6 +30,7 @@ import {
   nodeStatusLabel,
   pickConnection,
   produces,
+  runCreated,
   nodeDir,
   rememberDir,
   shortDir,
@@ -70,8 +71,11 @@ export interface CanvasActions {
   setFocusNode: (nodeId: string | null) => void;
   /** "Abrir no navegador" do processo: o navegador ligado nele, ou um novo. */
   openInBrowser: (fromId: string, url: string) => void;
-  /** "Manter" na cápsula do criado: os criados do run vão para o grafo. */
-  keepCreated: () => void;
+  /**
+   * "Manter": o criado `nodeId` vai para o grafo (rodapé do criado), ou todos
+   * os do run com `null` ("Manter tudo" no ⋯ do orquestrador).
+   */
+  keepCreated: (nodeId: string | null) => void;
   /** Permitir/Negar da cápsula âmbar: resolve o pedido no core. */
   answerApproval: (requestId: number, decision: ApprovalDecision) => void;
 }
@@ -164,6 +168,8 @@ export const EDGE_COLOR: Record<EdgeKind, string> = {
   log: "var(--tyba-cyan)",
   json: "var(--tyba-blue)",
   url: "var(--tyba-cyan)",
+  plan: "var(--tyba-violet)",
+  control: "var(--tyba-amber)",
 };
 
 /** Cor do texto e do ponto de cada estado (quadro: rodando verde, aguardando âmbar). */
@@ -502,6 +508,8 @@ export function NodeFrame({
         .join(" · ")
     : "";
   const agent = node.kind.type === "agent";
+  // "Manter tudo" no ⋯ de quem criou: vale também depois do fim do run.
+  const keepAll = runCreated(run).some((c) => !c.kept && c.createdBy === id);
 
   const capsule = request
     ? "border-tyba-amber bg-tyba-amber text-tyba-text-inverse"
@@ -597,16 +605,6 @@ export function NodeFrame({
           <>
             {status ?? (nodeRun && <CapsuleStatus nodeId={id} nodeRun={nodeRun} />)}
             {extra}
-            {locked && (
-              <button
-                type="button"
-                title={t("orbitKeepHint")}
-                onClick={keepCreated}
-                className="nodrag shrink-0 text-[11.5px] text-tyba-violet hover:underline"
-              >
-                {t("orbitKeep")}
-              </button>
-            )}
             <button
               type="button"
               aria-label={t("orbitNodeDetails")}
@@ -659,7 +657,22 @@ export function NodeFrame({
                   )}
                 </>
               ) : created ? (
-                t("orbitCreatedByNode", { node: creatorTitle ?? t("orbitAnotherAgent") })
+                <>
+                  {t("orbitCreatedByNode", { node: creatorTitle ?? t("orbitAnotherAgent") })}
+                  {locked && (
+                    <>
+                      {" · "}
+                      <button
+                        type="button"
+                        title={t("orbitKeepHint")}
+                        onClick={() => keepCreated(id)}
+                        className="nodrag text-tyba-text hover:underline"
+                      >
+                        {t("orbitKeep")}
+                      </button>
+                    </>
+                  )}
+                </>
               ) : (
                 meta
               )}
@@ -724,6 +737,16 @@ export function NodeFrame({
                     {t("orbitSwapRole")}
                   </button>
                 </>
+              )}
+              {keepAll && (
+                <button
+                  type="button"
+                  title={t("orbitKeepAllHint")}
+                  onClick={() => keepCreated(null)}
+                  className={`${detailBtn} text-tyba-text hover:bg-tyba-text/[.12]`}
+                >
+                  {t("orbitKeepAll")}
+                </button>
               )}
               {!locked && (
                 <button

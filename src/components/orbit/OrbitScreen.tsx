@@ -47,11 +47,9 @@ import {
   findSessionNode,
   integrationsById,
   invalidEdges,
-  createdDetail,
   createdByOf,
   ephemeralCreated,
   keepCreated,
-  shortDir,
   NEW_IN_HANDLE,
   OUT_HANDLE,
   isLocalUrl,
@@ -76,7 +74,6 @@ import {
   runGet,
   runNode,
   runNumber,
-  runCreated,
   runReducer,
   runStart,
   runStop,
@@ -85,7 +82,6 @@ import {
   selectedRun,
   stoppableRuns,
   toFlow,
-  type Created,
   type Graph,
   type ImportPreview,
   type Integration,
@@ -118,6 +114,7 @@ import {
   undo as undoShot,
 } from "@/lib/graphHistory";
 import { freeSpot, nodeRect, rightOf } from "@/lib/graphLayout";
+import { applyPlans, freshPlans } from "@/lib/orbitPlan";
 import { IS_MAC } from "@/lib/platform";
 import {
   subagentKey,
@@ -233,6 +230,10 @@ function OrbitInner({
   const [overflow, setOverflow] = useState(false);
   const showMinimap = minimapPref ?? overflow;
   const lastSaved = useRef<string | null>(null);
+  // Quando a tela leu o grafo do core, e o plano de cada nota já posto nela
+  // (ver `freshPlans`).
+  const loadedAt = useRef(0);
+  const appliedPlans = useRef(new Map<string, number>());
   const [runView, dispatchRun] = useReducer(runReducer, EMPTY_RUN_VIEW);
   const [now, setNow] = useState(() => Date.now());
   const [showInts, setShowInts] = useState(false);
@@ -263,6 +264,8 @@ function OrbitInner({
         // Grafo novo e vazio conta como "salvo": só vai para o banco na
         // primeira edição, para não deixar grafo vazio de quem só espiou.
         lastSaved.current = JSON.stringify(fromFlow(graph, flow.nodes, flow.edges));
+        loadedAt.current = Date.now();
+        appliedPlans.current = new Map();
         setIntegrations(ints);
         setNodes(flow.nodes as OrbitFlowNode[]);
         setEdges(flow.edges);
@@ -388,6 +391,28 @@ function OrbitInner({
   }, [runningIds]);
 
   const run = selectedRun(runView);
+
+  // A nota de plano que o Orquestrador escreve (`orbit_plan`) vai para o
+  // grafo salvo pelo core; a tela põe a nota e a ligação na cópia dela, senão
+  // o salvar seguinte apagaria a nota ou voltaria o texto velho.
+  const plans = useMemo(
+    () =>
+      meta
+        ? freshPlans(
+            runView.runs.flatMap((r) => (r.graphId === meta.id ? (r.plans ?? []) : [])),
+            appliedPlans.current,
+            loadedAt.current,
+          )
+        : [],
+    [runView.runs, meta],
+  );
+  useEffect(() => {
+    if (plans.length === 0) return;
+    for (const p of plans) appliedPlans.current.set(p.note.id, p.updatedAt);
+    const next = applyPlans(nodesRef.current, edgesRef.current, plans);
+    setNodes(next.nodes);
+    setEdges(next.edges);
+  }, [plans]);
   // Onde o dono deixou cada nó criado pelo orquestrador (vale enquanto esse
   // run está à vista, e o "Manter no grafo" leva a posição junto).
   const [createdView, setCreatedView] = useState<CreatedView>({});
@@ -733,7 +758,7 @@ function OrbitInner({
       setOpenSubagent: setOpenSub,
       setFocusNode,
       openInBrowser,
-      keepCreated: () => void keepRef.current(),
+      keepCreated: (nodeId: string | null) => void keepRef.current(nodeId),
       answerApproval: (id: number, decision: ApprovalDecision) =>
         void resolveApproval(id, decision).catch((e) =>
           setError(t("orbitApprovalError", { error: String(e) })),
@@ -769,13 +794,14 @@ function OrbitInner({
     ],
   );
 
-  // "Manter no grafo": o core grava os criados no grafo e devolve o grafo
-  // inteiro, que passa a ser o da tela (o que estava no debounce vai antes).
-  const keep = async () => {
+  // "Manter" (o criado `nodeId`, ou todos no "Manter tudo"): o core grava no
+  // grafo e devolve o grafo inteiro, que passa a ser o da tela (o que estava
+  // no debounce vai antes).
+  const keep = async (nodeId: string | null) => {
     if (!run) return;
     try {
       await flush();
-      const kept = await keepCreated(run.id);
+      const kept = await keepCreated(run.id, nodeId);
       const flow = toFlow(kept);
       lastSaved.current = JSON.stringify(fromFlow(kept, flow.nodes, flow.edges));
       // Onde o dono arrastou/redimensionou o criado vale no grafo: a posição
@@ -813,10 +839,10 @@ function OrbitInner({
   };
   const createdViewRef = useRef(createdView);
   createdViewRef.current = createdView;
-  // A cápsula do criado chama o "Manter" pela ação estável do contexto.
+  // O rodapé do criado e o ⋯ do orquestrador chamam o "Manter" pela ação
+  // estável do contexto.
   const keepRef = useRef(keep);
   keepRef.current = keep;
-  const orchestrated = runCreated(run);
 
   /** Troca de grafo: o que está no debounce vai antes para o banco. */
   const switchTo = (next: { id: string | null; fresh: boolean }) => {
@@ -1138,13 +1164,6 @@ function OrbitInner({
               {error}
             </div>
           )}
-          {orchestrated.length > 0 && (
-            <OrchestratorPanel
-              created={orchestrated}
-              titleOf={(id) => viewGraph.nodes.find((n) => n.id === id)?.title}
-              onKeep={() => void keep()}
-            />
-          )}
           {opened && (
             <SubagentPanel
               sessionId={opened.sessionId}
@@ -1225,76 +1244,6 @@ function OrbitInner({
         />
       )}
     </CanvasProvider>
-  );
-}
-
-/**
- * "O que o Orquestrador fez" (quadro OrbitOrquestrador): cada nó criado no
- * run à vista (o quê, comando ou url, pasta, hora) e "Manter no grafo", que
- * vale também depois do fim (o orquestrador saiu, ■ Parar) — é ali que o
- * dono decide. Descartar é o padrão: o que não for mantido não volta.
- */
-function OrchestratorPanel({
-  created,
-  titleOf,
-  onKeep,
-}: {
-  created: Created[];
-  titleOf: (id: string) => string | undefined;
-  onKeep: () => void;
-}) {
-  const { t, i18n } = useTranslation();
-  const pending = created.some((c) => !c.kept);
-  const btn =
-    "rounded-[6px] border px-2.5 py-1 text-[11px] disabled:cursor-not-allowed disabled:opacity-50";
-  return (
-    <aside
-      aria-label={t("orbitOrchestratorDid")}
-      className="flex w-[360px] shrink-0 flex-col border-l border-tyba-border bg-tyba-surface"
-    >
-      <div className="shrink-0 border-b border-tyba-border px-4 py-3 text-[13px] text-tyba-text">
-        {t("orbitOrchestratorDid")}
-      </div>
-      <div className="flex min-h-0 flex-col gap-3 overflow-y-auto px-4 py-3 text-[12px] leading-[1.5] text-tyba-text-muted">
-        {created.map((c) => {
-          const detail = createdDetail(c, titleOf);
-          const time = new Date(c.createdAt).toLocaleTimeString(i18n.language, {
-            hour: "2-digit",
-            minute: "2-digit",
-          });
-          const parts = [
-            detail.text,
-            detail.from && t("orbitCreatedFrom", { node: detail.from }),
-            detail.dir && shortDir(detail.dir),
-            time,
-          ].filter(Boolean);
-          return (
-            <div key={c.node.id} className="min-w-0">
-              <div className="truncate text-tyba-text">
-                {t("orbitCreatedItem", {
-                  kind: t(`orbitCreatedKind_${c.node.kind.type}`),
-                  title: c.node.title,
-                })}
-              </div>
-              <div className="truncate text-tyba-text-faint" title={parts.join(" · ")}>
-                {parts.join(" · ")}
-              </div>
-            </div>
-          );
-        })}
-        <div className="flex gap-2 pt-1">
-          <button
-            type="button"
-            disabled={!pending}
-            title={t("orbitKeepHint")}
-            onClick={onKeep}
-            className={`${btn} border-tyba-border-strong text-tyba-text hover:bg-tyba-raised`}
-          >
-            {t("orbitKeepInGraph")}
-          </button>
-        </div>
-      </div>
-    </aside>
   );
 }
 

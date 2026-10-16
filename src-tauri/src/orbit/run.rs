@@ -3859,7 +3859,7 @@ mod tests {
         let keep = runs.created_to_keep(&run.id).unwrap();
         assert_eq!(keep.len(), 2);
         let mut graph = runs.store.get_orbit_graph(&g.id).unwrap().unwrap().value;
-        orchestrator::merge_kept(&mut graph, &keep);
+        orchestrator::merge_kept(&mut graph, &keep, &keep);
         crate::orbit::validate_graph(&graph, &[]).unwrap();
         runs.store.save_orbit_graph(&graph, true, None).unwrap();
         runs.mark_kept(
@@ -3911,7 +3911,7 @@ mod tests {
         let keep = runs.created_to_keep(&run.id).unwrap();
         assert_eq!(keep.len(), 1);
         let mut graph = runs.store.get_orbit_graph(&g.id).unwrap().unwrap().value;
-        orchestrator::merge_kept(&mut graph, &keep);
+        orchestrator::merge_kept(&mut graph, &keep, &keep);
         runs.store.save_orbit_graph(&graph, true, None).unwrap();
         runs.mark_kept(&run.id, std::slice::from_ref(&page));
 

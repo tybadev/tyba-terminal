@@ -4,7 +4,6 @@ import {
   NEW_IN_HANDLE,
   ORCHESTRATOR_HANDLE,
   createdByOf,
-  createdDetail,
   createdFlow,
   ephemeralCreated,
   importItems,
@@ -49,24 +48,6 @@ describe("orquestrador: nós criados", () => {
     expect(ephemeralCreated(null)).toEqual([]);
     // Run gravado antes do orquestrador não tem `created`.
     expect(ephemeralCreated({ ...run("running", []), created: undefined })).toEqual([]);
-  });
-
-  test("o painel mostra comando e pasta, ou a origem da url do navegador", () => {
-    expect(createdDetail(created("orq-1"), () => undefined)).toEqual({
-      text: "bun run dev",
-      from: null,
-      dir: "/srv/api",
-    });
-    const browser = created("orq-2", {
-      node: newNode("orq-2", "code", { type: "browser", url: "" }, { x: 0, y: 0 }),
-      edges: [{ id: "orq-2-url", from: "orq-1", to: "orq-2", kind: "url" }],
-    });
-    const titles: Record<string, string> = { "orq-1": "code-platform" };
-    expect(createdDetail(browser, (id) => titles[id])).toEqual({
-      text: null,
-      from: "code-platform",
-      dir: null,
-    });
   });
 
   test("a prévia de importação mostra que o nó orquestra", () => {

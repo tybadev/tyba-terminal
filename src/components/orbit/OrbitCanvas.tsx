@@ -226,8 +226,8 @@ function OrbitEdgeView({
             ? "var(--tyba-violet)"
             : kind === "context"
               ? "color-mix(in srgb, var(--tyba-violet) 70%, transparent)"
-              : kind === "url"
-                ? "var(--tyba-cyan)"
+              : kind === "url" || kind === "plan" || kind === "control"
+                ? EDGE_COLOR[kind]
                 : "color-mix(in srgb, var(--tyba-text) 36%, transparent)",
           strokeWidth: selected ? 2.4 : 1.6,
           strokeDasharray: pending ? "3 6" : undefined,

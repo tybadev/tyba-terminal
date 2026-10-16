@@ -104,7 +104,7 @@ describe("isLocalUrl (espelha o core)", () => {
 describe("navegador e serviço no grafo", () => {
   test("produces / accepts", () => {
     expect(produces(nav.kind, none)).toEqual([]);
-    expect(accepts(nav.kind, none)).toEqual(["url"]);
+    expect(accepts(nav.kind, none)).toEqual(["url", "control"]);
     expect(produces(api.kind, none)).toEqual(["log", "url"]);
     expect(accepts(api.kind, none)).toEqual([]);
     expect(produces(dev.kind, none)).toEqual(["log", "url"]);

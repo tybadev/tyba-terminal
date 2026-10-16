@@ -562,17 +562,27 @@ pub fn diff_summary(patch: &str) -> Value {
     })
 }
 
-/// "Manter no grafo": os nós criados entram no grafo como nós normais (sem
-/// `created_by`, que só existe no run), com as ligações que chegam neles. Id
-/// que já está no grafo não entra de novo.
-pub fn merge_kept(graph: &mut Graph, created: &[Created]) {
-    for c in created {
+/// "Manter no grafo": os nós de `keep` entram no grafo como nós normais (sem
+/// `created_by`, que só existe no run). Id que já está no grafo não entra de
+/// novo. Das ligações dos criados do run (`all`), entram as que tocam um nó
+/// de `keep` e têm as duas pontas no grafo: o "Manter" de um nó só deixa de
+/// fora a url de um criado que ainda não foi mantido, e ela volta quando ele
+/// for.
+pub fn merge_kept(graph: &mut Graph, keep: &[Created], all: &[Created]) {
+    for c in keep {
         if !graph.nodes.iter().any(|n| n.id == c.node.id) {
             graph.nodes.push(c.node.clone());
         }
     }
-    for edge in created.iter().flat_map(|c| &c.edges) {
-        if !graph.edges.iter().any(|e| e.id == edge.id) {
+    let kept = |id: &str| keep.iter().any(|c| c.node.id == id);
+    for edge in all.iter().chain(keep).flat_map(|c| &c.edges) {
+        let ends = [&edge.from, &edge.to]
+            .into_iter()
+            .all(|id| graph.nodes.iter().any(|n| &n.id == id));
+        if (kept(&edge.from) || kept(&edge.to))
+            && ends
+            && !graph.edges.iter().any(|e| e.id == edge.id)
+        {
             graph.edges.push(edge.clone());
         }
     }
@@ -937,6 +947,48 @@ Binary files a/logo.png and b/logo.png differ
             &json!({"steps": [step(&"a".repeat(MAX_PLAN_TEXT_CHARS), "todo")]})
         )
         .is_ok());
+    }
+
+    #[test]
+    fn merge_kept_of_one_node_leaves_out_the_url_of_an_unkept_one() {
+        let edge = |id: &str, from: &str, to: &str, kind| Edge {
+            id: id.into(),
+            from: from.into(),
+            to: to.into(),
+            kind,
+        };
+        let made = |node: Node, edges: Vec<Edge>| Created {
+            node,
+            created_by: "o".into(),
+            created_at: 0,
+            edges,
+            kept: false,
+        };
+        let web = made(note("web", 0.0, 0.0, 10.0, 10.0), vec![]);
+        let page = made(
+            note("page", 0.0, 0.0, 10.0, 10.0),
+            vec![
+                edge("u", "web", "page", crate::orbit::EdgeKind::Url),
+                edge("c", "o", "page", crate::orbit::EdgeKind::Control),
+            ],
+        );
+        let all = vec![web.clone(), page.clone()];
+        let mut graph = Graph {
+            id: "g".into(),
+            name: "g".into(),
+            dir: String::new(),
+            nodes: vec![note("o", 0.0, 0.0, 10.0, 10.0)],
+            edges: vec![],
+            variables: Default::default(),
+        };
+        // Só a página: o controle do orquestrador vai; a url do web, ainda não.
+        merge_kept(&mut graph, std::slice::from_ref(&page), &all);
+        let ids = |g: &Graph| g.edges.iter().map(|e| e.id.clone()).collect::<Vec<_>>();
+        assert_eq!(ids(&graph), vec!["c"]);
+        // Depois o web: a url dele para a página, já mantida, entra junto.
+        merge_kept(&mut graph, std::slice::from_ref(&web), &all);
+        assert_eq!(ids(&graph), vec!["c", "u"]);
+        assert_eq!(graph.nodes.len(), 3);
     }
 
     #[test]

@@ -11,7 +11,7 @@ import {
 
 import { Button } from "@/components/ui/button";
 import {
-  EDGE_KINDS,
+  DATA_KINDS,
   OUTPUT_KINDS,
   integrationProblem,
   type EdgeKind,
@@ -97,7 +97,7 @@ export function IntegrationEditor({
             onChange={(e) => onChange({ ...draft, trigger: parseTrigger(e.target.value) })}
             className={`${field} appearance-none pr-8`}
           >
-            {EDGE_KINDS.map((kind) => (
+            {DATA_KINDS.map((kind) => (
               <option key={kind} value={`onInput:${kind}`}>
                 {t("orbitIntOnInput", { kind: t(`orbitEdge_${kind}`) })}
               </option>
