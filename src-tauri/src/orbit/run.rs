@@ -5297,11 +5297,33 @@ mod tests {
             .call("orbit_browser_snapshot", &json!({"node": "solto"}))
             .unwrap_err();
         assert!(err.contains("controla"), "{err}");
+        tools
+            .call(
+                "orbit_browser_type",
+                &json!({"ref": "e2", "text": "eu@x.test", "submit": true}),
+            )
+            .unwrap();
+        let err = tools
+            .call(
+                "orbit_browser_click",
+                &json!({"node": "solto", "ref": "e1"}),
+            )
+            .unwrap_err();
+        assert!(err.contains("controla"), "{err}");
         assert_eq!(
             host.browser.lock().clone(),
             vec![
                 ("b".to_string(), "Claude".to_string(), AgentAction::Snapshot),
                 ("b".to_string(), "Claude".to_string(), AgentAction::Snapshot),
+                (
+                    "b".to_string(),
+                    "Claude".to_string(),
+                    AgentAction::Type {
+                        reference: "e2".into(),
+                        text: "eu@x.test".into(),
+                        submit: true
+                    }
+                ),
             ]
         );
 
@@ -5316,7 +5338,11 @@ mod tests {
             .call("orbit_browser_snapshot", &json!({}))
             .unwrap_err();
         assert!(err.contains("nenhum navegador ligado"), "{err}");
-        assert_eq!(host.browser.lock().len(), 2);
+        let err = tools
+            .call("orbit_browser_click", &json!({"ref": "e1"}))
+            .unwrap_err();
+        assert!(err.contains("nenhum navegador ligado"), "{err}");
+        assert_eq!(host.browser.lock().len(), 3);
     }
 
     #[cfg(unix)]

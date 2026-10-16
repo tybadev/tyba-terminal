@@ -216,6 +216,56 @@ struct BrowserNodeArgs {
     node: Option<String>,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BrowserClickArgs {
+    #[serde(default)]
+    node: Option<String>,
+    #[serde(rename = "ref")]
+    reference: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BrowserTypeArgs {
+    #[serde(default)]
+    node: Option<String>,
+    #[serde(rename = "ref")]
+    reference: String,
+    text: String,
+    #[serde(default)]
+    submit: bool,
+}
+
+/// Teto do texto de `orbit_browser_type` (caracteres).
+pub const MAX_TYPE_CHARS: usize = 4_000;
+
+/// A ref de um elemento do snapshot (`e<N>`).
+fn browser_ref(value: &str) -> Result<String, String> {
+    let r = value.trim();
+    if !super::browser::snapshot::valid_ref(r) {
+        return Err(
+            "ref inválida: use uma ref do snapshot, como e3 (orbit_browser_snapshot)".into(),
+        );
+    }
+    Ok(r.to_string())
+}
+
+/// O texto a digitar: só `\n` como controle, até [`MAX_TYPE_CHARS`]. Não é
+/// redigido — é o agente digitando (uma senha de login, por exemplo).
+fn type_text(value: &str) -> Result<String, String> {
+    if value.chars().any(|c| c != '\n' && c.is_control()) {
+        return Err("text contém caractere de controle (só a quebra de linha passa)".into());
+    }
+    let n = value.chars().count();
+    if n > MAX_TYPE_CHARS {
+        return Err(format!(
+            "text com {n} caracteres passa do teto de {MAX_TYPE_CHARS}"
+        ));
+    }
+    Ok(value.to_string())
+}
+
 /// O `node` opcional das `orbit_browser_*`: vazio conta como ausente.
 fn browser_node(node: Option<String>) -> Result<Option<String>, String> {
     let node = node.filter(|n| !n.trim().is_empty());
@@ -398,6 +448,26 @@ pub fn parse_call(tool: &str, value: &Value) -> Result<ToolCall, String> {
             Ok(ToolCall::Browser {
                 node: browser_node(a.node)?,
                 action: super::browser::AgentAction::Snapshot,
+            })
+        }
+        "orbit_browser_click" => {
+            let a: BrowserClickArgs = args(tool, value)?;
+            Ok(ToolCall::Browser {
+                node: browser_node(a.node)?,
+                action: super::browser::AgentAction::Click {
+                    reference: browser_ref(&a.reference)?,
+                },
+            })
+        }
+        "orbit_browser_type" => {
+            let a: BrowserTypeArgs = args(tool, value)?;
+            Ok(ToolCall::Browser {
+                node: browser_node(a.node)?,
+                action: super::browser::AgentAction::Type {
+                    reference: browser_ref(&a.reference)?,
+                    text: type_text(&a.text)?,
+                    submit: a.submit,
+                },
             })
         }
         "orbit_peers" => {
@@ -1042,6 +1112,59 @@ mod tests {
         );
         assert!(snap(json!({"node": "b\u{1b}"})).is_err());
         assert!(snap(json!({"url": "http://localhost:1"})).is_err());
+    }
+
+    #[test]
+    fn browser_click_and_type_check_ref_and_text() {
+        use super::super::browser::AgentAction;
+        use serde_json::json;
+        assert_eq!(
+            parse_call("orbit_browser_click", &json!({"ref": " e3 "})),
+            Ok(ToolCall::Browser {
+                node: None,
+                action: AgentAction::Click {
+                    reference: "e3".into()
+                }
+            })
+        );
+        for bad in ["", "3", "e", "button", "e1 e2", "e1234567"] {
+            let err = parse_call("orbit_browser_click", &json!({"ref": bad})).unwrap_err();
+            assert!(err.contains("ref inválida"), "{bad}: {err}");
+        }
+        assert!(parse_call("orbit_browser_click", &json!({"node": "b"})).is_err());
+
+        let typed = |args: Value| parse_call("orbit_browser_type", &args);
+        assert_eq!(
+            typed(json!({"node": "b", "ref": "e2", "text": "linha 1\nlinha 2", "submit": true})),
+            Ok(ToolCall::Browser {
+                node: Some("b".into()),
+                action: AgentAction::Type {
+                    reference: "e2".into(),
+                    text: "linha 1\nlinha 2".into(),
+                    submit: true
+                }
+            })
+        );
+        // Texto vazio limpa o campo; sem submit é falso.
+        assert_eq!(
+            typed(json!({"ref": "e2", "text": ""})),
+            Ok(ToolCall::Browser {
+                node: None,
+                action: AgentAction::Type {
+                    reference: "e2".into(),
+                    text: String::new(),
+                    submit: false
+                }
+            })
+        );
+        let err = typed(json!({"ref": "e2", "text": "x\u{1b}[2J"})).unwrap_err();
+        assert!(err.contains("controle"), "{err}");
+        let err = typed(json!({"ref": "e2", "text": "\t"})).unwrap_err();
+        assert!(err.contains("controle"), "{err}");
+        assert!(typed(json!({"ref": "e2", "text": "a".repeat(MAX_TYPE_CHARS)})).is_ok());
+        let err = typed(json!({"ref": "e2", "text": "a".repeat(MAX_TYPE_CHARS + 1)})).unwrap_err();
+        assert!(err.contains("teto"), "{err}");
+        assert!(typed(json!({"ref": "e2"})).is_err());
     }
 
     #[test]

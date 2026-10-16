@@ -126,6 +126,16 @@ pub struct AgentStep {
 #[derive(Debug, Clone, PartialEq)]
 pub enum AgentAction {
     Snapshot,
+    /// Clicar no elemento da ref (do último snapshot).
+    Click {
+        reference: String,
+    },
+    /// Trocar o texto do campo da ref; com `submit`, enviar o formulário.
+    Type {
+        reference: String,
+        text: String,
+        submit: bool,
+    },
 }
 
 impl AgentAction {
@@ -133,12 +143,48 @@ impl AgentAction {
     fn script(&self) -> &'static str {
         match self {
             AgentAction::Snapshot => "snapshot",
+            AgentAction::Click { .. } => "click",
+            AgentAction::Type { .. } => "type",
+        }
+    }
+
+    /// Os argumentos da ação (JSON, vão como argumento do script).
+    fn args(&self) -> Value {
+        match self {
+            AgentAction::Snapshot => serde_json::json!({}),
+            AgentAction::Click { reference } => serde_json::json!({ "ref": reference }),
+            AgentAction::Type {
+                reference,
+                text,
+                submit,
+            } => serde_json::json!({ "ref": reference, "text": text, "submit": submit }),
         }
     }
 
     /// Ler (snapshot, console, print) vale com o dono usando; agir, não.
     pub fn acts(&self) -> bool {
-        false
+        matches!(self, AgentAction::Click { .. } | AgentAction::Type { .. })
+    }
+}
+
+/// Quanto tempo a ação do agente segura o foco "agente" no card.
+pub const AGENT_HOLD: Duration = Duration::from_millis(1500);
+/// Assentar: sem navegação nesse tempo, a ação terminou.
+pub const SETTLE_QUIET: Duration = Duration::from_millis(1500);
+/// Assentar: no máximo isto.
+pub const SETTLE_MAX: Duration = Duration::from_secs(5);
+
+/// A página assentou depois de clicar ou digitar? Com navegação começada,
+/// quando ela termina de carregar; sem, depois de [`SETTLE_QUIET`]; nunca
+/// além de [`SETTLE_MAX`].
+pub fn settled(navigated: bool, loading: bool, elapsed: Duration) -> bool {
+    if elapsed >= SETTLE_MAX {
+        return true;
+    }
+    if navigated {
+        !loading
+    } else {
+        elapsed >= SETTLE_QUIET
     }
 }
 
@@ -201,6 +247,10 @@ struct Entry {
     last_shot: u64,
     /// A view nativa já existe (o agente só lê/age numa view criada).
     created: bool,
+    /// Navegações começadas (o assentar do clique compara).
+    nav_seq: u64,
+    /// Até quando o foco "agente" vale (ms).
+    agent_until: u64,
 }
 
 /// A vez de cada navegador: uma ação de agente em voo por nó, e até
@@ -420,6 +470,11 @@ pub fn clean_page_title(title: &str) -> String {
         .collect::<String>()
         .trim()
         .to_string()
+}
+
+/// Texto da página para o card e o agente: uma linha, até `max`, redigido.
+fn redact_line(s: &str, max: usize) -> String {
+    crate::session::redact::redact(&snapshot::one_line(s, max)).into_owned()
 }
 
 fn now_ms() -> u64 {
@@ -660,6 +715,7 @@ impl BrowserViews {
             e.dirty = true;
             if !finished {
                 e.state.refused = None;
+                e.nav_seq += 1;
             }
         });
         if finished {
@@ -809,21 +865,142 @@ impl BrowserViews {
             key.node,
             action.script()
         );
-        let reply = self.eval(app, key, action.script(), serde_json::json!({}))?;
-        self.note_step(app, key, by, &action, None, reply.errors);
+        let nav_before = self.nav_seq(key);
+        if action.acts() {
+            self.hold_agent_focus(app, key);
+        }
+        let reply = self.eval(app, key, action.script(), action.args())?;
+        let ok = reply.ok.clone().unwrap_or(Value::Null);
+        let name = ok
+            .get("name")
+            .and_then(Value::as_str)
+            .map(|n| redact_line(n, 80));
+        self.note_step(app, key, by, &action, name.clone(), reply.errors);
         if let Some(code) = &reply.error {
             return Err(snapshot::error_message(code, reply.detail.as_deref()));
         }
-        let ok = reply.ok.clone().unwrap_or(Value::Null);
         let roots = self.roots(key);
         let url = policy::display_url(&reply.url, &roots);
+        let done = |verb: &str| {
+            let role = ok.get("role").and_then(Value::as_str).unwrap_or("");
+            format!(
+                "{verb} {} \"{}\"",
+                snapshot::one_line(role, 40),
+                name.clone().unwrap_or_default()
+            )
+        };
         match action {
             AgentAction::Snapshot => Ok(Value::String(snapshot::format_snapshot(
                 &url,
                 &reply.title,
                 &ok,
             ))),
+            AgentAction::Click { .. } | AgentAction::Type { .. } => {
+                let what = match &action {
+                    AgentAction::Type { .. } => {
+                        let chars = ok.get("chars").and_then(Value::as_u64).unwrap_or(0);
+                        format!(
+                            "digitou {chars} caracteres em \"{}\"",
+                            name.unwrap_or_default()
+                        )
+                    }
+                    _ => done("clicou em"),
+                };
+                // Espera a página assentar e diz onde ela ficou.
+                self.settle(key, nav_before);
+                self.shoot(app, key, ShotTrigger::AgentAction);
+                // A url da página (rota de SPA não dispara `load`); se a
+                // página ainda navega, a do último `load`.
+                let (url, title, errors) = match self.eval(app, key, "where", Value::Null) {
+                    Ok(r) if r.error.is_none() => {
+                        (policy::display_url(&r.url, &roots), r.title, r.errors)
+                    }
+                    _ => {
+                        let (url, title) = self.page(key);
+                        (url, title, self.console_errors(key))
+                    }
+                };
+                self.update(app, key, |e| e.state.console_errors = Some(errors));
+                Ok(serde_json::json!({
+                    "done": what,
+                    "url": redact_line(&url, 300),
+                    "title": redact_line(&title, 200),
+                    "console_errors": errors,
+                }))
+            }
         }
+    }
+
+    /// Quantas navegações a página já começou (o assentar compara).
+    fn nav_seq(&self, key: &ViewKey) -> u64 {
+        self.entries.lock().get(key).map_or(0, |e| e.nav_seq)
+    }
+
+    /// Url (como o dono a vê) e título atuais.
+    fn page(&self, key: &ViewKey) -> (String, String) {
+        self.entries
+            .lock()
+            .get(key)
+            .map(|e| (e.state.url.clone(), e.state.title.clone()))
+            .unwrap_or_default()
+    }
+
+    fn console_errors(&self, key: &ViewKey) -> u32 {
+        self.entries
+            .lock()
+            .get(key)
+            .and_then(|e| e.state.console_errors)
+            .unwrap_or(0)
+    }
+
+    /// Espera a página assentar ([`settled`]).
+    fn settle(&self, key: &ViewKey, nav_before: u64) {
+        let start = std::time::Instant::now();
+        loop {
+            let (seq, loading) = self
+                .entries
+                .lock()
+                .get(key)
+                .map_or((nav_before, false), |e| (e.nav_seq, e.state.loading));
+            if settled(seq != nav_before, loading, start.elapsed()) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    /// O card mostra "<agente> usando" por [`AGENT_HOLD`]: a ação é por
+    /// script, a view não rouba o teclado do app.
+    fn hold_agent_focus(&self, app: &AppHandle, key: &ViewKey) {
+        let mut changed = false;
+        self.update(app, key, |e| {
+            if e.state.focus == Focus::None {
+                e.state.focus = Focus::Agent;
+                changed = true;
+            }
+            e.agent_until = now_ms() + AGENT_HOLD.as_millis() as u64;
+        });
+        if !changed {
+            return;
+        }
+        let app = app.clone();
+        let key = key.clone();
+        std::thread::spawn(move || loop {
+            std::thread::sleep(Duration::from_millis(250));
+            let views = app.state::<BrowserViews>();
+            let mut done = false;
+            views.update(&app, &key, |e| {
+                if e.state.focus != Focus::Agent {
+                    done = true;
+                } else if now_ms() >= e.agent_until {
+                    e.state.focus = Focus::None;
+                    done = true;
+                }
+            });
+            if done || views.entries.lock().get(&key).is_none() {
+                return;
+            }
+        });
     }
 
     fn roots(&self, key: &ViewKey) -> Vec<PathBuf> {
@@ -1117,6 +1294,37 @@ mod tests {
         assert_eq!(lanes.turn(&k, Duration::from_millis(30)).err(), Some(BUSY));
         drop(held);
         assert!(lanes.lanes.lock().is_empty());
+    }
+
+    #[test]
+    fn only_click_and_type_act_and_their_args_go_as_data() {
+        let click = AgentAction::Click {
+            reference: "e3".into(),
+        };
+        let typed = AgentAction::Type {
+            reference: "e2".into(),
+            text: "a\"); alert(1); (\"".into(),
+            submit: true,
+        };
+        assert!(!AgentAction::Snapshot.acts());
+        assert!(click.acts() && typed.acts());
+        assert_eq!(click.args(), serde_json::json!({"ref": "e3"}));
+        // O texto vai como valor JSON (argumento do script), intacto.
+        assert_eq!(typed.args()["text"].as_str(), Some("a\"); alert(1); (\""));
+        assert_eq!(typed.args()["submit"], true);
+    }
+
+    #[test]
+    fn settle_waits_for_the_load_or_a_quiet_moment() {
+        let ms = Duration::from_millis;
+        // Sem navegação: 1,5 s de calma.
+        assert!(!settled(false, false, ms(1_000)));
+        assert!(settled(false, false, SETTLE_QUIET));
+        // Navegou: até terminar de carregar.
+        assert!(!settled(true, true, ms(2_000)));
+        assert!(settled(true, false, ms(200)));
+        // Nunca além do teto.
+        assert!(settled(true, true, SETTLE_MAX));
     }
 
     #[test]

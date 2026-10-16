@@ -279,8 +279,110 @@
     return { nodes, total, capped };
   };
 
+  // ── agir ───────────────────────────────────────────────────────────────
+  // Eventos sintéticos (`isTrusted = false`): página que exige evento de
+  // verdade não reage (limite aceito na v1).
+  const usable = (el) => {
+    if (hidden(el)) throw fail("hidden");
+    if (el.disabled || el.getAttribute("aria-disabled") === "true") throw fail("disabled");
+  };
+
+  const click = (a) => {
+    const el = element(a.ref);
+    usable(el);
+    el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
+    const r = el.getBoundingClientRect();
+    if (r.width < 1 || r.height < 1) throw fail("hidden");
+    const x = r.left + r.width / 2;
+    const y = r.top + r.height / 2;
+    if (x < 0 || y < 0 || x > innerWidth || y > innerHeight) throw fail("offscreen");
+    // Não clica através de um overlay: o ponto central tem de cair nele (ou
+    // no rótulo dele, o caso do checkbox escondido atrás do label).
+    const hit = document.elementFromPoint(x, y);
+    const label = hit && hit.closest ? hit.closest("label") : null;
+    if (!hit || !(hit === el || el.contains(hit) || (label && label.control === el))) {
+      if (!hit) throw fail("offscreen");
+      const t = target(hit);
+      throw fail("covered", `${t.role} "${t.name.slice(0, 80)}"`);
+    }
+    const base = {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      clientX: x,
+      clientY: y,
+      button: 0,
+      view: window,
+    };
+    const pointer = { ...base, pointerId: 1, pointerType: "mouse", isPrimary: true };
+    el.dispatchEvent(new PointerEvent("pointerdown", { ...pointer, buttons: 1 }));
+    el.dispatchEvent(new MouseEvent("mousedown", { ...base, buttons: 1, detail: 1 }));
+    if (typeof el.focus === "function") el.focus({ preventScroll: true });
+    el.dispatchEvent(new PointerEvent("pointerup", { ...pointer, buttons: 0 }));
+    el.dispatchEvent(new MouseEvent("mouseup", { ...base, buttons: 0, detail: 1 }));
+    el.dispatchEvent(new MouseEvent("click", { ...base, buttons: 0, detail: 1 }));
+    return target(el);
+  };
+
+  const type = (a) => {
+    const el = element(a.ref);
+    usable(el);
+    const text = String(a.text || "");
+    const tag = el.tagName;
+    el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
+    if (typeof el.focus === "function") el.focus({ preventScroll: true });
+    if (tag === "INPUT" || tag === "TEXTAREA") {
+      const kind = (el.getAttribute("type") || "").toLowerCase();
+      if (tag === "INPUT" && !TEXT_INPUTS.has(kind)) throw fail("notText");
+      if (el.readOnly) throw fail("readOnly");
+      // O setter nativo (o React escuta o `input` depois dele).
+      const proto = tag === "INPUT" ? HTMLInputElement.prototype : HTMLTextAreaElement.prototype;
+      Object.getOwnPropertyDescriptor(proto, "value").set.call(el, text);
+      el.dispatchEvent(
+        new InputEvent("input", {
+          bubbles: true,
+          composed: true,
+          inputType: "insertText",
+          data: text,
+        }),
+      );
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+    } else if (el.isContentEditable) {
+      const sel = getSelection();
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      sel.removeAllRanges();
+      sel.addRange(range);
+      document.execCommand("insertText", false, text);
+    } else {
+      throw fail("notText");
+    }
+    if (a.submit) {
+      const form = el.form || (el.closest ? el.closest("form") : null);
+      if (form && typeof form.requestSubmit === "function") form.requestSubmit();
+      else if (form) form.submit();
+      else
+        for (const t of ["keydown", "keypress", "keyup"])
+          el.dispatchEvent(
+            new KeyboardEvent(t, {
+              key: "Enter",
+              code: "Enter",
+              keyCode: 13,
+              which: 13,
+              bubbles: true,
+              cancelable: true,
+            }),
+          );
+    }
+    return { ...target(el), chars: [...text].length };
+  };
+
   const ACTIONS = {
     snapshot,
+    click,
+    type,
+    // Só a url e o título (o envelope do `run` traz): depois de assentar.
+    where: () => ({}),
     console: () => ({ entries: consoleBuf.slice() }),
   };
 
