@@ -274,7 +274,9 @@ fn produces(kind: &NodeKind, integrations: &HashMap<&str, &Integration>) -> Vec<
     match kind {
         NodeKind::Agent { .. } => vec![EdgeKind::Context, EdgeKind::Diff],
         NodeKind::Process { output, .. } => vec![(*output).into()],
-        NodeKind::Note { .. } => vec![EdgeKind::File],
+        // O texto da nota entra no prompt de quem a recebe (context) ou como
+        // arquivo para um processo ler (file).
+        NodeKind::Note { .. } => vec![EdgeKind::Context, EdgeKind::File],
         NodeKind::Integration { integration_id } => integrations
             .get(integration_id.as_str())
             .map(|i| vec![i.output.into()])

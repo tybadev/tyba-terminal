@@ -950,13 +950,17 @@ impl<H: RunHost> Runs<H> {
         match &start.node.kind {
             NodeKind::Note { markdown } => {
                 let path = start.out_dir.join(note_file_name(&start.node.title));
-                match std::fs::write(&path, markdown) {
+                let context = start.out_dir.join("context.md");
+                let written = std::fs::write(&path, markdown).and_then(|()| {
+                    std::fs::write(&context, super::agent::context_markdown(markdown))
+                });
+                match written {
                     Ok(()) => Launched::Finished(Outcome {
                         ok: true,
-                        outputs: HashMap::from([(
-                            EdgeKind::File,
-                            path.to_string_lossy().into_owned(),
-                        )]),
+                        outputs: HashMap::from([
+                            (EdgeKind::File, path.to_string_lossy().into_owned()),
+                            (EdgeKind::Context, context.to_string_lossy().into_owned()),
+                        ]),
                         ..Outcome::default()
                     }),
                     Err(e) => Launched::Finished(Outcome::failed(format!("gravar a nota: {e}"))),
@@ -1023,7 +1027,12 @@ impl<H: RunHost> Runs<H> {
         let inputs: Vec<(EdgeKind, PathBuf)> =
             start.inputs.iter().map(|i| i.kind).zip(written).collect();
         let prompt = crate::snippet::render(prompt, &start.variables);
-        let prompt = super::agent::build_prompt(&prompt, &inputs);
+        let contexts: Vec<String> = inputs
+            .iter()
+            .filter(|(kind, _)| *kind == EdgeKind::Context)
+            .filter_map(|(_, path)| super::agent::read_context(path))
+            .collect();
+        let prompt = super::agent::build_prompt(&prompt, &contexts, &inputs);
         let snapshot = super::agent::snapshot(&start.graph_dir);
         let me = self.me.clone();
         let (run, node, out_dir) = (
@@ -1874,11 +1883,13 @@ mod tests {
         assert_eq!(la.prompt, "Faça o plano.");
         assert_eq!(la.cwd, repo);
         let lb = launches.iter().find(|l| l.title == "b").unwrap();
+        // O contexto entra no corpo do prompt, já redigido.
         assert!(
-            lb.prompt.starts_with("Revise.\n\nEntradas"),
+            lb.prompt.starts_with("Revise.\n\nContexto:\npronto"),
             "{}",
             lb.prompt
         );
+        assert!(!lb.prompt.contains(&fake_key()), "{}", lb.prompt);
         assert!(lb.prompt.contains("context.md (contexto)"), "{}", lb.prompt);
 
         let q_log = std::fs::read_to_string(&run.nodes["q"].outputs[&EdgeKind::Log]).unwrap();

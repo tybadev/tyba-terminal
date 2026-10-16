@@ -76,7 +76,7 @@ describe("produces / accepts", () => {
   test("seguem a tabela de rules", () => {
     expect(produces(claude.kind, integrations)).toEqual(["context", "diff"]);
     expect(produces(tests.kind, integrations)).toEqual(["json"]);
-    expect(produces(note.kind, integrations)).toEqual(["file"]);
+    expect(produces(note.kind, integrations)).toEqual(["context", "file"]);
     expect(produces(lint.kind, integrations)).toEqual(["log"]);
     expect(accepts(note.kind, integrations)).toEqual([]);
     expect(accepts(claude.kind, integrations)).toHaveLength(5);
@@ -106,7 +106,7 @@ describe("connectionProblem", () => {
 
   test("tipo que a origem não produz", () => {
     expect(check("t", "i", "diff")).toBe("notProduced");
-    expect(check("n", "t", "context")).toBe("notProduced");
+    expect(check("n", "t", "diff")).toBe("notProduced");
   });
 
   test("integração por gatilho só aceita o tipo do gatilho", () => {

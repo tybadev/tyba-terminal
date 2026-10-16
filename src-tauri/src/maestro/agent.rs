@@ -38,13 +38,37 @@ fn kind_label(kind: EdgeKind) -> &'static str {
     }
 }
 
-/// O prompt do nó (variáveis já substituídas) mais o bloco "Entradas": uma
-/// linha por arquivo de `$TYBA_IN`, com o caminho inteiro.
-pub fn build_prompt(prompt: &str, inputs: &[(EdgeKind, PathBuf)]) -> String {
-    if inputs.is_empty() {
+/// O texto de um `context.md` recebido, até o teto, para entrar no prompt.
+pub fn read_context(path: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let text = text.trim();
+    if text.is_empty() {
+        return None;
+    }
+    Some(text.chars().take(CONTEXT_MAX_CHARS).collect())
+}
+
+/// O prompt do nó (variáveis já substituídas), o **contexto** recebido por
+/// inteiro e o bloco "Entradas": uma linha por arquivo de `$TYBA_IN`.
+///
+/// Contexto vai no corpo, e não só como caminho: uma nota ligada a um agente
+/// é a instrução dele, e listada como arquivo o agente a ignorava (teste do
+/// dono, 15/10: a nota pedia 6 subagentes e ele rodou 3).
+pub fn build_prompt(prompt: &str, contexts: &[String], inputs: &[(EdgeKind, PathBuf)]) -> String {
+    if inputs.is_empty() && contexts.is_empty() {
         return prompt.to_string();
     }
     let mut out = prompt.trim_end().to_string();
+    for context in contexts {
+        if !out.is_empty() {
+            out.push_str("\n\n");
+        }
+        out.push_str("Contexto:\n");
+        out.push_str(context);
+    }
+    if inputs.is_empty() {
+        return out;
+    }
     if !out.is_empty() {
         out.push_str("\n\n");
     }
@@ -231,6 +255,7 @@ mod tests {
     fn prompt_lists_each_input_in_one_line() {
         let p = build_prompt(
             "Revise o diff.\n",
+            &[],
             &[
                 (EdgeKind::Diff, PathBuf::from("/r/n/in/diff.patch")),
                 (EdgeKind::Context, PathBuf::from("/r/n/in/context.md")),
@@ -242,10 +267,25 @@ mod tests {
              - /r/n/in/diff.patch (diff)\n\
              - /r/n/in/context.md (contexto)"
         );
-        assert_eq!(build_prompt("só isto", &[]), "só isto");
+        assert_eq!(build_prompt("só isto", &[], &[]), "só isto");
         assert_eq!(
-            build_prompt("", &[(EdgeKind::Log, PathBuf::from("/i/log.txt"))]),
+            build_prompt("", &[], &[(EdgeKind::Log, PathBuf::from("/i/log.txt"))]),
             "Entradas (arquivos em $TYBA_IN):\n- /i/log.txt (log)"
+        );
+    }
+
+    #[test]
+    fn context_goes_into_the_prompt_body() {
+        let p = build_prompt(
+            "",
+            &["rode 6 subagentes com sleep 10".into()],
+            &[(EdgeKind::Context, PathBuf::from("/r/n/in/context.md"))],
+        );
+        assert_eq!(
+            p,
+            "Contexto:\nrode 6 subagentes com sleep 10\n\n\
+             Entradas (arquivos em $TYBA_IN):\n\
+             - /r/n/in/context.md (contexto)"
         );
     }
 

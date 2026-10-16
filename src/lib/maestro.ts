@@ -104,7 +104,7 @@ export function produces(kind: NodeKind, integrations: IntegrationsById): EdgeKi
     case "process":
       return [kind.output];
     case "note":
-      return ["file"];
+      return ["context", "file"];
     case "integration": {
       const i = integrations.get(kind.integrationId);
       return i ? [i.output] : [];
