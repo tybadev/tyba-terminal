@@ -110,6 +110,7 @@ import { keepIfSame } from "@/lib/stableItems";
 import {
   EMPTY_HISTORY,
   graphShot,
+  keepInHistory,
   record,
   redo as redoShot,
   restoreShot,
@@ -737,19 +738,29 @@ function MaestroInner({
       // Onde o dono arrastou/redimensionou o criado vale no grafo: a posição
       // da vista entra no nó mantido, e o salvar leva ao core.
       const view = createdViewRef.current;
-      setNodes(
-        flow.nodes.map((n) => {
-          const v = view[n.id];
-          return v
-            ? {
-                ...n,
-                position: v.position,
-                width: v.width ?? n.width,
-                height: v.height ?? n.height,
-              }
-            : n;
-        }) as MaestroFlowNode[],
+      const keptNodes = flow.nodes.map((n) => {
+        const v = view[n.id];
+        return v
+          ? {
+              ...n,
+              position: v.position,
+              width: v.width ?? n.width,
+              height: v.height ?? n.height,
+            }
+          : n;
+      }) as MaestroFlowNode[];
+      // O Manter não é passo do ⌘Z (ver `keepInHistory`): o que estava
+      // pendente assenta antes, e os mantidos entram em todo retrato da pilha.
+      settle();
+      const before = new Set(nodesRef.current.map((n) => n.id));
+      const shot = graphShot(keptNodes, flow.edges);
+      historyRef.current = keepInHistory(
+        historyRef.current,
+        shot,
+        new Set(keptNodes.filter((n) => !before.has(n.id)).map((n) => n.id)),
       );
+      settledRef.current = shot;
+      setNodes(keptNodes);
       setEdges(flow.edges);
       const fresh = await runGet(run.id);
       if (fresh) dispatchRun({ type: "update", run: fresh });

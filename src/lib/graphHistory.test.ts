@@ -4,6 +4,7 @@ import {
   EMPTY_HISTORY,
   HISTORY_LIMIT,
   graphShot,
+  keepInHistory,
   record,
   redo,
   removedNodes,
@@ -97,5 +98,40 @@ describe("retrato do grafo", () => {
   test("removedNodes acha o que foi apagado", () => {
     expect(removedNodes(shotOf("a", "b", "c"), shotOf("b"))).toEqual(["a", "c"]);
     expect(removedNodes(shotOf("a"), shotOf("a", "b"))).toEqual([]);
+  });
+});
+
+describe("Manter no grafo fora do ⌘Z", () => {
+  const graphOf = (ids: string[], edges: { id: string; from: string; to: string }[] = []) => {
+    const flow = toFlow({
+      id: "g",
+      name: "g",
+      dir: "",
+      variables: {},
+      nodes: ids.map((id) => note(id)),
+      edges: edges.map((e) => ({ ...e, kind: "context" as const })),
+    });
+    return graphShot(flow.nodes, flow.edges);
+  };
+  const ids = (shot: string) => restoreShot(shot).nodes.map((n) => n.id);
+
+  test("desfazer depois do Manter não tira do grafo o nó que o core marcou kept", () => {
+    // O dono pôs "b" (passo do ⌘Z); depois manteve "k", criado pelo orquestrador.
+    let h = record(EMPTY_HISTORY, graphOf(["a"]));
+    const afterKeep = graphOf(["a", "b", "k"], [{ id: "e", from: "k", to: "a" }]);
+    h = keepInHistory(h, afterKeep, new Set(["k"]));
+    const back = undo(h, afterKeep)!;
+    // Volta só o passo do dono: "b" sai, "k" e a ligação dele ficam.
+    expect(ids(back.shot)).toEqual(["a", "k"]);
+    expect(restoreShot(back.shot).edges.map((e) => e.id)).toEqual(["e"]);
+    expect(undo(back.history, back.shot)).toBeNull();
+  });
+
+  test("o refazer também leva o mantido; ligação sem ponta no retrato não entra", () => {
+    const h = { past: [], future: [graphOf(["b"])] };
+    const shot = graphOf(["a", "k"], [{ id: "e", from: "k", to: "a" }]);
+    const next = keepInHistory(h, shot, new Set(["k"]));
+    expect(ids(next.future[0])).toEqual(["b", "k"]);
+    expect(restoreShot(next.future[0]).edges).toEqual([]);
   });
 });

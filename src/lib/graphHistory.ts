@@ -61,3 +61,32 @@ export function removedNodes(before: string, after: string): string[] {
   const kept = new Set(ids(after));
   return ids(before).filter((id) => !kept.has(id));
 }
+
+/**
+ * "Manter no grafo" não é passo do ⌘Z. Quem decide é o core: ele grava os
+ * criados no grafo e marca `kept` no run, e daí o canvas deixa de desenhá-los
+ * como efêmeros. Um retrato de antes do Manter, sem eles, os tiraria do grafo
+ * salvo com o run ainda dizendo "mantido" — o nó sumiria do canvas com o
+ * processo vivo. Então os nós `ids` (com as ligações deles, como estão em
+ * `shot`) passam a existir em todo retrato da pilha: desfazer e refazer
+ * mexem só no que o dono fez. Ligação só entra onde as duas pontas existem.
+ */
+export function keepInHistory(h: History, shot: string, ids: ReadonlySet<string>): History {
+  if (ids.size === 0) return h;
+  const kept = JSON.parse(shot) as Pick<Graph, "nodes" | "edges">;
+  const nodes = kept.nodes.filter((n) => ids.has(n.id));
+  const edges = kept.edges.filter((e) => ids.has(e.from) || ids.has(e.to));
+  const adopt = (s: string): string => {
+    const g = JSON.parse(s) as Pick<Graph, "nodes" | "edges">;
+    const have = new Set(g.nodes.map((n) => n.id));
+    const addNodes = nodes.filter((n) => !have.has(n.id));
+    for (const n of addNodes) have.add(n.id);
+    const haveEdges = new Set(g.edges.map((e) => e.id));
+    const addEdges = edges.filter(
+      (e) => !haveEdges.has(e.id) && have.has(e.from) && have.has(e.to),
+    );
+    if (addNodes.length === 0 && addEdges.length === 0) return s;
+    return JSON.stringify({ nodes: [...g.nodes, ...addNodes], edges: [...g.edges, ...addEdges] });
+  };
+  return { past: h.past.map(adopt), future: h.future.map(adopt) };
+}
