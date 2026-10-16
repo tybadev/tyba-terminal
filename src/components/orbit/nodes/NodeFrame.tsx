@@ -229,8 +229,11 @@ const inStyle = {
   transform: "none",
 };
 
+/** O anel do nó: o estado dele, ou o dono usando a página do navegador (quadro OrbitPlano). */
+type FrameRing = RingState | "user";
+
 /** Estado do anel → traço (quadro OrbitCardsD). */
-const RING_STROKE: Record<RingState, { stroke: string; dash?: string }> = {
+const RING_STROKE: Record<FrameRing, { stroke: string; dash?: string }> = {
   idle: { stroke: "color-mix(in srgb, var(--tyba-text) 10%, transparent)" },
   working: { stroke: "color-mix(in srgb, var(--tyba-text) 8%, transparent)" },
   live: { stroke: "var(--tyba-green)" },
@@ -238,6 +241,7 @@ const RING_STROKE: Record<RingState, { stroke: string; dash?: string }> = {
   waiting: { stroke: "color-mix(in srgb, var(--tyba-text) 18%, transparent)", dash: "3 3" },
   owner: { stroke: "var(--tyba-text-inverse)", dash: "4 3" },
   failed: { stroke: "var(--tyba-red)" },
+  user: { stroke: "var(--tyba-cyan)" },
 };
 
 /**
@@ -249,7 +253,7 @@ export function NodeRing({
   tone,
   children,
 }: {
-  state: RingState;
+  state: FrameRing;
   /** Classe de cor do ícone (o `currentColor` do miolo). */
   tone: string;
   children: ReactNode;
@@ -428,6 +432,7 @@ export function NodeFrame({
   details = [],
   stateRows = true,
   paper = false,
+  inUse = false,
   children,
 }: {
   id: string;
@@ -448,6 +453,8 @@ export function NodeFrame({
   stateRows?: boolean;
   /** Nota: tom de papel. */
   paper?: boolean;
+  /** O dono está usando a página do navegador: cápsula e janela em ciano. */
+  inUse?: boolean;
   children: ReactNode;
 }) {
   const { t } = useTranslation();
@@ -518,7 +525,9 @@ export function NodeFrame({
           ? "border-dashed border-tyba-violet/80"
           : failed
             ? "border-tyba-red/60"
-            : "border-[color-mix(in_srgb,var(--tyba-text)_10%,transparent)]"
+            : inUse
+              ? "border-tyba-cyan/60"
+              : "border-[color-mix(in_srgb,var(--tyba-text)_10%,transparent)]"
       } ${
         paper
           ? "bg-[color-mix(in_srgb,var(--tyba-violet)_7%,var(--tyba-surface))]"
@@ -534,7 +543,9 @@ export function NodeFrame({
           ? "border-dashed border-tyba-violet/50"
           : failed
             ? "border-tyba-red/35"
-            : "border-tyba-border";
+            : inUse
+              ? "border-tyba-cyan/50"
+              : "border-tyba-border";
 
   return (
     <div className="group relative flex h-full w-full flex-col pt-5 font-mono text-tyba-text">
@@ -577,7 +588,7 @@ export function NodeFrame({
         className={`absolute top-0 right-3.5 left-3.5 z-[1] flex h-10 items-center gap-2.5 rounded-full border pr-2.5 pl-1.5 shadow-[var(--tyba-shadow-md)] ${capsule}`}
         title={request ? request.command : undefined}
       >
-        <NodeRing state={ring} tone={markTone}>
+        <NodeRing state={inUse && !request ? "user" : ring} tone={markTone}>
           {mark}
         </NodeRing>
         {request ? (

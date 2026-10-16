@@ -1,9 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ArrowClockwise, ArrowLeft, ArrowSquareOut, Browser } from "@phosphor-icons/react";
 import type { NodeProps } from "@xyflow/react";
 
 import { openExternalUrl } from "@/lib/clipboard";
+import { frameInUse } from "@/lib/graphKeys";
 import { isLocalUrl, type NodeKind } from "@/lib/orbit";
 import { NodeFrame, useOrbit, type OrbitFlowNode } from "./NodeFrame";
 
@@ -31,6 +32,12 @@ function frameable(url: string): boolean {
  * "Abrir fora"; a página num iframe com `sandbox`. Só endereço local carrega —
  * o resto mostra o aviso e nada vai para o frame (a CSP `frame-src` também
  * recusa). A url que chega pela ligação, na execução, toma o lugar da do nó.
+ *
+ * Clicar na página passa o teclado para ela ("você" na cápsula); clicar fora
+ * devolve. O Esc dentro da página é dela e não chega ao app, por isso o
+ * rodapé diz "clique fora". O login não fica salvo aqui dentro: para o
+ * WKWebView a página é de terceiro (o app é `tauri://localhost`) e o cookie
+ * dela é recusado — "Abrir fora" fica à mão, e a solução é a Fase 5.
  */
 export function BrowserNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
   const { t } = useTranslation();
@@ -45,6 +52,25 @@ export function BrowserNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
   const [draft, setDraft] = useState(kind.url);
   const [reload, setReload] = useState(0);
   const current = history[history.length - 1] ?? "";
+
+  // O dono usando a página: o foco saiu do app para o iframe deste nó. Estado
+  // de tela efêmero (o controle de verdade, com o agente esperando, é da Fase 5).
+  const frame = useRef<HTMLIFrameElement>(null);
+  const [inUse, setInUse] = useState(false);
+  useEffect(() => {
+    // No `blur` o elemento ativo ainda pode não ser o frame: confere depois.
+    const onBlur = () =>
+      window.setTimeout(() => setInUse(frameInUse(document.activeElement, frame.current)), 0);
+    const onFocus = () => setInUse(false);
+    window.addEventListener("blur", onBlur);
+    window.addEventListener("focus", onFocus);
+    return () => {
+      window.removeEventListener("blur", onBlur);
+      window.removeEventListener("focus", onFocus);
+    };
+  }, []);
+  // Página nova (navegar, recarregar): o frame é outro.
+  useEffect(() => setInUse(false), [current, reload]);
 
   const go = (url: string) => {
     setDraft(url);
@@ -82,7 +108,15 @@ export function BrowserNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
       selected={selected}
       mark={<Browser size={13} weight="bold" />}
       markTone="text-tyba-cyan"
-      meta={t("orbitBrowserLocalOnly")}
+      meta={inUse ? t("orbitBrowserInUse") : t("orbitBrowserLocalOnly")}
+      status={
+        inUse ? (
+          <span className="shrink-0 rounded-full bg-tyba-cyan/[.18] px-[9px] py-[2px] text-[11.5px] text-tyba-text">
+            {t("orbitBrowserYou")}
+          </span>
+        ) : undefined
+      }
+      inUse={inUse}
       details={[{ label: t("orbitDetailUrl"), value: current }]}
     >
       <div className="flex shrink-0 items-center gap-1.5 px-2.5 pb-1">
@@ -123,6 +157,7 @@ export function BrowserNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
         <button
           type="button"
           disabled={!ok}
+          title={t("orbitBrowserOpenOutsideHint")}
           onClick={() => void openExternalUrl(current).catch(() => {})}
           className="nodrag inline-flex h-6 shrink-0 items-center gap-1 rounded-[4px] border border-tyba-border-strong px-2 text-[11px] text-tyba-text-muted hover:text-tyba-text disabled:text-tyba-text-ghost"
         >
@@ -134,6 +169,7 @@ export function BrowserNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
         {ok ? (
           <iframe
             key={`${current}#${reload}`}
+            ref={frame}
             title={node.title}
             src={current}
             sandbox={SANDBOX}

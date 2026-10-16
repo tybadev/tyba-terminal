@@ -61,13 +61,16 @@ interface ElementLike {
 
 /**
  * O teclado é de outro dono (campo de texto, terminal do nó, diálogo, menu
- * aberto)? Então o canvas não pega a tecla — ⌘Z desfaz o texto do campo,
- * ⌘C copia do terminal.
+ * aberto, a página do nó de navegador)? Então o canvas não pega a tecla — ⌘Z
+ * desfaz o texto do campo, ⌘C copia do terminal.
  */
 export function keyOwnedElsewhere(target: ElementLike | null): boolean {
   if (!target) return false;
   const tag = target.tagName;
   if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
+  // Tecla dentro da página vai para o documento dela, não para este; o
+  // iframe em foco só aparece aqui se alguma chegar mesmo assim.
+  if (tag === "IFRAME") return true;
   if (target.isContentEditable) return true;
   return Boolean(target.closest('.nokey, [role="dialog"], [role="menu"], [data-orbit-sheet]'));
 }
@@ -83,4 +86,13 @@ export function enterTerminal(
   sessionOf: (id: string) => string | null,
 ): string | null {
   return selected.length === 1 ? sessionOf(selected[0].id) : null;
+}
+
+/**
+ * O dono está usando a página do nó de navegador: o foco do app foi para o
+ * iframe dele (a janela do app perdeu o foco e o elemento ativo é o frame).
+ * Estado de tela, efêmero: clicar fora devolve.
+ */
+export function frameInUse(active: unknown, frame: unknown): boolean {
+  return frame != null && active === frame;
 }

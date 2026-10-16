@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { canvasKey, enterTerminal, keyOwnedElsewhere } from "./graphKeys";
+import { canvasKey, enterTerminal, frameInUse, keyOwnedElsewhere } from "./graphKeys";
 
 const key = (
   k: string,
@@ -71,6 +71,10 @@ describe("keyOwnedElsewhere", () => {
     expect(keyOwnedElsewhere(el("DIV", '[role="dialog"]'))).toBe(true);
   });
 
+  test("a página do nó de navegador (iframe em foco) é dona: ⌘Z, ⌘D, Delete, / e ⌘K não são do canvas", () => {
+    expect(keyOwnedElsewhere(el("IFRAME"))).toBe(true);
+  });
+
   test("o canvas e o corpo da página não", () => {
     expect(keyOwnedElsewhere(el("DIV"))).toBe(false);
     expect(keyOwnedElsewhere(el("BODY"))).toBe(false);
@@ -90,5 +94,20 @@ describe("enterTerminal", () => {
     expect(enterTerminal([{ id: "a" }, { id: "b" }], sessionOf)).toBeNull();
     expect(enterTerminal([], sessionOf)).toBeNull();
     expect(enterTerminal([{ id: "n" }], sessionOf)).toBeNull();
+  });
+});
+
+describe("frameInUse (você está usando o navegador)", () => {
+  test("o foco no iframe do nó é o dono usando a página", () => {
+    const frame = { tagName: "IFRAME" };
+    expect(frameInUse(frame, frame)).toBe(true);
+  });
+
+  test("foco em outro lugar, ou nó sem iframe, não", () => {
+    const frame = { tagName: "IFRAME" };
+    expect(frameInUse({ tagName: "BODY" }, frame)).toBe(false);
+    expect(frameInUse({ tagName: "IFRAME" }, frame)).toBe(false);
+    expect(frameInUse(null, null)).toBe(false);
+    expect(frameInUse(undefined, null)).toBe(false);
   });
 });
