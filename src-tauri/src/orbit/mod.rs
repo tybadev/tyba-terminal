@@ -15,6 +15,7 @@ pub mod mcp;
 pub mod orchestrator;
 pub mod run;
 pub mod service;
+pub mod talk;
 
 pub use service::ServiceSource;
 
@@ -98,6 +99,9 @@ pub enum NodeKind {
     },
     Note {
         markdown: String,
+        /// Cadeado "só leitura": agente ligado por `memory` lê, não escreve.
+        #[serde(default)]
+        locked: bool,
     },
     Integration {
         integration_id: String,
@@ -112,9 +116,7 @@ pub enum NodeKind {
         url: String,
     },
     /// Liga num serviço que já roda: produz `log` e `url`.
-    Service {
-        source: ServiceSource,
-    },
+    Service { source: ServiceSource },
 }
 
 impl NodeKind {
@@ -170,10 +172,15 @@ pub enum EdgeKind {
     Plan,
     /// "controla": agente → navegador; quem pode mexer no navegador.
     Control,
+    /// "conversa": agente ⇄ agente. Uma ligação vale nos dois sentidos:
+    /// `orbit_peers` e `orbit_send` (ver [`talk`]).
+    Talk,
+    /// "memória": agente → nota que ele lê e escreve (`orbit_note_*`).
+    Memory,
 }
 
 impl EdgeKind {
-    const ALL: [EdgeKind; 8] = [
+    const ALL: [EdgeKind; 10] = [
         EdgeKind::Context,
         EdgeKind::Diff,
         EdgeKind::File,
@@ -182,12 +189,17 @@ impl EdgeKind {
         EdgeKind::Url,
         EdgeKind::Plan,
         EdgeKind::Control,
+        EdgeKind::Talk,
+        EdgeKind::Memory,
     ];
 
-    /// Leva valor na execução. `plan` e `control` só dizem quem é de quem:
-    /// não viram entrada nem seguram o nó de destino.
+    /// Leva valor na execução. `plan`, `control`, `talk` e `memory` só dizem
+    /// quem é de quem: não viram entrada nem seguram o nó de destino.
     pub fn carries_data(self) -> bool {
-        !matches!(self, EdgeKind::Plan | EdgeKind::Control)
+        !matches!(
+            self,
+            EdgeKind::Plan | EdgeKind::Control | EdgeKind::Talk | EdgeKind::Memory
+        )
     }
 
     /// Os tipos que levam valor (os que processo, agente e integração manual
@@ -306,6 +318,8 @@ pub enum OrbitError {
     NotLocalUrl(String),
     #[error("nó {0}: id de contêiner inválido")]
     InvalidContainer(String),
+    #[error("ligação {0}: esses dois agentes já conversam por outra ligação")]
+    DuplicateTalk(String),
 }
 
 /// Mesma regra de `snippet::validate`: `\n` e `\t` passam, o resto dos
@@ -368,6 +382,8 @@ pub(crate) fn produces(
             EdgeKind::Diff,
             EdgeKind::Plan,
             EdgeKind::Control,
+            EdgeKind::Talk,
+            EdgeKind::Memory,
         ],
         // A url só fica disponível quando a sessão do processo abre porta.
         NodeKind::Process { output, .. } => vec![(*output).into(), EdgeKind::Url],
@@ -386,8 +402,13 @@ pub(crate) fn produces(
 /// O que o nó aceita (tabela de rules).
 fn accepts(kind: &NodeKind, integrations: &HashMap<&str, &Integration>) -> Vec<EdgeKind> {
     match kind {
-        NodeKind::Agent { .. } | NodeKind::Process { .. } => EdgeKind::data(),
-        NodeKind::Note { .. } => vec![EdgeKind::Plan],
+        NodeKind::Agent { .. } => {
+            let mut kinds = EdgeKind::data();
+            kinds.push(EdgeKind::Talk);
+            kinds
+        }
+        NodeKind::Process { .. } => EdgeKind::data(),
+        NodeKind::Note { .. } => vec![EdgeKind::Plan, EdgeKind::Memory],
         NodeKind::Service { .. } => Vec::new(),
         NodeKind::Browser { .. } => vec![EdgeKind::Url, EdgeKind::Control],
         NodeKind::Integration { integration_id, .. } => {
@@ -457,7 +478,7 @@ pub fn validate_structure(graph: &Graph, integrations: &[Integration]) -> Result
                 check_text(what, command)?;
                 check_file(|| format!("nó {}", node.id), file.as_deref())?;
             }
-            NodeKind::Note { markdown } => check_text(what, markdown)?,
+            NodeKind::Note { markdown, .. } => check_text(what, markdown)?,
             NodeKind::Integration { integration_id, .. } => {
                 let integration = by_id.get(integration_id.as_str()).ok_or_else(|| {
                     OrbitError::UnknownIntegration {
@@ -493,6 +514,9 @@ pub fn validate_structure(graph: &Graph, integrations: &[Integration]) -> Result
         };
         let from = lookup(&edge.from)?;
         let to = lookup(&edge.to)?;
+        if edge.from == edge.to {
+            return Err(OrbitError::Cycle(edge.id.clone()));
+        }
         if !produces(&from.kind, &by_id).contains(&edge.kind) {
             return Err(OrbitError::NotProduced {
                 edge: edge.id.clone(),
@@ -506,6 +530,19 @@ pub fn validate_structure(graph: &Graph, integrations: &[Integration]) -> Result
                 node: to.id.clone(),
                 kind: edge.kind,
             });
+        }
+    }
+
+    // Conversa vale nos dois sentidos: uma ligação por par.
+    let mut talks: HashSet<(&str, &str)> = HashSet::new();
+    for edge in graph.edges.iter().filter(|e| e.kind == EdgeKind::Talk) {
+        let pair = if edge.from < edge.to {
+            (edge.from.as_str(), edge.to.as_str())
+        } else {
+            (edge.to.as_str(), edge.from.as_str())
+        };
+        if !talks.insert(pair) {
+            return Err(OrbitError::DuplicateTalk(edge.id.clone()));
         }
     }
 
@@ -539,11 +576,18 @@ fn check_source(node: &str, source: &ServiceSource) -> Result<(), OrbitError> {
 }
 
 /// Kahn: o que sobra com grau de entrada > 0 depois de esvaziar a fila está
-/// num ciclo. Aponta uma ligação entre dois nós que sobraram.
+/// num ciclo. Aponta uma ligação entre dois nós que sobraram. Só as
+/// ligações que levam valor contam: as outras não seguram ninguém no
+/// agendador (conversa, aliás, vale nos dois sentidos).
 fn check_acyclic(graph: &Graph) -> Result<(), OrbitError> {
     let mut indegree: HashMap<&str, usize> =
         graph.nodes.iter().map(|n| (n.id.as_str(), 0)).collect();
-    for edge in &graph.edges {
+    let edges: Vec<&Edge> = graph
+        .edges
+        .iter()
+        .filter(|e| e.kind.carries_data())
+        .collect();
+    for edge in &edges {
         *indegree.entry(edge.to.as_str()).or_default() += 1;
     }
     let mut queue: Vec<&str> = indegree
@@ -552,7 +596,7 @@ fn check_acyclic(graph: &Graph) -> Result<(), OrbitError> {
         .map(|(id, _)| *id)
         .collect();
     while let Some(id) = queue.pop() {
-        for edge in graph.edges.iter().filter(|e| e.from == id) {
+        for edge in edges.iter().filter(|e| e.from == id) {
             let d = indegree.get_mut(edge.to.as_str()).expect("nó contado");
             *d -= 1;
             if *d == 0 {
@@ -561,7 +605,7 @@ fn check_acyclic(graph: &Graph) -> Result<(), OrbitError> {
         }
     }
     let stuck = |id: &str| indegree.get(id).is_some_and(|d| *d > 0);
-    match graph.edges.iter().find(|e| stuck(&e.from) && stuck(&e.to)) {
+    match edges.iter().find(|e| stuck(&e.from) && stuck(&e.to)) {
         Some(edge) => Err(OrbitError::Cycle(edge.id.clone())),
         None => Ok(()),
     }
@@ -610,6 +654,7 @@ mod tests {
             id,
             NodeKind::Note {
                 markdown: "# plano".into(),
+                locked: false,
             },
         )
     }
@@ -834,6 +879,7 @@ mod tests {
         let mut n = note("n");
         n.kind = NodeKind::Note {
             markdown: "# a\n\tb".into(),
+            locked: false,
         };
         assert_eq!(validate_graph(&graph(vec![n], vec![]), &[]), Ok(()));
     }
@@ -1217,10 +1263,88 @@ mod tests {
     }
 
     #[test]
+    fn talk_links_agents_and_memory_links_agent_to_note() {
+        let g = graph(
+            vec![
+                agent("a"),
+                agent("b"),
+                note("n"),
+                process("p", OutputKind::Log),
+            ],
+            vec![
+                edge("t", "a", "b", EdgeKind::Talk),
+                edge("m", "b", "n", EdgeKind::Memory),
+                // Conversa não segura ninguém: o contexto de volta não fecha ciclo.
+                edge("c", "b", "a", EdgeKind::Context),
+                // Plano e o texto da mesma nota de volta ao agente, idem.
+                edge("pl", "a", "n", EdgeKind::Plan),
+                edge("nc", "n", "a", EdgeKind::Context),
+            ],
+        );
+        assert_eq!(validate_graph(&g, &[]), Ok(()));
+
+        for (from, to, kind) in [
+            ("a", "n", EdgeKind::Talk),
+            ("a", "p", EdgeKind::Talk),
+            ("p", "a", EdgeKind::Talk),
+            ("a", "b", EdgeKind::Memory),
+            ("n", "a", EdgeKind::Memory),
+            ("p", "n", EdgeKind::Memory),
+        ] {
+            let g = graph(
+                vec![
+                    agent("a"),
+                    agent("b"),
+                    note("n"),
+                    process("p", OutputKind::Log),
+                ],
+                vec![edge("e", from, to, kind)],
+            );
+            assert!(validate_graph(&g, &[]).is_err(), "{from} -> {to} {kind:?}");
+        }
+
+        // Uma conversa por par, nos dois sentidos; nunca consigo mesmo.
+        let twice = graph(
+            vec![agent("a"), agent("b")],
+            vec![
+                edge("t1", "a", "b", EdgeKind::Talk),
+                edge("t2", "b", "a", EdgeKind::Talk),
+            ],
+        );
+        assert_eq!(
+            validate_graph(&twice, &[]),
+            Err(OrbitError::DuplicateTalk("t2".into()))
+        );
+        let me = graph(vec![agent("a")], vec![edge("t", "a", "a", EdgeKind::Talk)]);
+        assert_eq!(validate_graph(&me, &[]), Err(OrbitError::Cycle("t".into())));
+    }
+
+    #[test]
+    fn note_lock_defaults_off_and_serializes() {
+        let old: NodeKind =
+            serde_json::from_value(serde_json::json!({"type": "note", "markdown": "# a"})).unwrap();
+        assert_eq!(
+            old,
+            NodeKind::Note {
+                markdown: "# a".into(),
+                locked: false
+            }
+        );
+        let locked = NodeKind::Note {
+            markdown: String::new(),
+            locked: true,
+        };
+        assert_eq!(serde_json::to_value(&locked).unwrap()["locked"], true);
+    }
+
+    #[test]
     fn plan_and_control_serialize_and_carry_no_data() {
         assert_eq!(serde_json::to_value(EdgeKind::Plan).unwrap(), "plan");
         assert_eq!(serde_json::to_value(EdgeKind::Control).unwrap(), "control");
         assert!(!EdgeKind::Plan.carries_data() && !EdgeKind::Control.carries_data());
+        assert_eq!(serde_json::to_value(EdgeKind::Talk).unwrap(), "talk");
+        assert_eq!(serde_json::to_value(EdgeKind::Memory).unwrap(), "memory");
+        assert!(!EdgeKind::Talk.carries_data() && !EdgeKind::Memory.carries_data());
         assert_eq!(EdgeKind::data().len(), 6);
         assert!(EdgeKind::data().iter().all(|k| k.carries_data()));
     }

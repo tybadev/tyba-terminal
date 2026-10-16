@@ -13,10 +13,12 @@ export type DataKind = "context" | "diff" | "file" | "log" | "json" | "url";
 
 /**
  * Tipo da ligação (espelha `EdgeKind` do core): um valor, ou `plan` (agente →
- * a nota de plano dele) e `control` (agente → navegador que ele controla),
- * que não levam valor — só dizem quem é de quem.
+ * a nota de plano dele), `control` (agente → navegador que ele controla),
+ * `talk` (agente ⇄ agente, a conversa; vale nos dois sentidos) e `memory`
+ * (agente → nota que ele lê e escreve), que não levam valor — só dizem quem
+ * é de quem.
  */
-export type EdgeKind = DataKind | "plan" | "control";
+export type EdgeKind = DataKind | "plan" | "control" | "talk" | "memory";
 
 /** Saída declarada de processo ou integração. `context` só o agente produz. */
 export type OutputKind = "log" | "json" | "file" | "diff";
@@ -24,11 +26,17 @@ export type OutputKind = "log" | "json" | "file" | "diff";
 /** Os tipos que levam valor (o que processo, agente e integração manual aceitam). */
 export const DATA_KINDS: readonly DataKind[] = ["context", "diff", "file", "log", "json", "url"];
 
-export const EDGE_KINDS: readonly EdgeKind[] = [...DATA_KINDS, "plan", "control"];
+export const EDGE_KINDS: readonly EdgeKind[] = [
+  ...DATA_KINDS,
+  "plan",
+  "control",
+  "talk",
+  "memory",
+];
 
-/** Leva valor na execução (espelha `carries_data`): `plan` e `control` não seguram ninguém. */
+/** Leva valor na execução (espelha `carries_data`): `plan`, `control`, `talk` e `memory` não seguram ninguém. */
 export const carriesData = (kind: EdgeKind): kind is DataKind =>
-  kind !== "plan" && kind !== "control";
+  (DATA_KINDS as readonly EdgeKind[]).includes(kind);
 
 export const OUTPUT_KINDS: readonly OutputKind[] = ["log", "json", "file", "diff"];
 
@@ -45,7 +53,8 @@ export type NodeKind =
       dir: string;
     }
   | { type: "process"; command: string; output: OutputKind; file: string | null; dir: string }
-  | { type: "note"; markdown: string }
+  /** `locked`: cadeado "só leitura" para o agente ligado por `memory`. */
+  | { type: "note"; markdown: string; locked?: boolean }
   | { type: "integration"; integrationId: string; dir: string }
   /** Mostra uma página local. Recebe `url` (ou usa a dele); não produz nada. */
   | { type: "browser"; url: string }
@@ -222,7 +231,7 @@ export const integrationsById = (list: readonly Integration[]): IntegrationsById
 export function produces(kind: NodeKind, integrations: IntegrationsById): EdgeKind[] {
   switch (kind.type) {
     case "agent":
-      return ["context", "diff", "plan", "control"];
+      return ["context", "diff", "plan", "control", "talk", "memory"];
     case "process":
       // A url só fica disponível quando a sessão do processo abre porta.
       return [kind.output, "url"];
@@ -243,10 +252,11 @@ export function produces(kind: NodeKind, integrations: IntegrationsById): EdgeKi
 export function accepts(kind: NodeKind, integrations: IntegrationsById): EdgeKind[] {
   switch (kind.type) {
     case "agent":
+      return [...DATA_KINDS, "talk"];
     case "process":
       return [...DATA_KINDS];
     case "note":
-      return ["plan"];
+      return ["plan", "memory"];
     case "service":
       return [];
     case "browser":
@@ -269,7 +279,8 @@ function reaches(edges: readonly OrbitEdge[], start: string, goal: string): bool
     if (id === goal) return true;
     if (seen.has(id)) continue;
     seen.add(id);
-    for (const e of edges) if (e.from === id) stack.push(e.to);
+    // Só o que leva valor segura alguém (espelha `check_acyclic`).
+    for (const e of edges) if (e.from === id && carriesData(e.kind)) stack.push(e.to);
   }
   return false;
 }
@@ -304,7 +315,11 @@ export function connectionProblem(
   if (edges.some((e) => e.from === from && e.to === to && e.kind === kind)) {
     return "duplicate";
   }
-  if (reaches(edges, to, from)) return "cycle";
+  // Conversa vale nos dois sentidos: uma por par (o core recusa a segunda).
+  if (kind === "talk" && edges.some((e) => e.kind === "talk" && e.from === to && e.to === from)) {
+    return "duplicate";
+  }
+  if (carriesData(kind) && reaches(edges, to, from)) return "cycle";
   return null;
 }
 
@@ -600,12 +615,32 @@ export interface NodeRun {
   orchestrating?: boolean;
   /** Navegador: a última página que um agente abriu nele (`orbit_browser_open`, `$BROWSER`). */
   opened?: BrowserOpened | null;
+  /** Agente: mensagens de outros agentes esperando ele fechar o turno. */
+  inbox?: number;
+  /** Agente: a última mensagem que ele mandou (`orbit_send`), redigida. */
+  sent?: SentMessage | null;
+  /** Nota: a última escrita de um agente ligado por `memory`, com o texto novo. */
+  written?: NoteWritten | null;
 }
 
 /** Quem abriu a página do navegador (título do nó do agente) e quando (ms). */
 export interface BrowserOpened {
   by: string;
   at: number;
+}
+
+/** "→ para X: …": título do destino, começo do texto (redigido) e quando (ms). */
+export interface SentMessage {
+  to: string;
+  text: string;
+  at: number;
+}
+
+/** Quem escreveu a nota por último (título do agente), quando (ms) e o texto que ficou. */
+export interface NoteWritten {
+  by: string;
+  at: number;
+  markdown: string;
 }
 
 export interface Run {

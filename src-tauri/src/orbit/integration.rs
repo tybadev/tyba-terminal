@@ -164,6 +164,9 @@ mod tests {
             url: None,
             orchestrating: false,
             opened: None,
+            inbox: 0,
+            sent: None,
+            written: None,
         };
         if started {
             n.status = NodeStatus::Done;

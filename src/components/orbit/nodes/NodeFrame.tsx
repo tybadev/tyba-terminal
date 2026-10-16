@@ -195,6 +195,8 @@ export const EDGE_COLOR: Record<EdgeKind, string> = {
   url: "var(--tyba-cyan)",
   plan: "var(--tyba-violet)",
   control: "var(--tyba-amber)",
+  talk: "var(--tyba-green)",
+  memory: "var(--tyba-blue)",
 };
 
 /** Cor do texto e do ponto de cada estado (quadro: rodando verde, aguardando âmbar). */

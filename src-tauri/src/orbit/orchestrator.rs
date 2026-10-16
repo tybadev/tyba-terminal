@@ -111,6 +111,23 @@ pub enum ToolCall {
         node: Option<String>,
         url: String,
     },
+    /// Os agentes ligados por `talk`.
+    Peers,
+    /// Texto (já pela régua de [`super::talk::message_text`]) para a fila de `to`.
+    Send {
+        to: String,
+        text: String,
+    },
+    /// Ler a nota ligada por `memory`.
+    NoteRead {
+        node: String,
+    },
+    /// Trocar (ou completar, com `append`) o texto da nota ligada por `memory`.
+    NoteWrite {
+        node: String,
+        text: String,
+        append: bool,
+    },
 }
 
 /// Estado de um passo do plano.
@@ -180,6 +197,40 @@ struct BrowserOpenArgs {
     #[serde(default)]
     node: Option<String>,
     url: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EmptyArgs {}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SendArgs {
+    to: String,
+    text: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NoteReadArgs {
+    node: String,
+}
+
+#[derive(Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+enum WriteMode {
+    #[default]
+    Replace,
+    Append,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NoteWriteArgs {
+    node: String,
+    text: String,
+    #[serde(default)]
+    mode: WriteMode,
 }
 
 #[derive(Deserialize)]
@@ -308,6 +359,34 @@ pub fn parse_call(tool: &str, value: &Value) -> Result<ToolCall, String> {
             Ok(ToolCall::BrowserOpen {
                 node: a.node.filter(|n| !n.trim().is_empty()),
                 url: browser_url(&url)?,
+            })
+        }
+        "orbit_peers" => {
+            let _: EmptyArgs = args(tool, value)?;
+            Ok(ToolCall::Peers)
+        }
+        "orbit_send" => {
+            let a: SendArgs = args(tool, value)?;
+            required("to", &a.to)?;
+            Ok(ToolCall::Send {
+                to: a.to,
+                text: super::talk::message_text(&a.text)?,
+            })
+        }
+        "orbit_note_read" => {
+            let a: NoteReadArgs = args(tool, value)?;
+            required("node", &a.node)?;
+            Ok(ToolCall::NoteRead { node: a.node })
+        }
+        "orbit_note_write" => {
+            let a: NoteWriteArgs = args(tool, value)?;
+            required("node", &a.node)?;
+            // A régua do texto (controle, teto, redação) depende do texto
+            // atual da nota no `append`: o run aplica.
+            Ok(ToolCall::NoteWrite {
+                node: a.node,
+                text: a.text,
+                append: a.mode == WriteMode::Append,
             })
         }
         "orbit_plan" => {
@@ -449,7 +528,10 @@ pub fn is_plan_text(markdown: &str) -> bool {
 /// A nota de plano nova: logo abaixo do orquestrador, num espaço livre.
 pub fn plan_note(id: String, anchor: Option<&Node>, occupied: &[&Node], markdown: String) -> Node {
     const GAP_Y: f64 = 60.0;
-    let kind = NodeKind::Note { markdown };
+    let kind = NodeKind::Note {
+        markdown,
+        locked: false,
+    };
     let size = default_size(&kind);
     let want = anchor
         .map(|o| Position {
@@ -872,6 +954,52 @@ mod tests {
     }
 
     #[test]
+    fn talk_and_memory_calls_parse_and_validate() {
+        use serde_json::json;
+        assert_eq!(parse_call("orbit_peers", &json!({})), Ok(ToolCall::Peers));
+        assert!(parse_call("orbit_peers", &json!({"x": 1})).is_err());
+        assert_eq!(
+            parse_call("orbit_send", &json!({"to": "b", "text": " oi\n "})),
+            Ok(ToolCall::Send {
+                to: "b".into(),
+                text: "oi".into()
+            })
+        );
+        assert!(parse_call("orbit_send", &json!({"to": "", "text": "oi"})).is_err());
+        assert!(parse_call("orbit_send", &json!({"to": "b", "text": "\u{7}"})).is_err());
+        let long = "x".repeat(super::super::talk::MAX_MESSAGE_CHARS + 1);
+        assert!(parse_call("orbit_send", &json!({"to": "b", "text": long})).is_err());
+        assert_eq!(
+            parse_call("orbit_note_read", &json!({"node": "n"})),
+            Ok(ToolCall::NoteRead { node: "n".into() })
+        );
+        assert_eq!(
+            parse_call("orbit_note_write", &json!({"node": "n", "text": "a"})),
+            Ok(ToolCall::NoteWrite {
+                node: "n".into(),
+                text: "a".into(),
+                append: false
+            })
+        );
+        assert_eq!(
+            parse_call(
+                "orbit_note_write",
+                &json!({"node": "n", "text": "a", "mode": "append"})
+            ),
+            Ok(ToolCall::NoteWrite {
+                node: "n".into(),
+                text: "a".into(),
+                append: true
+            })
+        );
+        assert!(parse_call(
+            "orbit_note_write",
+            &json!({"node": "n", "text": "a", "mode": "prepend"})
+        )
+        .is_err());
+    }
+
+    #[test]
     fn unknown_tool_is_refused() {
         assert!(parse_call("orbit_delete_graph", &json!({})).is_err());
     }
@@ -975,6 +1103,7 @@ Binary files a/logo.png and b/logo.png differ
             title: id.into(),
             kind: NodeKind::Note {
                 markdown: String::new(),
+                locked: false,
             },
             position: Position { x, y },
             size: Size { w, h },
@@ -1239,6 +1368,7 @@ Binary files a/logo.png and b/logo.png differ
             title: "o".into(),
             kind: NodeKind::Note {
                 markdown: String::new(),
+                locked: false,
             },
             position: Position { x: 100.0, y: 100.0 },
             size: Size { w: 400.0, h: 300.0 },
@@ -1256,7 +1386,8 @@ Binary files a/logo.png and b/logo.png differ
         assert_eq!(
             note.kind,
             NodeKind::Note {
-                markdown: "- [ ] a\n".into()
+                markdown: "- [ ] a\n".into(),
+                locked: false,
             }
         );
     }

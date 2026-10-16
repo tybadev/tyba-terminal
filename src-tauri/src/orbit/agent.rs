@@ -10,6 +10,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use super::talk::PeerState;
 use super::{EdgeKind, Runner};
 use crate::agent::session::{SharedTurnTail, TurnTail};
 use crate::session::{AgentRunnerKind, SessionStatus};
@@ -38,6 +39,8 @@ fn kind_label(kind: EdgeKind) -> &'static str {
         EdgeKind::Url => "url",
         EdgeKind::Plan => "plano",
         EdgeKind::Control => "controla",
+        EdgeKind::Talk => "conversa",
+        EdgeKind::Memory => "memória",
     }
 }
 
@@ -163,16 +166,25 @@ fn turn_from_tail(tail: &TurnTail) -> AgentTurn {
 /// Espera o primeiro turno numa thread e chama `on_turn` uma vez. O agente
 /// continua vivo depois; isto só avisa o Run. Com `on_exit` (o orquestrador),
 /// segue olhando a sessão pelo mesmo estado e chama `on_exit` quando ela sai.
+/// `on_state` recebe o estado a cada poll (o turno fechado só depois do
+/// `on_turn`): é o que entrega a fila da conversa.
 pub fn watch_first_turn(
     status: impl Fn() -> Option<SessionStatus> + Send + 'static,
     tail: SharedTurnTail,
     on_turn: Box<dyn FnOnce(AgentTurn) + Send>,
     on_exit: Option<Box<dyn FnOnce() + Send>>,
+    on_state: Box<dyn Fn(PeerState) + Send>,
 ) {
     std::thread::spawn(move || {
         loop {
-            match turn_state(status().as_ref()) {
-                TurnState::Pending => std::thread::sleep(TURN_POLL),
+            let status = status();
+            match turn_state(status.as_ref()) {
+                TurnState::Pending => {
+                    if let Some(s) = peer_state(status.as_ref()) {
+                        on_state(s);
+                    }
+                    std::thread::sleep(TURN_POLL)
+                }
                 TurnState::Gone => return on_turn(AgentTurn::Exited),
                 TurnState::Ended => {
                     std::thread::sleep(TURN_SETTLE);
@@ -183,11 +195,28 @@ pub fn watch_first_turn(
             }
         }
         let Some(on_exit) = on_exit else { return };
-        while turn_state(status().as_ref()) != TurnState::Gone {
+        loop {
+            let status = status();
+            if turn_state(status.as_ref()) == TurnState::Gone {
+                break;
+            }
+            if let Some(s) = peer_state(status.as_ref()) {
+                on_state(s);
+            }
             std::thread::sleep(TURN_POLL);
         }
         on_exit();
     });
+}
+
+/// O estado da sessão para a conversa: `Idle` é o turno fechado.
+fn peer_state(status: Option<&SessionStatus>) -> Option<PeerState> {
+    match status? {
+        SessionStatus::Idle { .. } => Some(PeerState::Ready),
+        SessionStatus::AwaitingInput { .. } => Some(PeerState::Waiting),
+        SessionStatus::Running => Some(PeerState::Working),
+        SessionStatus::Exited { .. } | SessionStatus::Failed { .. } => None,
+    }
 }
 
 /// O estado da pasta na largada do nó. Sem repo git não há snapshot (e o nó
@@ -423,6 +452,7 @@ mod tests {
             Arc::new(Mutex::new(TurnTail::default())),
             Box::new(move |turn| turn_tx.send(format!("{turn:?}")).unwrap()),
             Some(Box::new(move || tx.send("saiu".into()).unwrap())),
+            Box::new(|_| {}),
         );
         let wait = Duration::from_secs(10);
         assert!(rx.recv_timeout(wait).unwrap().starts_with("Done"));

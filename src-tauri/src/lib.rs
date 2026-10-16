@@ -4150,6 +4150,18 @@ fn submit_rich_input(
     text: String,
     submit: bool,
 ) -> Result<(), String> {
+    inject_rich_input(&state, id, &text, submit)
+}
+
+/// Cola `text` no terminal da sessão e, com `submit`, envia — pela
+/// estratégia do agente que lê o input. É o input rico do dono e a entrega
+/// da conversa do Orbit (`orbit::run`).
+pub(crate) fn inject_rich_input(
+    state: &AppState,
+    id: SessionId,
+    text: &str,
+    submit: bool,
+) -> Result<(), String> {
     let bracketed = state
         .pty_pool
         .bracketed_paste(id)
@@ -4167,7 +4179,7 @@ fn submit_rich_input(
             (kind, _) => agent::submit_strategy_for(kind),
         })
         .unwrap_or_default();
-    let (normalized, _) = rich_input::normalize(&text);
+    let (normalized, _) = rich_input::normalize(text);
     let payload =
         rich_input::plan_injection(&normalized, bracketed && strategy.use_bracketed_paste)?;
     if payload.is_empty() {

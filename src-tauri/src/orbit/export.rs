@@ -174,7 +174,7 @@ fn secret_fields(graph: &Graph, integrations: &[Integration]) -> Vec<SecretField
         let (field, text) = match &node.kind {
             NodeKind::Agent { prompt, .. } => ("prompt", prompt),
             NodeKind::Process { command, .. } => ("command", command),
-            NodeKind::Note { markdown } => ("markdown", markdown),
+            NodeKind::Note { markdown, .. } => ("markdown", markdown),
             NodeKind::Browser { url } => ("url", url),
             NodeKind::Integration { .. } | NodeKind::Service { .. } => continue,
         };
@@ -474,6 +474,7 @@ mod tests {
                     "n",
                     NodeKind::Note {
                         markdown: "# plano\n\n- passo".into(),
+                        locked: false,
                     },
                 ),
             ],
@@ -609,6 +610,43 @@ mod tests {
         // Ligação fora da regra no arquivo é recusada já na prévia.
         let bad = text.replace("kind = \"control\"", "kind = \"plan\"");
         assert!(parse_import(bad.as_bytes()).is_err());
+    }
+
+    #[test]
+    fn round_trip_keeps_talk_and_memory_edges_and_the_note_lock() {
+        let (mut graph, integrations) = sample();
+        let a = graph.nodes.iter().find(|n| n.id == "a").cloned().unwrap();
+        graph.nodes.push(node("a2", a.kind.clone()));
+        for n in graph.nodes.iter_mut().filter(|n| n.id == "n") {
+            if let NodeKind::Note { locked, .. } = &mut n.kind {
+                *locked = true;
+            }
+        }
+        graph.edges.extend([
+            Edge {
+                id: "t1".into(),
+                from: "a".into(),
+                to: "a2".into(),
+                kind: EdgeKind::Talk,
+            },
+            Edge {
+                id: "m1".into(),
+                from: "a2".into(),
+                to: "n".into(),
+                kind: EdgeKind::Memory,
+            },
+        ]);
+        let (text, _) = export_toml(&graph, &integrations).unwrap();
+        assert!(text.contains("kind = \"talk\""), "{text}");
+        assert!(text.contains("kind = \"memory\""), "{text}");
+        assert!(text.contains("locked = true"), "{text}");
+        let imported = parse_import(text.as_bytes()).unwrap();
+        assert_eq!(imported.graph, graph);
+        // Arquivo de antes do cadeado: a nota entra destrancada.
+        let old = text.replace("locked = true\n", "");
+        let imported = parse_import(old.as_bytes()).unwrap();
+        let n = imported.graph.nodes.iter().find(|n| n.id == "n").unwrap();
+        assert!(matches!(n.kind, NodeKind::Note { locked: false, .. }));
     }
 
     #[test]

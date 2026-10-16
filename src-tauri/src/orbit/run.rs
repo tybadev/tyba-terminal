@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use super::agent::{AgentTurn, Snapshot};
 use super::orchestrator::{self, Created, Plan, PlanStep, ToolCall, ToolHandler, MAX_CREATED};
 use super::service::{self, ServiceReady, ServiceSource};
+use super::talk::{self, Mailbox, PeerState};
 use super::{Edge, EdgeKind, Graph, Integration, Node, NodeKind, OutputKind, Runner, Stored};
 use crate::session::store::Store;
 
@@ -136,6 +137,37 @@ pub struct NodeRun {
     /// (`orbit_browser_open`, `$BROWSER`). A tela navega e mostra o chip.
     #[serde(default)]
     pub opened: Option<BrowserOpened>,
+    /// Agente: mensagens de outros agentes esperando ele fechar o turno.
+    #[serde(default)]
+    pub inbox: usize,
+    /// Agente: a última mensagem que ele mandou (`orbit_send`), redigida.
+    #[serde(default)]
+    pub sent: Option<SentMessage>,
+    /// Nota: a última escrita de um agente ligado por `memory`, com o texto
+    /// novo (o canvas o copia para o nó, como a url do navegador).
+    #[serde(default)]
+    pub written: Option<NoteWritten>,
+}
+
+/// A última mensagem que um agente mandou: a tela mostra "→ para X: …".
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SentMessage {
+    /// Título do nó de destino.
+    pub to: String,
+    /// O começo do texto ([`talk::preview`]), já redigido.
+    pub text: String,
+    pub at: u64,
+}
+
+/// Quem escreveu a nota por último e o texto que ficou (redigido).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteWritten {
+    /// Título do nó do agente.
+    pub by: String,
+    pub at: u64,
+    pub markdown: String,
 }
 
 /// Quem abriu a página do navegador e quando (ms).
@@ -160,6 +192,9 @@ impl NodeRun {
             url: None,
             orchestrating: false,
             opened: None,
+            inbox: 0,
+            sent: None,
+            written: None,
         }
     }
 }
@@ -543,6 +578,8 @@ fn base_input_name(kind: EdgeKind, file_name: Option<&str>) -> String {
         // Não levam valor: nunca viram entrada (filtradas antes).
         EdgeKind::Plan => "plano.txt".into(),
         EdgeKind::Control => "controle.txt".into(),
+        EdgeKind::Talk => "conversa.txt".into(),
+        EdgeKind::Memory => "memoria.txt".into(),
     }
 }
 
@@ -749,12 +786,20 @@ pub trait RunHost: Send + Sync + 'static {
     /// quando o primeiro turno fecha (ou o agente sai antes disso). O agente
     /// segue vivo depois; `on_exit`, quando presente, roda quando a sessão
     /// sai depois do primeiro turno fechado.
+    ///
+    /// `on_state` roda a cada estado visto da sessão (trabalhando, esperando
+    /// o dono, turno fechado), depois do `on_turn` quando o primeiro fecha:
+    /// é por ele que a fila da conversa sai.
     fn spawn_agent(
         &self,
         launch: AgentLaunch,
         on_turn: Box<dyn FnOnce(AgentTurn) + Send>,
         on_exit: Option<Box<dyn FnOnce() + Send>>,
+        on_state: Box<dyn Fn(PeerState) + Send>,
     ) -> Result<String, String>;
+    /// Escreve `text` no terminal do agente e envia, pela estratégia do
+    /// runner (colagem e Enter), como o input rico do dono.
+    fn send_input(&self, session_id: &str, text: &str) -> Result<(), String>;
     /// Sobe o processo num PTY e devolve o id da sessão. `on_exit` roda quando
     /// o PTY fecha.
     fn spawn_process(
@@ -782,6 +827,8 @@ struct Active {
     integrations: HashMap<String, Integration>,
     sched: Scheduler,
     dir: PathBuf,
+    /// Filas da conversa entre agentes deste run.
+    talk: Mailbox,
 }
 
 /// O que sai do lock para ser executado.
@@ -971,6 +1018,7 @@ impl<H: RunHost> Runs<H> {
                     integrations,
                     sched,
                     dir,
+                    talk: Mailbox::default(),
                 },
             );
         }
@@ -1195,7 +1243,7 @@ impl<H: RunHost> Runs<H> {
 
     fn launch(&self, run_id: &str, start: Start) -> Launched {
         match &start.node.kind {
-            NodeKind::Note { markdown } => {
+            NodeKind::Note { markdown, .. } => {
                 let path = start.out_dir.join(note_file_name(&start.node.title));
                 let context = start.out_dir.join("context.md");
                 let written = std::fs::write(&path, markdown).and_then(|()| {
@@ -1392,6 +1440,14 @@ impl<H: RunHost> Runs<H> {
                 }
             })
         };
+        let on_state: Box<dyn Fn(PeerState) + Send> = {
+            let (me, run, node) = (me.clone(), run.clone(), node.clone());
+            Box::new(move |state| {
+                if let Some(runs) = me.upgrade() {
+                    runs.agent_state(&run, &node, state);
+                }
+            })
+        };
         // Toda sessão de agente avisa a saída: o orquestrador segura o nó (e o
         // run) até ela; a de qualquer agente sai de `live_agents`.
         let on_exit: Box<dyn FnOnce() + Send> = Box::new(move || {
@@ -1409,7 +1465,10 @@ impl<H: RunHost> Runs<H> {
             out_dir: start.out_dir.clone(),
             tools,
         };
-        match self.host.spawn_agent(launch, on_turn, Some(on_exit)) {
+        match self
+            .host
+            .spawn_agent(launch, on_turn, Some(on_exit), on_state)
+        {
             Ok(session) => Launched::Session(session),
             Err(e) => Launched::Finished(Outcome::failed(format!("subir o agente: {e}"))),
         }
@@ -1475,7 +1534,264 @@ impl<H: RunHost> Runs<H> {
                 let id = self.open_browser(run_id, orchestrator, node.as_deref(), &url)?;
                 Ok(serde_json::json!({ "node_id": id, "url": url }))
             }
+            ToolCall::Peers => self.peers(run_id, orchestrator),
+            ToolCall::Send { to, text } => {
+                let waiting = self.send_message(run_id, orchestrator, &to, &text)?;
+                Ok(serde_json::json!({ "to": to, "queued": waiting }))
+            }
+            ToolCall::NoteRead { node } => self.note_read(run_id, orchestrator, &node),
+            ToolCall::NoteWrite { node, text, append } => {
+                let chars = self.note_write(run_id, orchestrator, &node, &text, append)?;
+                Ok(serde_json::json!({ "node": node, "chars": chars }))
+            }
         }
+    }
+
+    /// Os agentes ligados a `agent` por `talk` (nos dois sentidos), com o
+    /// estado de cada um e quantas mensagens esperam por ele.
+    pub fn peers(&self, run_id: &str, agent: &str) -> Result<serde_json::Value, String> {
+        let active = self.active.lock();
+        let a = active
+            .get(run_id)
+            .ok_or("esta execução já terminou: ▶ Executar de novo para conversar")?;
+        let peers: Vec<serde_json::Value> = talk_peers(&a.graph, agent)
+            .into_iter()
+            .filter_map(|id| a.graph.nodes.iter().find(|n| n.id == id))
+            .map(|n| {
+                let run = a.sched.run.nodes.get(&n.id);
+                let state = match (run.map(|r| r.status), a.talk.state(&n.id)) {
+                    (Some(NodeStatus::Running), Some(s)) => serde_json::to_value(s).ok(),
+                    (Some(NodeStatus::Running), None) => Some("working".into()),
+                    (Some(NodeStatus::Waiting), _) => Some("notStarted".into()),
+                    _ => Some("gone".into()),
+                };
+                serde_json::json!({
+                    "id": n.id,
+                    "title": n.title,
+                    "state": state,
+                    "queued": a.talk.waiting(&n.id),
+                })
+            })
+            .collect();
+        Ok(serde_json::json!({ "peers": peers }))
+    }
+
+    /// `orbit_send`: só para um agente ligado por `talk`. O texto (já pela
+    /// régua de [`talk::message_text`]) vai para a fila do destino e sai
+    /// quando ele fechar o turno ([`Self::agent_state`]). Devolve quantas
+    /// esperam por ele.
+    pub fn send_message(
+        &self,
+        run_id: &str,
+        agent: &str,
+        to: &str,
+        text: &str,
+    ) -> Result<usize, String> {
+        let mut active = self.active.lock();
+        let a = active
+            .get_mut(run_id)
+            .ok_or("esta execução já terminou: ▶ Executar de novo para conversar")?;
+        if !talk_peers(&a.graph, agent).iter().any(|p| p == to) {
+            return Err(format!(
+                "{to} não é um agente ligado a você por conversa: só fala com quem o dono \
+                 ligou a você no canvas (veja orbit_peers)"
+            ));
+        }
+        let gone = a
+            .sched
+            .run
+            .nodes
+            .get(to)
+            .is_none_or(|n| n.status.is_terminal());
+        if gone {
+            return Err(format!(
+                "{to} não está mais rodando: a mensagem não teria quem leia"
+            ));
+        }
+        let title = |id: &str| {
+            a.graph
+                .nodes
+                .iter()
+                .find(|n| n.id == id)
+                .map_or_else(|| id.to_string(), |n| n.title.clone())
+        };
+        let (from, to_title) = (title(agent), title(to));
+        let waiting = a.talk.push(
+            to,
+            talk::Message {
+                from,
+                text: text.to_string(),
+            },
+        )?;
+        let at = now();
+        if let Some(n) = a.sched.run.nodes.get_mut(to) {
+            n.inbox = waiting;
+        }
+        if let Some(n) = a.sched.run.nodes.get_mut(agent) {
+            n.sent = Some(SentMessage {
+                to: to_title,
+                text: talk::preview(text),
+                at,
+            });
+        }
+        drop(active);
+        self.publish_current(run_id);
+        Ok(waiting)
+    }
+
+    /// O estado visto da sessão do agente `node_id`. Turno fechado com fila:
+    /// o bloco marcado vai para o terminal dele, fora do lock.
+    fn agent_state(&self, run_id: &str, node_id: &str, state: PeerState) {
+        let (session, block) = {
+            let mut active = self.active.lock();
+            let Some(a) = active.get_mut(run_id) else {
+                return;
+            };
+            let Some(block) = a.talk.on_state(node_id, state, now()) else {
+                return;
+            };
+            let Some(n) = a.sched.run.nodes.get_mut(node_id) else {
+                return;
+            };
+            n.inbox = 0;
+            (n.session_id.clone(), block)
+        };
+        match session {
+            Some(session) => {
+                if let Err(e) = self.host.send_input(&session, &block) {
+                    eprintln!("[orbit] entregar a conversa para {node_id}: {e}");
+                }
+            }
+            None => eprintln!("[orbit] entregar a conversa para {node_id}: sem sessão"),
+        }
+        self.publish_current(run_id);
+    }
+
+    /// A nota `node`, só se ligada a `agent` por `memory`.
+    fn memory_note<'a>(a: &'a Active, agent: &str, node: &str) -> Result<&'a Node, String> {
+        let linked = a
+            .graph
+            .edges
+            .iter()
+            .any(|e| e.kind == EdgeKind::Memory && e.from == agent && e.to == node);
+        let note = a
+            .graph
+            .nodes
+            .iter()
+            .find(|n| n.id == node && matches!(n.kind, NodeKind::Note { .. }));
+        match (linked, note) {
+            (true, Some(n)) => Ok(n),
+            _ => Err(format!(
+                "{node} não é uma nota ligada a você por memória: só lê e escreve a nota \
+                 que o dono ligou a você no canvas"
+            )),
+        }
+    }
+
+    /// `orbit_note_read`: o texto (redigido) da nota ligada por `memory`.
+    pub fn note_read(
+        &self,
+        run_id: &str,
+        agent: &str,
+        node: &str,
+    ) -> Result<serde_json::Value, String> {
+        let active = self.active.lock();
+        let a = active
+            .get(run_id)
+            .ok_or("esta execução já terminou: ▶ Executar de novo para ler a nota")?;
+        let note = Self::memory_note(a, agent, node)?;
+        let NodeKind::Note { markdown, locked } = &note.kind else {
+            unreachable!("memory_note só devolve nota");
+        };
+        Ok(serde_json::json!({
+            "node": note.id,
+            "title": note.title,
+            "markdown": crate::session::redact::redact(markdown),
+            "locked": locked,
+        }))
+    }
+
+    /// `orbit_note_write`: troca (ou, com `append`, completa) o texto da nota
+    /// ligada por `memory`. Nota com cadeado recusa. Grava no grafo salvo
+    /// (mesma validação do salvar) e no do run; o retrato leva quem escreveu
+    /// e o texto novo à tela. Devolve o tamanho do texto, em caracteres.
+    pub fn note_write(
+        &self,
+        run_id: &str,
+        agent: &str,
+        node: &str,
+        text: &str,
+        append: bool,
+    ) -> Result<usize, String> {
+        let mut active = self.active.lock();
+        let a = active
+            .get_mut(run_id)
+            .ok_or("esta execução já terminou: ▶ Executar de novo para escrever na nota")?;
+        let note = Self::memory_note(a, agent, node)?;
+        let NodeKind::Note { markdown, locked } = &note.kind else {
+            unreachable!("memory_note só devolve nota");
+        };
+        if *locked {
+            return Err(format!(
+                "a nota {node} está com cadeado (só leitura): o dono não deixa agente \
+                 escrever nela"
+            ));
+        }
+        let markdown = talk::note_text(markdown, text, append)?;
+        let stored = self
+            .store
+            .get_orbit_graph(&a.graph.id)
+            .map_err(|e| e.to_string())?
+            .ok_or("grafo não encontrado")?;
+        let mut graph = stored.value;
+        let saved = graph
+            .nodes
+            .iter_mut()
+            .find(|n| n.id == node)
+            .ok_or("a nota não está mais no grafo")?;
+        // O cadeado que vale é o do grafo salvo (o dono pode ter trancado
+        // depois do ▶).
+        if matches!(saved.kind, NodeKind::Note { locked: true, .. }) {
+            return Err(format!(
+                "a nota {node} está com cadeado (só leitura): o dono não deixa agente \
+                 escrever nela"
+            ));
+        }
+        saved.kind = NodeKind::Note {
+            markdown: markdown.clone(),
+            locked: false,
+        };
+        let integrations = self
+            .store
+            .list_orbit_integrations()
+            .map_err(|e| e.to_string())?;
+        super::validate_graph(&graph, &integrations).map_err(|e| e.to_string())?;
+        self.store
+            .save_orbit_graph(&graph, stored.consented, None)
+            .map_err(|e| e.to_string())?;
+        if let Some(n) = a.graph.nodes.iter_mut().find(|n| n.id == node) {
+            n.kind = NodeKind::Note {
+                markdown: markdown.clone(),
+                locked: false,
+            };
+        }
+        let by = a
+            .graph
+            .nodes
+            .iter()
+            .find(|n| n.id == agent)
+            .map_or_else(|| agent.to_string(), |n| n.title.clone());
+        let chars = markdown.chars().count();
+        if let Some(n) = a.sched.run.nodes.get_mut(node) {
+            n.written = Some(NoteWritten {
+                by,
+                at: now(),
+                markdown,
+            });
+        }
+        drop(active);
+        self.publish_current(run_id);
+        Ok(chars)
     }
 
     /// `orbit_browser_open` e o `$BROWSER` da sessão: só no navegador ligado
@@ -1633,7 +1949,7 @@ impl<H: RunHost> Runs<H> {
             return Ok(id);
         }
         let note_markdown = |n: &Node| match &n.kind {
-            NodeKind::Note { markdown } => Some(markdown.clone()),
+            NodeKind::Note { markdown, .. } => Some(markdown.clone()),
             _ => None,
         };
         let note_id = {
@@ -1686,8 +2002,10 @@ impl<H: RunHost> Runs<H> {
                         .iter_mut()
                         .find(|n| n.id == id)
                         .ok_or("nota de plano sumiu")?;
+                    let locked = matches!(note.kind, NodeKind::Note { locked: true, .. });
                     note.kind = NodeKind::Note {
                         markdown: markdown.clone(),
+                        locked,
                     };
                     (note.clone(), edge)
                 }
@@ -1781,6 +2099,7 @@ impl<H: RunHost> Runs<H> {
         }
         let kind = NodeKind::Note {
             markdown: markdown.to_string(),
+            locked: false,
         };
         let own = a.sched.run.created.iter_mut().find(|c| {
             c.created_by == agent
@@ -2387,6 +2706,24 @@ fn prepare_start(a: &Active, id: &str) -> Option<Start> {
 }
 
 /// O nó foi criado por um agente neste run (não é do grafo do dono).
+/// Os agentes ligados a `agent` por `talk`, nos dois sentidos, sem repetir.
+fn talk_peers(graph: &Graph, agent: &str) -> Vec<String> {
+    let mut peers: Vec<String> = Vec::new();
+    for e in graph.edges.iter().filter(|e| e.kind == EdgeKind::Talk) {
+        let other = if e.from == agent {
+            &e.to
+        } else if e.to == agent {
+            &e.from
+        } else {
+            continue;
+        };
+        if other != agent && !peers.contains(other) {
+            peers.push(other.clone());
+        }
+    }
+    peers
+}
+
 fn is_created(a: &Active, id: &str) -> bool {
     a.sched.run.created.iter().any(|c| c.node.id == id)
 }
@@ -2478,6 +2815,7 @@ impl RunHost for TauriHost {
         launch: AgentLaunch,
         on_turn: Box<dyn FnOnce(AgentTurn) + Send>,
         on_exit: Option<Box<dyn FnOnce() + Send>>,
+        on_state: Box<dyn Fn(PeerState) + Send>,
     ) -> Result<String, String> {
         use tauri::Manager;
         let state = self.app.state::<crate::AppState>();
@@ -2525,6 +2863,7 @@ impl RunHost for TauriHost {
             tail,
             on_turn,
             on_exit,
+            on_state,
         );
         Ok(session.id.to_string())
     }
@@ -2535,8 +2874,18 @@ impl RunHost for TauriHost {
         _launch: AgentLaunch,
         _on_turn: Box<dyn FnOnce(AgentTurn) + Send>,
         _on_exit: Option<Box<dyn FnOnce() + Send>>,
+        _on_state: Box<dyn Fn(PeerState) + Send>,
     ) -> Result<String, String> {
         Err("o nó de agente ainda não roda neste sistema".into())
+    }
+
+    fn send_input(&self, session_id: &str, text: &str) -> Result<(), String> {
+        use tauri::Manager;
+        let id = session_id
+            .parse()
+            .map_err(|_| format!("sessão inválida: {session_id}"))?;
+        let state = self.app.state::<crate::AppState>();
+        crate::inject_rich_input(&state, id, text, true)
     }
 
     fn kill(&self, session_id: &str) {
@@ -2645,6 +2994,7 @@ mod tests {
             id,
             NodeKind::Note {
                 markdown: "# plano".into(),
+                locked: false,
             },
         )
     }
@@ -2935,9 +3285,24 @@ mod tests {
         exits: Mutex<HashMap<String, Box<dyn FnOnce() + Send>>>,
         /// Sessões de agente que saíram sozinhas.
         gone: Mutex<Vec<String>>,
+        /// O `on_state` de cada sessão de agente, com o título do nó.
+        states: Mutex<HashMap<String, (String, Box<dyn Fn(PeerState) + Send>)>>,
+        /// O que o core escreveu no terminal de cada agente (`send_input`).
+        inputs: Mutex<Vec<(String, String)>>,
     }
 
     impl PtyHost {
+        /// A sessão do agente de título `title` passa a `state` (o que o
+        /// watcher real avisa a cada poll).
+        fn set_state(&self, title: &str, state: PeerState) {
+            let states = self.states.lock();
+            let (_, on_state) = states
+                .values()
+                .find(|(t, _)| t == title)
+                .expect("agente subiu");
+            on_state(state);
+        }
+
         /// A sessão do agente sai (o dono fechou o claude): o mesmo aviso
         /// que a sessão real dá ao cair.
         fn exit_agent(&self, session: &str) {
@@ -2962,8 +3327,10 @@ mod tests {
             launch: AgentLaunch,
             on_turn: Box<dyn FnOnce(AgentTurn) + Send>,
             on_exit: Option<Box<dyn FnOnce() + Send>>,
+            on_state: Box<dyn Fn(PeerState) + Send>,
         ) -> Result<String, String> {
             self.agents.lock().push(launch.clone());
+            let title = launch.title.clone();
             let hold = self.hold_spawn.lock().take();
             if let Some((entered, release)) = hold {
                 entered.send(()).unwrap();
@@ -2980,6 +3347,9 @@ mod tests {
             if let Some(exit) = on_exit {
                 self.exits.lock().insert(session.clone(), exit);
             }
+            self.states
+                .lock()
+                .insert(session.clone(), (title, on_state));
             self.spawned.lock().push(session.clone());
             Ok(session)
         }
@@ -3037,6 +3407,13 @@ mod tests {
         fn emit(&self, run: &Run) {
             self.runs.lock().push(run.clone());
         }
+
+        fn send_input(&self, session_id: &str, text: &str) -> Result<(), String> {
+            self.inputs
+                .lock()
+                .push((session_id.to_string(), text.to_string()));
+            Ok(())
+        }
     }
 
     type TestRuns = (
@@ -3065,6 +3442,8 @@ mod tests {
             service: Mutex::new(Err("sem serviço".into())),
             exits: Mutex::new(HashMap::new()),
             gone: Mutex::new(Vec::new()),
+            states: Mutex::new(HashMap::new()),
+            inputs: Mutex::new(Vec::new()),
         });
         (Runs::new(Arc::clone(&host), store, Some(root)), host, app)
     }
@@ -4290,7 +4669,7 @@ mod tests {
         assert_eq!(again, note);
         let r = runs.get(&run.id).unwrap();
         assert_eq!(r.created.len(), 2);
-        let NodeKind::Note { markdown } = &r.created[1].node.kind else {
+        let NodeKind::Note { markdown, .. } = &r.created[1].node.kind else {
             panic!("{r:?}")
         };
         assert!(markdown.contains("[x] ler o diff"), "{markdown}");
@@ -4638,7 +5017,8 @@ mod tests {
         assert_eq!(
             note.kind,
             NodeKind::Note {
-                markdown: "- [~] Subir a api\n- [ ] Abrir o login\n".into()
+                markdown: "- [~] Subir a api\n- [ ] Abrir o login\n".into(),
+                locked: false,
             }
         );
         // Logo abaixo do orquestrador.
@@ -4684,7 +5064,8 @@ mod tests {
         assert_eq!(
             note.kind,
             NodeKind::Note {
-                markdown: "- [x] Subir a api\n  criou api (:3000)\n- [!] Abrir o login\n".into()
+                markdown: "- [x] Subir a api\n  criou api (:3000)\n- [!] Abrir o login\n".into(),
+                locked: false,
             }
         );
         let r = runs.get(&run.id).unwrap();
@@ -4711,7 +5092,8 @@ mod tests {
         assert_eq!(
             saved.nodes.iter().find(|n| n.id == note_id).unwrap().kind,
             NodeKind::Note {
-                markdown: "- [x] Abrir o login\n".into()
+                markdown: "- [x] Abrir o login\n".into(),
+                locked: false,
             }
         );
 
@@ -4747,6 +5129,7 @@ mod tests {
             "e",
             NodeKind::Note {
                 markdown: String::new(),
+                locked: false,
             },
         );
         let g = graph(
@@ -4772,7 +5155,8 @@ mod tests {
         assert_eq!(
             saved.nodes.iter().find(|n| n.id == "n").unwrap().kind,
             NodeKind::Note {
-                markdown: "# plano".into()
+                markdown: "# plano".into(),
+                locked: false,
             }
         );
         let fresh = saved.nodes.iter().find(|n| n.id == id).unwrap();
@@ -4792,10 +5176,234 @@ mod tests {
         assert_eq!(
             saved.nodes.iter().find(|n| n.id == "e").unwrap().kind,
             NodeKind::Note {
-                markdown: "- [ ] Subir a api\n".into()
+                markdown: "- [ ] Subir a api\n".into(),
+                locked: false,
             }
         );
         assert_eq!(saved.nodes.len(), 5);
+        runs.stop(&run.id).unwrap();
+    }
+
+    /// Conversa: só entre agentes ligados por `talk` (nos dois sentidos); a
+    /// mensagem espera na fila do core e sai, marcada, quando o destino fecha
+    /// o turno.
+    #[cfg(unix)]
+    #[test]
+    fn agents_talk_only_through_a_talk_link_and_messages_wait_for_idle() {
+        use serde_json::json;
+        let dir = tempfile::tempdir().unwrap();
+        let (runs, host, _app) = pty_runs(dir.path().join("runs"));
+        let mut a = orchestrator("a");
+        a.title = "Front".into();
+        let mut b = orchestrator("b");
+        b.title = "Revisor".into();
+        let mut c = orchestrator("c");
+        c.title = "Solto".into();
+        let g = graph(vec![a, b, c], vec![edge("t1", "a", "b", EdgeKind::Talk)]);
+        runs.store.save_orbit_graph(&g, true, None).unwrap();
+        let run = runs.start(g, vec![]).unwrap();
+        for id in ["a", "b", "c"] {
+            wait_orchestrating(&runs, &run.id, id);
+        }
+        let (front, revisor, solto) = (
+            tools_of(&host, "Front"),
+            tools_of(&host, "Revisor"),
+            tools_of(&host, "Solto"),
+        );
+
+        // Peers nos dois sentidos; quem não tem ligação não tem par.
+        let peers = front.call("orbit_peers", &json!({})).unwrap();
+        assert_eq!(peers["peers"][0]["id"], "b");
+        assert_eq!(peers["peers"][0]["title"], "Revisor");
+        assert_eq!(peers["peers"].as_array().unwrap().len(), 1);
+        let peers = revisor.call("orbit_peers", &json!({})).unwrap();
+        assert_eq!(peers["peers"][0]["id"], "a");
+        let peers = solto.call("orbit_peers", &json!({})).unwrap();
+        assert!(peers["peers"].as_array().unwrap().is_empty());
+
+        // Sem ligação: recusa e não enfileira.
+        let err = solto
+            .call("orbit_send", &json!({"to": "a", "text": "oi"}))
+            .unwrap_err();
+        assert!(err.contains("conversa"), "{err}");
+        let err = front
+            .call("orbit_send", &json!({"to": "c", "text": "oi"}))
+            .unwrap_err();
+        assert!(err.contains("conversa"), "{err}");
+        let err = front
+            .call("orbit_send", &json!({"to": "b", "text": "a\u{1b}[201~b"}))
+            .unwrap_err();
+        assert!(err.contains("controle"), "{err}");
+
+        // Enfileira com o destino trabalhando: nada vai ao terminal.
+        host.set_state("Revisor", PeerState::Working);
+        let text = format!("revise o login; a chave é {}", fake_key());
+        let got = front
+            .call("orbit_send", &json!({"to": "b", "text": text}))
+            .unwrap();
+        assert_eq!(got["queued"], 1);
+        assert!(host.inputs.lock().is_empty());
+        let r = runs.get(&run.id).unwrap();
+        assert_eq!(r.nodes["b"].inbox, 1);
+        let sent = r.nodes["a"].sent.clone().unwrap();
+        assert_eq!(sent.to, "Revisor");
+        assert!(sent.text.starts_with("revise o login"));
+        assert!(!sent.text.contains(&fake_key()), "{}", sent.text);
+        let peers = front.call("orbit_peers", &json!({})).unwrap();
+        assert_eq!(peers["peers"][0]["state"], "working");
+        assert_eq!(peers["peers"][0]["queued"], 1);
+
+        // Turno fechado: o bloco marcado vai para o terminal do Revisor.
+        host.set_state("Revisor", PeerState::Ready);
+        let inputs = host.inputs.lock().clone();
+        assert_eq!(inputs.len(), 1);
+        let b_session = runs.get(&run.id).unwrap().nodes["b"].session_id.clone();
+        assert_eq!(Some(inputs[0].0.clone()), b_session);
+        assert!(
+            inputs[0].1.starts_with("[mensagem de Front pelo Orbit"),
+            "{}",
+            inputs[0].1
+        );
+        assert!(inputs[0].1.contains("> revise o login"));
+        assert!(!inputs[0].1.contains(&fake_key()));
+        assert_eq!(runs.get(&run.id).unwrap().nodes["b"].inbox, 0);
+
+        // A volta pela mesma ligação.
+        revisor
+            .call("orbit_send", &json!({"to": "a", "text": "feito"}))
+            .unwrap();
+        host.set_state("Front", PeerState::Ready);
+        let inputs = host.inputs.lock().clone();
+        assert!(inputs[1].1.contains("mensagem de Revisor") && inputs[1].1.contains("> feito"));
+
+        // Teto da fila do destino.
+        host.set_state("Revisor", PeerState::Working);
+        for _ in 0..talk::MAX_QUEUE {
+            front
+                .call("orbit_send", &json!({"to": "b", "text": "mais"}))
+                .unwrap();
+        }
+        let err = front
+            .call("orbit_send", &json!({"to": "b", "text": "mais"}))
+            .unwrap_err();
+        assert!(err.contains("cheia"), "{err}");
+        assert_eq!(runs.get(&run.id).unwrap().nodes["b"].inbox, talk::MAX_QUEUE);
+        runs.stop(&run.id).unwrap();
+    }
+
+    /// Memória: só a nota ligada por `memory`; cadeado recusa a escrita; o
+    /// texto é redigido e vai para o grafo salvo, com quem escreveu.
+    #[cfg(unix)]
+    #[test]
+    fn agent_reads_and_writes_only_a_note_linked_by_memory() {
+        use serde_json::json;
+        let dir = tempfile::tempdir().unwrap();
+        let (runs, host, _app) = pty_runs(dir.path().join("runs"));
+        let mut a = orchestrator("a");
+        a.title = "Front".into();
+        let mut x = orchestrator("x");
+        x.title = "Outro".into();
+        let mut trancada = note("t");
+        trancada.kind = NodeKind::Note {
+            markdown: "regras do dono".into(),
+            locked: true,
+        };
+        let g = graph(
+            vec![a, x, note("m"), note("solta"), trancada],
+            vec![
+                edge("m1", "a", "m", EdgeKind::Memory),
+                edge("m2", "a", "t", EdgeKind::Memory),
+            ],
+        );
+        runs.store.save_orbit_graph(&g, true, None).unwrap();
+        let run = runs.start(g, vec![]).unwrap();
+        wait_orchestrating(&runs, &run.id, "a");
+        wait_orchestrating(&runs, &run.id, "x");
+        let front = tools_of(&host, "Front");
+
+        let got = front
+            .call("orbit_note_read", &json!({"node": "m"}))
+            .unwrap();
+        assert_eq!(got["markdown"], "# plano");
+        assert_eq!(got["locked"], false);
+        let got = front
+            .call("orbit_note_read", &json!({"node": "t"}))
+            .unwrap();
+        assert_eq!(got["locked"], true);
+
+        // Sem ligação (a nota solta; o outro agente): recusa.
+        for (tools, node) in [(&front, "solta"), (&tools_of(&host, "Outro"), "m")] {
+            let err = tools
+                .call("orbit_note_read", &json!({"node": node}))
+                .unwrap_err();
+            assert!(err.contains("memória"), "{err}");
+            let err = tools
+                .call("orbit_note_write", &json!({"node": node, "text": "x"}))
+                .unwrap_err();
+            assert!(err.contains("memória"), "{err}");
+        }
+
+        // Cadeado: só leitura.
+        let err = front
+            .call("orbit_note_write", &json!({"node": "t", "text": "x"}))
+            .unwrap_err();
+        assert!(err.contains("cadeado"), "{err}");
+
+        // Escrita: troca, depois completa; redigida; no grafo salvo.
+        front
+            .call(
+                "orbit_note_write",
+                &json!({"node": "m", "text": format!("porta 5173, chave {}", fake_key())}),
+            )
+            .unwrap();
+        front
+            .call(
+                "orbit_note_write",
+                &json!({"node": "m", "text": "login ok", "mode": "append"}),
+            )
+            .unwrap();
+        let saved = runs.store.get_orbit_graph("g-1").unwrap().unwrap().value;
+        let m = saved.nodes.iter().find(|n| n.id == "m").unwrap();
+        let NodeKind::Note { markdown, locked } = &m.kind else {
+            panic!("nota");
+        };
+        assert!(markdown.starts_with("porta 5173, chave "), "{markdown}");
+        assert!(markdown.ends_with("\nlogin ok"), "{markdown}");
+        assert!(!markdown.contains(&fake_key()), "{markdown}");
+        assert!(!locked);
+        let t = saved.nodes.iter().find(|n| n.id == "t").unwrap();
+        assert_eq!(
+            t.kind,
+            NodeKind::Note {
+                markdown: "regras do dono".into(),
+                locked: true
+            }
+        );
+        let written = runs.get(&run.id).unwrap().nodes["m"]
+            .written
+            .clone()
+            .unwrap();
+        assert_eq!(written.by, "Front");
+        assert_eq!(&written.markdown, markdown);
+        // A leitura seguinte vê a escrita.
+        let got = front
+            .call("orbit_note_read", &json!({"node": "m"}))
+            .unwrap();
+        assert_eq!(got["markdown"], markdown.as_str());
+
+        // O dono trancou depois do ▶: vale o cadeado do grafo salvo.
+        let mut g = saved.clone();
+        if let Some(n) = g.nodes.iter_mut().find(|n| n.id == "m") {
+            n.kind = NodeKind::Note {
+                markdown: markdown.clone(),
+                locked: true,
+            };
+        }
+        runs.store.save_orbit_graph(&g, true, None).unwrap();
+        let err = front
+            .call("orbit_note_write", &json!({"node": "m", "text": "x"}))
+            .unwrap_err();
+        assert!(err.contains("cadeado"), "{err}");
         runs.stop(&run.id).unwrap();
     }
 }

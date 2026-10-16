@@ -5064,6 +5064,9 @@ mod tests {
             url: None,
             orchestrating: false,
             opened: None,
+            inbox: 0,
+            sent: None,
+            written: None,
         };
         let path = dir.path().join("tyba.db");
         let graph = Graph {

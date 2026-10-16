@@ -41,7 +41,7 @@ const METHOD_NOT_FOUND: i64 = -32601;
 const INVALID_PARAMS: i64 = -32602;
 
 /// Nomes das ferramentas, na ordem do `tools/list`.
-pub const TOOLS: [&str; 7] = [
+pub const TOOLS: [&str; 11] = [
     "orbit_plan",
     "orbit_create_process",
     "orbit_create_agent",
@@ -49,6 +49,10 @@ pub const TOOLS: [&str; 7] = [
     "orbit_browser_open",
     "orbit_node_status",
     "orbit_stop_node",
+    "orbit_peers",
+    "orbit_send",
+    "orbit_note_read",
+    "orbit_note_write",
 ];
 
 /// Argumento do modo `$BROWSER` (`tyba _orbit-open <url>`).
@@ -240,6 +244,8 @@ fn initialize_result(params: &Value, can_create: bool) -> Value {
         "instructions": if can_create {
             "Ferramentas do Orbit do TYBA. Escreva e marque o plano com orbit_plan. \
             Página local num navegador ligado a você por controla: orbit_browser_open. \
+            Agente ligado por conversa: orbit_peers e orbit_send. Nota ligada por \
+            memória: orbit_note_read e orbit_note_write. \
             Para subir servidor, processo longo ou outro agente, crie um nó com elas \
             em vez de rodar dentro da sua sessão: o dono vê e para cada nó no canvas. \
             Página local vai num nó de navegador (orbit_create_browser), nunca no \
@@ -247,6 +253,8 @@ fn initialize_result(params: &Value, can_create: bool) -> Value {
         } else {
             "Ferramentas do Orbit do TYBA. Escreva e marque o plano com orbit_plan. \
             Página local num navegador ligado a você por controla: orbit_browser_open. \
+            Agente ligado por conversa: orbit_peers e orbit_send. Nota ligada por \
+            memória: orbit_note_read e orbit_note_write. \
             Você foi criado por outro agente e não cria nós."
         },
     })
@@ -443,6 +451,73 @@ pub fn tool_list(can_create: bool) -> Vec<Value> {
                 "additionalProperties": false
             }
         }),
+        json!({
+            "name": "orbit_peers",
+            "description": "List the agents linked to you by a talk link on the canvas: \
+                id, title, state (working, waiting = waiting for the owner, ready = turn \
+                ended, notStarted, gone) and how many messages wait for them.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "orbit_send",
+            "description": format!(
+                "Send a message to an agent linked to you by a talk link (see orbit_peers). \
+                 It waits in a queue and is typed into their terminal when their turn ends, \
+                 marked as a message from you (never as the owner). Plain text, line \
+                 breaks allowed, up to {} characters; secrets are redacted; at most {} \
+                 messages wait per agent.",
+                super::talk::MAX_MESSAGE_CHARS,
+                super::talk::MAX_QUEUE
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "to": string_prop("id of the linked agent (from orbit_peers)."),
+                    "text": string_prop("The message.")
+                },
+                "required": ["to", "text"],
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "orbit_note_read",
+            "description": "Read a Note node linked to you by a memory link (shared memory \
+                with the owner and other agents). Returns its markdown (secrets redacted) \
+                and whether it is locked (read only).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {"node": string_prop("node_id of the linked Note.")},
+                "required": ["node"],
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "orbit_note_write",
+            "description": format!(
+                "Write a Note node linked to you by a memory link: replace its text or \
+                 append to it. A locked note refuses. Up to {} characters in the note; \
+                 secrets are redacted. The owner sees it on the canvas.",
+                super::talk::MAX_NOTE_CHARS
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "node": string_prop("node_id of the linked Note."),
+                    "text": string_prop("Markdown."),
+                    "mode": {
+                        "type": "string",
+                        "enum": ["replace", "append"],
+                        "description": "replace (default) or append on a new line."
+                    }
+                },
+                "required": ["node", "text"],
+                "additionalProperties": false
+            }
+        }),
     ];
     all.into_iter()
         .filter(|t| {
@@ -551,7 +626,9 @@ Plano, sempre: antes de começar, chame orbit_plan com todos os passos (state to
 ao começar cada passo, chame de novo com ele em doing, e ao terminar, em done ou failed, \
 sempre com a lista inteira (em made, o nó que criou no passo, se criou). \
 Parte das ferramentas depende das ligações que o dono desenhou no canvas: um navegador ligado \
-a você por controla, outro agente ligado por conversa, uma nota ligada por memória; \
+a você por controla, outro agente ligado por conversa (orbit_peers lista, orbit_send manda; \
+a mensagem chega a ele quando o turno dele fecha), uma nota ligada por memória \
+(orbit_note_read e orbit_note_write; nota com cadeado só se lê); \
 sem a ligação o TYBA recusa e diz por quê. \
 Para mostrar uma página local num navegador ligado a você, use orbit_browser_open \
 (o $BROWSER do seu shell abre no ligado mais recente; arquivo local, sirva por localhost). \
@@ -680,7 +757,11 @@ mod tests {
                 "orbit_plan",
                 "orbit_browser_open",
                 "orbit_node_status",
-                "orbit_stop_node"
+                "orbit_stop_node",
+                "orbit_peers",
+                "orbit_send",
+                "orbit_note_read",
+                "orbit_note_write"
             ]
         );
         let r = handle_line(

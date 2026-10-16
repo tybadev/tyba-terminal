@@ -14,6 +14,7 @@ import {
   pickConnection,
   produces,
   toFlow,
+  type EdgeKind,
   type Graph,
   type Integration,
   type OrbitNode,
@@ -84,12 +85,27 @@ const graph: Graph = {
 
 describe("produces / accepts", () => {
   test("seguem a tabela de rules", () => {
-    expect(produces(claude.kind, integrations)).toEqual(["context", "diff", "plan", "control"]);
+    expect(produces(claude.kind, integrations)).toEqual([
+      "context",
+      "diff",
+      "plan",
+      "control",
+      "talk",
+      "memory",
+    ]);
     expect(produces(tests.kind, integrations)).toEqual(["json", "url"]);
     expect(produces(note.kind, integrations)).toEqual(["context", "file"]);
     expect(produces(lint.kind, integrations)).toEqual(["log"]);
-    expect(accepts(note.kind, integrations)).toEqual(["plan"]);
-    expect(accepts(claude.kind, integrations)).toHaveLength(6);
+    expect(accepts(note.kind, integrations)).toEqual(["plan", "memory"]);
+    expect(accepts(claude.kind, integrations)).toEqual([
+      "context",
+      "diff",
+      "file",
+      "log",
+      "json",
+      "url",
+      "talk",
+    ]);
     expect(accepts(lint.kind, integrations)).toEqual(["diff"]);
     expect(accepts(manualHook.kind, integrations)).toHaveLength(6);
   });
@@ -249,8 +265,9 @@ describe("tipo da ligação calculado (canvas-3)", () => {
     expect(pick("p", "b")).toEqual({ kind: "url" });
     expect(pick("a", "i")).toEqual({ kind: "diff" });
     expect(pick("r", "n")).toEqual({ kind: "plan" });
-    // A nota já dá contexto ao a: o plano de volta fecharia o ciclo.
-    expect(pick("a", "n")).toEqual({ problem: "cycle" });
+    // A nota já dá contexto ao a: o plano de volta não leva valor, então não
+    // fecha ciclo (espelha `check_acyclic`).
+    expect(pick("a", "n")).toEqual({ kind: "plan" });
     expect(pick("n", "b")).toEqual({ problem: "notAccepted" });
     expect(pick("a", "a")).toEqual({ problem: "self" });
     expect(pick("x", "a")).toEqual({ problem: "unknownNode" });
@@ -353,5 +370,27 @@ describe("pasta por nó", () => {
       if (saved) Object.defineProperty(g, "localStorage", saved);
       else delete g.localStorage;
     }
+  });
+});
+
+describe("conversa e memória", () => {
+  const a2: OrbitNode = { ...claude, id: "a2" };
+  const all = [claude, a2, note];
+  const problem = (edges: Graph["edges"], from: string, to: string, kind: EdgeKind) =>
+    connectionProblem(all, edges, integrations, from, to, kind);
+
+  test("conversa: agente ⇄ agente, uma por par, sem ciclo", () => {
+    expect(problem([], "a", "a2", "talk")).toBeNull();
+    expect(problem([], "a", "n", "talk")).toBe("notAccepted");
+    const talk = [{ id: "t", from: "a", to: "a2", kind: "talk" as const }];
+    expect(problem(talk, "a2", "a", "talk")).toBe("duplicate");
+    // Conversa não leva valor: o contexto de volta não fecha ciclo.
+    expect(problem(talk, "a2", "a", "context")).toBeNull();
+  });
+
+  test("memória: agente → nota", () => {
+    expect(problem([], "a", "n", "memory")).toBeNull();
+    expect(problem([], "a", "a2", "memory")).toBe("notAccepted");
+    expect(problem([], "n", "a", "memory")).toBe("notProduced");
   });
 });
