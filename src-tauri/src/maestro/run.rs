@@ -1549,19 +1549,46 @@ impl<H: RunHost> Runs<H> {
         Ok(id)
     }
 
-    /// Estado de um nó do run, url/porta e as últimas linhas do log redigidas.
+    /// Estado de um nó do run, url/porta, as últimas linhas do log redigidas
+    /// e, quando o nó tem, o resultado: o texto do turno (`context.md`, já
+    /// redigido) e o resumo do diff — o agente criado não grava `log.txt`, e
+    /// sem isto o orquestrador via `done` sem saber o que ele disse nem o que
+    /// mudou. `paths` leva os caminhos absolutos para ler o resto.
     pub fn node_status(&self, run_id: &str, node_id: &str) -> Result<serde_json::Value, String> {
         let run = self.get(run_id).ok_or("execução não encontrada")?;
         let n = run
             .nodes
             .get(node_id)
             .ok_or_else(|| format!("nó não existe neste run: {node_id}"))?;
-        let log = self.root.as_ref().and_then(|root| {
-            orchestrator::log_tail(
-                &root.join(run_id).join(node_id).join("out").join("log.txt"),
-                orchestrator::STATUS_LOG_LINES,
-            )
-        });
+        let log_path = self
+            .root
+            .as_ref()
+            .map(|root| root.join(run_id).join(node_id).join("out").join("log.txt"));
+        let log = log_path
+            .as_deref()
+            .and_then(|p| orchestrator::log_tail(p, orchestrator::STATUS_LOG_LINES));
+        let turn = n
+            .outputs
+            .get(&EdgeKind::Context)
+            .and_then(|p| orchestrator::turn_text(Path::new(p)));
+        let diff = n
+            .outputs
+            .get(&EdgeKind::Diff)
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .map(|patch| orchestrator::diff_summary(&patch));
+        let mut paths: serde_json::Map<String, serde_json::Value> = n
+            .outputs
+            .iter()
+            .filter_map(|(kind, path)| {
+                let key = serde_json::to_value(kind).ok()?.as_str()?.to_string();
+                Some((key, path.clone().into()))
+            })
+            .collect();
+        if let Some(p) = log_path.filter(|p| p.is_file()) {
+            paths
+                .entry("log")
+                .or_insert_with(|| p.to_string_lossy().into_owned().into());
+        }
         let port = n.url.as_deref().and_then(|u| {
             let authority = u.split("://").nth(1)?.split(['/', '?', '#']).next()?;
             authority.rsplit_once(':')?.1.parse::<u16>().ok()
@@ -1574,6 +1601,10 @@ impl<H: RunHost> Runs<H> {
             "exit_code": n.exit_code,
             "reason": n.reason,
             "log": log,
+            "text": turn.as_ref().map(|(t, _)| t),
+            "text_truncated": turn.as_ref().is_some_and(|(_, cut)| *cut),
+            "diff": diff,
+            "paths": paths,
         }))
     }
 
@@ -3538,6 +3569,55 @@ mod tests {
         let saved = runs.store.get_maestro_graph("g-1").unwrap().unwrap().value;
         assert_eq!(saved.nodes.len(), 3);
         assert_eq!(runs.get(&run.id).unwrap().status, RunStatus::Stopped);
+    }
+
+    /// O orquestrador delega a um agente criado e lê o resultado: a fala
+    /// final (redigida), o que mudou na pasta e onde ler o resto.
+    #[cfg(unix)]
+    #[test]
+    fn node_status_of_a_created_agent_brings_its_answer_and_diff() {
+        use serde_json::json;
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        init_repo(&repo);
+        let (runs, host, _app) = pty_runs(dir.path().join("runs"));
+        let g = graph(vec![orchestrator("o"), process("p", "sleep 30")], vec![]);
+        let run = runs.start(g, vec![]).unwrap();
+        wait_orchestrating(&runs, &run.id, "o");
+        let tools = tools_of(&host, "o");
+        let rev = tools
+            .call(
+                "maestro_create_agent",
+                &json!({"title": "revisor", "runner": "claude", "prompt": "revise", "dir": repo}),
+            )
+            .unwrap()["node_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let r = wait_status(&runs, &run.id, &rev, NodeStatus::Done);
+        assert_eq!(r.nodes[&rev].status, NodeStatus::Done, "{r:?}");
+
+        let st = tools
+            .call("maestro_node_status", &json!({"node_id": rev}))
+            .unwrap();
+        let text = st["text"].as_str().expect("sem o texto do turno");
+        assert!(text.starts_with("pronto, usei "), "{st}");
+        assert!(!text.contains(&fake_key()), "segredo no resultado: {st}");
+        assert_eq!(st["text_truncated"], false);
+        assert_eq!(st["diff"]["files_changed"], 1, "{st}");
+        assert_eq!(
+            st["diff"]["files"],
+            json!([{"path": "revisor.txt", "added": 1, "removed": 0}])
+        );
+        for kind in ["context", "diff"] {
+            let path = st["paths"][kind].as_str().unwrap();
+            assert!(
+                Path::new(path).is_absolute() && Path::new(path).is_file(),
+                "{st}"
+            );
+        }
+        assert!(st["paths"].get("log").is_none(), "agente não grava log.txt");
+        runs.stop(&run.id).unwrap();
     }
 
     #[cfg(unix)]

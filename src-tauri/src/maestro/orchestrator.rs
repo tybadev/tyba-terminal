@@ -26,6 +26,11 @@ pub const MAX_CREATED: usize = 30;
 pub const STATUS_LOG_LINES: usize = 40;
 /// Quanto do fim do `log.txt` se lê para achar as últimas linhas.
 const STATUS_LOG_TAIL_BYTES: u64 = 64 * 1024;
+/// Teto do texto do turno no `maestro_node_status`; o resto o agente lê
+/// pelo caminho do `context.md`.
+pub const STATUS_TEXT_MAX_CHARS: usize = 8_000;
+/// Arquivos listados no resumo do diff (os totais contam todos).
+const STATUS_DIFF_MAX_FILES: usize = 100;
 
 /// Quem atende as ferramentas da sessão do orquestrador: `(ferramenta,
 /// argumentos) → resultado`. Montado pelo run para o nó, levado até o
@@ -308,6 +313,74 @@ pub fn log_tail(path: &Path, n: usize) -> Option<String> {
     Some(crate::session::redact::redact(&tail).into_owned())
 }
 
+/// O texto do `context.md` (a fala final do agente, já redigida ao gravar),
+/// até [`STATUS_TEXT_MAX_CHARS`]. `true` quando cortou. Vazio: `None`.
+pub fn turn_text(path: &Path) -> Option<(String, bool)> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let text = text.trim();
+    if text.is_empty() {
+        return None;
+    }
+    let cut: String = text.chars().take(STATUS_TEXT_MAX_CHARS).collect();
+    let truncated = cut.len() < text.len();
+    Some((cut, truncated))
+}
+
+/// Um arquivo do resumo do diff.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct DiffFile {
+    pub path: String,
+    pub added: usize,
+    pub removed: usize,
+}
+
+/// Resumo de um patch unificado (`git diff`, com os arquivos novos de
+/// `--no-index`): arquivos com linhas `+`/`−` e os totais. Cabeçalhos
+/// (`---`/`+++`) só contam como cabeçalho antes do primeiro `@@` do arquivo:
+/// dentro do hunk, `+++x` é uma linha `++x` adicionada.
+pub fn diff_summary(patch: &str) -> Value {
+    let mut files: Vec<DiffFile> = Vec::new();
+    let mut in_hunk = false;
+    for line in patch.lines() {
+        if let Some(header) = line.strip_prefix("diff --git ") {
+            let path = header.rsplit_once(" b/").map_or(header, |(_, p)| p);
+            files.push(DiffFile {
+                path: path.to_string(),
+                added: 0,
+                removed: 0,
+            });
+            in_hunk = false;
+            continue;
+        }
+        let Some(file) = files.last_mut() else {
+            continue;
+        };
+        if !in_hunk {
+            if let Some(path) = line.strip_prefix("+++ b/") {
+                file.path = path.to_string();
+            } else if line.starts_with("@@") {
+                in_hunk = true;
+            }
+            continue;
+        }
+        match line.as_bytes().first() {
+            Some(b'+') => file.added += 1,
+            Some(b'-') => file.removed += 1,
+            _ => {}
+        }
+    }
+    let added = files.iter().map(|f| f.added).sum::<usize>();
+    let removed = files.iter().map(|f| f.removed).sum::<usize>();
+    let changed = files.len();
+    files.truncate(STATUS_DIFF_MAX_FILES);
+    serde_json::json!({
+        "files_changed": changed,
+        "added": added,
+        "removed": removed,
+        "files": files,
+    })
+}
+
 /// "Manter no grafo": os nós criados entram no grafo como nós normais (sem
 /// `created_by`, que só existe no run), com as ligações que chegam neles. Id
 /// que já está no grafo não entra de novo.
@@ -468,6 +541,78 @@ mod tests {
         assert!(tail.starts_with("linha 98\nlinha 99\nchave "), "{tail}");
         assert!(!tail.contains(&key), "{tail}");
         assert_eq!(log_tail(&tmp.path().join("nao"), 3), None);
+    }
+
+    #[test]
+    fn diff_summary_counts_lines_per_file_and_new_files() {
+        // Fixture sintética: um arquivo mudado, um novo (`--no-index`), um
+        // apagado e um binário; no hunk, `+++`/`---` são linhas de conteúdo.
+        let patch = "\
+diff --git a/src/app.ts b/src/app.ts
+index 1111111..2222222 100644
+--- a/src/app.ts
++++ b/src/app.ts
+@@ -1,3 +1,4 @@
+ const a = 1;
+-const b = 2;
++const b = 3;
++++contador;
+@@ -10,2 +11,1 @@ function f() {
+---x;
+ fim();
+\\ No newline at end of file
+diff --git a/novo arquivo.md b/novo arquivo.md
+new file mode 100644
+index 0000000..3333333
+--- /dev/null
++++ b/novo arquivo.md
+@@ -0,0 +1,2 @@
++# título
++texto
+diff --git a/velho.txt b/velho.txt
+deleted file mode 100644
+index 4444444..0000000
+--- a/velho.txt
++++ /dev/null
+@@ -1 +0,0 @@
+-adeus
+diff --git a/logo.png b/logo.png
+index 5555555..6666666 100644
+Binary files a/logo.png and b/logo.png differ
+";
+        let s = diff_summary(patch);
+        assert_eq!(s["files_changed"], 4);
+        assert_eq!(s["added"], 4);
+        assert_eq!(s["removed"], 3);
+        assert_eq!(
+            s["files"],
+            json!([
+                {"path": "src/app.ts", "added": 2, "removed": 2},
+                {"path": "novo arquivo.md", "added": 2, "removed": 0},
+                {"path": "velho.txt", "added": 0, "removed": 1},
+                {"path": "logo.png", "added": 0, "removed": 0},
+            ])
+        );
+        assert_eq!(diff_summary("")["files_changed"], 0);
+    }
+
+    #[test]
+    fn turn_text_is_capped_and_says_so() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("context.md");
+        std::fs::write(&path, "  feito: revisei o X.\n").unwrap();
+        assert_eq!(
+            turn_text(&path),
+            Some(("feito: revisei o X.".into(), false))
+        );
+        let long = "é".repeat(STATUS_TEXT_MAX_CHARS + 10);
+        std::fs::write(&path, &long).unwrap();
+        let (text, truncated) = turn_text(&path).unwrap();
+        assert_eq!(text.chars().count(), STATUS_TEXT_MAX_CHARS);
+        assert!(truncated);
+        std::fs::write(&path, " \n").unwrap();
+        assert_eq!(turn_text(&path), None);
+        assert_eq!(turn_text(&tmp.path().join("nao")), None);
     }
 
     #[test]

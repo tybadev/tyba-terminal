@@ -278,8 +278,11 @@ pub fn tool_list() -> Vec<Value> {
         }),
         json!({
             "name": "maestro_node_status",
-            "description": "State of a node of this run: status, url/port, exit code and the \
-                last lines of its log (secrets redacted).",
+            "description": "State of a node of this run: status, url/port, exit code, the \
+                last lines of its log and, for an agent node, its final answer (text) and a \
+                summary of what it changed (diff: files and +/- lines); secrets redacted. \
+                paths has the absolute paths of its outputs (context.md, diff.patch, \
+                log.txt) to read the rest.",
             "inputSchema": {
                 "type": "object",
                 "properties": {"node_id": string_prop("The node_id.")},
@@ -375,7 +378,8 @@ para subir ou rodar um serviço, servidor de dev ou processo longo, use maestro_
 para abrir ou mostrar uma página (inclusive domínios .test e .localhost), use maestro_create_browser \
 em vez de um navegador externo; \
 para trabalho de agente em outro repositório, use maestro_create_agent. \
-Use maestro_node_status para ler o estado e o log dos nós antes de concluir. \
+Use maestro_node_status para ler o estado e o log dos nós antes de concluir \
+(de um agente criado, ele traz a resposta final e o que mudou). \
 Comandos curtos de leitura (ls, cat, git status) podem rodar no seu shell.";
 
 #[cfg(test)]
