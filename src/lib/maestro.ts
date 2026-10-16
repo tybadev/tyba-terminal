@@ -564,28 +564,49 @@ export function concurrentAgents(
 export const integrationTest = (integrationId: string, graphId: string, nodeId: string) =>
   invoke<Run>("maestro_integration_test", { integrationId, graphId, nodeId });
 
-/** Grava o `.tyba-maestro.toml`; devolve os nomes das variáveis zeradas (cara de segredo). */
+/** Campo que saiu no arquivo com segredo literal (o core não reescreve o texto). */
+export interface SecretField {
+  owner: "node" | "integration";
+  id: string;
+  /** Título do nó ou nome da integração. */
+  name: string;
+  field: "prompt" | "command" | "markdown" | "script";
+}
+
+/** O que avisar depois de exportar. */
+export interface ExportReport {
+  /** Variáveis que saíram vazias por parecerem segredo. */
+  cleared: string[];
+  /** Campos que saíram com segredo literal dentro. */
+  secretFields: SecretField[];
+}
+
+/** Grava o `.tyba-maestro.toml`; devolve o que avisar (variáveis zeradas, segredo literal). */
 export const exportGraph = (graphId: string, path: string) =>
-  invoke<string[]>("maestro_export", { graphId, path });
+  invoke<ExportReport>("maestro_export", { graphId, path });
 
 /** O que o core leu e validou do arquivo. Nada foi gravado ainda. */
 export interface ImportPreview {
   /** SHA-256 do arquivo: o consentimento vale para este conteúdo. */
   hash: string;
+  /** `dir` é o de quem exportou: só informação. O grafo grava na pasta de destino. */
   graph: Graph;
   integrations: Integration[];
   /** Já existe um grafo com esse id: confirmar substitui. */
   replacesGraph: boolean;
-  /** Integrações locais com o mesmo id: confirmar substitui o script delas. */
-  replacesIntegrations: string[];
+  /** Ids que já existem aqui com outro conteúdo: a do arquivo entra com id novo, a local fica. */
+  renamedIntegrations: string[];
 }
 
 export const importPreview = (path: string) =>
   invoke<ImportPreview>("maestro_import_preview", { path });
 
-/** Relê o arquivo e só grava se o hash for o da prévia. Devolve o id do grafo. */
-export const importConfirm = (path: string, hash: string) =>
-  invoke<string>("maestro_import_confirm", { path, hash });
+/**
+ * Relê o arquivo e só grava se o hash for o da prévia. O grafo grava com
+ * `dir` = pasta de destino (a do workspace aberto). Devolve o id do grafo.
+ */
+export const importConfirm = (path: string, hash: string, dir: string) =>
+  invoke<string>("maestro_import_confirm", { path, hash, dir });
 
 /** Teto do script de uma integração, em bytes (espelha `MAX_SCRIPT_BYTES` do core). */
 export const MAX_SCRIPT_BYTES = 64 * 1024;
@@ -659,7 +680,14 @@ export function revealHidden(text: string): string {
 /** Um item do que vai rodar, na ordem em que a tela de importação mostra. */
 export type ImportItem =
   | { type: "agent"; node: MaestroNode; runner: Runner; role: string; prompt: string }
-  | { type: "process"; node: MaestroNode; command: string; output: OutputKind }
+  | {
+      type: "process";
+      node: MaestroNode;
+      command: string;
+      output: OutputKind;
+      /** Arquivo de saída, relativo à pasta: o core lê dele depois de rodar. */
+      file: string | null;
+    }
   | { type: "note"; node: MaestroNode; markdown: string }
   | { type: "integration"; node: MaestroNode; integration: Integration | null };
 
@@ -675,7 +703,7 @@ export function importItems(preview: Pick<ImportPreview, "graph" | "integrations
       case "agent":
         return { type: "agent", node, runner: k.runner, role: k.role, prompt: k.prompt };
       case "process":
-        return { type: "process", node, command: k.command, output: k.output };
+        return { type: "process", node, command: k.command, output: k.output, file: k.file };
       case "note":
         return { type: "note", node, markdown: k.markdown };
       case "integration":

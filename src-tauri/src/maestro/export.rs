@@ -1,7 +1,8 @@
 //! Exportar e importar o grafo como arquivo `.tyba-maestro.toml`.
 //!
 //! O TYBA não tem conta: o arquivo é o jeito de levar, versionar e
-//! compartilhar. Exportar zera variável com cara de segredo. Importar é
+//! compartilhar. Exportar zera variável com cara de segredo e aponta o segredo
+//! literal que ficou em prompt, comando, nota ou script. Importar é
 //! fronteira nova — comando, script e prompt de outra pessoa —, então a prévia
 //! só lê e valida, nunca grava nem roda; o consentimento vale para o hash do
 //! conteúdo que o dono viu.
@@ -41,6 +42,8 @@ pub enum ExportError {
     HashMismatch,
     #[error("arquivo inválido: {0}")]
     Parse(String),
+    #[error("pasta de destino inválida: {0}")]
+    InvalidDir(String),
     #[error("falha ao gerar o arquivo: {0}")]
     Serialize(String),
     #[error("{0}")]
@@ -64,7 +67,8 @@ struct MaestroFile {
 #[serde(rename_all = "camelCase")]
 pub struct Imported {
     pub hash: String,
-    /// Grafo inteiro: comandos, prompts, variáveis e `dir` (onde tudo roda).
+    /// Grafo inteiro: comandos, prompts e variáveis. O `dir` é o de quem
+    /// exportou — só informação; o Confirmar grava na pasta de destino.
     pub graph: Graph,
     /// Integrações do arquivo, com o script inteiro.
     pub integrations: Vec<Integration>,
@@ -78,16 +82,81 @@ pub struct ImportPreview {
     pub imported: Imported,
     /// Já existe um grafo com esse id: confirmar substitui.
     pub replaces_graph: bool,
-    /// Integrações locais com o mesmo id: confirmar substitui o script delas.
-    pub replaces_integrations: Vec<String>,
+    /// Integrações do arquivo cujo id já existe aqui com outro conteúdo:
+    /// entram com id novo e a local fica como está.
+    pub renamed_integrations: Vec<String>,
 }
 
-/// Gera o TOML do grafo com as integrações que ele usa. Devolve também os
-/// nomes das variáveis zeradas por parecerem segredo, para o front avisar.
+/// De quem é o campo com cara de segredo.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SecretOwner {
+    Node,
+    Integration,
+}
+
+/// Campo que saiu no arquivo com algo que parece segredo literal. O texto do
+/// dono não é reescrito (zerar um script quebra o script): o front avisa.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SecretField {
+    pub owner: SecretOwner,
+    pub id: String,
+    /// Título do nó ou nome da integração.
+    pub name: String,
+    /// `prompt`, `command`, `markdown` ou `script`.
+    pub field: String,
+}
+
+/// O que o front avisa depois de exportar.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportReport {
+    /// Variáveis que saíram vazias por parecerem segredo.
+    pub cleared: Vec<String>,
+    /// Campos que saíram com segredo literal dentro.
+    pub secret_fields: Vec<SecretField>,
+}
+
+fn secret_fields(graph: &Graph, integrations: &[Integration]) -> Vec<SecretField> {
+    let mut found = Vec::new();
+    let mut check = |owner, id: &str, name: &str, field: &str, text: &str| {
+        if contains_secret(text) {
+            found.push(SecretField {
+                owner,
+                id: id.to_string(),
+                name: name.to_string(),
+                field: field.to_string(),
+            });
+        }
+    };
+    for node in &graph.nodes {
+        let (field, text) = match &node.kind {
+            NodeKind::Agent { prompt, .. } => ("prompt", prompt),
+            NodeKind::Process { command, .. } => ("command", command),
+            NodeKind::Note { markdown } => ("markdown", markdown),
+            NodeKind::Integration { .. } => continue,
+        };
+        check(SecretOwner::Node, &node.id, &node.title, field, text);
+    }
+    for integration in integrations {
+        check(
+            SecretOwner::Integration,
+            &integration.id,
+            &integration.name,
+            "script",
+            &integration.script,
+        );
+    }
+    found
+}
+
+/// Gera o TOML do grafo com as integrações que ele usa. Devolve também o que
+/// o front avisa: variáveis zeradas e campos com segredo literal.
 pub fn export_toml(
     graph: &Graph,
     integrations: &[Integration],
-) -> Result<(String, Vec<String>), ExportError> {
+) -> Result<(String, ExportReport), ExportError> {
     let mut graph = graph.clone();
     let mut cleared = Vec::new();
     for (name, value) in graph.variables.iter_mut() {
@@ -111,24 +180,28 @@ pub fn export_toml(
         }
     }
 
+    let report = ExportReport {
+        cleared,
+        secret_fields: secret_fields(&graph, &used),
+    };
     let file = MaestroFile {
         version: FORMAT_VERSION,
         graph,
         integrations: used,
     };
     let text = toml::to_string_pretty(&file).map_err(|e| ExportError::Serialize(e.to_string()))?;
-    Ok((text, cleared))
+    Ok((text, report))
 }
 
-/// Exporta para `path`. Devolve os nomes das variáveis zeradas.
+/// Exporta para `path`. Devolve o que o front avisa.
 pub fn export_to(
     path: &Path,
     graph: &Graph,
     integrations: &[Integration],
-) -> Result<Vec<String>, ExportError> {
-    let (text, cleared) = export_toml(graph, integrations)?;
+) -> Result<ExportReport, ExportError> {
+    let (text, report) = export_toml(graph, integrations)?;
     std::fs::write(path, text)?;
-    Ok(cleared)
+    Ok(report)
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -173,6 +246,60 @@ pub fn read_import(path: &Path) -> Result<Imported, ExportError> {
         .take(MAX_FILE_BYTES + 1)
         .read_to_end(&mut bytes)?;
     parse_import(&bytes)
+}
+
+/// O grafo importado roda na pasta de destino (a do workspace aberto), não no
+/// `dir` de quem exportou.
+pub fn place_in(imported: &mut Imported, dir: &str) -> Result<(), ExportError> {
+    let path = Path::new(dir);
+    if !path.is_absolute() || !path.is_dir() {
+        return Err(ExportError::InvalidDir(dir.to_string()));
+    }
+    imported.graph.dir = dir.to_string();
+    Ok(())
+}
+
+/// Resultado de `resolve_integration_ids`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Resolved {
+    /// O que o Confirmar grava: integrações novas e as renomeadas.
+    pub to_save: Vec<Integration>,
+    /// Ids do arquivo que colidiram com integração local de outro conteúdo.
+    pub renamed: Vec<String>,
+}
+
+/// Integração do arquivo cujo id já existe aqui com outro conteúdo ganha id
+/// novo, e os nós do grafo importado passam a apontar para ele: importar nunca
+/// troca o script de uma integração local (que outro grafo, já consentido,
+/// usa). Mesmo id e mesmo conteúdo: a local fica como está e não é regravada.
+pub fn resolve_integration_ids<E>(
+    imported: &mut Imported,
+    mut local: impl FnMut(&str) -> Result<Option<Integration>, E>,
+    mut new_id: impl FnMut() -> String,
+) -> Result<Resolved, E> {
+    let mut resolved = Resolved {
+        to_save: Vec::new(),
+        renamed: Vec::new(),
+    };
+    for integration in imported.integrations.iter_mut() {
+        match local(&integration.id)? {
+            None => resolved.to_save.push(integration.clone()),
+            Some(existing) if existing == *integration => {}
+            Some(_) => {
+                let old = std::mem::replace(&mut integration.id, new_id());
+                for node in imported.graph.nodes.iter_mut() {
+                    if let NodeKind::Integration { integration_id } = &mut node.kind {
+                        if *integration_id == old {
+                            integration_id.clone_from(&integration.id);
+                        }
+                    }
+                }
+                resolved.renamed.push(old);
+                resolved.to_save.push(integration.clone());
+            }
+        }
+    }
+    Ok(resolved)
 }
 
 /// Relê para o Confirmar: o hash tem que ser o mesmo que o dono viu na prévia.
@@ -277,8 +404,8 @@ mod tests {
     #[test]
     fn round_trip_keeps_graph_and_integrations() {
         let (graph, integrations) = sample();
-        let (text, cleared) = export_toml(&graph, &integrations).unwrap();
-        assert!(cleared.is_empty());
+        let (text, report) = export_toml(&graph, &integrations).unwrap();
+        assert_eq!(report, ExportReport::default());
         let imported = parse_import(text.as_bytes()).unwrap();
         assert_eq!(imported.graph, graph);
         assert_eq!(imported.integrations, vec![integration()]);
@@ -292,12 +419,116 @@ mod tests {
         graph
             .variables
             .insert("API_KEY".into(), "sk-FAKEfakeFAKEfakeFAKEfake0000".into());
-        let (text, cleared) = export_toml(&graph, &integrations).unwrap();
-        assert_eq!(cleared, vec!["API_KEY".to_string()]);
+        let (text, report) = export_toml(&graph, &integrations).unwrap();
+        assert_eq!(report.cleared, vec!["API_KEY".to_string()]);
         assert!(!text.contains("sk-FAKE"));
         let imported = parse_import(text.as_bytes()).unwrap();
         assert_eq!(imported.graph.variables["API_KEY"], "");
         assert_eq!(imported.graph.variables["alvo"], "main");
+    }
+
+    #[test]
+    fn literal_secret_in_text_fields_is_reported_on_export() {
+        let (mut graph, mut integrations) = sample();
+        // Fixtures sintéticas, não são chave de ninguém.
+        let fake = "sk-FAKEfakeFAKEfakeFAKEfake0000";
+        for node in graph.nodes.iter_mut() {
+            match &mut node.kind {
+                NodeKind::Agent { prompt, .. } => prompt.push_str(&format!(" use {fake}")),
+                NodeKind::Process { command, .. } => {
+                    *command = "curl -H 'Authorization: Bearer x' AKIAFAKEFAKEFAKEFAKE".into()
+                }
+                _ => {}
+            }
+        }
+        for i in integrations.iter_mut() {
+            i.script = format!("export TOKEN={fake}\n");
+        }
+        let (text, report) = export_toml(&graph, &integrations).unwrap();
+        assert!(report.cleared.is_empty());
+        // O texto do dono não é reescrito: sai como está, com aviso.
+        assert!(text.contains(fake));
+        let found: Vec<(SecretOwner, &str, &str)> = report
+            .secret_fields
+            .iter()
+            .map(|f| (f.owner, f.id.as_str(), f.field.as_str()))
+            .collect();
+        assert_eq!(
+            found,
+            vec![
+                (SecretOwner::Node, "a", "prompt"),
+                (SecretOwner::Node, "p", "command"),
+                // Só a integração que o grafo usa vai para o arquivo.
+                (SecretOwner::Integration, "i-1", "script"),
+            ]
+        );
+        assert_eq!(report.secret_fields[0].name, "nó a");
+    }
+
+    #[test]
+    fn import_never_overwrites_local_integration_with_other_content() {
+        let (graph, integrations) = sample();
+        let (text, _) = export_toml(&graph, &integrations).unwrap();
+        let mut imported = parse_import(text.as_bytes()).unwrap();
+
+        // Aqui já existe uma "i-1" com outro script, usada por outro grafo.
+        let mut mine = integration();
+        mine.script = "echo meu script consentido".into();
+        let local = |id: &str| -> Result<Option<Integration>, ()> {
+            Ok((id == "i-1").then(|| mine.clone()))
+        };
+        let resolved = resolve_integration_ids(&mut imported, local, || "novo".into()).unwrap();
+        assert_eq!(resolved.renamed, vec!["i-1".to_string()]);
+        assert_eq!(resolved.to_save.len(), 1);
+        assert_eq!(resolved.to_save[0].id, "novo");
+        assert_eq!(resolved.to_save[0].script, integration().script);
+        assert!(!resolved.to_save.iter().any(|i| i.id == "i-1"));
+        // O grafo importado aponta para a cópia nova e continua válido.
+        let node = imported.graph.nodes.iter().find(|n| n.id == "i").unwrap();
+        assert_eq!(
+            node.kind,
+            NodeKind::Integration {
+                integration_id: "novo".into()
+            }
+        );
+        validate_graph(&imported.graph, &imported.integrations).unwrap();
+
+        // Mesmo id e mesmo conteúdo: nada a gravar, nada renomeado.
+        let mut again = parse_import(text.as_bytes()).unwrap();
+        let same = |_: &str| -> Result<Option<Integration>, ()> { Ok(Some(integration())) };
+        let resolved = resolve_integration_ids(&mut again, same, || unreachable!()).unwrap();
+        assert_eq!(resolved.to_save, vec![]);
+        assert!(resolved.renamed.is_empty());
+
+        // Id novo aqui: grava como veio.
+        let mut fresh = parse_import(text.as_bytes()).unwrap();
+        let none = |_: &str| -> Result<Option<Integration>, ()> { Ok(None) };
+        let resolved = resolve_integration_ids(&mut fresh, none, || unreachable!()).unwrap();
+        assert_eq!(resolved.to_save, vec![integration()]);
+    }
+
+    #[test]
+    fn import_runs_in_destination_dir_not_exporter_dir() {
+        let (graph, integrations) = sample();
+        let (text, _) = export_toml(&graph, &integrations).unwrap();
+        let mut imported = parse_import(text.as_bytes()).unwrap();
+        assert_eq!(imported.graph.dir, "/tmp/repo");
+
+        let dest = tempfile::tempdir().unwrap();
+        let dest_str = dest.path().to_str().unwrap();
+        place_in(&mut imported, dest_str).unwrap();
+        assert_eq!(imported.graph.dir, dest_str);
+
+        for bad in ["", "relativa/pasta", "/nao/existe/tyba-maestro-teste"] {
+            assert!(matches!(
+                place_in(&mut imported, bad),
+                Err(ExportError::InvalidDir(_))
+            ));
+        }
+        let file = dest.path().join("arquivo.txt");
+        std::fs::write(&file, "x").unwrap();
+        assert!(place_in(&mut imported, file.to_str().unwrap()).is_err());
+        assert_eq!(imported.graph.dir, dest_str);
     }
 
     #[test]

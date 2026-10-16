@@ -83,7 +83,11 @@ function ItemView({ item }: { item: ImportItem }) {
     case "process":
       return (
         <div className="flex flex-col gap-1.5">
-          {head(t("maestroKindProcess"), `${t("maestroOutput")}: ${t(`maestroEdge_${item.output}`)}`)}
+          {head(
+            t("maestroKindProcess"),
+            `${t("maestroOutput")}: ${t(`maestroEdge_${item.output}`)}` +
+              (item.file ? ` (${revealHidden(item.file)})` : ""),
+          )}
           <Code>{item.command}</Code>
         </div>
       );
@@ -112,15 +116,18 @@ function ItemView({ item }: { item: ImportItem }) {
  * A tela de importação é o consentimento: mostra TUDO o que o arquivo traz
  * para rodar — prompts, comandos, scripts inteiros, variáveis e a pasta — e
  * só grava no Confirmar. O core confere que o arquivo é o mesmo da prévia
- * (hash) e nada roda aqui.
+ * (hash) e nada roda aqui. Roda em `targetDir` (a pasta aberta); o `dir` do
+ * arquivo é só de onde veio.
  */
 export function ImportDialog({
   path,
+  targetDir,
   preview,
   onCancel,
   onImported,
 }: {
   path: string;
+  targetDir: string;
   preview: ImportPreview;
   onCancel: () => void;
   onImported: (graphId: string) => void;
@@ -136,7 +143,7 @@ export function ImportDialog({
   const confirm = async () => {
     setBusy(true);
     try {
-      onImported(await importConfirm(path, preview.hash));
+      onImported(await importConfirm(path, preview.hash, targetDir));
     } catch (e) {
       setError(String(e));
       setBusy(false);
@@ -158,20 +165,22 @@ export function ImportDialog({
               <dt className="text-tyba-text-faint">{t("maestroImportName")}</dt>
               <dd className="break-all text-tyba-text">{revealHidden(graph.name)}</dd>
               <dt className="text-tyba-text-faint">{t("maestroImportDir")}</dt>
-              <dd className="break-all text-tyba-text">{revealHidden(graph.dir)}</dd>
+              <dd className="break-all text-tyba-text">{targetDir}</dd>
+              <dt className="text-tyba-text-faint">{t("maestroImportOrigin")}</dt>
+              <dd className="break-all text-tyba-text-muted">{revealHidden(graph.dir)}</dd>
               <dt className="text-tyba-text-faint">{t("maestroImportFile")}</dt>
               <dd className="break-all text-tyba-text-muted">{path}</dd>
               <dt className="text-tyba-text-faint">SHA-256</dt>
               <dd className="break-all text-tyba-text-muted">{preview.hash}</dd>
             </dl>
-            {(preview.replacesGraph || preview.replacesIntegrations.length > 0) && (
+            {(preview.replacesGraph || preview.renamedIntegrations.length > 0) && (
               <p className="flex items-start gap-2 rounded-[5px] bg-tyba-amber-tint px-3 py-2 text-[11.5px] text-tyba-amber">
                 <Warning size={13} className="mt-px shrink-0" />
                 <span>
                   {preview.replacesGraph && t("maestroImportReplacesGraph")}{" "}
-                  {preview.replacesIntegrations.length > 0 &&
-                    t("maestroImportReplacesIntegrations", {
-                      count: preview.replacesIntegrations.length,
+                  {preview.renamedIntegrations.length > 0 &&
+                    t("maestroImportRenamesIntegrations", {
+                      count: preview.renamedIntegrations.length,
                     })}
                 </span>
               </p>

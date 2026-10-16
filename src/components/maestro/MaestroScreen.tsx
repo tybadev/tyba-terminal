@@ -125,9 +125,11 @@ function MaestroInner({
   const [now, setNow] = useState(() => Date.now());
   const [showInts, setShowInts] = useState(false);
   const [notice, setNotice] = useState<{ text: string; warn: boolean } | null>(null);
-  const [importing, setImporting] = useState<{ path: string; preview: ImportPreview } | null>(
-    null,
-  );
+  const [importing, setImporting] = useState<{
+    path: string;
+    dir: string;
+    preview: ImportPreview;
+  } | null>(null);
   // Depois de importar: qual grafo abrir na pasta (pode haver mais de um nela).
   const [preferId, setPreferId] = useState<string | null>(null);
   const [reload, setReload] = useState(0);
@@ -282,18 +284,22 @@ function MaestroInner({
       // Grafo novo e vazio ainda não foi para o banco: o export lê de lá.
       await flush(true);
       const path = joinPath(folder, exportFileName(meta.name));
-      const cleared = await exportGraph(meta.id, path);
-      setNotice(
-        cleared.length > 0
-          ? { text: t("maestroExportedCleared", { path, names: cleared.join(", ") }), warn: true }
-          : { text: t("maestroExported", { path }), warn: false },
-      );
+      const { cleared, secretFields } = await exportGraph(meta.id, path);
+      const warnings = [
+        cleared.length > 0 && t("maestroExportedCleared", { names: cleared.join(", ") }),
+        secretFields.length > 0 &&
+          t("maestroExportedSecrets", {
+            fields: secretFields.map((f) => `${f.name} (${f.field})`).join(", "),
+          }),
+      ].filter(Boolean);
+      setNotice({ text: [t("maestroExported", { path }), ...warnings].join(" "), warn: warnings.length > 0 });
     } catch (e) {
       setNotice({ text: t("maestroExportError", { error: String(e) }), warn: true });
     }
   };
 
   const importFile = async () => {
+    if (!dir) return;
     try {
       const path = await openFileDialog({
         multiple: false,
@@ -302,23 +308,18 @@ function MaestroInner({
         filters: [{ name: "TYBA Maestro", extensions: ["toml"] }],
       });
       if (typeof path !== "string") return;
-      setImporting({ path, preview: await importPreview(path) });
+      setImporting({ path, dir, preview: await importPreview(path) });
     } catch (e) {
       setNotice({ text: t("maestroImportError", { error: String(e) }), warn: true });
     }
   };
 
+  // O Confirmar grava o grafo na pasta aberta: é nela que ele aparece.
   const imported = (graphId: string) => {
-    const target = importing?.preview.graph.dir ?? null;
     setImporting(null);
     setPreferId(graphId);
-    if (target && dirs.includes(target)) {
-      setDir(target);
-      setReload((n) => n + 1);
-      setNotice({ text: t("maestroImported"), warn: false });
-    } else {
-      setNotice({ text: t("maestroImportedElsewhere", { dir: target ?? "" }), warn: true });
-    }
+    setReload((n) => n + 1);
+    setNotice({ text: t("maestroImported"), warn: false });
   };
 
   const dropIntegration = (e: DragEvent) => {
@@ -684,6 +685,7 @@ function MaestroInner({
       {importing && (
         <ImportDialog
           path={importing.path}
+          targetDir={importing.dir}
           preview={importing.preview}
           onCancel={() => setImporting(null)}
           onImported={imported}

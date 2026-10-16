@@ -216,6 +216,8 @@ pub enum MaestroError {
     ScriptTooLarge(String),
     #[error("{0} contém caractere de controle")]
     ControlChars(String),
+    #[error("{0}: o arquivo de saída tem que ficar dentro da pasta (sem caminho absoluto nem ..)")]
+    FileOutsideDir(String),
 }
 
 /// Mesma regra de `snippet::validate`: `\n` e `\t` passam, o resto dos
@@ -232,6 +234,21 @@ fn check_text(what: impl FnOnce() -> String, text: &str) -> Result<(), MaestroEr
     Ok(())
 }
 
+/// O `file` de saída é lido de `dir.join(file)`: absoluto ou com `..` lê
+/// fora da pasta do workspace. Barra e contrabarra contam como separador nos
+/// dois sistemas, e `C:` também é raiz.
+fn check_file(what: impl FnOnce() -> String, file: Option<&str>) -> Result<(), MaestroError> {
+    let Some(file) = file else { return Ok(()) };
+    let bytes = file.as_bytes();
+    let rooted = file.starts_with(['/', '\\'])
+        || std::path::Path::new(file).is_absolute()
+        || (bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':');
+    if rooted || file.split(['/', '\\']).any(|part| part == "..") {
+        return Err(MaestroError::FileOutsideDir(what()));
+    }
+    check_text(what, file)
+}
+
 pub fn validate_integration(integration: &Integration) -> Result<(), MaestroError> {
     if integration.id.trim().is_empty() {
         return Err(MaestroError::EmptyIntegrationId);
@@ -245,6 +262,10 @@ pub fn validate_integration(integration: &Integration) -> Result<(), MaestroErro
     check_text(
         || format!("script da integração {}", integration.id),
         &integration.script,
+    )?;
+    check_file(
+        || format!("integração {}", integration.id),
+        integration.file.as_deref(),
     )
 }
 
@@ -307,7 +328,10 @@ pub fn validate_graph(graph: &Graph, integrations: &[Integration]) -> Result<(),
         let what = || format!("nó {}", node.id);
         match &node.kind {
             NodeKind::Agent { prompt, .. } => check_text(what, prompt)?,
-            NodeKind::Process { command, .. } => check_text(what, command)?,
+            NodeKind::Process { command, file, .. } => {
+                check_text(what, command)?;
+                check_file(|| format!("nó {}", node.id), file.as_deref())?;
+            }
             NodeKind::Note { markdown } => check_text(what, markdown)?,
             NodeKind::Integration { integration_id } => {
                 let integration = by_id.get(integration_id.as_str()).ok_or_else(|| {
@@ -669,6 +693,62 @@ mod tests {
             validate_integration(&i),
             Err(MaestroError::ScriptTooLarge("i-1".into()))
         );
+    }
+
+    #[test]
+    fn output_file_outside_dir_is_refused() {
+        let with_file = |file: &str| {
+            graph(
+                vec![node(
+                    "p",
+                    NodeKind::Process {
+                        command: "cargo test".into(),
+                        output: OutputKind::File,
+                        file: Some(file.into()),
+                    },
+                )],
+                vec![],
+            )
+        };
+        for ok in ["out/result.json", "relatorio.txt", "a/./b", "..x/arquivo"] {
+            assert_eq!(validate_graph(&with_file(ok), &[]), Ok(()), "{ok}");
+        }
+        for bad in [
+            "/etc/passwd",
+            "../segredo",
+            "out/../../segredo",
+            "..",
+            "\\servidor\\c",
+            "..\\segredo",
+            "C:\\Windows\\win.ini",
+            "c:arquivo",
+        ] {
+            assert_eq!(
+                validate_graph(&with_file(bad), &[]),
+                Err(MaestroError::FileOutsideDir("nó p".into())),
+                "{bad}"
+            );
+        }
+
+        let mut i = integration("i-1", Trigger::Manual);
+        i.file = Some("../../.ssh/id_ed25519".into());
+        assert_eq!(
+            validate_integration(&i),
+            Err(MaestroError::FileOutsideDir("integração i-1".into()))
+        );
+        let g = graph(
+            vec![node(
+                "n",
+                NodeKind::Integration {
+                    integration_id: "i-1".into(),
+                },
+            )],
+            vec![],
+        );
+        assert!(matches!(
+            validate_graph(&g, &[i]),
+            Err(MaestroError::FileOutsideDir(_))
+        ));
     }
 
     #[test]

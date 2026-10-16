@@ -8671,13 +8671,13 @@ fn maestro_runs_list(
 }
 
 /// Grava o `.tyba-maestro.toml` com o grafo e as integrações que ele usa.
-/// Devolve os nomes das variáveis zeradas por parecerem segredo.
+/// Devolve as variáveis zeradas e os campos com segredo literal, para avisar.
 #[tauri::command]
 fn maestro_export(
     state: State<'_, AppState>,
     graph_id: String,
     path: String,
-) -> Result<Vec<String>, String> {
+) -> Result<maestro::export::ExportReport, String> {
     let graph = state
         .store
         .get_maestro_graph(&graph_id)
@@ -8706,35 +8706,53 @@ fn maestro_import_preview(
         .get_maestro_graph(&imported.graph.id)
         .map_err(|e| e.to_string())?
         .is_some();
-    let mut replaces_integrations = Vec::new();
-    for integration in &imported.integrations {
-        if state
-            .store
-            .get_maestro_integration(&integration.id)
-            .map_err(|e| e.to_string())?
-            .is_some()
-        {
-            replaces_integrations.push(integration.id.clone());
-        }
-    }
+    // Mesma regra do Confirmar, numa cópia: a prévia mostra o arquivo como veio.
+    let renamed_integrations = maestro::export::resolve_integration_ids(
+        &mut imported.clone(),
+        |id| local_maestro_integration(&state, id),
+        String::new,
+    )?
+    .renamed;
     Ok(maestro::export::ImportPreview {
         imported,
         replaces_graph,
-        replaces_integrations,
+        renamed_integrations,
     })
+}
+
+fn local_maestro_integration(
+    state: &AppState,
+    id: &str,
+) -> Result<Option<maestro::Integration>, String> {
+    Ok(state
+        .store
+        .get_maestro_integration(id)
+        .map_err(|e| e.to_string())?
+        .map(|stored| stored.value))
 }
 
 /// Confirmar da importação: relê o arquivo e só grava se o hash for o mesmo
 /// que o dono viu na prévia. Grava consentido e com a origem (`imported_hash`).
+/// O grafo roda em `dir` (a pasta do workspace aberto), não na de quem
+/// exportou; integração local de mesmo id e outro conteúdo nunca é
+/// sobrescrita — a do arquivo entra com id novo.
 #[tauri::command]
 fn maestro_import_confirm(
     state: State<'_, AppState>,
     path: String,
     hash: String,
+    dir: String,
 ) -> Result<String, String> {
-    let imported = maestro::export::read_confirmed(std::path::Path::new(&path), &hash)
+    let mut imported = maestro::export::read_confirmed(std::path::Path::new(&path), &hash)
         .map_err(|e| e.to_string())?;
-    for integration in &imported.integrations {
+    maestro::export::place_in(&mut imported, &dir).map_err(|e| e.to_string())?;
+    let resolved = maestro::export::resolve_integration_ids(
+        &mut imported,
+        |id| local_maestro_integration(&state, id),
+        || uuid::Uuid::new_v4().to_string(),
+    )?;
+    maestro::validate_graph(&imported.graph, &imported.integrations).map_err(|e| e.to_string())?;
+    for integration in &resolved.to_save {
         state
             .store
             .save_maestro_integration(integration, true, Some(&imported.hash))

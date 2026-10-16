@@ -107,6 +107,20 @@ describe("tela de importação", () => {
     expect(items[4]).toMatchObject({ integration: null });
   });
 
+  test("processo mostra o arquivo de saída que o core vai ler", () => {
+    const withFile: Graph = {
+      ...graph,
+      nodes: [
+        newNode("p", "Relatório", { type: "process", command: "make", output: "file", file: "out/r.json" }, { x: 0, y: 0 }),
+      ],
+    };
+    expect(importItems({ graph: withFile, integrations: [] })[0]).toMatchObject({
+      type: "process",
+      file: "out/r.json",
+    });
+    expect(importItems({ graph, integrations: [lint] })[1]).toMatchObject({ file: null });
+  });
+
   test("integração do arquivo que nenhum nó usa também aparece (também é gravada)", () => {
     expect(unusedImportIntegrations({ graph, integrations: [lint, extra] })).toEqual([extra]);
   });
