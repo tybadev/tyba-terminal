@@ -22,6 +22,21 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/base.css";
 import { toastError } from "@/lib/toast";
+import {
+  SUBAGENT_HANDLE,
+  SUB_H,
+  SUB_COLS,
+  SUB_GAP,
+  SUB_ROUNDS_H,
+  SUB_W,
+  gridPosition,
+  groupRounds,
+  isSubagentNodeId,
+  roundsPosition,
+  subagentKey,
+  subagentNodeId,
+  subagentRoundsNodeId,
+} from "@/lib/maestroSubagents";
 
 import {
   DropdownMenu,
@@ -47,15 +62,40 @@ import { IntegrationNode } from "./nodes/IntegrationNode";
 import { EDGE_COLOR, useMaestro, type MaestroFlowNode } from "./nodes/NodeFrame";
 import { NoteNode } from "./nodes/NoteNode";
 import { ProcessNode } from "./nodes/ProcessNode";
+import {
+  SubagentNode,
+  SubagentRoundsNode,
+  type SubagentFlowNode,
+  type SubagentRoundsFlowNode,
+} from "./nodes/SubagentNode";
 
 export type MaestroFlowEdge = Edge<FlowEdgeData>;
+
+/** O que o canvas desenha: os nós do grafo e os filhos efêmeros dos subagentes. */
+type CanvasNode = MaestroFlowNode | SubagentFlowNode | SubagentRoundsFlowNode;
 
 const nodeTypes = {
   agent: AgentNode,
   process: ProcessNode,
   note: NoteNode,
   integration: IntegrationNode,
+  subagent: SubagentNode,
+  subagentRounds: SubagentRoundsNode,
 };
+
+const SUB_EDGE_STYLE = {
+  stroke: "var(--tyba-violet)",
+  strokeWidth: 1.4,
+  strokeDasharray: "4 4",
+};
+
+const EPHEMERAL = {
+  draggable: false,
+  selectable: false,
+  connectable: false,
+  deletable: false,
+  focusable: false,
+} as const;
 
 /** Ligação com a etiqueta do tipo no meio (quadro: a "pílula"). */
 function MaestroEdgeView({
@@ -158,13 +198,85 @@ export function MaestroCanvas({
   const { screenToFlowPosition } = useReactFlow();
   const wrapper = useRef<HTMLDivElement>(null);
   const byId = useMemo(() => new Map(integrations.map((i) => [i.id, i])), [integrations]);
+  const { subagents } = useMaestro();
+
+  // Filhos efêmeros: montados a cada render a partir do nó do agente, fora do
+  // state `nodes`/`edges` — por isso nunca chegam ao modelo salvo.
+  const ephemeral = useMemo(() => {
+    const ns: (SubagentFlowNode | SubagentRoundsFlowNode)[] = [];
+    const es: Edge[] = [];
+    for (const parent of nodes) {
+      const rounds = groupRounds(subagents.get(parent.id) ?? []);
+      if (!rounds) continue;
+      const box = {
+        position: parent.position,
+        width: parent.width ?? parent.data.node.size.w,
+        height: parent.height ?? parent.data.node.size.h,
+      };
+      rounds.current.forEach((run, i) => {
+        const id = subagentNodeId(parent.id, subagentKey(run));
+        ns.push({
+          id,
+          type: "subagent",
+          position: gridPosition(box, i),
+          width: SUB_W,
+          height: SUB_H,
+          // Com `measured`, o xyflow guarda as portas já medidas quando o nó
+          // é recriado; sem ele, a aresta sumiria (as mudanças de medida dos
+          // efêmeros não voltam para o state).
+          measured: { width: SUB_W, height: SUB_H },
+          data: { run },
+          ...EPHEMERAL,
+        });
+        es.push({
+          id: `${id}:edge`,
+          source: parent.id,
+          sourceHandle: SUBAGENT_HANDLE,
+          target: id,
+          style: SUB_EDGE_STYLE,
+          ...EPHEMERAL,
+        });
+      });
+      if (rounds.previous > 0) {
+        ns.push({
+          id: subagentRoundsNodeId(parent.id),
+          type: "subagentRounds",
+          position: roundsPosition(box, rounds.current.length),
+          width: SUB_COLS * SUB_W + (SUB_COLS - 1) * SUB_GAP,
+          height: SUB_ROUNDS_H,
+          measured: { width: SUB_COLS * SUB_W + (SUB_COLS - 1) * SUB_GAP, height: SUB_ROUNDS_H },
+          data: { count: rounds.previous },
+          ...EPHEMERAL,
+        });
+      }
+    }
+    return { nodes: ns, edges: es };
+  }, [nodes, subagents]);
+  const shownNodes = useMemo<CanvasNode[]>(
+    () => (ephemeral.nodes.length ? [...nodes, ...ephemeral.nodes] : nodes),
+    [nodes, ephemeral.nodes],
+  );
+  const shownEdges = useMemo<Edge[]>(
+    () => (ephemeral.edges.length ? [...edges, ...ephemeral.edges] : edges),
+    [edges, ephemeral.edges],
+  );
 
   const onNodesChange = useCallback(
-    (changes: NodeChange<MaestroFlowNode>[]) => setNodes((ns) => applyNodeChanges(changes, ns)),
+    (changes: NodeChange<CanvasNode>[]) => {
+      const mine = changes.filter(
+        (c) => !("id" in c) || !isSubagentNodeId(c.id),
+      ) as NodeChange<MaestroFlowNode>[];
+      if (mine.length) setNodes((ns) => applyNodeChanges(mine, ns));
+    },
     [setNodes],
   );
   const onEdgesChange = useCallback(
-    (changes: EdgeChange<MaestroFlowEdge>[]) => setEdges((es) => applyEdgeChanges(changes, es)),
+    (changes: EdgeChange<Edge>[]) => {
+      const mine = changes.filter(
+        (c) => !("id" in c) || !isSubagentNodeId(c.id),
+      ) as EdgeChange<MaestroFlowEdge>[];
+      if (mine.length) setEdges((es) => applyEdgeChanges(mine, es));
+    },
     [setEdges],
   );
 
@@ -179,7 +291,7 @@ export function MaestroCanvas({
   );
 
   const isValidConnection = useCallback(
-    (c: Connection | MaestroFlowEdge) => {
+    (c: Connection | Edge) => {
       const kind = kindOfOutHandle(c.sourceHandle);
       if (!kind || c.targetHandle !== NEW_IN_HANDLE) return false;
       return connectionProblem(model.nodes, model.edges, byId, c.source, c.target, kind) === null;
@@ -267,9 +379,9 @@ export function MaestroCanvas({
 
   return (
     <div ref={wrapper} className="relative min-h-0 flex-1 bg-tyba-bg">
-      <ReactFlow<MaestroFlowNode, MaestroFlowEdge>
-        nodes={nodes}
-        edges={edges}
+      <ReactFlow<CanvasNode, Edge>
+        nodes={shownNodes}
+        edges={shownEdges}
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
         onNodesChange={onNodesChange}

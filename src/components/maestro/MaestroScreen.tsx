@@ -72,6 +72,16 @@ import { IntegrationsPanel } from "./IntegrationsPanel";
 import { MaestroCanvas, type MaestroFlowEdge } from "./MaestroCanvas";
 import { RunTimeline } from "./RunTimeline";
 import { MaestroContext, STATUS_TONE, type MaestroFlowNode } from "./nodes/NodeFrame";
+import { nodeSession } from "./nodes/NodeTerminal";
+import { SubagentMark, subagentTone, useSubagentTime } from "./nodes/SubagentNode";
+import { useNodeSubagents } from "./useNodeSubagents";
+import { SubagentTranscript } from "@/components/SubagentViewer";
+import type { SubagentRun } from "@/lib/ipc";
+import {
+  subagentKey,
+  subagentNodeId,
+  subagentState,
+} from "@/lib/maestroSubagents";
 
 const SAVE_DEBOUNCE_MS = 500;
 
@@ -219,15 +229,43 @@ function MaestroInner({
   const run = selectedRun(runView);
   const latest = runView.runs[0] ?? null;
   const running = runView.runs.find((r) => r.status === "running") ?? null;
+  const live = run !== null && run.id === latest?.id;
 
-  // Relógio dos tempos de nó e de execução, só enquanto algo roda.
+  // Subagentes de cada nó de agente com terminal vivo no run à vista.
+  const agentSessions = useMemo(() => {
+    const out = new Map<string, string>();
+    if (!run) return out;
+    for (const n of nodes) {
+      const kind = n.data.node.kind;
+      if (kind.type !== "agent") continue;
+      const session = nodeSession(kind, run.nodes[n.id], live);
+      if (session) out.set(n.id, session);
+    }
+    return out;
+  }, [nodes, run, live]);
+  const subagents = useNodeSubagents(agentSessions);
+  const [openSub, setOpenSub] = useState<string | null>(null);
+  const opened = useMemo(() => {
+    if (!openSub) return null;
+    for (const [nodeId, runs] of subagents) {
+      const found = runs.find((r) => subagentNodeId(nodeId, subagentKey(r)) === openSub);
+      if (found) return { run: found, sessionId: agentSessions.get(nodeId)! };
+    }
+    return null;
+  }, [openSub, subagents, agentSessions]);
+  const subagentsActive = [...subagents.values()].some((runs) =>
+    runs.some((r) => subagentState(r) === "running"),
+  );
+
+  // Relógio dos tempos de nó, de execução e de subagente, só enquanto algo roda.
   const runningId = running?.id ?? null;
+  const ticking = runningId !== null || subagentsActive;
   useEffect(() => {
-    if (!runningId) return;
+    if (!ticking) return;
     setNow(Date.now());
     const timer = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(timer);
-  }, [runningId]);
+  }, [ticking, runningId]);
 
   /** O core lê o grafo do banco: o que ainda está no debounce vai antes. */
   const flush = async (always = false) => {
@@ -380,7 +418,6 @@ function MaestroInner({
     }),
     [nodes, edges],
   );
-  const live = run !== null && run.id === latest?.id;
   const ctx = useMemo(
     () => ({
       integrations: new Map(integrations.map((i) => [i.id, i])),
@@ -391,8 +428,23 @@ function MaestroInner({
       now,
       actualSize,
       runNode: releaseNode,
+      subagents,
+      openSubagent: opened ? openSub : null,
+      setOpenSubagent: setOpenSub,
     }),
-    [integrations, updateNode, graph, run, live, now, actualSize, releaseNode],
+    [
+      integrations,
+      updateNode,
+      graph,
+      run,
+      live,
+      now,
+      actualSize,
+      releaseNode,
+      subagents,
+      opened,
+      openSub,
+    ],
   );
 
   if (!dir) {
@@ -637,6 +689,13 @@ function MaestroInner({
               {error}
             </div>
           )}
+          {opened && (
+            <SubagentPanel
+              sessionId={opened.sessionId}
+              run={opened.run}
+              onClose={() => setOpenSub(null)}
+            />
+          )}
           {showVars && meta && (
             <VariablesPanel
               variables={meta.variables}
@@ -702,6 +761,53 @@ function MaestroInner({
         />
       )}
     </MaestroContext.Provider>
+  );
+}
+
+/**
+ * O que um subagente fez (quadro MaestroSubagentes): estado, pedido, tempo e
+ * o transcript, que segue ao vivo enquanto ele roda.
+ */
+function SubagentPanel({
+  sessionId,
+  run,
+  onClose,
+}: {
+  sessionId: string;
+  run: SubagentRun;
+  onClose: () => void;
+}) {
+  const { t } = useTranslation();
+  const state = subagentState(run);
+  const time = useSubagentTime(run);
+  return (
+    <aside
+      aria-label={run.description || t("maestroSubNoDescription")}
+      className="flex w-[400px] shrink-0 flex-col border-l border-tyba-border bg-tyba-surface"
+    >
+      <div className="flex shrink-0 items-center gap-2.5 border-b border-tyba-border px-4 py-3">
+        <span className={subagentTone(state)} title={t(`maestroSub_${state}`)}>
+          <SubagentMark state={state} size={13} />
+        </span>
+        <span className="min-w-0 flex-1 truncate text-[13px] text-tyba-text">
+          {run.description || t("maestroSubNoDescription")}
+        </span>
+        <span className="shrink-0 text-[12px] text-tyba-text-faint">{time}</span>
+        <button
+          type="button"
+          aria-label={t("close")}
+          onClick={onClose}
+          className="shrink-0 rounded-[4px] p-1 text-tyba-text-faint hover:text-tyba-text"
+        >
+          <X size={13} />
+        </button>
+      </div>
+      <SubagentTranscript
+        sessionId={sessionId}
+        run={run}
+        scrollClassName="min-h-0 flex-1 overflow-y-auto px-4 py-3.5"
+      />
+    </aside>
   );
 }
 

@@ -30,6 +30,7 @@ import {
   type NodeStatus,
   type Run,
 } from "@/lib/maestro";
+import type { SubagentRun } from "@/lib/ipc";
 
 export type MaestroFlowNode = Node<FlowNodeData>;
 
@@ -48,6 +49,11 @@ export interface MaestroCtx {
   /** Zoom em 100%: terminal real no nó. Fora disso, prévia em texto. */
   actualSize: boolean;
   runNode: (nodeId: string) => void;
+  /** Subagentes do claude de cada nó com sessão viva (por id de nó). */
+  subagents: ReadonlyMap<string, SubagentRun[]>;
+  /** Id do nó-filho aberto no painel, ou `null`. */
+  openSubagent: string | null;
+  setOpenSubagent: (nodeId: string | null) => void;
 }
 
 export const MaestroContext = createContext<MaestroCtx>({
@@ -59,6 +65,9 @@ export const MaestroContext = createContext<MaestroCtx>({
   now: 0,
   actualSize: true,
   runNode: () => {},
+  subagents: new Map(),
+  openSubagent: null,
+  setOpenSubagent: () => {},
 });
 
 export const useMaestro = () => useContext(MaestroContext);
@@ -126,6 +135,7 @@ export function NodeFrame({
   markClass,
   label,
   extra,
+  status,
   children,
 }: {
   id: string;
@@ -136,6 +146,8 @@ export function NodeFrame({
   label: string;
   /** Ação do nó no cabeçalho (o ▶ da integração manual). */
   extra?: ReactNode;
+  /** Toma o lugar do estado do nó no cabeçalho (subagentes trabalhando). */
+  status?: ReactNode;
   children: ReactNode;
 }) {
   const { t } = useTranslation();
@@ -202,7 +214,7 @@ export function NodeFrame({
         <span className="min-w-0 shrink truncate text-[11.5px] text-tyba-text-faint">
           {label}
         </span>
-        {nodeRun && <NodeStatusBadge nodeId={id} nodeRun={nodeRun} />}
+        {status ?? (nodeRun && <NodeStatusBadge nodeId={id} nodeRun={nodeRun} />)}
         {extra}
         <button
           type="button"
