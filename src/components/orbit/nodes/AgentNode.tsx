@@ -42,9 +42,9 @@ export function AgentNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
   const set = (patch: Partial<AgentKind>) =>
     updateNode(id, (n) => ({ ...n, kind: { ...(n.kind as AgentKind), ...patch } }));
   const claude = kind.runner === "claude";
-  // Agente criado pelo orquestrador nunca orquestra: sem toggle e sem selo.
+  // Todo agente do grafo cria nós (porta das tracejadas); o criado por
+  // outro agente não (sem cascata).
   const created = createdBy.has(id);
-  const orchestrates = !created && kind.orchestrate === true;
   const hidden = { opacity: 0, width: 1, height: 1, minWidth: 0, minHeight: 0, border: 0 };
   const dir = nodeDir(kind, graphDir);
   const subTally =
@@ -78,17 +78,9 @@ export function AgentNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
         dir: dir ? shortDir(dir) : "",
         task: firstLine(kind.prompt),
         telemetry: usage,
-        orchestrate: created ? null : orchestrates,
       }).map((row) => ({
         label: t(row.key),
-        value:
-          row.value === null ? (
-            nodeRun && <Elapsed nodeRun={nodeRun} />
-          ) : row.key === "orbitOrchestrate" ? (
-            t(row.value)
-          ) : (
-            row.value
-          ),
+        value: row.value === null ? nodeRun && <Elapsed nodeRun={nodeRun} /> : row.value,
       }))}
       status={
         rounds && tally && tally.running > 0 ? (
@@ -108,7 +100,7 @@ export function AgentNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
         style={hidden}
       />
       {/* Saída invisível das ligações tracejadas até os nós que ele criou. */}
-      {orchestrates && (
+      {!created && (
         <Handle
           type="source"
           id={ORCHESTRATOR_HANDLE}
@@ -145,21 +137,6 @@ export function AgentNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
             onChange={(e) => set({ role: e.target.value })}
             className={`${fieldClass} min-w-0 flex-1`}
           />
-          {!created && (
-            <button
-              type="button"
-              aria-pressed={orchestrates}
-              title={t("orbitOrchestrateHint")}
-              onClick={() => set({ orchestrate: !orchestrates })}
-              className={`nodrag shrink-0 rounded-[4px] border px-1.5 text-[11px] leading-[20px] ${
-                orchestrates
-                  ? "border-tyba-violet/50 bg-tyba-violet-tint text-tyba-violet"
-                  : "border-tyba-border text-tyba-text-faint hover:text-tyba-text"
-              }`}
-            >
-              {t("orbitOrchestrate")}
-            </button>
-          )}
           <NodeDir id={id} kind={kind} />
         </div>
       )}

@@ -452,7 +452,6 @@ mod tests {
                         role: "revisor".into(),
                         prompt: "revise o diff contra {{alvo}}".into(),
                         dir: "/tmp/repo".into(),
-                        orchestrate: true,
                     },
                 ),
                 node(
@@ -511,32 +510,23 @@ mod tests {
         assert_eq!(imported.hash, sha256_hex(text.as_bytes()));
     }
 
-    /// O orquestrador viaja no arquivo e volta na prévia: quem importa vê que
-    /// o nó vai ganhar as ferramentas do Orbit.
+    /// O toggle "orquestrar" saiu (todo agente tem as ferramentas): o
+    /// arquivo novo não leva o campo, e o arquivo antigo com
+    /// `orchestrate = true` ainda importa (o campo é ignorado).
     #[test]
-    fn orchestrate_flag_travels_in_the_file() {
+    fn old_orchestrate_flag_is_ignored_on_import() {
         let (graph, integrations) = sample();
         let (text, _) = export_toml(&graph, &integrations).unwrap();
-        assert!(text.contains("orchestrate = true"), "{text}");
-        let imported = parse_import(text.as_bytes()).unwrap();
-        assert!(matches!(
-            imported.graph.nodes[0].kind,
-            NodeKind::Agent {
-                orchestrate: true,
-                ..
-            }
-        ));
-        // Arquivo de antes do orquestrador: agente que não orquestra.
-        let old = text.replace("orchestrate = true\n", "");
-        assert!(!old.contains("orchestrate"));
+        assert!(!text.contains("orchestrate"), "{text}");
+        let line = text
+            .lines()
+            .find(|l| l.starts_with("prompt = "))
+            .unwrap()
+            .to_string();
+        let old = text.replacen(&line, &format!("{line}\norchestrate = true"), 1);
+        assert!(old.contains("orchestrate = true"), "{old}");
         let imported = parse_import(old.as_bytes()).unwrap();
-        assert!(matches!(
-            imported.graph.nodes[0].kind,
-            NodeKind::Agent {
-                orchestrate: false,
-                ..
-            }
-        ));
+        assert_eq!(imported.graph, graph);
     }
 
     #[test]

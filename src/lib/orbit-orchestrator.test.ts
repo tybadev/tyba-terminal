@@ -50,7 +50,7 @@ describe("orquestrador: nós criados", () => {
     expect(ephemeralCreated({ ...run("running", []), created: undefined })).toEqual([]);
   });
 
-  test("a prévia de importação mostra que o nó orquestra", () => {
+  test("a prévia de importação mostra o agente sem o antigo orquestrar", () => {
     const graph: Graph = {
       id: "g",
       name: "subir",
@@ -58,12 +58,6 @@ describe("orquestrador: nós criados", () => {
       variables: {},
       edges: [],
       nodes: [
-        newNode(
-          "o",
-          "Orquestrador",
-          { type: "agent", runner: "claude", role: "", prompt: "suba", dir: "", orchestrate: true },
-          { x: 0, y: 0 },
-        ),
         newNode("a", "Claude", { type: "agent", runner: "claude", role: "", prompt: "x", dir: "" }, {
           x: 0,
           y: 0,
@@ -71,9 +65,7 @@ describe("orquestrador: nós criados", () => {
       ],
     };
     const items = importItems({ graph, integrations: [] });
-    expect(items[0]).toMatchObject({ type: "agent", orchestrate: true });
-    // Grafo de antes do orquestrador: campo ausente = não orquestra.
-    expect(items[1]).toMatchObject({ type: "agent", orchestrate: false });
+    expect(items[0]).toEqual({ type: "agent", node: graph.nodes[0], runner: "claude", role: "", prompt: "x" });
   });
 });
 
@@ -81,7 +73,7 @@ describe("orquestrador: marca e ligação dos criados no canvas", () => {
   const orchestrator = newNode(
     "o",
     "Claude",
-    { type: "agent", runner: "claude", role: "", prompt: "", dir: "/srv", orchestrate: true },
+    { type: "agent", runner: "claude", role: "", prompt: "", dir: "/srv" },
     { x: 0, y: 0 },
   );
   const agent = (id: string, patch: Partial<Created> = {}) =>
@@ -114,8 +106,7 @@ describe("orquestrador: marca e ligação dos criados no canvas", () => {
   test("mantidos (já no grafo) seguem marcados e ligados com o run à vista, mesmo fechado", () => {
     const list = ["orq-1", "orq-2", "orq-3"].map((id) => agent(id, { kept: true }));
     const r = run("done", list);
-    const graph = [orchestrator, ...list.map((c) => ({ ...c.node, kind: { ...c.node.kind, orchestrate: false } }))];
-    const flow = createdFlow(r, graph as Graph["nodes"]);
+    const flow = createdFlow(r, [orchestrator, ...list.map((c) => c.node)]);
     expect(flow.nodes).toEqual([]);
     expect(flow.byEdges.map((e) => [e.source, e.target])).toEqual([
       ["o", "orq-1"],
@@ -125,9 +116,9 @@ describe("orquestrador: marca e ligação dos criados no canvas", () => {
     expect(createdByOf(r).has("orq-2")).toBe(true);
   });
 
-  test("sem tracejada quando o criador não orquestra mais ou o criado não está desenhado", () => {
-    const off = { ...orchestrator, kind: { ...orchestrator.kind, orchestrate: false } } as Graph["nodes"][number];
-    expect(createdFlow(run("running", [agent("orq-1")]), [off]).byEdges).toEqual([]);
+  test("sem tracejada quando o criador não está no grafo ou o criado não está desenhado", () => {
+    // O criador saiu do grafo (o dono o apagou): não há de onde sair.
+    expect(createdFlow(run("running", [agent("orq-1")]), []).byEdges).toEqual([]);
     // Descartado (não mantido) com o run fechado: não existe mais no canvas.
     expect(createdFlow(run("stopped", [agent("orq-1")]), [orchestrator]).byEdges).toEqual([]);
   });

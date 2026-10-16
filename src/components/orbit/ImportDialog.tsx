@@ -129,14 +129,6 @@ function ItemView({ item, dir }: { item: ImportItem; dir: ReactNode }) {
       return (
         <div className="flex flex-col gap-1.5">
           {head(item.runner === "claude" ? "Claude" : "Codex", revealHidden(item.role))}
-          {item.orchestrate && (
-            <span
-              title={t("orbitOrchestrateHint")}
-              className="self-start rounded-[4px] border border-tyba-violet/50 px-1.5 text-[11px] leading-[18px] text-tyba-violet"
-            >
-              {t("orbitOrchestrates")}
-            </span>
-          )}
           {dir}
           <Code>{item.prompt}</Code>
         </div>

@@ -43,8 +43,6 @@ export type NodeKind =
       role: string;
       prompt: string;
       dir: string;
-      /** Orquestrador: recebe as ferramentas do Orbit e cria nós no run. Ausente = não. */
-      orchestrate?: boolean;
     }
   | { type: "process"; command: string; output: OutputKind; file: string | null; dir: string }
   | { type: "note"; markdown: string }
@@ -644,7 +642,7 @@ export const ephemeralCreated = (run: Run | null): Created[] =>
  * ligação tracejada seguem enquanto esse run está à vista. Antes a origem
  * saía só de {@link ephemeralCreated}, e "Manter no grafo" (ou o fim do run)
  * a apagava na hora — no teste do dono os 3 agentes mantidos viraram nós
- * comuns, sem marca, sem ligação e com o toggle "orquestrar".
+ * comuns, sem marca e sem ligação.
  */
 export function createdByOf(run: Run | null): Map<string, string> {
   return new Map((run?.created ?? []).map((c) => [c.node.id, c.createdBy]));
@@ -661,18 +659,15 @@ export interface CreatedFlow {
 }
 
 /**
- * Nós e ligações dos criados. A tracejada só sai de um orquestrador do grafo
- * (é ele que tem a porta {@link ORCHESTRATOR_HANDLE}) e só chega num nó que
+ * Nós e ligações dos criados. A tracejada só sai de um agente do grafo (é
+ * ele que tem a porta {@link ORCHESTRATOR_HANDLE}) e só chega num nó que
  * está desenhado — efêmero ou já mantido no grafo.
  */
 export function createdFlow(run: Run | null, graphNodes: readonly OrbitNode[]): CreatedFlow {
   const ephemeral = ephemeralCreated(run);
   const inGraph = new Map(graphNodes.map((n) => [n.id, n]));
   const drawn = new Set([...inGraph.keys(), ...ephemeral.map((c) => c.node.id)]);
-  const orchestrates = (id: string) => {
-    const k = inGraph.get(id)?.kind;
-    return k?.type === "agent" && k.orchestrate === true;
-  };
+  const orchestrates = (id: string) => inGraph.get(id)?.kind.type === "agent";
   const byEdges: CreatedFlow["byEdges"] = [];
   for (const c of run?.created ?? []) {
     if (!drawn.has(c.node.id) || !orchestrates(c.createdBy)) continue;
@@ -1257,8 +1252,6 @@ export type ImportItem =
       runner: Runner;
       role: string;
       prompt: string;
-      /** Vai ganhar as ferramentas do Orbit (cria nós no canvas). */
-      orchestrate: boolean;
     }
   | {
       type: "process";
@@ -1289,7 +1282,6 @@ export function importItems(preview: Pick<ImportPreview, "graph" | "integrations
           runner: k.runner,
           role: k.role,
           prompt: k.prompt,
-          orchestrate: k.orchestrate === true,
         };
       case "process":
         return { type: "process", node, command: k.command, output: k.output, file: k.file };

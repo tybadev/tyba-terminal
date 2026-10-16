@@ -674,7 +674,7 @@ export function NodeFrame({
   const creator = createdBy.get(id);
   const created = creator !== undefined;
   const locked = createdIds.has(id);
-  const orchestrates = !created && node.kind.type === "agent" && node.kind.orchestrate === true;
+  const orchestrates = !created && node.kind.type === "agent";
   const session = nodeSession(node.kind, run, id, live);
   const request = approvals.get(id) ?? null;
   const ring = ringState(nodeRun, request !== null);
@@ -705,7 +705,7 @@ export function NodeFrame({
     return "kind" in pick ? pick.kind : null;
   }, [from, id, takesInput, createdIds, graph, integrations]);
 
-  // Porta nova (o nó passou a produzir/aceitar, o toggle do orquestrador)
+  // Porta nova (o nó passou a produzir/aceitar, o agente deixou de ser criado)
   // só existe para o xyflow depois de medida de novo.
   const handleKey = `${outputs[0] ?? ""}|${takesInput}|${orchestrates}`;
   useEffect(() => {

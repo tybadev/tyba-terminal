@@ -82,11 +82,9 @@ pub enum NodeKind {
         /// Pasta onde o agente roda. Vazio: `Graph::dir`.
         #[serde(default)]
         dir: String,
-        /// Orquestrador: a sessão recebe as ferramentas do Orbit (servidor
-        /// MCP `tyba _orbit-mcp`) e cria nós no run em vez de rodar tudo
-        /// dentro dela. Ver [`orchestrator`].
-        #[serde(default)]
-        orchestrate: bool,
+        // Todo agente recebe as ferramentas do Orbit (ver [`orchestrator`]).
+        // O antigo `orchestrate` de grafo salvo e de `.tyba-orbit.toml` é
+        // ignorado na leitura (serde não recusa campo desconhecido aqui).
     },
     Process {
         command: String,
@@ -603,7 +601,6 @@ mod tests {
                 role: "revisor".into(),
                 prompt: "revise o diff".into(),
                 dir: String::new(),
-                orchestrate: false,
             },
         )
     }
@@ -820,7 +817,6 @@ mod tests {
             role: String::new(),
             prompt: "oi\u{1b}[2J".into(),
             dir: String::new(),
-            orchestrate: false,
         };
         assert!(matches!(
             validate_graph(&graph(vec![a], vec![]), &[]),
@@ -982,6 +978,25 @@ mod tests {
         assert_eq!(g.nodes[0].kind.dir(), Some(""));
         assert_eq!(g.node_dir(&g.nodes[0]), "/tmp/repo");
         assert_eq!(validate_graph(&g, &[]), Ok(()));
+    }
+
+    /// Grafo salvo com o antigo toggle "orquestrar" ainda carrega: o campo
+    /// é ignorado (todo agente tem as ferramentas) e não volta no salvar.
+    #[test]
+    fn graph_saved_with_orchestrate_still_loads() {
+        let json = serde_json::json!({
+            "id": "g", "name": "velho", "dir": "/tmp/repo",
+            "nodes": [{
+                "id": "a", "title": "a",
+                "kind": {"type": "agent", "runner": "claude", "prompt": "oi", "orchestrate": true},
+                "position": {"x": 0, "y": 0}, "size": {"w": 1, "h": 1}
+            }],
+            "edges": []
+        });
+        let g: Graph = serde_json::from_value(json).unwrap();
+        assert!(matches!(g.nodes[0].kind, NodeKind::Agent { .. }));
+        let back = serde_json::to_string(&g).unwrap();
+        assert!(!back.contains("orchestrate"), "{back}");
     }
 
     fn browser(id: &str, url: &str) -> Node {

@@ -152,7 +152,7 @@ struct HandlerCtx {
     observe_only: bool,
     /// Agente de nó do Orbit: onde o fim do turno fica para ele ler.
     turn_tail: Option<SharedTurnTail>,
-    /// Nó do Orbit com orquestrar ligado: quem atende o `OrbitTool` que o
+    /// Nó de agente do Orbit: quem atende o `OrbitTool` que o
     /// `tyba _orbit-mcp` da sessão manda. `None` em toda outra sessão.
     orbit_tools: Option<crate::orbit::orchestrator::ToolHandler>,
 }
@@ -925,11 +925,11 @@ fn record_inferred_notification(
 
 /// Ferramenta do Orbit pedida pelo `tyba _orbit-mcp` da sessão. Não é
 /// hook do agente: não passa pelo registro de eventos nem pelo gate. Só a
-/// sessão de nó com orquestrar ligado tem quem atenda.
+/// sessão de nó de agente do Orbit tem quem atenda.
 fn on_orbit_tool(ctx: &HandlerCtx, event: &HookEvent) -> HookAction {
     let Some(tools) = &ctx.orbit_tools else {
         return HookAction::Deny {
-            reason: "as ferramentas do Orbit só existem na sessão de um nó com orquestrar ligado"
+            reason: "as ferramentas do Orbit só existem na sessão de um nó de agente do Orbit"
                 .into(),
         };
     };
@@ -1650,7 +1650,7 @@ pub struct FreeAgentSpec {
     pub extra_env: Vec<(String, String)>,
     pub cols: u16,
     pub rows: u16,
-    /// Nó com orquestrar ligado: a sessão ganha o servidor MCP do Orbit
+    /// Nó de agente do Orbit: a sessão ganha o servidor MCP do Orbit
     /// (`tyba _orbit-mcp`) e o socket dela atende as ferramentas.
     pub orbit_tools: Option<crate::orbit::orchestrator::ToolHandler>,
 }
@@ -1823,13 +1823,15 @@ pub fn spawn_free_agent(
         settings_path: runtime.join(HOOK_SETTINGS_FILE),
         hook_command: hook_cmd,
     };
-    // Orquestrador: o servidor MCP é este binário, falando pelo socket desta
-    // sessão. O `--mcp-config` do Claude vai num arquivo 0600 no runtime dir.
+    // Agente do Orbit: o servidor MCP é este binário, falando pelo socket
+    // desta sessão. O `--mcp-config` do Claude vai num arquivo 0600 no
+    // runtime dir.
     let mcp_args = match &spec.orbit_tools {
-        Some(_) => {
+        Some(tools) => {
             use crate::orbit::mcp;
             if matches!(runner.kind(), AgentRunnerKind::ClaudeCode) {
-                let body = serde_json::to_string_pretty(&mcp::claude_config(&exe, &socket_path))
+                let config = mcp::claude_config(&exe, &socket_path, tools.can_create);
+                let body = serde_json::to_string_pretty(&config)
                     .map_err(|e| format!("config do MCP do Orbit: {e}"))?;
                 crate::session::write_private(&runtime, mcp::CLAUDE_CONFIG_FILE, &body)
                     .map_err(|e| format!("escrita da config do MCP do Orbit: {e}"))?;
@@ -1839,6 +1841,7 @@ pub fn spawn_free_agent(
                 &exe,
                 &socket_path,
                 &runtime.join(mcp::CLAUDE_CONFIG_FILE),
+                tools.can_create,
             )
         }
         None => Vec::new(),
@@ -2732,11 +2735,11 @@ mod build_hosted_command_tests {
         );
     }
 
-    /// Orquestrador: o servidor MCP do Orbit entra antes do prompt, e o
+    /// Agente do Orbit: o servidor MCP do Orbit entra antes do prompt, e o
     /// `--mcp-config=<arquivo>` numa peça só (separado, a opção variádica do
     /// Claude comeria o prompt).
     #[test]
-    fn orchestrator_gets_the_orbit_mcp_before_the_prompt() {
+    fn orbit_agent_gets_the_orbit_mcp_before_the_prompt() {
         let cwd = tempfile::tempdir().unwrap();
         let runtime = tempfile::tempdir().unwrap();
         let exe = std::env::current_exe().unwrap();
@@ -2746,7 +2749,7 @@ mod build_hosted_command_tests {
             &ClaudeCodeRunner as &dyn AgentRunner,
             &CodexRunner as &dyn AgentRunner,
         ] {
-            let mcp = crate::orbit::mcp::agent_args(&runner.kind(), &exe, &socket, &config);
+            let mcp = crate::orbit::mcp::agent_args(&runner.kind(), &exe, &socket, &config, true);
             let env = HashMap::from([("PATH".to_string(), "/usr/bin".to_string())]);
             let built = build_free_command(
                 runner,
@@ -2765,7 +2768,7 @@ mod build_hosted_command_tests {
             let before_prompt = &argv[..argv.len() - 1];
             assert!(before_prompt.ends_with(&mcp), "{argv:?}");
         }
-        // Sem orquestrar, nada de MCP do Orbit.
+        // Fora do Orbit, nada de MCP do Orbit.
         let plain = argv(&free(&ClaudeCodeRunner, cwd.path(), runtime.path(), "x").cmd);
         assert!(!plain.iter().any(|a| a.contains("mcp")), "{plain:?}");
     }

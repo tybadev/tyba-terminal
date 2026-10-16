@@ -724,7 +724,7 @@ pub struct AgentLaunch {
     pub prompt: String,
     pub in_dir: PathBuf,
     pub out_dir: PathBuf,
-    /// Só no nó com orquestrar ligado: as ferramentas do Orbit que o
+    /// Todo nó de agente: as ferramentas do Orbit que o
     /// servidor MCP da sessão chama pelo socket de hooks.
     pub tools: Option<ToolHandler>,
 }
@@ -782,6 +782,8 @@ struct Start {
     /// A integração do nó, quando é de integração e ela existe.
     integration: Option<Integration>,
     graph_id: String,
+    /// Nó criado por outro agente neste run (`run.created`).
+    created: bool,
 }
 
 enum Launched {
@@ -1201,12 +1203,9 @@ impl<H: RunHost> Runs<H> {
                 Some(i) => self.launch_script(run_id, &start, &i.script, i.output),
                 None => Launched::Finished(Outcome::failed("integração não encontrada")),
             },
-            NodeKind::Agent {
-                runner,
-                prompt,
-                orchestrate,
-                ..
-            } => self.launch_agent(run_id, &start, *runner, prompt, *orchestrate),
+            NodeKind::Agent { runner, prompt, .. } => {
+                self.launch_agent(run_id, &start, *runner, prompt)
+            }
             NodeKind::Process {
                 command, output, ..
             } => self.launch_script(run_id, &start, command, *output),
@@ -1329,15 +1328,13 @@ impl<H: RunHost> Runs<H> {
     }
 
     /// Entradas em `in/`, snapshot de diff na largada e o agente livre na
-    /// pasta do nó.
-    fn launch_agent(
-        &self,
-        run_id: &str,
-        start: &Start,
-        runner: Runner,
-        prompt: &str,
-        orchestrate: bool,
-    ) -> Launched {
+    /// pasta do nó, com as ferramentas do Orbit. O agente do grafo do dono
+    /// segura o nó (e o run) até a sessão sair, como o antigo orquestrador:
+    /// publica as saídas no fim do primeiro turno e segue podendo criar nós
+    /// e reescrever o plano. O criado por outro agente fecha no fim do turno
+    /// e não tem as `orbit_create_*` (sem cascata).
+    fn launch_agent(&self, run_id: &str, start: &Start, runner: Runner, prompt: &str) -> Launched {
+        let holds = !start.created;
         let written = match materialize(&start.in_dir, &start.inputs) {
             Ok(w) => w,
             Err(e) => {
@@ -1377,14 +1374,7 @@ impl<H: RunHost> Runs<H> {
             let (me, run, node) = (me.clone(), run.clone(), node.clone());
             Box::new(move |turn: AgentTurn| {
                 if let Some(runs) = me.upgrade() {
-                    runs.agent_turn_ended(
-                        &run,
-                        &node,
-                        &out_dir,
-                        snapshot.as_ref(),
-                        turn,
-                        orchestrate,
-                    );
+                    runs.agent_turn_ended(&run, &node, &out_dir, snapshot.as_ref(), turn, holds);
                 }
             })
         };
@@ -1392,10 +1382,10 @@ impl<H: RunHost> Runs<H> {
         // run) até ela; a de qualquer agente sai de `live_agents`.
         let on_exit: Box<dyn FnOnce() + Send> = Box::new(move || {
             if let Some(runs) = me.upgrade() {
-                runs.agent_exited(&run, &node, orchestrate);
+                runs.agent_exited(&run, &node, holds);
             }
         });
-        let tools = orchestrate.then(|| self.tool_handler(run_id, &start.node.id));
+        let tools = Some(self.tool_handler(run_id, &start.node.id, !start.created));
         let launch = AgentLaunch {
             title: start.node.title.clone(),
             cwd: start.node_dir.clone(),
@@ -1411,15 +1401,18 @@ impl<H: RunHost> Runs<H> {
         }
     }
 
-    /// As ferramentas do orquestrador `node_id` neste run. Fraco: a sessão
-    /// que sobrevive ao app não segura o motor.
-    fn tool_handler(&self, run_id: &str, node_id: &str) -> ToolHandler {
+    /// As ferramentas do agente `node_id` neste run. Fraco: a sessão que
+    /// sobrevive ao app não segura o motor.
+    fn tool_handler(&self, run_id: &str, node_id: &str, can_create: bool) -> ToolHandler {
         let me = self.me.clone();
         let (run, node) = (run_id.to_string(), node_id.to_string());
-        ToolHandler(Arc::new(move |tool, args| {
-            let runs = me.upgrade().ok_or("o TYBA está fechando")?;
-            runs.orchestrator_call(&run, &node, tool, args)
-        }))
+        ToolHandler {
+            call: Arc::new(move |tool, args| {
+                let runs = me.upgrade().ok_or("o TYBA está fechando")?;
+                runs.orchestrator_call(&run, &node, tool, args)
+            }),
+            can_create,
+        }
     }
 
     /// Uma ferramenta do Orbit pedida pela sessão do orquestrador
@@ -1431,8 +1424,21 @@ impl<H: RunHost> Runs<H> {
         tool: &str,
         args: &serde_json::Value,
     ) -> Result<serde_json::Value, String> {
+        // Sem cascata: o agente criado por outro não cria nós, anuncie o
+        // `tools/list` dele o que anunciar.
+        if orchestrator::is_create_tool(tool)
+            && self
+                .active
+                .lock()
+                .get(run_id)
+                .is_some_and(|a| is_created(a, orchestrator))
+        {
+            return Err(format!(
+                "{tool}: agente criado por outro agente não cria nós (sem cascata)"
+            ));
+        }
         let call = orchestrator::parse_call(tool, args)?;
-        eprintln!("[orbit] orquestrador {orchestrator}: {tool}");
+        eprintln!("[orbit] agente {orchestrator}: {tool}");
         match call {
             ToolCall::Create {
                 title,
@@ -1470,6 +1476,10 @@ impl<H: RunHost> Runs<H> {
         steps: Vec<PlanStep>,
     ) -> Result<String, String> {
         let markdown = orchestrator::plan_markdown(&steps);
+        if let Some(id) = self.write_created_plan(run_id, orchestrator, &markdown)? {
+            self.publish_current(run_id);
+            return Ok(id);
+        }
         let note_markdown = |n: &Node| match &n.kind {
             NodeKind::Note { markdown } => Some(markdown.clone()),
             _ => None,
@@ -1597,6 +1607,80 @@ impl<H: RunHost> Runs<H> {
         };
         self.publish_current(run_id);
         Ok(note_id)
+    }
+
+    /// O plano do agente criado por outro: ele não está no grafo salvo, então
+    /// a nota também não vai para lá — entra no run como nó criado por ele
+    /// (efêmera como o autor, com "Manter"), ligada por `plan`. As chamadas
+    /// seguintes só reescrevem o texto dela. `None`: quem pede é do grafo do
+    /// dono (segue o caminho do grafo salvo).
+    fn write_created_plan(
+        &self,
+        run_id: &str,
+        agent: &str,
+        markdown: &str,
+    ) -> Result<Option<String>, String> {
+        let mut active = self.active.lock();
+        let a = active.get_mut(run_id).ok_or(
+            "esta execução já terminou: ▶ Executar de novo para o agente escrever o plano",
+        )?;
+        if !is_created(a, agent) {
+            return Ok(None);
+        }
+        let kind = NodeKind::Note {
+            markdown: markdown.to_string(),
+        };
+        let own = a.sched.run.created.iter_mut().find(|c| {
+            c.created_by == agent
+                && c.edges
+                    .iter()
+                    .any(|e| e.kind == EdgeKind::Plan && e.from == agent)
+        });
+        if let Some(c) = own {
+            c.node.kind = kind.clone();
+            let id = c.node.id.clone();
+            if let Some(n) = a.graph.nodes.iter_mut().find(|n| n.id == id) {
+                n.kind = kind;
+            }
+            return Ok(Some(id));
+        }
+        if a.sched.run.created.len() >= MAX_CREATED {
+            return Err(format!(
+                "teto de {MAX_CREATED} nós criados por execução atingido"
+            ));
+        }
+        let id = format!("plano-{}", &uuid::Uuid::new_v4().simple().to_string()[..12]);
+        let note = {
+            let anchor = a.graph.nodes.iter().find(|n| n.id == agent);
+            let occupied: Vec<&Node> = a.graph.nodes.iter().collect();
+            orchestrator::plan_note(id.clone(), anchor, &occupied, markdown.to_string())
+        };
+        let edge = Edge {
+            id: format!("{id}-plan"),
+            from: agent.to_string(),
+            to: id.clone(),
+            kind: EdgeKind::Plan,
+        };
+        if let Some(root) = &self.root {
+            for sub in ["in", "out"] {
+                create_private_dir(&root.join(run_id).join(&id).join(sub))
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+        // `plan` não segura o alvo: a nota grava o texto e fica pronta.
+        a.sched.add_node(&id, &[])?;
+        a.graph.nodes.push(note.clone());
+        a.graph.edges.push(edge.clone());
+        a.sched.run.created.push(Created {
+            node: note,
+            created_by: agent.to_string(),
+            created_at: now(),
+            edges: vec![edge],
+            kept: false,
+        });
+        drop(active);
+        self.advance(run_id);
+        Ok(Some(id))
     }
 
     /// Nó novo no run ativo, começando na hora (ou assim que a url do
@@ -1877,7 +1961,7 @@ impl<H: RunHost> Runs<H> {
         out_dir: &Path,
         snapshot: Option<&super::agent::Snapshot>,
         turn: AgentTurn,
-        orchestrate: bool,
+        holds: bool,
     ) {
         if !self.active.lock().contains_key(run_id) {
             return;
@@ -1892,7 +1976,7 @@ impl<H: RunHost> Runs<H> {
             let Some(a) = active.get_mut(run_id) else {
                 return;
             };
-            let changed = if orchestrate && outcome.ok {
+            let changed = if holds && outcome.ok {
                 a.sched.orchestrate(node_id, outcome.outputs)
             } else {
                 a.sched.finish(node_id, outcome, now())
@@ -1910,7 +1994,7 @@ impl<H: RunHost> Runs<H> {
     /// A sessão de agente saiu depois do primeiro turno. Run ativo: o
     /// orquestrador fecha o nó, e o retrato novo leva `live_agents` sem ela.
     /// Run já fechado: o retrato guardado é republicado só por isso.
-    fn agent_exited(&self, run_id: &str, node_id: &str, orchestrate: bool) {
+    fn agent_exited(&self, run_id: &str, node_id: &str, holds: bool) {
         {
             let active = self.active.lock();
             if !active.contains_key(run_id) {
@@ -1920,7 +2004,7 @@ impl<H: RunHost> Runs<H> {
                 return;
             }
         }
-        if orchestrate {
+        if holds {
             self.orchestrator_exited(run_id, node_id);
         } else {
             self.publish_current(run_id);
@@ -2146,7 +2230,13 @@ fn prepare_start(a: &Active, id: &str) -> Option<Start> {
         node_dir,
         integration,
         graph_id: a.graph.id.clone(),
+        created: is_created(a, id),
     })
+}
+
+/// O nó foi criado por um agente neste run (não é do grafo do dono).
+fn is_created(a: &Active, id: &str) -> bool {
+    a.sched.run.created.iter().any(|c| c.node.id == id)
 }
 
 /// Pasta das execuções no perfil: `~/.tyba/orbit/runs` (dev: `~/.tyba-dev`).
@@ -2514,6 +2604,7 @@ mod tests {
                     node_dir: dir.path().to_path_buf(),
                     integration: None,
                     graph_id: "g".into(),
+                    created: false,
                 },
                 own,
             )
@@ -3033,7 +3124,6 @@ mod tests {
                 role: String::new(),
                 prompt: prompt.into(),
                 dir: String::new(),
-                orchestrate: false,
             },
         )
     }
@@ -3077,8 +3167,12 @@ mod tests {
         g.dir = repo.to_string_lossy().into_owned();
         g.variables.insert("coisa".into(), "o plano".into());
         let run = runs.start(g, vec![]).unwrap();
-        let run = wait_finished(&runs, &run.id);
-        assert_eq!(run.status, RunStatus::Done, "{run:?}");
+        // Os agentes publicam no fim do turno e seguram o run vivos.
+        wait_status(&runs, &run.id, "q", NodeStatus::Done);
+        wait_orchestrating(&runs, &run.id, "a");
+        let run = wait_orchestrating(&runs, &run.id, "b");
+        assert_eq!(run.status, RunStatus::Running, "{run:?}");
+        assert_eq!(run.nodes["q"].status, NodeStatus::Done, "{run:?}");
 
         let a = &run.nodes["a"];
         let context = std::fs::read_to_string(&a.outputs[&EdgeKind::Context]).unwrap();
@@ -3108,7 +3202,7 @@ mod tests {
         assert!(q_log.contains("pronto"), "{q_log}");
         assert!(!q_log.contains(&fake_key()), "{q_log}");
 
-        // Run fechado, agentes vivos: o Parar ainda os mata.
+        // Agentes vivos: o Parar os mata.
         runs.stop(&run.id).unwrap();
         let killed = host.killed.lock().clone();
         for id in ["a", "b"] {
@@ -3196,8 +3290,8 @@ mod tests {
         let mut g = graph(vec![in_dir(agent("a", "faça"), &mine)], vec![]);
         g.dir = other.to_string_lossy().into_owned();
         let run = runs.start(g, vec![]).unwrap();
-        let run = wait_finished(&runs, &run.id);
-        assert_eq!(run.status, RunStatus::Done, "{run:?}");
+        let run = wait_orchestrating(&runs, &run.id, "a");
+        assert!(run.nodes["a"].orchestrating, "{run:?}");
 
         let launch = host.agents.lock()[0].clone();
         assert_eq!(launch.cwd, mine);
@@ -3428,10 +3522,10 @@ mod tests {
         let g = graph(vec![agent("a", "x")], vec![]);
 
         let first = runs.start(g.clone(), vec![]).unwrap();
-        let first = wait_finished(&runs, &first.id);
-        assert_eq!(first.status, RunStatus::Done, "{first:?}");
+        let first = wait_orchestrating(&runs, &first.id, "a");
+        assert_eq!(first.status, RunStatus::Running, "{first:?}");
         let session = host.spawned.lock()[0].clone();
-        // Run fechado, agente vivo: a tela sabe e o Parar segue valendo.
+        // Agente vivo depois do turno: a tela sabe e o Parar segue valendo.
         assert_eq!(first.live_agents, vec![session.clone()]);
         assert_eq!(runs.list(&g.id)[0].live_agents, vec![session.clone()]);
 
@@ -3439,7 +3533,7 @@ mod tests {
         let second = runs.start(g.clone(), vec![]).unwrap();
         assert!(host.killed.lock().contains(&session));
         assert!(runs.get(&first.id).unwrap().live_agents.is_empty());
-        let second = wait_finished(&runs, &second.id);
+        let second = wait_orchestrating(&runs, &second.id, "a");
         let other = host.spawned.lock()[1].clone();
         assert_eq!(second.live_agents, vec![other.clone()]);
         assert!(!host.killed.lock().contains(&other));
@@ -3613,7 +3707,6 @@ mod tests {
                 role: String::new(),
                 prompt: "suba o ambiente".into(),
                 dir: String::new(),
-                orchestrate: true,
             },
         )
     }
@@ -3643,9 +3736,12 @@ mod tests {
         );
         let run = runs.start(g, vec![]).unwrap();
         wait_orchestrating(&runs, &run.id, "o");
-        // Quem depende dele recebe o contexto do turno e termina.
-        let r = wait_status(&runs, &run.id, "a", NodeStatus::Done);
-        assert_eq!(r.nodes["a"].status, NodeStatus::Done, "{r:?}");
+        // Quem depende dele recebe o contexto do turno e fecha o dele.
+        let r = wait_orchestrating(&runs, &run.id, "a");
+        assert!(
+            r.nodes["a"].outputs.contains_key(&EdgeKind::Context),
+            "{r:?}"
+        );
         assert_eq!(r.nodes["o"].status, NodeStatus::Running, "{r:?}");
         assert!(r.nodes["o"].outputs.contains_key(&EdgeKind::Context));
         assert_eq!(r.status, RunStatus::Running, "{r:?}");
@@ -3665,7 +3761,10 @@ mod tests {
         assert_eq!(r.nodes[&created].status, NodeStatus::Done, "{r:?}");
         assert_eq!(r.status, RunStatus::Running);
 
-        // A sessão do orquestrador sai: o nó fica pronto e o run fecha.
+        // As sessões saem: os nós ficam prontos e o run fecha.
+        host.exit_agent(&r.nodes["a"].session_id.clone().unwrap());
+        let r = wait_status(&runs, &run.id, "a", NodeStatus::Done);
+        assert_eq!(r.status, RunStatus::Running, "{r:?}");
         let session = r.nodes["o"].session_id.clone().unwrap();
         host.exit_agent(&session);
         let r = wait_finished(&runs, &run.id);
@@ -3688,28 +3787,29 @@ mod tests {
         assert!(err.contains("já terminou"), "{err}");
     }
 
+    /// Todo agente do grafo do dono segura o run depois do turno (pode
+    /// criar nós e reescrever o plano), e a saída da sessão o fecha.
     #[cfg(unix)]
     #[test]
-    fn agent_without_orchestrate_closes_the_run_at_the_end_of_the_turn() {
+    fn agent_holds_the_run_until_its_session_exits() {
         let dir = tempfile::tempdir().unwrap();
         let (runs, host, _app) = pty_runs(dir.path().join("runs"));
         let run = runs
             .start(graph(vec![agent("a", "x")], vec![]), vec![])
             .unwrap();
-        let r = wait_finished(&runs, &run.id);
-        assert_eq!(r.status, RunStatus::Done, "{r:?}");
-        assert_eq!(r.nodes["a"].status, NodeStatus::Done);
-        assert!(!r.nodes["a"].orchestrating);
-        // Sessão viva depois do turno, como antes.
+        let r = wait_orchestrating(&runs, &run.id, "a");
+        assert_eq!(r.status, RunStatus::Running, "{r:?}");
+        assert_eq!(r.nodes["a"].status, NodeStatus::Running);
+        assert!(r.nodes["a"].outputs.contains_key(&EdgeKind::Context));
         let session = host.spawned.lock()[0].clone();
         assert_eq!(r.live_agents, vec![session.clone()]);
 
-        // A sessão sai com o run já fechado: o retrato é republicado sem ela
-        // (a tela esconde o terminal) e o banco também fica sabendo.
+        // A sessão sai: o nó fica pronto, o run fecha sem ela e o banco
+        // também fica sabendo.
         host.exit_agent(&session);
-        let last = host.runs.lock().last().cloned().unwrap();
-        assert_eq!(last.id, run.id);
-        assert_eq!(last.status, RunStatus::Done);
+        let last = wait_finished(&runs, &run.id);
+        assert_eq!(last.status, RunStatus::Done, "{last:?}");
+        assert_eq!(last.nodes["a"].status, NodeStatus::Done);
         assert!(last.live_agents.is_empty(), "{last:?}");
         let stored = runs.store.get_orbit_run(&run.id).unwrap().unwrap();
         assert!(stored.live_agents.is_empty(), "{stored:?}");
@@ -3738,16 +3838,11 @@ mod tests {
         runs.store.save_orbit_graph(&g, true, None).unwrap();
         let run = runs.start(g, vec![]).unwrap();
         wait_orchestrating(&runs, &run.id, "o");
-        // Só o nó com orquestrar ligado recebe as ferramentas.
-        assert!(host
-            .agents
-            .lock()
-            .iter()
-            .find(|l| l.title == "a")
-            .unwrap()
-            .tools
-            .is_none());
+        // Todo agente do grafo do dono recebe as ferramentas, as de criar
+        // inclusive.
+        assert!(tools_of(&host, "a").can_create);
         let tools = tools_of(&host, "o");
+        assert!(tools.can_create);
 
         let created = tools
             .call(
@@ -3981,6 +4076,78 @@ mod tests {
         runs.stop(&run.id).unwrap();
     }
 
+    /// Agente criado por outro: tem as ferramentas menos as de criar (o core
+    /// recusa a chamada), e o plano dele é uma nota criada no run — ele não
+    /// está no grafo salvo, então a nota também não vai para lá.
+    #[cfg(unix)]
+    #[test]
+    fn created_agent_plans_in_the_run_and_never_creates() {
+        use serde_json::json;
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        init_repo(&repo);
+        let (runs, host, _app) = pty_runs(dir.path().join("runs"));
+        let g = graph(vec![orchestrator("o"), process("p", "sleep 30")], vec![]);
+        runs.store.save_orbit_graph(&g, true, None).unwrap();
+        let run = runs.start(g.clone(), vec![]).unwrap();
+        wait_orchestrating(&runs, &run.id, "o");
+        let rev = tools_of(&host, "o")
+            .call(
+                "orbit_create_agent",
+                &json!({"title": "revisor", "runner": "claude", "prompt": "revise", "dir": repo}),
+            )
+            .unwrap()["node_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        // Agente criado fecha no fim do turno (não segura o run).
+        wait_status(&runs, &run.id, &rev, NodeStatus::Done);
+        let tools = tools_of(&host, "revisor");
+        assert!(!tools.can_create);
+        for tool in [
+            "orbit_create_process",
+            "orbit_create_agent",
+            "orbit_create_browser",
+        ] {
+            let err = tools
+                .call(tool, &json!({"title": "x", "command": "true", "dir": repo}))
+                .unwrap_err();
+            assert!(err.contains("sem cascata"), "{tool}: {err}");
+        }
+        let created = runs.get(&run.id).unwrap().created.len();
+        assert_eq!(created, 1);
+
+        let step = |state: &str| json!({"steps": [{"text": "ler o diff", "state": state}]});
+        let note = tools.call("orbit_plan", &step("doing")).unwrap()["note_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let r = runs.get(&run.id).unwrap();
+        let c = r.created.iter().find(|c| c.node.id == note).unwrap();
+        assert_eq!(c.created_by, rev);
+        assert_eq!(
+            (c.edges[0].from.as_str(), c.edges[0].kind),
+            (rev.as_str(), EdgeKind::Plan)
+        );
+        assert!(r.plans.is_empty(), "{r:?}");
+        // A segunda chamada reescreve a mesma nota.
+        let again = tools.call("orbit_plan", &step("done")).unwrap()["note_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(again, note);
+        let r = runs.get(&run.id).unwrap();
+        assert_eq!(r.created.len(), 2);
+        let NodeKind::Note { markdown } = &r.created[1].node.kind else {
+            panic!("{r:?}")
+        };
+        assert!(markdown.contains("[x] ler o diff"), "{markdown}");
+        // O grafo salvo não recebeu a nota.
+        let saved = runs.store.get_orbit_graph(&g.id).unwrap().unwrap().value;
+        assert_eq!(saved.nodes.len(), 2);
+        runs.stop(&run.id).unwrap();
+    }
+
     #[cfg(unix)]
     #[test]
     fn keep_writes_created_nodes_into_the_graph_as_normal_nodes() {
@@ -4139,7 +4306,6 @@ mod tests {
                         role: String::new(),
                         prompt: "x".into(),
                         dir: String::new(),
-                        orchestrate: true,
                     },
                 ),
                 note("n"),

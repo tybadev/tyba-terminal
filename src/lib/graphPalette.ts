@@ -59,7 +59,6 @@ const agent = (runner: "claude" | "codex", dir: string): NodeKind => ({
   role: "",
   prompt: "",
   dir,
-  orchestrate: false,
 });
 
 const process = (command: string, dir: string): NodeKind => ({

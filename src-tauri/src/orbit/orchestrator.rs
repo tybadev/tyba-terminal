@@ -1,4 +1,5 @@
-//! Orquestrador: o nó de agente com `orchestrate` cria nós no run ativo.
+//! Ferramentas do Orbit: todo nó de agente cria nós no run ativo e escreve
+//! o plano (o agente criado por outro, sem `orbit_create_*`).
 //!
 //! O pedido chega do `tyba _orbit-mcp` ([`super::mcp`]) pelo socket de
 //! hooks da sessão dele e cai em [`super::run::Runs::orchestrator_call`]. Aqui
@@ -38,19 +39,29 @@ pub const MAX_PLAN_TEXT_CHARS: usize = 300;
 /// Título da nota de plano.
 pub const PLAN_TITLE: &str = "Plano";
 
-/// Quem atende as ferramentas da sessão do orquestrador: `(ferramenta,
-/// argumentos) → resultado`. Montado pelo run para o nó, levado até o
-/// handler do socket de hooks da sessão.
+/// Quem atende as ferramentas da sessão de um agente do Orbit:
+/// `(ferramenta, argumentos) → resultado`. Montado pelo run para o nó,
+/// levado até o handler do socket de hooks da sessão. `can_create` é falso
+/// no agente criado por outro agente (sem cascata): o `tools/list` dele não
+/// anuncia as `orbit_create_*`, e o core recusa a chamada mesmo assim.
 #[derive(Clone)]
-pub struct ToolHandler(pub Arc<ToolFn>);
+pub struct ToolHandler {
+    pub call: Arc<ToolFn>,
+    pub can_create: bool,
+}
 
 /// `(ferramenta, argumentos) → resultado`.
 pub type ToolFn = dyn Fn(&str, &Value) -> Result<Value, String> + Send + Sync;
 
 impl ToolHandler {
     pub fn call(&self, tool: &str, args: &Value) -> Result<Value, String> {
-        (self.0)(tool, args)
+        (self.call)(tool, args)
     }
+}
+
+/// As `orbit_create_*`: o que o agente criado não tem.
+pub fn is_create_tool(tool: &str) -> bool {
+    tool.starts_with("orbit_create_")
 }
 
 impl std::fmt::Debug for ToolHandler {
@@ -231,13 +242,13 @@ pub fn parse_call(tool: &str, value: &Value) -> Result<ToolCall, String> {
             existing_dir(&a.dir)?;
             Ok(ToolCall::Create {
                 title: a.title,
-                // Agente criado não orquestra: sem ferramentas, sem cascata.
+                // O agente criado tem as ferramentas menos as de criar
+                // (sem cascata): o run sabe que ele é criado.
                 kind: NodeKind::Agent {
                     runner: a.runner,
                     role: String::new(),
                     prompt: a.prompt,
                     dir: a.dir,
-                    orchestrate: false,
                 },
                 from_node: None,
             })
@@ -721,7 +732,24 @@ mod tests {
     }
 
     #[test]
-    fn created_agent_never_orchestrates() {
+    fn only_the_create_tools_are_create_tools() {
+        let create: Vec<&str> = super::super::mcp::TOOLS
+            .iter()
+            .copied()
+            .filter(|t| is_create_tool(t))
+            .collect();
+        assert_eq!(
+            create,
+            [
+                "orbit_create_process",
+                "orbit_create_agent",
+                "orbit_create_browser"
+            ]
+        );
+    }
+
+    #[test]
+    fn create_agent_builds_an_agent_node() {
         let call = parse_call(
             "orbit_create_agent",
             &json!({"title": "rev", "runner": "codex", "prompt": "revise", "dir": dir()}),
@@ -734,7 +762,6 @@ mod tests {
             kind,
             NodeKind::Agent {
                 runner: Runner::Codex,
-                orchestrate: false,
                 ..
             }
         ));
@@ -934,7 +961,6 @@ Binary files a/logo.png and b/logo.png differ
                 role: String::new(),
                 prompt: "subir o ambiente".into(),
                 dir: String::new(),
-                orchestrate: false,
             },
             NodeKind::Process {
                 command: "bun dev".into(),

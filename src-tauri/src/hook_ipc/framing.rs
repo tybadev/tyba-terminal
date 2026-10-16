@@ -132,7 +132,7 @@ mod boundary_tests {
     ///
     /// Orquestrador do Orbit (2026-10-15, quadro `OrbitOrquestrador`):
     /// `result` entrou de propósito e é a ÚNICA resposta que carrega dado. Ela
-    /// só existe na sessão de um nó com orquestrar ligado, e o dado é o do run
+    /// só existe na sessão de um nó de agente do Orbit, e o dado é o do run
     /// dele: o id do nó criado ou o estado de um nó do run (com o log
     /// redigido). Nada de histórico, nada fora do run.
     #[test]

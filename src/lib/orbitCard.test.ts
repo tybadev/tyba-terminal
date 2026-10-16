@@ -137,7 +137,6 @@ describe("cards no quadro OrbitCardsD", () => {
       dir: "muriki-web",
       task: "escrever os testes",
       telemetry: { model: "Opus 5.5", contextPct: 12.6, linesAdded: 42, linesRemoved: 7 },
-      orchestrate: false,
     });
     expect(rows.slice(0, 6)).toEqual([
       { key: "orbitDetailAgent", value: "Claude · Opus 5.5" },
@@ -156,10 +155,8 @@ describe("cards no quadro OrbitCardsD", () => {
       dir: "",
       task: "",
       telemetry: undefined,
-      orchestrate: null,
     });
     expect(rows.map((r) => r.value).slice(0, 5)).toEqual(["Codex", "", "", "", ""]);
-    expect(rows.some((r) => r.key === "orbitOrchestrate")).toBe(false);
   });
 
   test("nome do modelo: o id do Claude perde o prefixo", () => {

@@ -129,8 +129,8 @@ export interface DetailRow {
 /**
  * A grade do ⋯ do agente na ordem do quadro OrbitCardsD — em duas colunas,
  * agente | pasta / papel | diff / contexto | tempo — e, depois dela, o que o
- * quadro não tem mas o nó rodando esconde (a tarefa e o orquestrar, cuja
- * barra recolhe enquanto roda).
+ * quadro não tem mas o nó rodando esconde (a tarefa, cuja barra recolhe
+ * enquanto roda).
  */
 export function agentDetailRows(p: {
   runner: Runner;
@@ -138,8 +138,6 @@ export function agentDetailRows(p: {
   dir: string;
   task: string;
   telemetry: AgentTelemetry | undefined;
-  /** Agente que o orquestrador criou não orquestra: sem a linha. */
-  orchestrate: boolean | null;
 }): DetailRow[] {
   const pct = p.telemetry?.contextPct;
   return [
@@ -150,9 +148,6 @@ export function agentDetailRows(p: {
     { key: "orbitDetailContext", value: pct == null ? "" : `${Math.round(pct)}%` },
     { key: "orbitDetailTime", value: null },
     { key: "orbitDetailTask", value: p.task },
-    ...(p.orchestrate === null
-      ? []
-      : [{ key: "orbitOrchestrate", value: p.orchestrate ? "orbitYes" : "orbitNo" }]),
   ];
 }
 
