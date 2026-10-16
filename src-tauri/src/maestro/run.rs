@@ -1605,36 +1605,46 @@ impl<H: RunHost> Runs<H> {
         Ok(())
     }
 
-    /// Os nós criados ainda não mantidos do run ATIVO (o "Manter no grafo").
-    /// Depois do ■ Parar ou do fim do run eles já foram descartados.
+    /// Os nós criados ainda não mantidos do run (o "Manter no grafo"): do
+    /// ativo ou do retrato guardado — o run terminado, parado ou do histórico
+    /// também os deixa manter.
     pub fn created_to_keep(&self, run_id: &str) -> Result<Vec<Created>, String> {
-        let active = self.active.lock();
-        let a = active
-            .get(run_id)
-            .ok_or("a execução já terminou: os nós criados foram descartados")?;
-        Ok(a.sched
-            .run
-            .created
-            .iter()
-            .filter(|c| !c.kept)
-            .cloned()
-            .collect())
+        let run = self.get(run_id).ok_or("execução não encontrada")?;
+        Ok(run.created.into_iter().filter(|c| !c.kept).collect())
     }
 
-    /// Marca como mantidos (já gravados no grafo) e avisa o front.
+    /// Marca como mantidos (já gravados no grafo) e avisa o front. Run fechado:
+    /// a marca vai para o retrato guardado.
     pub fn mark_kept(&self, run_id: &str, ids: &[String]) {
+        let mark = |created: &mut Vec<Created>| {
+            for c in created.iter_mut().filter(|c| ids.contains(&c.node.id)) {
+                c.kept = true;
+            }
+        };
         {
             let mut active = self.active.lock();
             let Some(a) = active.get_mut(run_id) else {
+                if let Some(mut run) = self.stored_closed(run_id) {
+                    mark(&mut run.created);
+                    self.publish(run);
+                }
                 return;
             };
-            for c in &mut a.sched.run.created {
-                if ids.contains(&c.node.id) {
-                    c.kept = true;
-                }
-            }
+            mark(&mut a.sched.run.created);
         }
         self.publish_current(run_id);
+    }
+
+    /// O retrato guardado de um run fechado. Chamado com `active` na mão: o
+    /// run que fecha só sai de `active` depois de gravado, e dois retoques do
+    /// mesmo run não se atropelam. `running` no banco sem estar ativo é o
+    /// ■ Parar no meio, que grava o retrato dele logo em seguida.
+    fn stored_closed(&self, run_id: &str) -> Option<Run> {
+        self.store
+            .get_maestro_run(run_id)
+            .ok()
+            .flatten()
+            .filter(|r| r.status != RunStatus::Running)
     }
 
     /// Guarda a sessão de agente para o Parar. Chamado com `active` na mão.
@@ -3325,8 +3335,12 @@ mod tests {
         assert_eq!(r.nodes["o"].status, NodeStatus::Done);
         assert!(!r.nodes["o"].orchestrating);
         assert!(r.nodes["o"].outputs.contains_key(&EdgeKind::Context));
-        // Fechado: criados descartados e nada mais se cria.
-        assert!(runs.created_to_keep(&run.id).is_err());
+        // Fechado: nada mais se cria, mas o criado ainda pode ser mantido.
+        let keep = runs.created_to_keep(&run.id).unwrap();
+        assert_eq!(
+            keep.iter().map(|c| c.node.id.as_str()).collect::<Vec<_>>(),
+            vec![created.as_str()]
+        );
         let err = tools
             .call(
                 "maestro_create_browser",
@@ -3362,7 +3376,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn orchestrator_creates_nodes_in_the_active_run_and_stop_discards_them() {
+    fn orchestrator_creates_nodes_in_the_active_run_and_stop_leaves_them_out() {
         use serde_json::json;
         let dir = tempfile::tempdir().unwrap();
         let work = dir.path().join("api");
@@ -3507,9 +3521,14 @@ mod tests {
         assert_eq!(r.nodes[&api].status, NodeStatus::Stopped);
         assert_eq!(r.status, RunStatus::Running);
 
-        // ■ Parar: o run fecha e os criados ficam fora do grafo.
+        // ■ Parar: o run fecha e os criados ficam fora do grafo (até o dono
+        // mandar manter).
         runs.stop(&run.id).unwrap();
-        assert!(runs.created_to_keep(&run.id).is_err());
+        assert!(runs
+            .created_to_keep(&run.id)
+            .unwrap()
+            .iter()
+            .any(|c| c.node.id == api));
         let err = tools
             .call(
                 "maestro_create_process",
@@ -3625,6 +3644,45 @@ mod tests {
         // Já mantidos: nada mais a manter.
         assert!(runs.created_to_keep(&run.id).unwrap().is_empty());
         runs.stop(&run.id).unwrap();
+    }
+
+    /// "Manter no grafo" depois do ■ Parar: o retrato guardado ainda tem os
+    /// criados, e a marca de mantido vai para ele.
+    #[cfg(unix)]
+    #[test]
+    fn keep_works_after_the_run_stopped() {
+        use serde_json::json;
+        let dir = tempfile::tempdir().unwrap();
+        let (runs, host, _app) = pty_runs(dir.path().join("runs"));
+        let g = graph(vec![orchestrator("o"), process("p", "sleep 30")], vec![]);
+        runs.store.save_maestro_graph(&g, true, None).unwrap();
+        let run = runs.start(g.clone(), vec![]).unwrap();
+        wait_orchestrating(&runs, &run.id, "o");
+        let page = tools_of(&host, "o")
+            .call(
+                "maestro_create_browser",
+                &json!({"title": "page", "url": "http://localhost:1"}),
+            )
+            .unwrap()["node_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        runs.stop(&run.id).unwrap();
+        assert_eq!(runs.get(&run.id).unwrap().status, RunStatus::Stopped);
+
+        let keep = runs.created_to_keep(&run.id).unwrap();
+        assert_eq!(keep.len(), 1);
+        let mut graph = runs.store.get_maestro_graph(&g.id).unwrap().unwrap().value;
+        orchestrator::merge_kept(&mut graph, &keep);
+        runs.store.save_maestro_graph(&graph, true, None).unwrap();
+        runs.mark_kept(&run.id, std::slice::from_ref(&page));
+
+        let stored = runs.store.get_maestro_run(&run.id).unwrap().unwrap();
+        assert_eq!(stored.status, RunStatus::Stopped);
+        assert!(stored.created.iter().all(|c| c.kept), "{stored:?}");
+        let last = host.runs.lock().last().cloned().unwrap();
+        assert!(last.created.iter().all(|c| c.kept), "{last:?}");
+        assert!(runs.created_to_keep(&run.id).unwrap().is_empty());
     }
 
     /// O app fechou no meio: o run gravado `running` tem nó rodando (com a

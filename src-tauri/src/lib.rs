@@ -8714,8 +8714,8 @@ fn maestro_run_stop(
     runs.stop(&run_id)
 }
 
-/// "Manter no grafo": os nós que o orquestrador criou no run ativo entram no
-/// grafo salvo como nós normais. O front grava o que está no debounce antes;
+/// "Manter no grafo": os nós que o orquestrador criou no run (ativo,
+/// terminado, parado ou do histórico) entram no grafo salvo como nós normais. O front grava o que está no debounce antes;
 /// o grafo resultante passa pela mesma validação do salvar e volta para a tela.
 #[tauri::command]
 fn maestro_keep_created(
