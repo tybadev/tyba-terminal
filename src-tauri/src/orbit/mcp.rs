@@ -37,7 +37,8 @@ const METHOD_NOT_FOUND: i64 = -32601;
 const INVALID_PARAMS: i64 = -32602;
 
 /// Nomes das ferramentas, na ordem do `tools/list`.
-pub const TOOLS: [&str; 5] = [
+pub const TOOLS: [&str; 6] = [
+    "orbit_plan",
     "orbit_create_process",
     "orbit_create_agent",
     "orbit_create_browser",
@@ -215,6 +216,45 @@ pub fn tool_list() -> Vec<Value> {
     let dir = string_prop("Absolute path of an existing folder where it runs.");
     vec![
         json!({
+            "name": "orbit_plan",
+            "description": format!(
+                "Write or update your plan, shown to the owner as the Plan note linked to \
+                 you on the canvas. Call it before you start, with every step as todo; then \
+                 call it again when a step starts (doing) and when it ends (done or failed), \
+                 always with the whole list. In made, name the node you created in that \
+                 step (e.g. \"caddy (:443)\"). Up to {} steps, {} characters per text, one \
+                 line each.",
+                super::orchestrator::MAX_PLAN_STEPS,
+                super::orchestrator::MAX_PLAN_TEXT_CHARS
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "steps": {
+                        "type": "array",
+                        "description": "The whole plan, in order.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "text": string_prop("What the step does, one line."),
+                                "state": {
+                                    "type": "string",
+                                    "enum": ["todo", "doing", "done", "failed"]
+                                },
+                                "made": string_prop(
+                                    "Optional: the node you created in this step."
+                                )
+                            },
+                            "required": ["text", "state"],
+                            "additionalProperties": false
+                        }
+                    }
+                },
+                "required": ["steps"],
+                "additionalProperties": false
+            }
+        }),
+        json!({
             "name": "orbit_create_process",
             "description": "Create a Process node on the TYBA Orbit canvas and start it now, in \
                 its own terminal that the owner sees and can stop. Use it for servers, watchers \
@@ -255,9 +295,12 @@ pub fn tool_list() -> Vec<Value> {
         json!({
             "name": "orbit_create_browser",
             "description": format!(
-                "Create a Browser node that shows a local page on the canvas. Give url \
-                 (http/https on {} only) or from_node: the node_id of a Process node, whose \
-                 first open port becomes the address. Returns the node_id.",
+                "Create a Browser node that shows a local page on the canvas; you get the \
+                 control link to it. Always prefer from_node: the node_id of the Process or \
+                 Service node that serves the address (e.g. the Caddy that serves *.test, or \
+                 the front-end dev server), so the address comes from it. Give url \
+                 (http/https on {} only) only when no node of the graph serves that address. \
+                 Returns the node_id.",
                 super::service::LOCAL_HOSTS
             ),
             "inputSchema": {
@@ -267,7 +310,9 @@ pub fn tool_list() -> Vec<Value> {
                     "url": string_prop(
                         "Local address, e.g. http://localhost:5173 or https://app.test."
                     ),
-                    "from_node": string_prop("node_id of the Process node that serves the page.")
+                    "from_node": string_prop(
+                        "node_id of the Process or Service node that serves the page."
+                    )
                 },
                 "required": ["title"],
                 "additionalProperties": false
@@ -368,11 +413,16 @@ pub fn agent_args(
 /// aparecia no canvas (teste do dono, 16/10). Com as ferramentas à mão e
 /// esta regra, o caminho natural dele passa a ser o Orbit.
 pub const ORCHESTRATOR_PROMPT: &str = "Você é o orquestrador de um grafo no Orbit do TYBA. \
-O dono acompanha tudo pelo canvas, então trabalhe pelos nós: \
-para subir ou rodar um serviço, servidor de dev ou processo longo, use orbit_create_process \
+O dono acompanha tudo pelo canvas, então trabalhe pelos nós. \
+Antes de começar, chame orbit_plan com todos os passos (state todo); \
+ao começar cada passo, chame de novo com ele em doing, e ao terminar, em done ou failed, \
+sempre com a lista inteira, dizendo em made o nó que criou no passo. \
+Para subir ou rodar um serviço, servidor de dev ou processo longo, use orbit_create_process \
 (um nó por serviço, na pasta do projeto) em vez de rodar no seu próprio shell; \
 para abrir ou mostrar uma página (inclusive domínios .test e .localhost), use orbit_create_browser \
-em vez de um navegador externo; \
+em vez de um navegador externo, SEMPRE com from_node apontando o nó de processo ou serviço que \
+serve o endereço (ex.: o Caddy que serve *.test, ou o front) em vez de digitar url; \
+use url só quando nenhum nó do grafo serve aquele endereço; \
 para trabalho de agente em outro repositório, use orbit_create_agent. \
 Use orbit_node_status para ler o estado e o log dos nós antes de concluir \
 (de um agente criado, ele traz a resposta final e o que mudou). \
@@ -430,7 +480,7 @@ mod tests {
     }
 
     #[test]
-    fn tools_list_has_the_five_tools_with_schemas() {
+    fn tools_list_has_every_tool_with_schemas() {
         let r = one(r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#).unwrap();
         let tools = r["result"]["tools"].as_array().unwrap();
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
@@ -439,10 +489,17 @@ mod tests {
             assert_eq!(t["inputSchema"]["type"], "object", "{t}");
             assert!(t["description"].as_str().is_some_and(|d| !d.is_empty()));
         }
+        let by_name = |name: &str| tools.iter().find(|t| t["name"] == name).unwrap();
         assert_eq!(
-            tools[0]["inputSchema"]["required"],
+            by_name("orbit_create_process")["inputSchema"]["required"],
             json!(["title", "command", "dir"])
         );
+        let plan = &by_name("orbit_plan")["inputSchema"]["properties"]["steps"]["items"];
+        assert_eq!(
+            plan["properties"]["state"]["enum"],
+            json!(["todo", "doing", "done", "failed"])
+        );
+        assert_eq!(plan["required"], json!(["text", "state"]));
         // A regra de URL do navegador é a do core, domínios de dev inclusive.
         let browser = tools
             .iter()
@@ -620,6 +677,8 @@ mod tests {
         // Numa peça só, como o --mcp-config: separada, a opção comeria o prompt.
         assert!(claude[1].starts_with("--append-system-prompt=Você é o orquestrador"));
         assert!(claude[1].contains("orbit_create_browser"));
+        // Plano antes de começar e navegador pelo nó que serve o endereço.
+        assert!(claude[1].contains("orbit_plan") && claude[1].contains("from_node"));
         assert_eq!(claude.len(), 2);
         let config = claude_config(exe, socket);
         assert_eq!(config["mcpServers"]["orbit"]["args"], json!([MODE]));

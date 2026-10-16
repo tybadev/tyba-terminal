@@ -36,6 +36,8 @@ fn kind_label(kind: EdgeKind) -> &'static str {
         EdgeKind::Log => "log",
         EdgeKind::Json => "json",
         EdgeKind::Url => "url",
+        EdgeKind::Plan => "plano",
+        EdgeKind::Control => "controla",
     }
 }
 

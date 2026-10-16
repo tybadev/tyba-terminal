@@ -168,17 +168,35 @@ pub enum EdgeKind {
     Json,
     /// Texto com uma URL local (`out/url.txt`).
     Url,
+    /// "plano": Orquestrador → a nota de plano dele (`orbit_plan`).
+    Plan,
+    /// "controla": agente → navegador; quem pode mexer no navegador.
+    Control,
 }
 
 impl EdgeKind {
-    const ALL: [EdgeKind; 6] = [
+    const ALL: [EdgeKind; 8] = [
         EdgeKind::Context,
         EdgeKind::Diff,
         EdgeKind::File,
         EdgeKind::Log,
         EdgeKind::Json,
         EdgeKind::Url,
+        EdgeKind::Plan,
+        EdgeKind::Control,
     ];
+
+    /// Leva valor na execução. `plan` e `control` só dizem quem é de quem:
+    /// não viram entrada nem seguram o nó de destino.
+    pub fn carries_data(self) -> bool {
+        !matches!(self, EdgeKind::Plan | EdgeKind::Control)
+    }
+
+    /// Os tipos que levam valor (os que processo, agente e integração manual
+    /// aceitam).
+    fn data() -> Vec<EdgeKind> {
+        Self::ALL.into_iter().filter(|k| k.carries_data()).collect()
+    }
 }
 
 /// Saída declarada de um processo ou integração. `context` só o agente produz.
@@ -347,7 +365,12 @@ pub(crate) fn produces(
     integrations: &HashMap<&str, &Integration>,
 ) -> Vec<EdgeKind> {
     match kind {
-        NodeKind::Agent { .. } => vec![EdgeKind::Context, EdgeKind::Diff],
+        NodeKind::Agent { .. } => vec![
+            EdgeKind::Context,
+            EdgeKind::Diff,
+            EdgeKind::Plan,
+            EdgeKind::Control,
+        ],
         // A url só fica disponível quando a sessão do processo abre porta.
         NodeKind::Process { output, .. } => vec![(*output).into(), EdgeKind::Url],
         // O texto da nota entra no prompt de quem a recebe (context) ou como
@@ -365,14 +388,15 @@ pub(crate) fn produces(
 /// O que o nó aceita (tabela de rules).
 fn accepts(kind: &NodeKind, integrations: &HashMap<&str, &Integration>) -> Vec<EdgeKind> {
     match kind {
-        NodeKind::Agent { .. } | NodeKind::Process { .. } => EdgeKind::ALL.to_vec(),
-        NodeKind::Note { .. } | NodeKind::Service { .. } => Vec::new(),
-        NodeKind::Browser { .. } => vec![EdgeKind::Url],
+        NodeKind::Agent { .. } | NodeKind::Process { .. } => EdgeKind::data(),
+        NodeKind::Note { .. } => vec![EdgeKind::Plan],
+        NodeKind::Service { .. } => Vec::new(),
+        NodeKind::Browser { .. } => vec![EdgeKind::Url, EdgeKind::Control],
         NodeKind::Integration { integration_id, .. } => {
             match integrations.get(integration_id.as_str()).map(|i| i.trigger) {
-                Some(Trigger::OnInput { kind }) => vec![kind],
-                Some(Trigger::Manual) => EdgeKind::ALL.to_vec(),
-                None => Vec::new(),
+                Some(Trigger::OnInput { kind }) if kind.carries_data() => vec![kind],
+                Some(Trigger::OnInput { .. }) | None => Vec::new(),
+                Some(Trigger::Manual) => EdgeKind::data(),
             }
         }
     }
@@ -980,7 +1004,10 @@ mod tests {
     fn browser_and_service_produce_and_accept() {
         let none = HashMap::new();
         assert!(produces(&browser("b", "").kind, &none).is_empty());
-        assert_eq!(accepts(&browser("b", "").kind, &none), vec![EdgeKind::Url]);
+        assert_eq!(
+            accepts(&browser("b", "").kind, &none),
+            vec![EdgeKind::Url, EdgeKind::Control]
+        );
         assert_eq!(
             produces(&service("s").kind, &none),
             vec![EdgeKind::Log, EdgeKind::Url]
@@ -1115,5 +1142,71 @@ mod tests {
         })
         .unwrap();
         assert_eq!(t, serde_json::json!({"type": "onInput", "kind": "diff"}));
+    }
+
+    #[test]
+    fn plan_and_control_link_only_agent_to_note_and_browser() {
+        let ok = graph(
+            vec![agent("o"), note("n"), browser("b", ""), service("s")],
+            vec![
+                edge("e1", "o", "n", EdgeKind::Plan),
+                edge("e2", "o", "b", EdgeKind::Control),
+                edge("e3", "s", "b", EdgeKind::Url),
+            ],
+        );
+        assert_eq!(validate_graph(&ok, &[]), Ok(()));
+        let bad = [
+            // Plan só para nota; Control só para navegador.
+            ("o", "b", EdgeKind::Plan),
+            ("o", "n", EdgeKind::Control),
+            ("o", "a2", EdgeKind::Plan),
+            ("o", "p", EdgeKind::Control),
+            // Só agente produz.
+            ("p", "n", EdgeKind::Plan),
+            ("s", "b", EdgeKind::Control),
+            ("n", "b", EdgeKind::Control),
+        ];
+        for (from, to, kind) in bad {
+            let g = graph(
+                vec![
+                    agent("o"),
+                    agent("a2"),
+                    note("n"),
+                    browser("b", ""),
+                    service("s"),
+                    process("p", OutputKind::Log),
+                ],
+                vec![edge("e1", from, to, kind)],
+            );
+            assert!(
+                validate_graph(&g, &[]).is_err(),
+                "{from} → {to} ({kind:?}) devia ser recusada"
+            );
+        }
+        // Integração manual não recebe plan nem control.
+        let i = integration("i-1", Trigger::Manual);
+        let g = graph(
+            vec![
+                agent("o"),
+                node(
+                    "i",
+                    NodeKind::Integration {
+                        integration_id: "i-1".into(),
+                        dir: String::new(),
+                    },
+                ),
+            ],
+            vec![edge("e1", "o", "i", EdgeKind::Control)],
+        );
+        assert!(validate_graph(&g, &[i]).is_err());
+    }
+
+    #[test]
+    fn plan_and_control_serialize_and_carry_no_data() {
+        assert_eq!(serde_json::to_value(EdgeKind::Plan).unwrap(), "plan");
+        assert_eq!(serde_json::to_value(EdgeKind::Control).unwrap(), "control");
+        assert!(!EdgeKind::Plan.carries_data() && !EdgeKind::Control.carries_data());
+        assert_eq!(EdgeKind::data().len(), 6);
+        assert!(EdgeKind::data().iter().all(|k| k.carries_data()));
     }
 }

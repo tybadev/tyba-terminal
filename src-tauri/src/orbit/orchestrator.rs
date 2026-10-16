@@ -31,6 +31,12 @@ const STATUS_LOG_TAIL_BYTES: u64 = 64 * 1024;
 pub const STATUS_TEXT_MAX_CHARS: usize = 8_000;
 /// Arquivos listados no resumo do diff (os totais contam todos).
 const STATUS_DIFF_MAX_FILES: usize = 100;
+/// Teto de passos do `orbit_plan`.
+pub const MAX_PLAN_STEPS: usize = 40;
+/// Teto, em caracteres, do texto de um passo e do `made`.
+pub const MAX_PLAN_TEXT_CHARS: usize = 300;
+/// Título da nota de plano.
+pub const PLAN_TITLE: &str = "Plano";
 
 /// Quem atende as ferramentas da sessão do orquestrador: `(ferramenta,
 /// argumentos) → resultado`. Montado pelo run para o nó, levado até o
@@ -84,6 +90,42 @@ pub enum ToolCall {
     Stop {
         node_id: String,
     },
+    /// O plano inteiro, já validado e redigido.
+    Plan {
+        steps: Vec<PlanStep>,
+    },
+}
+
+/// Estado de um passo do plano.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum StepState {
+    Todo,
+    Doing,
+    Done,
+    Failed,
+}
+
+/// Um passo do plano do orquestrador; `made` é o nó que ele criou no passo.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PlanStep {
+    pub text: String,
+    pub state: StepState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub made: Option<String>,
+}
+
+/// A nota de plano de um orquestrador, como ficou no grafo: cópia no run
+/// para o histórico e para o front pôr a nota e a ligação no canvas.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Plan {
+    pub orchestrator: String,
+    pub note: Node,
+    pub edge: Edge,
+    pub steps: Vec<PlanStep>,
+    pub updated_at: u64,
 }
 
 #[derive(Deserialize)]
@@ -113,6 +155,12 @@ struct BrowserArgs {
     url: Option<String>,
     #[serde(default)]
     from_node: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PlanArgs {
+    steps: Vec<PlanStep>,
 }
 
 #[derive(Deserialize)]
@@ -228,7 +276,102 @@ pub fn parse_call(tool: &str, value: &Value) -> Result<ToolCall, String> {
             required("node_id", &a.node_id)?;
             Ok(ToolCall::Stop { node_id: a.node_id })
         }
+        "orbit_plan" => {
+            let a: PlanArgs = args(tool, value)?;
+            Ok(ToolCall::Plan {
+                steps: plan_steps(a.steps)?,
+            })
+        }
         _ => Err(format!("ferramenta desconhecida: {tool}")),
+    }
+}
+
+/// Texto de uma linha do plano: não vazio, sem nenhum caractere de controle
+/// (nem quebra de linha: cada passo é uma linha do checklist), até
+/// [`MAX_PLAN_TEXT_CHARS`], e redigido.
+fn plan_line(what: &str, value: &str) -> Result<String, String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err(format!("{what} vazio"));
+    }
+    if value.chars().any(char::is_control) {
+        return Err(format!("{what} contém caractere de controle"));
+    }
+    if value.chars().count() > MAX_PLAN_TEXT_CHARS {
+        return Err(format!(
+            "{what} passa do teto de {MAX_PLAN_TEXT_CHARS} caracteres"
+        ));
+    }
+    Ok(crate::session::redact::redact(value).into_owned())
+}
+
+/// Os passos do `orbit_plan`: de 1 a [`MAX_PLAN_STEPS`], cada texto pela
+/// régua de [`plan_line`]. `made` vazio conta como ausente.
+fn plan_steps(steps: Vec<PlanStep>) -> Result<Vec<PlanStep>, String> {
+    if steps.is_empty() {
+        return Err("steps vazio: mande a lista inteira de passos".into());
+    }
+    if steps.len() > MAX_PLAN_STEPS {
+        return Err(format!(
+            "plano com {} passos passa do teto de {MAX_PLAN_STEPS}",
+            steps.len()
+        ));
+    }
+    steps
+        .into_iter()
+        .enumerate()
+        .map(|(i, step)| {
+            let n = i + 1;
+            let made = match step.made.as_deref().map(str::trim) {
+                None | Some("") => None,
+                Some(m) => Some(plan_line(&format!("steps[{n}].made"), m)?),
+            };
+            Ok(PlanStep {
+                text: plan_line(&format!("steps[{n}].text"), &step.text)?,
+                state: step.state,
+                made,
+            })
+        })
+        .collect()
+}
+
+/// O texto da nota de plano: um checklist em markdown (`- [ ]` falta,
+/// `- [~]` fazendo, `- [x]` pronto, `- [!]` falhou) e, sob o passo, a linha
+/// recuada `  criou <made>`.
+pub fn plan_markdown(steps: &[PlanStep]) -> String {
+    let mut out = String::new();
+    for step in steps {
+        let mark = match step.state {
+            StepState::Todo => ' ',
+            StepState::Doing => '~',
+            StepState::Done => 'x',
+            StepState::Failed => '!',
+        };
+        out.push_str(&format!("- [{mark}] {}\n", step.text));
+        if let Some(made) = &step.made {
+            out.push_str(&format!("  criou {made}\n"));
+        }
+    }
+    out
+}
+
+/// A nota de plano nova: logo abaixo do orquestrador, num espaço livre.
+pub fn plan_note(id: String, anchor: Option<&Node>, occupied: &[&Node], markdown: String) -> Node {
+    const GAP_Y: f64 = 60.0;
+    let kind = NodeKind::Note { markdown };
+    let size = default_size(&kind);
+    let want = anchor
+        .map(|o| Position {
+            x: o.position.x,
+            y: o.position.y + o.size.h + GAP_Y,
+        })
+        .unwrap_or(Position { x: 0.0, y: 0.0 });
+    Node {
+        id,
+        title: PLAN_TITLE.to_string(),
+        kind,
+        position: free_spot(want, &size, occupied),
+        size,
     }
 }
 
@@ -739,5 +882,109 @@ Binary files a/logo.png and b/logo.png differ
             let node = new_node("n".into(), "n".into(), kind, None, &[]);
             assert_eq!(node.size, Size { w: 560.0, h: 440.0 });
         }
+    }
+
+    #[test]
+    fn plan_parses_valid_steps_and_redacts() {
+        let key = format!("sk-{}", "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6");
+        let call = parse_call(
+            "orbit_plan",
+            &json!({"steps": [
+                {"text": "Subir a api", "state": "done", "made": "muriki-api (:3000)"},
+                {"text": format!("Testar com {key}"), "state": "doing"},
+                {"text": "Escrever o que achou", "state": "todo", "made": "  "},
+                {"text": "Caddy", "state": "failed"}
+            ]}),
+        )
+        .unwrap();
+        let ToolCall::Plan { steps } = call else {
+            panic!("não é plano: {call:?}")
+        };
+        assert_eq!(steps.len(), 4);
+        assert_eq!(steps[0].state, StepState::Done);
+        assert_eq!(steps[0].made.as_deref(), Some("muriki-api (:3000)"));
+        assert!(!steps[1].text.contains(&key), "{}", steps[1].text);
+        // made só de espaço conta como ausente.
+        assert_eq!(steps[2].made, None);
+        assert_eq!(steps[3].state, StepState::Failed);
+    }
+
+    #[test]
+    fn plan_refuses_bad_state_control_chars_and_ceilings() {
+        let step = |text: &str, state: &str| json!({"text": text, "state": state});
+        let bad = [
+            json!({"steps": [step("a", "pronto")]}),
+            json!({"steps": [step("linha\nnova", "todo")]}),
+            json!({"steps": [step("tab\tno meio", "todo")]}),
+            json!({"steps": [step("esc \u{1b}[31m", "todo")]}),
+            json!({"steps": [{"text": "a", "state": "todo", "made": "x\u{7}"}]}),
+            json!({"steps": [step("", "todo")]}),
+            json!({"steps": []}),
+            json!({"steps": [{"text": "a", "state": "todo", "extra": 1}]}),
+            json!({"steps": [step(&"a".repeat(MAX_PLAN_TEXT_CHARS + 1), "todo")]}),
+            json!({"steps": (0..=MAX_PLAN_STEPS).map(|i| step(&format!("p{i}"), "todo")).collect::<Vec<_>>()}),
+        ];
+        for args in bad {
+            assert!(parse_call("orbit_plan", &args).is_err(), "aceitou {args}");
+        }
+        // No teto passa.
+        let full: Vec<Value> = (0..MAX_PLAN_STEPS)
+            .map(|i| step(&format!("p{i}"), "todo"))
+            .collect();
+        assert!(parse_call("orbit_plan", &json!({"steps": full})).is_ok());
+        assert!(parse_call(
+            "orbit_plan",
+            &json!({"steps": [step(&"a".repeat(MAX_PLAN_TEXT_CHARS), "todo")]})
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn plan_markdown_is_a_checklist_with_made_under_the_step() {
+        let step = |text: &str, state, made: Option<&str>| PlanStep {
+            text: text.into(),
+            state,
+            made: made.map(Into::into),
+        };
+        let md = plan_markdown(&[
+            step("Subir a api", StepState::Done, Some("muriki-api (:3000)")),
+            step("Abrir o login", StepState::Doing, None),
+            step("Escrever", StepState::Todo, None),
+            step("Caddy", StepState::Failed, Some("caddy")),
+        ]);
+        assert_eq!(
+            md,
+            "- [x] Subir a api\n  criou muriki-api (:3000)\n- [~] Abrir o login\n\
+             - [ ] Escrever\n- [!] Caddy\n  criou caddy\n"
+        );
+    }
+
+    #[test]
+    fn plan_note_goes_below_the_orchestrator_in_a_free_spot() {
+        let orq = Node {
+            id: "o".into(),
+            title: "o".into(),
+            kind: NodeKind::Note {
+                markdown: String::new(),
+            },
+            position: Position { x: 100.0, y: 100.0 },
+            size: Size { w: 400.0, h: 300.0 },
+        };
+        let note = plan_note("n".into(), Some(&orq), &[&orq], "- [ ] a\n".into());
+        assert_eq!(note.title, PLAN_TITLE);
+        assert_eq!(note.position.x, 100.0);
+        assert!(note.position.y >= 100.0 + 300.0, "{:?}", note.position);
+        assert!(!overlaps(
+            note.position.x,
+            note.position.y,
+            &note.size,
+            &orq
+        ));
+        assert_eq!(
+            note.kind,
+            NodeKind::Note {
+                markdown: "- [ ] a\n".into()
+            }
+        );
     }
 }

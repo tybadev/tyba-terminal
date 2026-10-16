@@ -589,6 +589,39 @@ mod tests {
     }
 
     #[test]
+    fn round_trip_keeps_plan_and_control_edges() {
+        let (mut graph, integrations) = sample();
+        graph.nodes.push(node(
+            "b",
+            NodeKind::Browser {
+                url: "https://code.muriki.test".into(),
+            },
+        ));
+        graph.edges.extend([
+            Edge {
+                id: "e3".into(),
+                from: "a".into(),
+                to: "n".into(),
+                kind: EdgeKind::Plan,
+            },
+            Edge {
+                id: "e4".into(),
+                from: "a".into(),
+                to: "b".into(),
+                kind: EdgeKind::Control,
+            },
+        ]);
+        let (text, _) = export_toml(&graph, &integrations).unwrap();
+        assert!(text.contains("kind = \"plan\""), "{text}");
+        assert!(text.contains("kind = \"control\""), "{text}");
+        let imported = parse_import(text.as_bytes()).unwrap();
+        assert_eq!(imported.graph, graph);
+        // Ligação fora da regra no arquivo é recusada já na prévia.
+        let bad = text.replace("kind = \"control\"", "kind = \"plan\"");
+        assert!(parse_import(bad.as_bytes()).is_err());
+    }
+
+    #[test]
     fn secret_variable_is_cleared_on_export() {
         let (mut graph, integrations) = sample();
         // Fixture sintética, não é chave de ninguém.

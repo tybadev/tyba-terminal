@@ -179,6 +179,7 @@ mod tests {
             test: false,
             live_agents: Vec::new(),
             created: Vec::new(),
+            plans: Vec::new(),
         }
     }
 
