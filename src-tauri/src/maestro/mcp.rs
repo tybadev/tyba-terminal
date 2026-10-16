@@ -336,12 +336,28 @@ pub fn agent_args(
                 ),
             ]
         }
-        _ => vec![format!(
-            "--mcp-config={}",
-            claude_config_path.to_string_lossy()
-        )],
+        _ => vec![
+            format!("--mcp-config={}", claude_config_path.to_string_lossy()),
+            format!("--append-system-prompt={ORCHESTRATOR_PROMPT}"),
+        ],
     }
 }
+
+/// A orientação do orquestrador, anexada ao system prompt do Claude.
+///
+/// Sem ela o agente fazia o que faria num terminal qualquer: subia os
+/// serviços dentro da própria sessão e abria o Chrome pela extensão — nada
+/// aparecia no canvas (teste do dono, 16/10). Com as ferramentas à mão e
+/// esta regra, o caminho natural dele passa a ser o Maestro.
+pub const ORCHESTRATOR_PROMPT: &str = "Você é o orquestrador de um grafo no Maestro do TYBA. \
+O dono acompanha tudo pelo canvas, então trabalhe pelos nós: \
+para subir ou rodar um serviço, servidor de dev ou processo longo, use maestro_create_process \
+(um nó por serviço, na pasta do projeto) em vez de rodar no seu próprio shell; \
+para abrir ou mostrar uma página (inclusive domínios .test e .localhost), use maestro_create_browser \
+em vez de um navegador externo; \
+para trabalho de agente em outro repositório, use maestro_create_agent. \
+Use maestro_node_status para ler o estado e o log dos nós antes de concluir. \
+Comandos curtos de leitura (ls, cat, git status) podem rodar no seu shell.";
 
 #[cfg(test)]
 mod tests {
@@ -573,7 +589,11 @@ mod tests {
             socket,
             cfg,
         );
-        assert_eq!(claude, vec!["--mcp-config=/tmp/tyba-abc/maestro-mcp.json"]);
+        assert_eq!(claude[0], "--mcp-config=/tmp/tyba-abc/maestro-mcp.json");
+        // Numa peça só, como o --mcp-config: separada, a opção comeria o prompt.
+        assert!(claude[1].starts_with("--append-system-prompt=Você é o orquestrador"));
+        assert!(claude[1].contains("maestro_create_browser"));
+        assert_eq!(claude.len(), 2);
         let config = claude_config(exe, socket);
         assert_eq!(config["mcpServers"]["maestro"]["args"], json!([MODE]));
         assert_eq!(
