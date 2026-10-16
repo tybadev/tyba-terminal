@@ -1,6 +1,13 @@
 import { expect, test } from "bun:test";
 
-import { nodeFontSize, nodeGrid, nodeTerminalClass, nodeZoomStyle, type Cell } from "./nodeTerminal";
+import {
+  canvasWheel,
+  nodeFontSize,
+  nodeGrid,
+  nodeTerminalClass,
+  nodeZoomStyle,
+  type Cell,
+} from "./nodeTerminal";
 
 /**
  * A célula que o renderer WebGL do xterm 5.5 desenha (WebglRenderer
@@ -75,4 +82,25 @@ test("a roda é do terminal só com o nó selecionado; senão é do canvas", () 
     expect(cls).toContain("nodrag");
     expect(cls).toContain("nokey");
   }
+});
+
+test("sem o nó selecionado a roda vai ao canvas, inteira (pan, pinça, ⌘ + roda)", () => {
+  const wheel = {
+    deltaX: 3,
+    deltaY: -40,
+    deltaZ: 0,
+    deltaMode: 0,
+    clientX: 210,
+    clientY: 330,
+    screenX: 1210,
+    screenY: 1330,
+    ctrlKey: true,
+    metaKey: false,
+    shiftKey: false,
+    altKey: false,
+  };
+  // Selecionado: a roda é do terminal (scrollback), nada vai ao canvas.
+  expect(canvasWheel(wheel, true)).toBeNull();
+  // Não selecionado: a cópia sobe até o canvas com tudo que o pan/zoom lê.
+  expect(canvasWheel(wheel, false)).toEqual({ ...wheel, bubbles: true, cancelable: true });
 });

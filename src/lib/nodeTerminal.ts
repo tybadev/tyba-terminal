@@ -93,3 +93,47 @@ export function nodeFontSize(
 export function nodeTerminalClass(selected: boolean): string {
   return selected ? "nodrag nowheel nopan nokey" : "nodrag nopan nokey";
 }
+
+type WheelLike = Pick<
+  WheelEvent,
+  | "deltaX"
+  | "deltaY"
+  | "deltaZ"
+  | "deltaMode"
+  | "clientX"
+  | "clientY"
+  | "screenX"
+  | "screenY"
+  | "ctrlKey"
+  | "metaKey"
+  | "shiftKey"
+  | "altKey"
+>;
+
+/**
+ * A roda sobre o terminal de um nó NÃO selecionado é do canvas. Não basta
+ * tirar o `nowheel`: o xterm ouve a roda no próprio elemento, rola o
+ * scrollback (ou, na tela alternativa, manda setas ao PTY) e para a
+ * propagação — o canvas nunca a via. Então o nó a pega na captura, antes do
+ * xterm, e devolve ao canvas esta cópia, que sobe do nó até o pan/zoom do
+ * xyflow. `null` com o nó selecionado: aí a roda é do terminal.
+ */
+export function canvasWheel(e: WheelLike, selected: boolean): WheelEventInit | null {
+  if (selected) return null;
+  return {
+    bubbles: true,
+    cancelable: true,
+    deltaX: e.deltaX,
+    deltaY: e.deltaY,
+    deltaZ: e.deltaZ,
+    deltaMode: e.deltaMode,
+    clientX: e.clientX,
+    clientY: e.clientY,
+    screenX: e.screenX,
+    screenY: e.screenY,
+    ctrlKey: e.ctrlKey,
+    metaKey: e.metaKey,
+    shiftKey: e.shiftKey,
+    altKey: e.altKey,
+  };
+}

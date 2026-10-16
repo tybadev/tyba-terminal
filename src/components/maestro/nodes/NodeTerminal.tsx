@@ -1,10 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { useStore } from "@xyflow/react";
 
 import { TerminalView } from "@/components/TerminalView";
 import { sessionScreenLines } from "@/lib/ipc";
-import { nodeTerminalClass } from "@/lib/nodeTerminal";
+import { canvasWheel, nodeTerminalClass } from "@/lib/nodeTerminal";
 import { useMaestro } from "./NodeFrame";
 
 /** O terminal ocupa o nó inteiro: o wrapper é quem tem o tamanho. */
@@ -37,8 +37,31 @@ export function NodeTerminal({
   const { focusNode } = useMaestro();
   const zoom = useStore((s) => s.transform[2]);
   const inFocus = focusNode === nodeId;
+
+  // Roda sem o nó selecionado: pega na captura, antes do xterm (que rolaria
+  // o scrollback ou mandaria setas ao PTY), e entrega ao canvas.
+  const box = useRef<HTMLDivElement>(null);
+  const selectedRef = useRef(selected);
+  selectedRef.current = selected;
+  useEffect(() => {
+    const el = box.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      const init = canvasWheel(e, selectedRef.current);
+      if (!init) return;
+      e.preventDefault();
+      e.stopPropagation();
+      el.parentElement?.dispatchEvent(new WheelEvent("wheel", init));
+    };
+    el.addEventListener("wheel", onWheel, { capture: true, passive: false });
+    return () => el.removeEventListener("wheel", onWheel, { capture: true });
+  }, []);
+
   return (
-    <div className={`${nodeTerminalClass(selected)} relative min-h-0 flex-1 bg-tyba-sunken`}>
+    <div
+      ref={box}
+      className={`${nodeTerminalClass(selected)} relative min-h-0 flex-1 bg-tyba-sunken`}
+    >
       {inFocus ? (
         <TerminalPreview sessionId={sessionId} />
       ) : (
