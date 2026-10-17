@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   ArrowsInSimple,
@@ -10,6 +10,7 @@ import {
 } from "@phosphor-icons/react";
 
 import {
+  agentsPanelTouched,
   resolveApproval,
   type AgentRunner,
   type ApprovalDecision,
@@ -86,6 +87,8 @@ function PendingBadge({ count }: { count: number }) {
   );
 }
 
+const TOUCH_THROTTLE_MS = 1_000;
+
 /**
  * A superfície única de agentes (A5.3): a árvore agente principal → subagentes
  * com luz de status por nível, e o detalhe do subagente aberto INLINE, na
@@ -139,6 +142,17 @@ export function AgentsPanel({
     orchestratorVisual(session.status, session.attention, subagents),
     session.subagents_working === true,
   );
+  // Clicar, rolar, expandir ou teclar no painel diz ao core que o dono está
+  // nele: o painel aberto sozinho deixa de fechar no fim da rodada. Com
+  // throttle — o core só precisa ouvir uma vez.
+  const lastTouch = useRef(0);
+  const touched = () => {
+    const at = Date.now();
+    if (at - lastTouch.current < TOUCH_THROTTLE_MS) return;
+    lastTouch.current = at;
+    void agentsPanelTouched(session.id).catch(() => {});
+  };
+
   const toggle = (agentId: string) => {
     setOpenId((current) => (current === agentId ? null : agentId));
     if (openId !== agentId) onSelect(agentId);
@@ -148,7 +162,12 @@ export function AgentsPanel({
     // Sem fundo próprio: o container no App já é `surface` com
     // `tyba-divide-l`, e a divisa é sombra `inset` — um fundo aqui a cobria,
     // e painel e terminal se fundiam no escuro.
-    <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+    <div
+      className="flex min-h-0 min-w-0 flex-1 flex-col"
+      onPointerDownCapture={touched}
+      onWheelCapture={touched}
+      onKeyDownCapture={touched}
+    >
       <header className={PANEL_HEADER}>
         {/* A marca de uma cor só, no âmbar de agentes. */}
         <TybaMarkMono size={16} className="shrink-0 text-tyba-amber" />

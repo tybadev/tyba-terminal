@@ -2160,8 +2160,9 @@ export const openAgentsPanel = (id: SessionId) =>
 export const openSubagentViewer = (sessionId: SessionId) =>
   invoke<void>("open_subagent_viewer", { sessionId });
 
-export const closeAgentViewers = (sessionId: SessionId) =>
-  invoke<void>("close_agent_viewers", { sessionId });
+/** O dono mexeu no painel Agentes: o core não o fecha mais sozinho. */
+export const agentsPanelTouched = (sessionId: SessionId) =>
+  invoke<void>("agents_panel_touched", { sessionId });
 
 export const subagentTranscript = (
   sessionId: SessionId,
