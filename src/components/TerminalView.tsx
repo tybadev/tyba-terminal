@@ -149,7 +149,7 @@ let defaultFontSize = 13;
  * Métrica diferente faz o texto mudar de tamanho ao virar cartão, que é a
  * emenda voltando por outro caminho.
  */
-export const TERMINAL_LINE_HEIGHT = 1.35;
+export const TERMINAL_LINE_HEIGHT = 1;
 
 /**
  * Largura de uma célula em fração do tamanho da fonte, só como ponto de partida.
@@ -628,7 +628,7 @@ export function TerminalView({
       fontFamily:
         '"JetBrains Mono", "Symbols Nerd Font Mono", "Fira Code", ui-monospace, SFMono-Regular, Menlo, monospace',
       fontSize: defaultFontSize,
-      lineHeight: 1.35,
+      lineHeight: TERMINAL_LINE_HEIGHT,
       cursorBlink: true,
       allowProposedApi: true,
       scrollback: 10_000,
