@@ -255,6 +255,8 @@ function NativeBrowserNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
   const controllers = browserControllers(id, graph.nodes, graph.edges);
   const openedBy = useOpenedBy(id, kind);
 
+  // Reiniciar o nó (↻) recarrega, mesmo com a mesma url.
+  const attempt = run?.nodes[id]?.attempt ?? 0;
   const { state, ready } = useBrowserState(graphId, id);
   const owner = state?.focus === "owner";
   const current = state?.url ?? "";
@@ -289,7 +291,7 @@ function NativeBrowserNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
   const lastOpen = useRef<string | null>(null);
   useEffect(() => {
     if (!ready) return;
-    const key = runUrl ? `${runUrl}#${opened?.at ?? 0}` : "";
+    const key = runUrl ? `${runUrl}#${opened?.at ?? 0}#${attempt}` : "";
     if (lastOpen.current === null) {
       lastOpen.current = key;
       const start = runUrl ?? kind.url;
@@ -300,7 +302,7 @@ function NativeBrowserNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
       lastOpen.current = key;
       go(runUrl);
     }
-  }, [ready, runUrl, opened?.at]);
+  }, [ready, runUrl, opened?.at, attempt]);
 
   const submit = () => {
     const url = draft.trim();
@@ -457,9 +459,17 @@ function IframeBrowserNode({
 
   // A url da execução chega pela ligação, ou um agente abriu uma página
   // (`opened` muda mesmo que a url seja a mesma): vai para o frame.
+  // Reiniciar o nó (↻) recarrega o frame, mesmo com a mesma url.
+  const attempt = run?.nodes[id]?.attempt ?? 0;
+  const lastAttempt = useRef(attempt);
   useEffect(() => {
-    if (runUrl) go(runUrl);
-  }, [runUrl, opened?.at]);
+    if (!runUrl) return;
+    go(runUrl);
+    if (attempt !== lastAttempt.current) {
+      lastAttempt.current = attempt;
+      setReload((n) => n + 1);
+    }
+  }, [runUrl, opened?.at, attempt]);
 
   const submit = () => {
     const url = draft.trim();

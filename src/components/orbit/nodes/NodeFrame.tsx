@@ -38,6 +38,7 @@ import {
   accepts,
   formatDuration,
   nodeControls,
+  staleHintKey,
   nodeElapsed,
   nodeSession,
   nodeStatusLabel,
@@ -897,7 +898,7 @@ export function NodeFrame({
             {nodeRun?.stale && again && (
               <button
                 type="button"
-                title={t("orbitStaleHint")}
+                title={t(staleHintKey(nodeRun.staleReason))}
                 onClick={() => restartNode(id)}
                 className="nodrag shrink-0 truncate text-[11.5px] text-tyba-amber hover:underline"
               >

@@ -697,10 +697,20 @@ export interface NodeRun {
   /** Quantas vezes o nó foi reiniciado ou rodado de novo neste run. */
   attempt?: number;
   /**
-   * "↻ para aplicar": uma origem rodou de novo depois que este nó já tinha
-   * começado com o valor antigo. Não reinicia sozinho.
+   * "↻ para aplicar": o nó já começou e algo de que ele depende mudou depois.
+   * Não reinicia sozinho.
    */
   stale?: boolean;
+  /** Por que ficou "↻ para aplicar" (o último motivo, guardado no core). */
+  staleReason?: StaleReason | null;
+}
+
+/** Motivo do "↻ para aplicar": origem rodou de novo, config do nó, ligações ou variável. */
+export type StaleReason = "source" | "config" | "edges" | "variable";
+
+/** A chave i18n da dica do "↻ para aplicar" para o motivo que veio do core. */
+export function staleHintKey(reason: StaleReason | null | undefined): string {
+  return `orbitStaleHint_${reason ?? "source"}`;
 }
 
 /** Quem abriu a página do navegador (título do nó do agente) e quando (ms). */
@@ -886,7 +896,7 @@ export function nodeSession(
 }
 
 /** Tipos de nó que param, reiniciam e rodam de novo pelo ⋯. */
-const CONTROLLED: readonly NodeKind["type"][] = ["agent", "process", "service", "integration"];
+const CONTROLLED: readonly NodeKind["type"][] = ["agent", "process", "service", "integration", "browser"];
 
 /** O que o ⋯ do nó oferece agora. */
 export interface NodeControls {
@@ -914,6 +924,10 @@ export function nodeControls(
     return { stop: false, restart: false, rerun: false };
   }
   const open = run.status === "running";
+  // O navegador não tem sessão: Reiniciar recarrega com a url de agora.
+  if (kind.type === "browser") {
+    return { stop: false, restart: open && n.status !== "waiting" && n.status !== "skipped", rerun: false };
+  }
   return {
     stop: (open && n.status === "running") || nodeSession(kind, run, nodeId, live) !== null,
     restart: open && n.status === "running",

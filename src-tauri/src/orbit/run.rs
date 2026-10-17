@@ -209,11 +209,40 @@ pub struct NodeRun {
     /// subiu: o da sessão velha, morta pelo reinício, não fecha a nova.
     #[serde(default)]
     pub attempt: u32,
-    /// "↻ para aplicar": uma origem deste nó rodou de novo depois que ele já
-    /// tinha começado com o valor antigo. Não reinicia sozinho; some quando
-    /// ele roda de novo.
+    /// "↻ para aplicar": o nó já começou e algo de que ele depende mudou
+    /// depois (ver [`StaleReason`]). Não reinicia sozinho; some quando ele
+    /// roda de novo.
     #[serde(default)]
     pub stale: bool,
+    /// Por que o nó ficou "↻ para aplicar" (o último motivo), para a tela
+    /// explicar a causa certa.
+    #[serde(default)]
+    pub stale_reason: Option<StaleReason>,
+}
+
+/// O motivo do "↻ para aplicar".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum StaleReason {
+    /// Uma origem rodou de novo (ou trocou a url) depois que o nó começou.
+    Source,
+    /// A config do nó mudou no grafo salvo (comando, prompt, pasta, alvo,
+    /// script da integração).
+    Config,
+    /// As ligações que chegam no nó mudaram.
+    Edges,
+    /// Uma variável que o comando, o prompt ou o script usa mudou de valor.
+    Variable,
+}
+
+impl NodeRun {
+    /// Marca "↻ para aplicar" com o motivo. Devolve `true` se mudou algo.
+    fn mark_stale(&mut self, reason: StaleReason) -> bool {
+        let changed = !self.stale || self.stale_reason != Some(reason);
+        self.stale = true;
+        self.stale_reason = Some(reason);
+        changed
+    }
 }
 
 /// A última mensagem que um agente mandou: a tela mostra "→ para X: …".
@@ -266,6 +295,7 @@ impl NodeRun {
             undelivered: None,
             attempt: 0,
             stale: false,
+            stale_reason: None,
         }
     }
 }
@@ -462,7 +492,7 @@ impl Scheduler {
         for d in self.dependents.get(id).cloned().unwrap_or_default() {
             if let Some(dn) = self.run.nodes.get_mut(&d) {
                 if dn.started_at.is_some() {
-                    dn.stale = true;
+                    dn.mark_stale(StaleReason::Source);
                 }
             }
         }
@@ -634,7 +664,7 @@ impl Scheduler {
         for d in &dependents {
             if let Some(dn) = self.run.nodes.get_mut(d) {
                 if dn.started_at.is_some() {
-                    dn.stale = true;
+                    dn.mark_stale(StaleReason::Source);
                 }
             }
         }
@@ -647,16 +677,13 @@ impl Scheduler {
         self.held.remove(id);
     }
 
-    /// A config do nó mudou no grafo salvo com o run aberto: quem já
-    /// começou fica "↻ para aplicar" (a config nova vale quando o dono o
-    /// reinicia); quem ainda espera começa com ela, sem marca. Devolve
-    /// `true` se marcou.
-    pub fn mark_changed(&mut self, id: &str) -> bool {
+    /// A config do nó (ou uma variável que ele usa) mudou no grafo salvo com
+    /// o run aberto: quem já começou fica "↻ para aplicar" com o motivo (a
+    /// config nova vale quando o dono o reinicia); quem ainda espera começa
+    /// com ela, sem marca. Devolve `true` se marcou ou trocou o motivo.
+    pub fn mark_changed(&mut self, id: &str, reason: StaleReason) -> bool {
         match self.run.nodes.get_mut(id) {
-            Some(n) if n.started_at.is_some() && !n.stale => {
-                n.stale = true;
-                true
-            }
+            Some(n) if n.started_at.is_some() => n.mark_stale(reason),
             _ => false,
         }
     }
@@ -697,7 +724,7 @@ impl Scheduler {
             }
             changed = true;
             if n.started_at.is_some() {
-                n.stale = true;
+                n.mark_stale(StaleReason::Edges);
             }
         }
         self.sources = sources;
@@ -905,31 +932,63 @@ pub(super) fn node_label(node: &Node) -> String {
 /// texto vazio e o comando rodava pela metade.
 pub fn missing_variable(graph: &Graph, integrations: &[&Integration]) -> Result<(), String> {
     for node in &graph.nodes {
-        let text = match &node.kind {
-            NodeKind::Process { command, .. } => command.as_str(),
-            NodeKind::Agent { prompt, .. } => prompt.as_str(),
+        let integration = match &node.kind {
             NodeKind::Integration { integration_id, .. } => integrations
                 .iter()
                 .find(|i| &i.id == integration_id)
-                .map_or("", |i| i.script.as_str()),
-            _ => continue,
+                .copied(),
+            _ => None,
         };
-        let empty = crate::snippet::placeholders(text).into_iter().find(|p| {
-            p.default.as_deref().is_none_or(str::is_empty)
-                && graph
-                    .variables
-                    .get(&p.name)
-                    .is_none_or(|v| v.trim().is_empty())
-        });
-        if let Some(p) = empty {
-            return Err(format!(
-                "{}: a variável {{{{{}}}}} está sem valor — preencha em Variáveis antes do ▶",
-                node_label(node),
-                p.name
-            ));
-        }
+        node_missing_variable(node, integration, &graph.variables)?;
     }
     Ok(())
+}
+
+/// O texto que o nó roda e onde entram as variáveis: o comando, o prompt ou
+/// o script da integração (vazio sem ela). Os outros tipos não têm.
+fn run_text<'a>(node: &'a Node, integration: Option<&'a Integration>) -> Option<&'a str> {
+    match &node.kind {
+        NodeKind::Process { command, .. } => Some(command),
+        NodeKind::Agent { prompt, .. } => Some(prompt),
+        NodeKind::Integration { .. } => Some(integration.map_or("", |i| i.script.as_str())),
+        _ => None,
+    }
+}
+
+/// [`missing_variable`] de um nó só, com as variáveis de agora: o ▶, o
+/// reinício e o começo de cada nó usam a mesma régua.
+fn node_missing_variable(
+    node: &Node,
+    integration: Option<&Integration>,
+    variables: &std::collections::BTreeMap<String, String>,
+) -> Result<(), String> {
+    let Some(text) = run_text(node, integration) else {
+        return Ok(());
+    };
+    let empty = crate::snippet::placeholders(text).into_iter().find(|p| {
+        p.default.as_deref().is_none_or(str::is_empty)
+            && variables.get(&p.name).is_none_or(|v| v.trim().is_empty())
+    });
+    match empty {
+        Some(p) => Err(format!(
+            "{}: a variável {{{{{}}}}} está sem valor — preencha em Variáveis antes do ▶",
+            node_label(node),
+            p.name
+        )),
+        None => Ok(()),
+    }
+}
+
+/// [`node_missing_variable`] de um nó do run ativo.
+fn active_missing_variable(a: &Active, id: &str) -> Result<(), String> {
+    let Some(node) = a.graph.nodes.iter().find(|n| n.id == id) else {
+        return Ok(());
+    };
+    let integration = match &node.kind {
+        NodeKind::Integration { integration_id, .. } => a.integrations.get(integration_id),
+        _ => None,
+    };
+    node_missing_variable(node, integration, &a.graph.variables)
 }
 
 /// Id de nó vira nome de pasta: só o que não escapa de `runs/<run>/`.
@@ -1678,22 +1737,35 @@ impl<H: RunHost> Runs<H> {
     /// Começa tudo que ficou pronto, até não sobrar nada pronto.
     fn advance(&self, run_id: &str) {
         loop {
-            let starts = {
+            let (starts, refused) = {
                 let mut active = self.active.lock();
                 let Some(a) = active.get_mut(run_id) else {
                     return;
                 };
                 let ready = a.sched.ready();
                 let t = now();
-                ready
+                let mut refused = false;
+                let starts = ready
                     .iter()
                     .filter_map(|id| {
                         a.sched.mark_running(id, t);
+                        // Variável que ficou sem valor depois do ▶ (o dono
+                        // editou com o run aberto): falha com o motivo, em vez
+                        // de rodar o comando com o buraco.
+                        if let Err(e) = active_missing_variable(a, id) {
+                            a.sched.finish(id, Outcome::failed(e), t);
+                            refused = true;
+                            return None;
+                        }
                         prepare_start(a, id)
                     })
-                    .collect::<Vec<_>>()
+                    .collect::<Vec<_>>();
+                (starts, refused)
             };
             if starts.is_empty() {
+                if refused {
+                    self.publish_current(run_id);
+                }
                 return;
             }
             self.publish_current(run_id);
@@ -1951,11 +2023,31 @@ impl<H: RunHost> Runs<H> {
         let snapshot = (output == OutputKind::Diff)
             .then(|| super::agent::snapshot(&start.node_dir))
             .flatten();
+        // A config com que esta tentativa subiu: o dono pode editar o nó
+        // com o processo rodando, e o fim dele lê o que ele rodou de fato.
+        let config = ExitConfig {
+            out_dir: start.out_dir.clone(),
+            node_dir: start.node_dir.clone(),
+            declared: match &start.node.kind {
+                NodeKind::Process { output, file, .. } => Some((*output, file.clone())),
+                NodeKind::Integration { .. } => start
+                    .integration
+                    .as_ref()
+                    .map(|i| (i.output, i.file.clone())),
+                _ => None,
+            },
+            command: match &start.node.kind {
+                NodeKind::Process { command, .. } => command.clone(),
+                _ => String::new(),
+            },
+            title: start.node.title.clone(),
+            snapshot,
+        };
         let me = self.me.clone();
         let (run, node, attempt) = (run_id.to_string(), start.node.id.clone(), start.attempt);
         let on_exit = Box::new(move || {
             if let Some(runs) = me.upgrade() {
-                runs.process_exited(&run, &node, attempt, snapshot.as_ref());
+                runs.process_exited(&run, &node, attempt, &config);
             }
         });
         let launch = ProcessLaunch {
@@ -3348,11 +3440,32 @@ impl<H: RunHost> Runs<H> {
                  ligado a você no canvas ou que você criou"
             ));
         }
+        // Integração manual roda só pelo ▶ do dono: o agente não a dispara
+        // reiniciando.
+        if self.manual_integration(run_id, node_id) {
+            return Err(format!(
+                "integração manual: só o dono roda — {node_id} espera o ▶ do dono no nó"
+            ));
+        }
         self.restart_node(run_id, node_id)?;
         if process {
             return Ok(self.settle_process(run_id, node_id));
         }
         Ok(serde_json::json!({ "node_id": node_id, "restarted": true }))
+    }
+
+    /// O nó é de integração com gatilho manual, no run ativo.
+    fn manual_integration(&self, run_id: &str, node_id: &str) -> bool {
+        let active = self.active.lock();
+        let Some(a) = active.get(run_id) else {
+            return false;
+        };
+        a.graph.nodes.iter().any(|n| {
+            n.id == node_id
+                && matches!(&n.kind, NodeKind::Integration { integration_id, .. }
+                    if a.integrations.get(integration_id)
+                        .is_some_and(|i| i.trigger == super::Trigger::Manual))
+        })
     }
 
     /// O tipo do nó no grafo do run ativo (o do dono e os criados).
@@ -3453,17 +3566,20 @@ impl<H: RunHost> Runs<H> {
     /// A `out/` da tentativa de antes é limpa antes de subir; quem depende
     /// do nó e já consumiu o valor antigo fica "↻ para aplicar".
     pub fn restart_node(&self, run_id: &str, node_id: &str) -> Result<(), String> {
-        let (session, out_dir) = {
+        let (session, node_dir) = {
             let mut active = self.active.lock();
             let a = active
                 .get_mut(run_id)
                 .ok_or("a execução já fechou: ▶ Executar de novo")?;
+            // O reinício usa as variáveis de agora: a que ficou sem valor
+            // recusa antes de matar a sessão velha.
+            active_missing_variable(a, node_id)?;
             let session = a
                 .sched
                 .rerun(node_id)
                 .map_err(|e| format!("{}: {e}", active_label(a, node_id)))?;
             a.talk.reset_state(node_id);
-            (session, a.dir.join(node_id).join("out"))
+            (session, a.dir.join(node_id))
         };
         // O nó segue segurado (`rerun`): nada o sobe antes de a sessão velha
         // morrer e a `out/` dela sumir.
@@ -3473,12 +3589,17 @@ impl<H: RunHost> Runs<H> {
             }
             self.host.kill(session);
         }
-        let cleared = match std::fs::remove_dir_all(&out_dir) {
-            Ok(()) => Ok(()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(e),
-        }
-        .and_then(|()| create_private_dir(&out_dir));
+        // `in/` e `out/` da tentativa de antes saem: a nova materializa as
+        // entradas de agora, sem sobra de uma ligação que já não existe.
+        let cleared = ["in", "out"].iter().try_for_each(|sub| {
+            let dir = node_dir.join(sub);
+            match std::fs::remove_dir_all(&dir) {
+                Ok(()) => Ok(()),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(e) => Err(e),
+            }
+            .and_then(|()| create_private_dir(&dir))
+        });
         {
             let mut active = self.active.lock();
             if let Some(a) = active.get_mut(run_id) {
@@ -3487,7 +3608,7 @@ impl<H: RunHost> Runs<H> {
                     a.sched.mark_running(node_id, now());
                     a.sched.finish(
                         node_id,
-                        Outcome::failed(format!("limpar a saída anterior: {e}")),
+                        Outcome::failed(format!("limpar a tentativa anterior: {e}")),
                         now(),
                     );
                 }
@@ -3568,7 +3689,7 @@ impl<H: RunHost> Runs<H> {
                             };
                             node.kind = new.kind.clone();
                             if marks {
-                                changed |= a.sched.mark_changed(&node.id);
+                                changed |= a.sched.mark_changed(&node.id, StaleReason::Config);
                             }
                         }
                         Some(_) => {}
@@ -3580,6 +3701,28 @@ impl<H: RunHost> Runs<H> {
                             ) {
                                 removed.push((run_id.clone(), node.id.clone()));
                             }
+                        }
+                    }
+                }
+                // As variáveis do salvo valem no próximo começo (o reinício
+                // inclusive); quem já começou e usa uma que mudou fica "↻
+                // para aplicar".
+                if a.graph.variables != graph.variables {
+                    let old = std::mem::replace(&mut a.graph.variables, graph.variables.clone());
+                    for node in &a.graph.nodes {
+                        let integration = match &node.kind {
+                            NodeKind::Integration { integration_id, .. } => {
+                                a.integrations.get(integration_id)
+                            }
+                            _ => None,
+                        };
+                        let uses_changed = run_text(node, integration).is_some_and(|text| {
+                            crate::snippet::placeholders(text)
+                                .iter()
+                                .any(|p| old.get(&p.name) != graph.variables.get(&p.name))
+                        });
+                        if uses_changed {
+                            changed |= a.sched.mark_changed(&node.id, StaleReason::Variable);
                         }
                     }
                 }
@@ -3633,7 +3776,7 @@ impl<H: RunHost> Runs<H> {
                     .insert(integration.id.clone(), integration.clone());
                 let mut changed = false;
                 for id in &users {
-                    changed |= a.sched.mark_changed(id);
+                    changed |= a.sched.mark_changed(id, StaleReason::Config);
                 }
                 if changed {
                     touched.push(run_id.clone());
@@ -3781,15 +3924,10 @@ impl<H: RunHost> Runs<H> {
     }
 
     /// O PTY do processo fechou: lê o `.exit` e segue o grafo. O diff (git)
-    /// sai fora do lock.
-    fn process_exited(
-        &self,
-        run_id: &str,
-        node_id: &str,
-        attempt: u32,
-        snapshot: Option<&Snapshot>,
-    ) {
-        let (out_dir, node_dir, declared, command, title) = {
+    /// sai fora do lock. A saída declarada, a pasta e o comando são os da
+    /// largada desta tentativa ([`ExitConfig`]), não os do grafo editado.
+    fn process_exited(&self, run_id: &str, node_id: &str, attempt: u32, config: &ExitConfig) {
+        {
             let active = self.active.lock();
             let Some(a) = active.get(run_id) else {
                 return;
@@ -3798,42 +3936,32 @@ impl<H: RunHost> Runs<H> {
             if a.sched.attempt(node_id) != Some(attempt) {
                 return;
             }
-            let Some(node) = a.graph.nodes.iter().find(|n| n.id == node_id) else {
-                return;
-            };
-            let command = match &node.kind {
-                NodeKind::Process { command, .. } => command.clone(),
-                _ => String::new(),
-            };
-            let declared = match &node.kind {
-                NodeKind::Process { output, file, .. } => Some((*output, file.clone())),
-                NodeKind::Integration { integration_id, .. } => a
-                    .integrations
-                    .get(integration_id)
-                    .map(|i| (i.output, i.file.clone())),
-                _ => None,
-            };
-            (
-                a.dir.join(node_id).join("out"),
-                PathBuf::from(a.graph.node_dir(node)),
-                declared,
-                command,
-                node.title.clone(),
-            )
-        };
-        let exit = read_exit(&out_dir);
+        }
+        let ExitConfig {
+            out_dir,
+            node_dir,
+            declared,
+            command,
+            title,
+            snapshot,
+        } = config;
+        let exit = read_exit(out_dir);
         // Caiu: o porquê numa linha (porta ocupada e por quem, ou a última
         // linha do log) para o rodapé do card e para o agente que criou. O
         // `lsof` roda aqui, fora do lock e da main thread.
         let reason = match exit {
             None => Some("o processo terminou sem exit code".to_string()),
             Some(0) => None,
-            Some(_) => super::failure::failure_reason(&out_dir.join("log.txt"), &command, &title),
+            Some(_) => super::failure::failure_reason(&out_dir.join("log.txt"), command, title),
         };
         let outputs = match declared {
-            Some((output, file)) => {
-                process_outputs(output, file.as_deref(), &out_dir, &node_dir, snapshot)
-            }
+            Some((output, file)) => process_outputs(
+                *output,
+                file.as_deref(),
+                out_dir,
+                node_dir,
+                snapshot.as_ref(),
+            ),
             None => HashMap::new(),
         };
         {
@@ -3938,6 +4066,19 @@ fn service_outcome(out_dir: &Path, ready: ServiceReady) -> Outcome {
         url: ready.url,
         ..Outcome::default()
     }
+}
+
+/// O que o fim do processo precisa da largada da tentativa: o grafo do run
+/// pode ter sido editado depois, e a config nova só vale no reinício.
+struct ExitConfig {
+    out_dir: PathBuf,
+    node_dir: PathBuf,
+    /// A saída declarada (processo ou integração) e o arquivo dela.
+    declared: Option<(OutputKind, Option<String>)>,
+    /// O comando do processo (sem as variáveis), para o motivo da falha.
+    command: String,
+    title: String,
+    snapshot: Option<Snapshot>,
 }
 
 /// O que o fim do primeiro turno precisa da largada do agente.
@@ -7905,6 +8046,7 @@ mod tests {
         assert_eq!(s.rerun("a"), Ok(None));
         let c = &s.run().nodes["c"];
         assert!(c.stale);
+        assert_eq!(c.stale_reason, Some(StaleReason::Source));
         assert_eq!(c.status, NodeStatus::Running, "não reinicia sozinho");
         assert!(!s.run().nodes["b"].stale, "b não depende de a");
         assert!(!s.run().nodes["d"].stale, "d ainda não começou");
@@ -7914,6 +8056,7 @@ mod tests {
         assert!(s.run().nodes["c"].stale, "a marca fica até c rodar de novo");
         assert_eq!(s.rerun("c"), Ok(None));
         assert!(!s.run().nodes["c"].stale);
+        assert_eq!(s.run().nodes["c"].stale_reason, None);
         assert_eq!(s.run().nodes["c"].attempt, 1);
     }
 
@@ -8100,6 +8243,7 @@ mod tests {
         g.edges.push(edge("e4", "a", "d", EdgeKind::Log));
         assert!(s.rewire(&g.edges));
         assert!(s.run().nodes["c"].stale, "c já tinha começado");
+        assert_eq!(s.run().nodes["c"].stale_reason, Some(StaleReason::Edges));
         assert!(!s.run().nodes["d"].stale, "d ainda não começou");
         assert!(s.ready().is_empty(), "d segue esperando c");
         s.finish("c", ok(), 4);
@@ -8139,9 +8283,14 @@ mod tests {
     fn mark_changed_only_marks_who_already_started() {
         let mut s = Scheduler::new(&diamond(), "r".into(), 0);
         s.mark_running("a", 1);
-        assert!(s.mark_changed("a"));
-        assert!(!s.mark_changed("a"), "já marcado");
-        assert!(!s.mark_changed("c"), "espera: começa com a config nova");
+        assert!(s.mark_changed("a", StaleReason::Config));
+        assert!(!s.mark_changed("a", StaleReason::Config), "já marcado");
+        assert!(s.mark_changed("a", StaleReason::Variable), "motivo novo");
+        assert_eq!(s.run().nodes["a"].stale_reason, Some(StaleReason::Variable));
+        assert!(
+            !s.mark_changed("c", StaleReason::Config),
+            "espera: começa com a config nova"
+        );
         assert!(!s.run().nodes["c"].stale);
     }
 
@@ -8188,6 +8337,7 @@ mod tests {
         assert!(!host.pool.is_alive(gone_session.parse().unwrap()));
         let p = &r.nodes["p"];
         assert!(p.stale, "config nova espera o reinício");
+        assert_eq!(p.stale_reason, Some(StaleReason::Config));
         assert_eq!(p.session_id.as_deref(), Some(p_session.as_str()));
         assert!(host.pool.is_alive(p_session.parse().unwrap()));
         assert_eq!(r.nodes["q"].status, NodeStatus::Waiting, "agora espera p");
@@ -8339,6 +8489,302 @@ mod tests {
         let r = runs.get(&run.id).unwrap();
         assert_eq!(r.nodes["p"].attempt, 1);
         assert_eq!(r.nodes["solto"].attempt, 0);
+        runs.stop(&run.id).unwrap();
+    }
+
+    fn wait_until(
+        runs: &Runs<Arc<PtyHost>>,
+        run: &str,
+        what: &str,
+        ok: impl Fn(&Run) -> bool,
+    ) -> Run {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            let r = runs.get(run).unwrap();
+            if ok(&r) {
+                return r;
+            }
+            assert!(Instant::now() < deadline, "{what}: {r:?}");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    fn set_command(g: &mut Graph, id: &str, text: &str) {
+        let n = g.nodes.iter_mut().find(|n| n.id == id).unwrap();
+        if let NodeKind::Process { command, .. } = &mut n.kind {
+            *command = text.into();
+        }
+    }
+
+    /// Variável salva com o run aberto chega ao reinício: quem a usa e já
+    /// começou fica "↻ para aplicar" (motivo: variável), e o reinício roda
+    /// o valor novo. Variável sem valor nunca vira texto vazio no comando
+    /// (`rm -rf {{out}}/cache` → `rm -rf /cache`): o reinício recusa com o
+    /// título, e o nó que começa depois falha sem rodar.
+    #[cfg(unix)]
+    #[test]
+    fn saved_variables_reach_the_restart_and_an_empty_one_never_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let (runs, host, _app) = pty_runs(dir.path().join("runs"));
+        let mark = dir.path().join("mark");
+        let mut g = graph(
+            vec![
+                process("p", "echo rm -rf {{out}}/cache; sleep 30"),
+                process("w", "sleep 30"),
+                process(
+                    "gate",
+                    &format!(
+                        "while [ ! -f '{m}' ]; do sleep 0.05; done",
+                        m = mark.display()
+                    ),
+                ),
+                process("q", "true"),
+            ],
+            vec![edge("e1", "gate", "q", EdgeKind::Log)],
+        );
+        g.variables.insert("out".into(), "/tmp/velho".into());
+        runs.store.save_orbit_graph(&g, true, None).unwrap();
+        let run = runs.start_now(g.clone(), vec![]).unwrap();
+        let r = wait_until(&runs, &run.id, "p e w sobem", |r| {
+            r.nodes["p"].session_id.is_some() && r.nodes["w"].session_id.is_some()
+        });
+        let w_session = r.nodes["w"].session_id.clone().unwrap();
+
+        let mut edited = g.clone();
+        edited.variables.insert("out".into(), "/tmp/novo".into());
+        set_command(&mut edited, "w", "echo rm -rf {{vazia}}/cache");
+        set_command(&mut edited, "q", "echo rm -rf {{vazia}}/cache");
+        runs.store.save_orbit_graph(&edited, true, None).unwrap();
+        runs.graph_saved(&edited);
+
+        let r = runs.get(&run.id).unwrap();
+        assert_eq!(
+            r.nodes["p"].stale_reason,
+            Some(StaleReason::Variable),
+            "{r:?}"
+        );
+        assert_eq!(r.nodes["w"].stale_reason, Some(StaleReason::Config));
+        assert!(!r.nodes["gate"].stale, "gate não usa variável");
+
+        let err = runs.restart_node(&run.id, "w").unwrap_err();
+        assert!(err.contains("\"w\"") && err.contains("{{vazia}}"), "{err}");
+        let r = runs.get(&run.id).unwrap();
+        assert_eq!(r.nodes["w"].attempt, 0, "recusa antes de matar");
+        assert!(host.pool.is_alive(w_session.parse().unwrap()));
+
+        runs.restart_node(&run.id, "p").unwrap();
+        let log = dir
+            .path()
+            .join("runs")
+            .join(&run.id)
+            .join("p")
+            .join("out")
+            .join("log.txt");
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            let text = std::fs::read_to_string(&log).unwrap_or_default();
+            if text.contains("rm -rf /tmp/novo/cache") {
+                break;
+            }
+            assert!(Instant::now() < deadline, "sem o valor novo: {text:?}");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+
+        std::fs::write(&mark, "").unwrap();
+        let r = wait_status(&runs, &run.id, "q", NodeStatus::Failed);
+        let q = &r.nodes["q"];
+        assert!(
+            q.reason
+                .as_deref()
+                .is_some_and(|m| m.contains("\"q\"") && m.contains("{{vazia}}")),
+            "{q:?}"
+        );
+        assert!(q.session_id.is_none(), "não subiu o comando com o buraco");
+        runs.stop(&run.id).unwrap();
+    }
+
+    /// `orbit_restart_node` não dispara integração manual: esperando o ▶ ou
+    /// já rodando, o agente recebe a recusa; o dono reinicia normalmente.
+    #[cfg(unix)]
+    #[test]
+    fn agent_never_runs_a_manual_integration() {
+        use serde_json::json;
+        let dir = tempfile::tempdir().unwrap();
+        let (runs, host, _app) = pty_runs(dir.path().join("runs"));
+        let mut a = orchestrator("a");
+        a.title = "Front".into();
+        let g = graph(
+            vec![a, integration_node("m", "manual")],
+            vec![edge("d1", "a", "m", EdgeKind::Diff)],
+        );
+        runs.store.save_orbit_graph(&g, true, None).unwrap();
+        let run = runs
+            .start_now(g, vec![integration("manual", "sleep 30", Trigger::Manual)])
+            .unwrap();
+        wait_orchestrating(&runs, &run.id, "a");
+        let front = tools_of(&host, "Front");
+        let refused = |front: &ToolHandler| {
+            let err = front
+                .call("orbit_restart_node", &json!({"node": "m"}))
+                .unwrap_err();
+            assert!(err.contains("integração manual: só o dono roda"), "{err}");
+        };
+        refused(&front);
+        assert_eq!(
+            runs.get(&run.id).unwrap().nodes["m"].status,
+            NodeStatus::Waiting
+        );
+
+        runs.run_node(&run.id, "m").unwrap();
+        wait_status(&runs, &run.id, "m", NodeStatus::Running);
+        refused(&front);
+        assert_eq!(runs.get(&run.id).unwrap().nodes["m"].attempt, 0);
+
+        runs.restart_node(&run.id, "m").unwrap();
+        wait_attempt(&runs, &run.id, "m", 1, NodeStatus::Running);
+        runs.stop(&run.id).unwrap();
+    }
+
+    /// A url impressa com segredo no caminho vira só `scheme://host:porta`
+    /// no nó, no `url.txt` e no banco.
+    #[cfg(unix)]
+    #[test]
+    fn printed_url_with_a_secret_never_reaches_the_node() {
+        let dir = tempfile::tempdir().unwrap();
+        let (runs, _host, _app) = pty_runs(dir.path().join("runs"));
+        let command = format!(
+            "echo 'pronto: http://localhost:5998/callback/{key}?token=x'; sleep 30",
+            key = fake_key()
+        );
+        let run = runs
+            .start_now(graph(vec![process("p", &command)], vec![]), vec![])
+            .unwrap();
+        let r = wait_until(&runs, &run.id, "sem url", |r| r.nodes["p"].url.is_some());
+        assert_eq!(r.nodes["p"].url.as_deref(), Some("http://localhost:5998"));
+        let out = dir.path().join("runs").join(&run.id).join("p").join("out");
+        assert_eq!(
+            std::fs::read_to_string(out.join("url.txt")).unwrap(),
+            "http://localhost:5998"
+        );
+        let stored = runs.store.get_orbit_run(&run.id).unwrap().unwrap();
+        assert_eq!(
+            stored.nodes["p"].url.as_deref(),
+            Some("http://localhost:5998")
+        );
+        runs.stop(&run.id).unwrap();
+    }
+
+    /// O fim do processo lê a saída declarada com que a tentativa subiu: o
+    /// dono trocar a saída (e o comando) com ele rodando só vale no reinício.
+    #[cfg(unix)]
+    #[test]
+    fn process_end_uses_the_config_it_started_with() {
+        let dir = tempfile::tempdir().unwrap();
+        let (runs, _host, _app) = pty_runs(dir.path().join("runs"));
+        let mark = dir.path().join("mark");
+        let g = graph(
+            vec![
+                process(
+                    "p",
+                    &format!(
+                        "while [ ! -f '{m}' ]; do sleep 0.05; done; echo fim",
+                        m = mark.display()
+                    ),
+                ),
+                process("keep", "sleep 30"),
+            ],
+            vec![],
+        );
+        runs.store.save_orbit_graph(&g, true, None).unwrap();
+        let run = runs.start_now(g.clone(), vec![]).unwrap();
+        wait_until(&runs, &run.id, "p sobe", |r| {
+            r.nodes["p"].session_id.is_some()
+        });
+
+        let mut edited = g.clone();
+        let other = tempfile::tempdir().unwrap();
+        edited.nodes[0].kind = NodeKind::Process {
+            command: "exit 7".into(),
+            output: OutputKind::Json,
+            file: None,
+            dir: other.path().to_string_lossy().into_owned(),
+        };
+        runs.store.save_orbit_graph(&edited, true, None).unwrap();
+        runs.graph_saved(&edited);
+        std::fs::write(&mark, "").unwrap();
+
+        let r = wait_status(&runs, &run.id, "p", NodeStatus::Done);
+        let p = &r.nodes["p"];
+        assert_eq!(p.exit_code, Some(0), "{r:?}");
+        assert!(p.outputs.contains_key(&EdgeKind::Log), "{p:?}");
+        assert!(!p.outputs.contains_key(&EdgeKind::Json), "{p:?}");
+        assert!(p.stale, "a config nova espera o reinício");
+        runs.stop(&run.id).unwrap();
+    }
+
+    /// O navegador que ficou com a url velha (a origem rodou de novo e
+    /// imprimiu outra) aplica a nova no reinício.
+    #[cfg(unix)]
+    #[test]
+    fn restarting_the_browser_applies_the_new_url() {
+        let dir = tempfile::tempdir().unwrap();
+        let (runs, _host, _app) = pty_runs(dir.path().join("runs"));
+        let mark = dir.path().join("mark");
+        let command = format!(
+            "if [ -f '{m}' ]; then echo http://localhost:4102/; else touch '{m}'; \
+             echo http://localhost:4101/; fi; sleep 30",
+            m = mark.display()
+        );
+        let g = graph(
+            vec![process("p", &command), browser("b", "")],
+            vec![edge("u", "p", "b", EdgeKind::Url)],
+        );
+        let run = runs.start_now(g, vec![]).unwrap();
+        let r = wait_status(&runs, &run.id, "b", NodeStatus::Done);
+        assert_eq!(r.nodes["b"].url.as_deref(), Some("http://localhost:4101/"));
+
+        runs.restart_node(&run.id, "p").unwrap();
+        let r = wait_until(&runs, &run.id, "p com a url nova", |r| {
+            r.nodes["p"].url.as_deref() == Some("http://localhost:4102/")
+        });
+        let b = &r.nodes["b"];
+        assert_eq!(b.stale_reason, Some(StaleReason::Source), "{b:?}");
+        assert_eq!(b.url.as_deref(), Some("http://localhost:4101/"));
+
+        runs.restart_node(&run.id, "b").unwrap();
+        let r = wait_attempt(&runs, &run.id, "b", 1, NodeStatus::Done);
+        let b = &r.nodes["b"];
+        assert_eq!(b.url.as_deref(), Some("http://localhost:4102/"), "{r:?}");
+        assert!(!b.stale);
+        runs.stop(&run.id).unwrap();
+    }
+
+    /// O reinício limpa `in/` além da `out/`: a entrada de antes não sobra
+    /// para a tentativa nova, que materializa as de agora.
+    #[cfg(unix)]
+    #[test]
+    fn restart_clears_the_inputs_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let (runs, _host, _app) = pty_runs(dir.path().join("runs"));
+        let g = graph(
+            vec![
+                process("p", "echo oi"),
+                process("q", "cat \"$TYBA_IN/log.txt\"; sleep 30"),
+            ],
+            vec![edge("e1", "p", "q", EdgeKind::Log)],
+        );
+        let run = runs.start_now(g, vec![]).unwrap();
+        wait_until(&runs, &run.id, "q sobe", |r| {
+            r.nodes["q"].session_id.is_some()
+        });
+        let in_dir = dir.path().join("runs").join(&run.id).join("q").join("in");
+        std::fs::write(in_dir.join("sobra.txt"), "velho").unwrap();
+        runs.restart_node(&run.id, "q").unwrap();
+        assert!(!in_dir.join("sobra.txt").exists());
+        wait_until(&runs, &run.id, "q de novo", |r| {
+            r.nodes["q"].attempt == 1 && r.nodes["q"].session_id.is_some()
+        });
+        assert!(in_dir.join("log.txt").is_file());
         runs.stop(&run.id).unwrap();
     }
 }

@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 
 import {
   EMPTY_RUN_VIEW,
@@ -8,6 +9,7 @@ import {
   formatDuration,
   newNode,
   nodeControls,
+  staleHintKey,
   nodeElapsed,
   nodeStatusLabel,
   runNumber,
@@ -326,5 +328,28 @@ describe("nodeControls", () => {
     expect(nodeControls(procKind, of("running"), "p", false).stop).toBe(false);
     expect(nodeControls(procKind, null, "p", true).restart).toBe(false);
     expect(nodeControls(noteKind, of("done"), "p", true).rerun).toBe(false);
+  });
+
+  test("navegador: Reiniciar recarrega com a url de agora, sem Parar", () => {
+    const browserKind = { type: "browser", url: "" } as const;
+    expect(nodeControls(browserKind, of("done"), "p", true)).toEqual({ stop: false, restart: true, rerun: false });
+    expect(nodeControls(browserKind, of("failed"), "p", true).restart).toBe(true);
+    expect(nodeControls(browserKind, of("waiting"), "p", true).restart).toBe(false);
+    expect(nodeControls(browserKind, of("done", { status: "done" }), "p", true).restart).toBe(false);
+  });
+});
+
+describe("dica do ↻ para aplicar", () => {
+  // O módulo de i18n lê `localStorage` ao carregar; sem DOM, a checagem é
+  // pelo texto do arquivo: cada motivo tem a dica em pt-BR e em inglês.
+  test("cada motivo do core tem o texto dele, em pt-BR e inglês", () => {
+    const source = readFileSync(new URL("../i18n/index.ts", import.meta.url), "utf8");
+    for (const reason of ["source", "config", "edges", "variable"] as const) {
+      const key = staleHintKey(reason);
+      expect(key).toBe(`orbitStaleHint_${reason}`);
+      expect(source.split(`${key}:`).length - 1).toBe(2);
+    }
+    expect(staleHintKey(undefined)).toBe("orbitStaleHint_source");
+    expect(staleHintKey(null)).toBe("orbitStaleHint_source");
   });
 });

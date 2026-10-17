@@ -282,12 +282,32 @@ pub fn printed_url(line: &str) -> Option<String> {
             }
             url = trimmed;
         }
-        let url = any_interface_to_localhost(url);
+        let url = without_secrets(&any_interface_to_localhost(url));
         if super::service::is_local_url(&url) {
             return Some(url);
         }
     }
     None
+}
+
+/// A url impressa vira url do nó (vai ao `url.txt`, ao banco, à ligação e ao
+/// `orbit_node_status`): fica só `scheme://host:porta/caminho`, sem query nem
+/// fragmento (onde mora o `?token=` do Jupyter e do login), e sem o caminho
+/// quando ele carrega um segredo (`/callback/sk-…`).
+fn without_secrets(url: &str) -> String {
+    let Some(i) = url.find("://") else {
+        return url.to_string();
+    };
+    let rest = &url[i + 3..];
+    let rest = &rest[..rest.find(['?', '#']).unwrap_or(rest.len())];
+    let authority_end = rest.find('/').unwrap_or(rest.len());
+    let path = &rest[authority_end..];
+    let keep = if crate::session::redact::contains_secret(path) {
+        &rest[..authority_end]
+    } else {
+        rest
+    };
+    format!("{}{keep}", &url[..i + 3])
 }
 
 fn any_interface_to_localhost(url: &str) -> String {
@@ -476,6 +496,38 @@ mod tests {
         ];
         for (line, want) in cases {
             assert_eq!(printed_url(line).as_deref(), want, "{line}");
+        }
+    }
+
+    /// A url impressa com token (Jupyter, callback de login) não vira url
+    /// do nó com o segredo: sai sem query nem fragmento, e sem o caminho
+    /// quando ele é o segredo.
+    #[test]
+    fn printed_url_drops_query_fragment_and_secret_path() {
+        let jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJlX2Zha2U";
+        let key = "sk-abcdefghij0123456789ABCD";
+        let cases = [
+            (
+                format!("Jupyter em http://localhost:8888/lab?token={jwt}"),
+                "http://localhost:8888/lab".to_string(),
+            ),
+            (
+                format!("abra http://127.0.0.1:3000/?token={jwt}#x"),
+                "http://127.0.0.1:3000/".to_string(),
+            ),
+            (
+                format!("callback: http://localhost:5173/callback/{key}"),
+                "http://localhost:5173".to_string(),
+            ),
+            (
+                "http://0.0.0.0:8000/docs#/rotas".to_string(),
+                "http://localhost:8000/docs".to_string(),
+            ),
+        ];
+        for (line, want) in cases {
+            let got = printed_url(&line).unwrap();
+            assert_eq!(got, want, "{line}");
+            assert!(!crate::session::redact::contains_secret(&got), "{got}");
         }
     }
 

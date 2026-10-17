@@ -1763,8 +1763,12 @@ const resources = {
       orbitWholeLogEmpty: "Log vazio.",
       orbitStopNode: "Parar",
       orbitStale: "↻ para aplicar",
-      orbitStaleHint:
+      orbitStaleHint_source:
         "Uma origem deste nó rodou de novo depois que ele começou: reinicie para usar o valor novo",
+      orbitStaleHint_config: "A configuração deste nó mudou depois que ele começou: reinicie para aplicar",
+      orbitStaleHint_edges: "As ligações que chegam neste nó mudaram depois que ele começou: reinicie para aplicar",
+      orbitStaleHint_variable:
+        "Uma variável que este nó usa mudou de valor depois que ele começou: reinicie para aplicar",
       orbitRestartError: "Não reiniciou o nó: {{error}}",
       orbitNodeStopError: "Não parou o nó: {{error}}",
       orbitSwapRole: "Trocar papel",
@@ -4222,7 +4226,10 @@ const resources = {
       orbitWholeLogEmpty: "Empty log.",
       orbitStopNode: "Stop",
       orbitStale: "↻ to apply",
-      orbitStaleHint: "A source of this node ran again after it started: restart it to use the new value",
+      orbitStaleHint_source: "A source of this node ran again after it started: restart it to use the new value",
+      orbitStaleHint_config: "This node's settings changed after it started: restart it to apply them",
+      orbitStaleHint_edges: "The links into this node changed after it started: restart it to apply them",
+      orbitStaleHint_variable: "A variable this node uses changed after it started: restart it to apply it",
       orbitRestartError: "Did not restart the node: {{error}}",
       orbitNodeStopError: "Did not stop the node: {{error}}",
       orbitSwapRole: "Change role",

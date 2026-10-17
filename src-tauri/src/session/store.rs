@@ -5071,6 +5071,7 @@ mod tests {
             inbox_from: Default::default(),
             attempt: 0,
             stale: false,
+            stale_reason: None,
         };
         let path = dir.path().join("tyba.db");
         let graph = Graph {
