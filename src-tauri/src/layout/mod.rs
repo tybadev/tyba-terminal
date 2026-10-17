@@ -1626,6 +1626,36 @@ impl LayoutManager {
         true
     }
 
+    /// O painel Agentes desta sessão está aberto em algum workspace?
+    pub fn agents_panel_open(&self, session: SessionId) -> bool {
+        let wanted = agents_view(session);
+        self.inner
+            .read()
+            .workspaces
+            .iter()
+            .any(|ws| ws.side_view.as_deref() == Some(wanted.as_str()))
+    }
+
+    /// Fecha o painel Agentes desta sessão onde ele estiver aberto. Devolve
+    /// `true` se fechou algum — outra view no lugar dele não é tocada.
+    pub fn close_agents_panel(&self, session: SessionId) -> bool {
+        let wanted = agents_view(session);
+        let mut inner = self.inner.write();
+        let mut closed = false;
+        for ws in inner.workspaces.iter_mut() {
+            if ws.side_view.as_deref() == Some(wanted.as_str()) {
+                ws.side_view = None;
+                ws.side_expanded = false;
+                closed = true;
+            }
+        }
+        drop(inner);
+        if closed {
+            let _ = self.persist();
+        }
+        closed
+    }
+
     pub fn open_agent_viewer(&self, session: SessionId) -> Result<bool, LayoutError> {
         let mut inner = self.inner.write();
         let active_ws = inner.active.ok_or(LayoutError::NoActiveWorkspace)?;
@@ -3093,6 +3123,28 @@ mod tests {
         assert!(
             mgr.ensure_agents_panel(s),
             "já aberto conta como coordenado"
+        );
+    }
+
+    #[test]
+    fn close_agents_panel_closes_only_the_agents_view() {
+        let mgr = manager();
+        let s = sid();
+        mgr.create_workspace("api", None, s).unwrap();
+
+        assert!(mgr.ensure_agents_panel(s));
+        assert!(mgr.agents_panel_open(s));
+        assert!(mgr.close_agents_panel(s));
+        assert!(!mgr.agents_panel_open(s));
+        assert!(mgr.state().workspaces[0].side_view.is_none());
+
+        // O dono trocou para o diff: o fechamento automático não toca nele.
+        mgr.open_workspace_side_view(s, &format!("diff:{s}"))
+            .unwrap();
+        assert!(!mgr.close_agents_panel(s));
+        assert_eq!(
+            mgr.state().workspaces[0].side_view,
+            Some(format!("diff:{s}"))
         );
     }
 

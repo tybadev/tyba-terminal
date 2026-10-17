@@ -649,10 +649,35 @@ pub(crate) fn coordinate_subagent_viewer(
         state.subagents.mark_coordinated(session);
         return;
     }
+    let was_open = state.layout.agents_panel_open(session);
     if state.layout.ensure_agents_panel(session) {
         state.subagents.mark_coordinated(session);
+        if !was_open {
+            state.subagents.note_panel_auto_opened(session);
+        }
         emit_layout(app, &state);
     }
+}
+
+/// Tick do fechamento automático do painel Agentes: o relógio mora no
+/// `SubagentTracker`; aqui só se aplica o que venceu. Fecha junto os splits
+/// de viewer da sessão — viewer e painel são uma feature só.
+fn spawn_agents_panel_closer(app: AppHandle) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        let state = app.state::<AppState>();
+        let due = state.subagents.due_panel_closes(approvals::now_ms());
+        let mut changed = false;
+        for session in due {
+            changed |= state.layout.close_agents_panel(session);
+            for pane in state.layout.agent_viewer_panes(session) {
+                changed |= state.layout.close_pane(pane).is_ok();
+            }
+        }
+        if changed {
+            emit_layout(&app, &state);
+        }
+    });
 }
 
 fn gc_host(state: &State<'_, AppState>, alias: &str) {
@@ -7352,24 +7377,17 @@ fn open_agents_panel(
         .layout
         .open_workspace_side_view(id, &layout::agents_view(id))
         .map_err(|e| e.to_string())?;
+    state.subagents.keep_panel(id);
     close_orphaned_files_panel(&state, previous, None);
     emit_layout(&app, &state);
     Ok(())
 }
 
-/// Fecha os splits de viewer de subagente da sessão — o par do auto-fechar do
-/// painel Agentes no fim da rodada: viewer e painel são uma feature só.
+/// O dono mexeu no painel Agentes (clicou, rolou, expandiu): ele não fecha
+/// mais sozinho. O front manda com throttle.
 #[tauri::command]
-fn close_agent_viewers(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    session_id: SessionId,
-) -> Result<(), String> {
-    for pane in state.layout.agent_viewer_panes(session_id) {
-        let _ = state.layout.close_pane(pane);
-    }
-    emit_layout(&app, &state);
-    Ok(())
+fn agents_panel_touched(state: State<'_, AppState>, session_id: SessionId) {
+    state.subagents.keep_panel(session_id);
 }
 
 #[tauri::command]
@@ -9170,6 +9188,8 @@ pub fn run() {
                 }
             }
 
+            spawn_agents_panel_closer(app.handle().clone());
+
             // Fim de subagente async detectado por arquivo desce a sessão a Idle
             // — mas só se ela ainda estiver segurada em Running (não pisa em
             // AwaitingInput/Exited nem em turno novo já iniciado).
@@ -9486,7 +9506,7 @@ pub fn run() {
             resume_shell_conversation,
             dismiss_shell_resume_offer,
             open_subagent_viewer,
-            close_agent_viewers,
+            agents_panel_touched,
             agent_repo_config,
             set_agent_config_consent,
             set_app_menu,

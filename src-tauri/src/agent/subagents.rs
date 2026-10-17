@@ -34,6 +34,10 @@ const MAX_SETTLED_RUNS: usize = 40;
 /// Quantas ações anteriores o painel mostra embaixo do AGORA.
 const MAX_RECENT_ACTIVITY: usize = 2;
 
+/// Quanto o painel Agentes aberto sozinho fica na tela depois que a rodada
+/// assenta, antes de o core fechá-lo.
+pub const PANEL_AUTO_CLOSE_MS: u64 = 10_000;
+
 /// Um `agent_id` real de subagente do Claude Code é hexadecimal (17 chars nesta
 /// máquina). Item de fila / prompt enfileirado não carrega um id assim — o gate
 /// evita transformar stop espúrio em entrada fantasma no painel.
@@ -244,6 +248,13 @@ pub(crate) struct SessionSubagents {
     orchestrator_idle_summary: Option<String>,
     /// Rodada corrente. 0 antes do primeiro subagente.
     round: u32,
+    /// O painel Agentes aberto agora foi aberto pela coordenação (não pelo
+    /// dono) e o dono ainda não mexeu nele. Só esse painel fecha sozinho.
+    panel_auto_open: bool,
+    /// Desde quando (rodada, ms) a rodada corrente está assentada, enquanto
+    /// `panel_auto_open`. A rodada no par faz uma rodada nova inteira entre
+    /// dois ticks reiniciar o relógio.
+    panel_settled_since: Option<(u32, u64)>,
 }
 
 impl SessionSubagents {
@@ -267,13 +278,7 @@ impl SessionSubagents {
     /// o próprio placeholder da rodada nova (`push_pending` → `promote`) de
     /// abrir outra rodada.
     fn rearm_for_new_round(&mut self) {
-        let current = self.runs.iter().filter(|run| run.round == self.round);
-        let (mut any_done, mut any_running) = (false, false);
-        for run in current {
-            any_done |= run.status == SubagentStatus::Done;
-            any_running |= run.status == SubagentStatus::Running;
-        }
-        let round_settled = any_done && !any_running;
+        let round_settled = self.current_round_settled();
         if self.round == 0 || round_settled {
             self.round += 1;
         }
@@ -286,6 +291,45 @@ impl SessionSubagents {
             self.orchestrator_idle_summary = None;
             self.trim_settled();
         }
+    }
+
+    fn current_round_settled(&self) -> bool {
+        let current = self.runs.iter().filter(|run| run.round == self.round);
+        let (mut any_done, mut any_running) = (false, false);
+        for run in current {
+            any_done |= run.status == SubagentStatus::Done;
+            any_running |= run.status == SubagentStatus::Running;
+        }
+        any_done && !any_running
+    }
+
+    /// Relógio do fechamento automático. Painel aberto sozinho + rodada
+    /// assentada há `PANEL_AUTO_CLOSE_MS` → `true` (uma vez: o painel deixa
+    /// de ser "automático"). Rodada que volta a rodar zera o relógio.
+    fn panel_close_due(&mut self, now: u64) -> bool {
+        if !self.panel_auto_open || !self.current_round_settled() {
+            self.panel_settled_since = None;
+            return false;
+        }
+        let since = match self.panel_settled_since {
+            Some((round, since)) if round == self.round => since,
+            _ => {
+                self.panel_settled_since = Some((self.round, now));
+                now
+            }
+        };
+        if now.saturating_sub(since) < PANEL_AUTO_CLOSE_MS {
+            return false;
+        }
+        self.keep_panel();
+        true
+    }
+
+    /// O painel passou a ser do dono (abriu, mexeu ou fechou): não fecha
+    /// sozinho.
+    fn keep_panel(&mut self) {
+        self.panel_auto_open = false;
+        self.panel_settled_since = None;
     }
 
     /// Descarta os `Done` mais antigos além do teto. Nunca toca em ativo.
@@ -1000,7 +1044,36 @@ impl SubagentTracker {
         let mut sessions = self.sessions.lock().expect("subagents lock");
         if let Some(entry) = sessions.get_mut(&session) {
             entry.panel_disarmed = true;
+            entry.keep_panel();
         }
+    }
+
+    /// A coordenação acabou de abrir o painel desta sessão (não estava
+    /// aberto): ele fecha sozinho quando a rodada assentar.
+    pub fn note_panel_auto_opened(&self, session: SessionId) {
+        let mut sessions = self.sessions.lock().expect("subagents lock");
+        if let Some(entry) = sessions.get_mut(&session) {
+            entry.panel_auto_open = true;
+            entry.panel_settled_since = None;
+        }
+    }
+
+    /// O dono abriu o painel ou mexeu nele: fica até ele fechar.
+    pub fn keep_panel(&self, session: SessionId) {
+        let mut sessions = self.sessions.lock().expect("subagents lock");
+        if let Some(entry) = sessions.get_mut(&session) {
+            entry.keep_panel();
+        }
+    }
+
+    /// Sessões cujo painel aberto sozinho deve fechar agora. `now` injetável
+    /// para os testes do relógio; o tick do core passa `now_ms()`.
+    pub fn due_panel_closes(&self, now: u64) -> Vec<SessionId> {
+        let mut sessions = self.sessions.lock().expect("subagents lock");
+        sessions
+            .iter_mut()
+            .filter_map(|(id, entry)| entry.panel_close_due(now).then_some(*id))
+            .collect()
     }
 
     /// Devolve `Some(summary)` quando o stop deste subagente deixou a sessão
@@ -2221,6 +2294,136 @@ mod tests {
             None,
         );
         assert!(after.is_none());
+    }
+
+    /// Rodada com um subagente que já começou e terminou, painel aberto pela
+    /// coordenação. Devolve o tracker e a sessão.
+    fn settled_auto_panel(
+        handle: &tauri::AppHandle<tauri::test::MockRuntime>,
+    ) -> (SubagentTracker, SessionId) {
+        let tracker = SubagentTracker::new();
+        let session = SessionId::new_v4();
+        tracker.register_session(session);
+        tracker
+            .on_subagent_started(handle, session, "a1".into(), "explorer".into(), None, None)
+            .expect("rodada 1 coordena");
+        tracker.mark_coordinated(session);
+        tracker.note_panel_auto_opened(session);
+        assert!(tracker.due_panel_closes(0).is_empty(), "rodando não fecha");
+        tracker.on_subagent_stopped(handle, session, "a1".into(), None, None);
+        (tracker, session)
+    }
+
+    #[test]
+    fn settled_round_closes_auto_panel_after_the_delay_once() {
+        let app = tauri::test::mock_app();
+        let (tracker, session) = settled_auto_panel(app.handle());
+
+        assert!(tracker.due_panel_closes(1_000).is_empty(), "relógio começa");
+        assert!(tracker
+            .due_panel_closes(1_000 + PANEL_AUTO_CLOSE_MS - 1)
+            .is_empty());
+        assert_eq!(
+            tracker.due_panel_closes(1_000 + PANEL_AUTO_CLOSE_MS),
+            vec![session]
+        );
+        assert!(
+            tracker
+                .due_panel_closes(1_000 + 2 * PANEL_AUTO_CLOSE_MS)
+                .is_empty(),
+            "fecha uma vez só"
+        );
+    }
+
+    #[test]
+    fn owner_touch_keeps_the_auto_panel_open() {
+        let app = tauri::test::mock_app();
+        let (tracker, session) = settled_auto_panel(app.handle());
+
+        assert!(tracker.due_panel_closes(1_000).is_empty());
+        tracker.keep_panel(session); // clicou, rolou, expandiu
+        assert!(tracker
+            .due_panel_closes(1_000 + 10 * PANEL_AUTO_CLOSE_MS)
+            .is_empty());
+    }
+
+    #[test]
+    fn new_round_before_the_delay_cancels_the_close() {
+        let app = tauri::test::mock_app();
+        let handle = app.handle();
+        let (tracker, session) = settled_auto_panel(handle);
+
+        assert!(tracker.due_panel_closes(1_000).is_empty());
+        // Rodada nova aos 5 s: o painel já está aberto (a coordenação não
+        // reabre), e o relógio para enquanto ela roda.
+        tracker.on_subagent_started(handle, session, "b2".into(), "reviewer".into(), None, None);
+        assert!(tracker.due_panel_closes(6_000).is_empty());
+        assert!(tracker
+            .due_panel_closes(1_000 + PANEL_AUTO_CLOSE_MS)
+            .is_empty());
+        assert!(
+            tracker.due_panel_closes(30_000).is_empty(),
+            "rodando não fecha"
+        );
+
+        // Ela assenta: o relógio recomeça do zero, e o painel continua sendo
+        // o aberto sozinho.
+        tracker.on_subagent_stopped(handle, session, "b2".into(), None, None);
+        assert!(tracker.due_panel_closes(31_000).is_empty());
+        assert!(tracker
+            .due_panel_closes(31_000 + PANEL_AUTO_CLOSE_MS - 1)
+            .is_empty());
+        assert_eq!(
+            tracker.due_panel_closes(31_000 + PANEL_AUTO_CLOSE_MS),
+            vec![session]
+        );
+    }
+
+    #[test]
+    fn owner_opened_panel_never_closes_by_itself() {
+        let app = tauri::test::mock_app();
+        let handle = app.handle();
+        let tracker = SubagentTracker::new();
+        let session = SessionId::new_v4();
+        tracker.register_session(session);
+        tracker.on_subagent_started(handle, session, "a1".into(), "explorer".into(), None, None);
+        // Painel já aberto pelo dono: a coordenação não o marca automático.
+        tracker.mark_coordinated(session);
+        tracker.on_subagent_stopped(handle, session, "a1".into(), None, None);
+        assert!(tracker.due_panel_closes(0).is_empty());
+        assert!(tracker
+            .due_panel_closes(10 * PANEL_AUTO_CLOSE_MS)
+            .is_empty());
+
+        // Aberto sozinho e depois reaberto pelo menu: passa a ser do dono.
+        let (tracker, session) = settled_auto_panel(handle);
+        tracker.keep_panel(session);
+        assert!(tracker.due_panel_closes(0).is_empty());
+        assert!(tracker
+            .due_panel_closes(10 * PANEL_AUTO_CLOSE_MS)
+            .is_empty());
+    }
+
+    #[test]
+    fn auto_close_does_not_disarm_the_next_round() {
+        let app = tauri::test::mock_app();
+        let handle = app.handle();
+        let (tracker, session) = settled_auto_panel(handle);
+        assert!(tracker.due_panel_closes(0).is_empty());
+        assert_eq!(tracker.due_panel_closes(PANEL_AUTO_CLOSE_MS), vec![session]);
+
+        let next = tracker
+            .on_subagent_started(handle, session, "b2".into(), "reviewer".into(), None, None)
+            .expect("a próxima leva coordena de novo");
+        assert!(!next.panel_disarmed, "fechar sozinho não desarma");
+        tracker.mark_coordinated(session);
+        tracker.note_panel_auto_opened(session);
+        tracker.on_subagent_stopped(handle, session, "b2".into(), None, None);
+        assert!(tracker.due_panel_closes(50_000).is_empty());
+        assert_eq!(
+            tracker.due_panel_closes(50_000 + PANEL_AUTO_CLOSE_MS),
+            vec![session]
+        );
     }
 
     #[test]
