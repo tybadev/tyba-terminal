@@ -1103,7 +1103,9 @@ export function OrbitCanvas({
   return (
     <div
       ref={wrapper}
-      className="relative min-h-0 flex-1 bg-tyba-bg"
+      // Fundo do canvas num preto mais claro que o do app, para o card (preto
+      // puro) se destacar; segue o tema por mistura com o texto.
+      className="relative min-h-0 flex-1 bg-[var(--orbit-canvas)] [--orbit-canvas:color-mix(in_srgb,var(--tyba-text)_5%,var(--tyba-bg))]"
       onMouseMove={(e) => {
         pointer.current = { x: e.clientX, y: e.clientY };
       }}

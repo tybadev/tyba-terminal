@@ -255,7 +255,7 @@ const portStyle = (color: string) => ({
   right: 6,
   top: 12,
   borderRadius: "50%",
-  border: "3px solid var(--tyba-bg)",
+  border: "3px solid var(--orbit-canvas, var(--tyba-bg))",
   background: color,
   transform: "none",
   // Acima da cápsula (`z-[1]`), que agora fica embaixo da bolinha.
