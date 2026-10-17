@@ -10,9 +10,13 @@ import {
   nodeElapsed,
   nodeStatusLabel,
   runNumber,
+  runElapsed,
   runProgress,
   runReducer,
+  runShownStatus,
+  runStatusKey,
   selectedRun,
+  shownStatus,
   stoppableRuns,
   timelineSteps,
   type Graph,
@@ -241,5 +245,42 @@ describe("agentes em paralelo", () => {
   test("dois agentes sem dependência entre si avisam", () => {
     const pair = concurrentAgents({ nodes: [agent("a", "A"), agent("b", "B")], edges: [] });
     expect(pair?.map((n) => n.id)).toEqual(["a", "b"]);
+  });
+});
+
+describe("execução assentada (concluída, sessões abertas)", () => {
+  const live = nodeRun({ status: "running", orchestrating: true, startedAt: 1_000 });
+  const settled = run("r", 0, { a: live }, { settled: true, finishedAt: 50_000, pausedMs: 10_000 });
+
+  test("mostra concluída com o relógio parado no tempo ativo", () => {
+    expect(runStatusKey(settled)).toBe("orbitRunSettled");
+    expect(runShownStatus(settled)).toBe("done");
+    expect(runElapsed(settled, 999_999)).toBe(40_000);
+    // Voltou a andar: relógio corre de novo, sem o tempo parado.
+    const awake = { ...settled, settled: false, finishedAt: null };
+    expect(runStatusKey(awake)).toBe("orbitRunStatus_running");
+    expect(runShownStatus(awake)).toBe("running");
+    expect(runElapsed(awake, 70_000)).toBe(60_000);
+    expect(runStatusKey(run("r", 0, {}, { status: "done", finishedAt: 5 }))).toBe(
+      "orbitRunStatus_done",
+    );
+  });
+
+  test("o agente diz pronto em vez de ao vivo, com o tempo parado", () => {
+    const g = { nodes: [agent("a", "Claude")], edges: [] };
+    expect(nodeStatusLabel(g, settled, "a")?.key).toBe("orbitStatus_done");
+    expect(nodeStatusLabel(g, { ...settled, settled: false }, "a")?.key).toBe(
+      "orbitStatus_orchestrating",
+    );
+    expect(shownStatus(settled, live)).toBe("done");
+    expect(shownStatus({ settled: false }, live)).toBe("running");
+    expect(nodeElapsed(live, 999_999, settled)).toBe(49_000);
+    expect(nodeElapsed(live, 60_000, { ...settled, settled: false })).toBe(59_000);
+    // Ainda no primeiro turno: segue rodando mesmo com a execução assentada.
+    const first = nodeRun({ status: "running", startedAt: 1_000 });
+    expect(shownStatus(settled, first)).toBe("running");
+    expect(nodeStatusLabel(g, run("r", 0, { a: first }, { settled: true }), "a")?.key).toBe(
+      "orbitStatus_running",
+    );
   });
 });

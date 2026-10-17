@@ -55,6 +55,15 @@ describe("ringState", () => {
     expect(ringState(nodeRun({ status: "running" }), true)).toBe("owner");
     expect(ringState(undefined, true)).toBe("owner");
   });
+
+  test("agente parado numa execução assentada fica pronto, não gira", () => {
+    const live = nodeRun({ status: "running", orchestrating: true });
+    expect(ringState(live, false)).toBe("working");
+    expect(ringState(live, false, true)).toBe("done");
+    // No primeiro turno (ainda não segura o run) e com pedido do dono, não.
+    expect(ringState(nodeRun({ status: "running" }), false, true)).toBe("working");
+    expect(ringState(live, true, true)).toBe("owner");
+  });
 });
 
 describe("nodeApproval", () => {

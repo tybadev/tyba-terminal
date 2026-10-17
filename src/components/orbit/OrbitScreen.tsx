@@ -87,6 +87,9 @@ import {
   type Integration,
   type OrbitNode,
   type Plan,
+  runElapsed,
+  runShownStatus,
+  runStatusKey,
 } from "@/lib/orbit";
 import { browserRetain } from "@/lib/orbitBrowser";
 import { roomAgents } from "@/lib/orbitTalk";
@@ -1053,7 +1056,7 @@ function OrbitInner({
                 >
                   <i
                     className={`size-[7px] shrink-0 rounded-full ${
-                      STATUS_TONE[r.status].dot
+                      STATUS_TONE[runShownStatus(r)].dot
                     }`}
                   />
                   <span className={r.id === run?.id ? "text-tyba-text" : "text-tyba-text-muted"}>
@@ -1068,8 +1071,7 @@ function OrbitInner({
                     })}
                   </span>
                   <span className="ml-auto text-tyba-text-faint">
-                    {t(`orbitRunStatus_${r.status}`)} ·{" "}
-                    {formatDuration((r.finishedAt ?? now) - r.startedAt)}
+                    {t(runStatusKey(r))} · {formatDuration(runElapsed(r, now))}
                   </span>
                 </DropdownMenuItem>
               ))}

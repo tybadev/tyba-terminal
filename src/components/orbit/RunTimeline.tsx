@@ -7,6 +7,9 @@ import {
   formatDuration,
   nodeElapsed,
   nodeStatusLabel,
+  runElapsed,
+  runStatusKey,
+  shownStatus,
   timelineSteps,
   type Graph,
   type Run,
@@ -37,8 +40,8 @@ export function RunTimeline({
   const step = (id: string) => {
     const n = run?.nodes[id];
     const label = run ? nodeStatusLabel(graph, run, id) : null;
-    const elapsed = nodeElapsed(n, now);
-    const tone = n ? STATUS_TONE[n.status] : null;
+    const elapsed = nodeElapsed(n, now, run);
+    const tone = n ? STATUS_TONE[shownStatus(run, n)] : null;
     return (
       <span key={id} className="flex items-center gap-2 text-[11.5px] whitespace-nowrap">
         <span className="text-tyba-text">{title(id)}</span>
@@ -69,18 +72,18 @@ export function RunTimeline({
             <span className="text-[13px] font-medium text-tyba-text">
               {t("orbitRunNumber", { n: number })}{" "}
               <span className="font-normal text-tyba-text-faint">
-                · {formatDuration((run.finishedAt ?? now) - run.startedAt)}
+                · {formatDuration(runElapsed(run, now))}
               </span>
             </span>
             <span className="text-[11px] text-tyba-text-faint">
-              {run.status === "running"
+              {run.status === "running" && !run.settled
                 ? t("orbitRunStartedAt", {
                     time: new Date(run.startedAt).toLocaleTimeString(i18n.language, {
                       hour: "2-digit",
                       minute: "2-digit",
                     }),
                   })
-                : t(`orbitRunStatus_${run.status}`)}
+                : t(runStatusKey(run))}
             </span>
           </div>
           <ol

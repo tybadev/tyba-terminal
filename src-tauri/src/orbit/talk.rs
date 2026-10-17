@@ -58,6 +58,9 @@ pub struct Mailbox {
     /// Quando a última fila foi entregue a cada destino que ainda não saiu
     /// do `Idle` desde então.
     delivered: HashMap<String, u64>,
+    /// Desde quando cada agente está no estado de agora (o "assentado" do
+    /// run pede turno fechado há um tempo).
+    since: HashMap<String, u64>,
 }
 
 impl Mailbox {
@@ -93,6 +96,18 @@ impl Mailbox {
         self.states.get(node).copied()
     }
 
+    /// Há quanto tempo `node` está com o turno fechado (`Ready`); `None` se
+    /// trabalha, espera o dono ou ainda não avisou estado.
+    pub fn idle_for(&self, node: &str, now: u64) -> Option<u64> {
+        (self.state(node)? == PeerState::Ready)
+            .then(|| now.saturating_sub(self.since.get(node).copied().unwrap_or(now)))
+    }
+
+    /// Alguma mensagem esperando entrega, para qualquer agente do run.
+    pub fn any_waiting(&self) -> bool {
+        self.queues.values().any(|q| !q.is_empty())
+    }
+
     /// O estado novo de `node`. Em `Ready` com fila e o dono quieto no
     /// terminal dele (`owner_quiet`, ver [`OwnerKeys::quiet`]), devolve o
     /// bloco a escrever — uma vez por turno fechado: a entrega seguinte
@@ -106,7 +121,9 @@ impl Mailbox {
         now: u64,
         owner_quiet: bool,
     ) -> Option<Delivery> {
-        self.states.insert(node.to_string(), state);
+        if self.states.insert(node.to_string(), state) != Some(state) {
+            self.since.insert(node.to_string(), now);
+        }
         if state != PeerState::Ready {
             self.delivered.remove(node);
             return None;
@@ -125,6 +142,9 @@ impl Mailbox {
         }
         let messages: Vec<Message> = queue.iter().cloned().collect();
         self.delivered.insert(node.to_string(), now);
+        // A entrega é trabalho novo: o turno fechado conta de novo daqui,
+        // antes de o watcher ver o agente sair do `Idle`.
+        self.since.insert(node.to_string(), now);
         Some(Delivery {
             count: messages.len(),
             block: delivery_block(&messages),
@@ -396,6 +416,30 @@ mod tests {
         // Outro destino tem a própria fila.
         assert_eq!(m.push("c", msg("A", "oi")).unwrap(), 1);
         assert_eq!(m.waiting("b"), MAX_QUEUE);
+    }
+
+    /// O tempo de turno fechado conta da primeira vez que o agente ficou
+    /// `Ready`, não do último aviso (o watcher repete o estado a cada poll),
+    /// e zera quando ele volta a trabalhar.
+    #[test]
+    fn idle_counts_from_the_first_ready_and_resets_on_work() {
+        let mut m = Mailbox::default();
+        assert_eq!(m.idle_for("a", 0), None);
+        m.on_state("a", PeerState::Working, 0, true);
+        assert_eq!(m.idle_for("a", 100), None);
+        m.on_state("a", PeerState::Ready, 1_000, true);
+        m.on_state("a", PeerState::Ready, 2_000, true);
+        assert_eq!(m.idle_for("a", 4_000), Some(3_000));
+        m.on_state("a", PeerState::Waiting, 4_100, true);
+        assert_eq!(m.idle_for("a", 9_000), None);
+        m.on_state("a", PeerState::Ready, 9_000, true);
+        assert_eq!(m.idle_for("a", 9_500), Some(500));
+        assert!(!m.any_waiting());
+        m.push("a", msg("B", "oi")).unwrap();
+        assert!(m.any_waiting());
+        // Entregar zera o turno fechado: o agente vai ler a mensagem.
+        assert!(m.on_state("a", PeerState::Ready, 10_000, true).is_some());
+        assert_eq!(m.idle_for("a", 10_200), Some(200));
     }
 
     /// Entrega e confirma, como o run faz quando o envio dá certo.

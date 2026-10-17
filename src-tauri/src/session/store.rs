@@ -5109,6 +5109,8 @@ mod tests {
             version: 3,
             test: false,
             live_agents: Vec::new(),
+            settled: false,
+            paused_ms: 0,
             created: Vec::new(),
             plans: Vec::new(),
         };
@@ -7086,6 +7088,8 @@ mod tests {
             version: 1,
             test: false,
             live_agents: Vec::new(),
+            settled: false,
+            paused_ms: 0,
             created: Vec::new(),
             plans: Vec::new(),
         };
@@ -7132,6 +7136,8 @@ mod tests {
             version,
             test: false,
             live_agents: Vec::new(),
+            settled: false,
+            paused_ms: 0,
             created: Vec::new(),
             plans: Vec::new(),
         };
@@ -7158,6 +7164,8 @@ mod tests {
             version: 1,
             test,
             live_agents: Vec::new(),
+            settled: false,
+            paused_ms: 0,
             created: Vec::new(),
             plans: Vec::new(),
         };

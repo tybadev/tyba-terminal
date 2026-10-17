@@ -673,6 +673,14 @@ export interface Run {
   test?: boolean;
   /** Sessões de agente do run ainda vivas — o run pode já ter fechado. */
   liveAgents?: string[];
+  /**
+   * Assentada: nada acontece (agentes com o turno fechado, sem fila, nenhum
+   * processo). Segue `running` por baixo — sessões abertas —, mas a tela diz
+   * "concluída · sessões abertas" e `finishedAt` é o momento em que assentou.
+   */
+  settled?: boolean;
+  /** Tempo parado (assentada) que já passou; sai do tempo mostrado. */
+  pausedMs?: number;
   /** Nós que um orquestrador criou neste run (efêmeros, fora do grafo salvo). */
   created?: Created[];
   /** A nota de plano de cada orquestrador do run (`orbit_plan`), como está no grafo salvo. */
@@ -1047,11 +1055,45 @@ export function formatDuration(ms: number): string {
   return `${Math.floor(m / 60)}h${String(m % 60).padStart(2, "0")}m`;
 }
 
-/** Tempo do nó: até agora se roda, até o fim se acabou, nada se não começou. */
-export function nodeElapsed(n: NodeRun | undefined, now: number): number | null {
+/**
+ * Tempo do nó: até agora se roda, até o fim se acabou, nada se não começou.
+ * Agente parado numa execução assentada: até o momento em que ela assentou.
+ */
+export function nodeElapsed(
+  n: NodeRun | undefined,
+  now: number,
+  run?: Pick<Run, "settled" | "finishedAt"> | null,
+): number | null {
   if (!n?.startedAt) return null;
-  return (n.finishedAt ?? (n.status === "running" ? now : n.startedAt)) - n.startedAt;
+  const end = settledAgent(run, n) && run?.finishedAt ? run.finishedAt : now;
+  return (n.finishedAt ?? (n.status === "running" ? end : n.startedAt)) - n.startedAt;
 }
+
+/** Tempo ativo da execução: sem o tempo em que ficou assentada. */
+export const runElapsed = (
+  run: Pick<Run, "startedAt" | "finishedAt" | "pausedMs">,
+  now: number,
+): number => (run.finishedAt ?? now) - run.startedAt - (run.pausedMs ?? 0);
+
+/** A chave do estado da execução: assentada é "concluída · sessões abertas". */
+export const runStatusKey = (run: Pick<Run, "status" | "settled">): string =>
+  run.status === "running" && run.settled ? "orbitRunSettled" : `orbitRunStatus_${run.status}`;
+
+/** O estado que a tela mostra: execução assentada aparece como concluída. */
+export const runShownStatus = (run: Pick<Run, "status" | "settled">): RunStatus =>
+  run.status === "running" && run.settled ? "done" : run.status;
+
+/** Agente que segura a execução assentada: turno fechado, nada a fazer. */
+export const settledAgent = (
+  run: Pick<Run, "settled"> | null | undefined,
+  n: Pick<NodeRun, "status" | "orchestrating">,
+): boolean => Boolean(run?.settled && n.status === "running" && n.orchestrating);
+
+/** O estado do nó que a tela mostra: agente parado na assentada é "pronto". */
+export const shownStatus = (
+  run: Pick<Run, "settled"> | null | undefined,
+  n: Pick<NodeRun, "status" | "orchestrating">,
+): NodeStatus => (settledAgent(run, n) ? "done" : n.status);
 
 /** Chave de i18n e parâmetros: o texto sai da tela, a regra fica testável. */
 export interface Label {
@@ -1112,7 +1154,8 @@ export function nodeStatusLabel(
 ): Label | null {
   const n = run.nodes[nodeId];
   if (!n) return null;
-  if (n.status === "running" && n.orchestrating) return { key: "orbitStatus_orchestrating" };
+  if (n.status === "running" && n.orchestrating)
+    return { key: run.settled ? "orbitStatus_done" : "orbitStatus_orchestrating" };
   if (n.status !== "waiting") return { key: `orbitStatus_${n.status}` };
   if (run.status !== "running") return { key: "orbitStatus_waiting" };
   const pending = graph.edges.find((e) => e.to === nodeId && !edgeHasValue(e, run));

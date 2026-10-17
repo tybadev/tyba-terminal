@@ -1096,7 +1096,10 @@ export function OrbitCanvas({
     (n: CanvasNode) =>
       isSubagentNodeId(n.id)
         ? "color-mix(in srgb, var(--tyba-violet) 50%, transparent)"
-        : minimapTone(ringState(run?.nodes[n.id], approvals.has(n.id)), createdIds.has(n.id)),
+        : minimapTone(
+            ringState(run?.nodes[n.id], approvals.has(n.id), run?.settled),
+            createdIds.has(n.id),
+          ),
     [run, approvals, createdIds],
   );
 

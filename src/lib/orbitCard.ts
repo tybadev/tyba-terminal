@@ -11,13 +11,20 @@ import { formatDuration, type NodeKind, type NodeRun, type Runner } from "./orbi
  * - `live`: verde cheio, o nó está no ar (processo/serviço com URL);
  * - `waiting`: tracejado (na fila do run, ou esperando o ▶);
  * - `owner`: tracejado escuro sobre a cápsula âmbar (precisa do dono);
- * - `failed`: vermelho; `done`: verde cheio;
+ * - `failed`: vermelho; `done`: verde cheio (também o agente parado numa
+ *   execução assentada, `settled`);
  * - `idle`: apagado (fora de execução, parado, pulado).
  */
 export type RingState = "idle" | "working" | "live" | "waiting" | "owner" | "failed" | "done";
 
-export function ringState(nodeRun: NodeRun | undefined, needsOwner: boolean): RingState {
+export function ringState(
+  nodeRun: NodeRun | undefined,
+  needsOwner: boolean,
+  settled = false,
+): RingState {
   if (needsOwner) return "owner";
+  // Agente parado numa execução assentada: pronto, o anel não gira.
+  if (settled && nodeRun?.status === "running" && nodeRun.orchestrating) return "done";
   switch (nodeRun?.status) {
     case "running":
       return nodeRun.url ? "live" : "working";

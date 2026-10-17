@@ -119,6 +119,8 @@ pub enum ToolCall {
     },
     /// Os agentes ligados por `talk`.
     Peers,
+    /// Fechar a própria sessão (como sair do CLI) quando o turno fechar.
+    Finish,
     /// Texto (já pela régua de [`super::talk::message_text`]) para a fila de `to`.
     Send {
         to: String,
@@ -490,6 +492,10 @@ pub fn parse_call(tool: &str, value: &Value) -> Result<ToolCall, String> {
         "orbit_peers" => {
             let _: EmptyArgs = args(tool, value)?;
             Ok(ToolCall::Peers)
+        }
+        "orbit_finish" => {
+            let _: EmptyArgs = args(tool, value)?;
+            Ok(ToolCall::Finish)
         }
         "orbit_send" => {
             let a: SendArgs = args(tool, value)?;
@@ -1205,6 +1211,9 @@ mod tests {
         use serde_json::json;
         assert_eq!(parse_call("orbit_peers", &json!({})), Ok(ToolCall::Peers));
         assert!(parse_call("orbit_peers", &json!({"x": 1})).is_err());
+        // Sem argumento: não há como apontar a sessão de outro.
+        assert_eq!(parse_call("orbit_finish", &json!({})), Ok(ToolCall::Finish));
+        assert!(parse_call("orbit_finish", &json!({"node": "b"})).is_err());
         assert_eq!(
             parse_call("orbit_send", &json!({"to": "b", "text": " oi\n "})),
             Ok(ToolCall::Send {

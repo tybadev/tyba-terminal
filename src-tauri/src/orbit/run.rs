@@ -74,6 +74,19 @@ pub struct Run {
     /// Calculado na leitura; o que fica gravado no banco não vale.
     #[serde(default)]
     pub live_agents: Vec<String>,
+    /// Assentado: nada acontece (todo agente com o turno fechado há
+    /// [`SETTLE_MS`], sem pedido do dono, sem fila de conversa, nenhum
+    /// processo nem nó esperando). O run segue `running` por baixo — sessões
+    /// e ferramentas vivas —, mas a tela mostra "concluída · sessões
+    /// abertas" e `finished_at` guarda, provisório, o momento em que
+    /// assentou (o relógio para ali). Algo volta a acontecer: sai daqui e o
+    /// tempo parado vai para `paused_ms`.
+    #[serde(default)]
+    pub settled: bool,
+    /// Tempo parado (assentado) que já passou: o tempo ativo do run é
+    /// `(finished_at ou agora) - started_at - paused_ms`.
+    #[serde(default)]
+    pub paused_ms: u64,
     /// Nós que um orquestrador criou neste run (efêmeros: não estão no grafo
     /// salvo, a menos que o dono os mantenha).
     #[serde(default)]
@@ -81,6 +94,15 @@ pub struct Run {
     /// Cópia da nota de plano de cada orquestrador (a nota vive no grafo).
     #[serde(default)]
     pub plans: Vec<Plan>,
+}
+
+/// Como fecha um run sem nada rodando: falhou se algum nó falhou.
+fn closed_status(nodes: &HashMap<String, NodeRun>) -> RunStatus {
+    if nodes.values().any(|n| n.status == NodeStatus::Failed) {
+        RunStatus::Failed
+    } else {
+        RunStatus::Done
+    }
 }
 
 /// Motivo do nó que rodava quando o app fechou.
@@ -92,6 +114,24 @@ impl Run {
     /// [`APP_CLOSED`], esperando vira `skipped`, e nenhuma sessão fica — a
     /// que estava aqui não existe mais. A versão sobe para a gravação valer.
     fn close_interrupted(&mut self, now: u64) {
+        // Assentado: o trabalho já tinha acabado, só as sessões seguiam
+        // abertas — fecha concluído, com o relógio onde parou.
+        if self.settled {
+            let at = self.finished_at.unwrap_or(now);
+            for n in self.nodes.values_mut() {
+                if n.status == NodeStatus::Running {
+                    n.status = NodeStatus::Done;
+                    n.finished_at = Some(at);
+                }
+                n.session_id = None;
+                n.orchestrating = false;
+            }
+            self.status = closed_status(&self.nodes);
+            self.settled = false;
+            self.finished_at = Some(at);
+            self.version += 1;
+            return;
+        }
         for n in self.nodes.values_mut() {
             match n.status {
                 NodeStatus::Running => {
@@ -273,6 +313,8 @@ impl Scheduler {
             version: 0,
             test: false,
             live_agents: Vec::new(),
+            settled: false,
+            paused_ms: 0,
             created: Vec::new(),
             plans: Vec::new(),
         };
@@ -408,6 +450,7 @@ impl Scheduler {
     /// Fecha um nó rodando. Falha pula, em cascata, tudo que depende dele.
     /// Devolve `false` quando o nó não estava rodando (ex.: já parado).
     pub fn finish(&mut self, id: &str, outcome: Outcome, now: u64) -> bool {
+        let settled_at = self.settled_at();
         let Some(n) = self.run.nodes.get_mut(id) else {
             return false;
         };
@@ -420,7 +463,9 @@ impl Scheduler {
             NodeStatus::Failed
         };
         n.orchestrating = false;
-        n.finished_at = Some(now);
+        // Assentado, a sessão que sai agora (o agente parado) fecha no
+        // momento em que o run assentou: o relógio não anda no tempo parado.
+        n.finished_at = Some(settled_at.unwrap_or(now));
         n.exit_code = outcome.exit_code;
         // O que saiu antes do fim (url) fica.
         let early = std::mem::replace(&mut n.outputs, outcome.outputs);
@@ -512,38 +557,78 @@ impl Scheduler {
         }
     }
 
-    /// Fecha o run quando não sobra nó esperando nem rodando.
+    /// Fecha o run quando não sobra nó esperando nem rodando. Assentado, o
+    /// relógio fica onde parou.
     fn settle(&mut self, now: u64) {
         if self.run.status != RunStatus::Running
             || !self.run.nodes.values().all(|n| n.status.is_terminal())
         {
             return;
         }
-        let failed = self
-            .run
-            .nodes
-            .values()
-            .any(|n| n.status == NodeStatus::Failed);
-        self.run.status = if failed {
-            RunStatus::Failed
+        self.run.status = closed_status(&self.run.nodes);
+        self.run.finished_at = Some(self.settled_at().unwrap_or(now));
+        self.run.settled = false;
+    }
+
+    /// O momento em que o run assentou, se está assentado.
+    fn settled_at(&self) -> Option<u64> {
+        self.run.settled.then_some(self.run.finished_at).flatten()
+    }
+
+    /// Nada roda nem espera no grafo além de agentes que já fecharam o
+    /// primeiro turno (os que seguram o run), e há ao menos um deles. O
+    /// resto do "assentado" (turno fechado há um tempo, fila vazia) é do
+    /// [`Runs`], que vê as sessões.
+    fn only_live_agents(&self) -> bool {
+        self.run.status == RunStatus::Running
+            && self.run.nodes.values().all(|n| {
+                n.status.is_terminal() || (n.status == NodeStatus::Running && n.orchestrating)
+            })
+            && self
+                .run
+                .nodes
+                .values()
+                .any(|n| n.status == NodeStatus::Running)
+    }
+
+    /// O run assentou (`true`) ou voltou a andar. Assentado, o relógio para
+    /// em `now` (`finished_at` provisório); ao voltar, o tempo parado soma em
+    /// `paused_ms` e o relógio retoma do tempo ativo. Devolve `true` se mudou.
+    pub fn set_settled(&mut self, settled: bool, now: u64) -> bool {
+        if self.run.status != RunStatus::Running || self.run.settled == settled {
+            return false;
+        }
+        if settled {
+            self.run.finished_at = Some(now);
         } else {
-            RunStatus::Done
-        };
-        self.run.finished_at = Some(now);
+            let since = self.run.finished_at.take().unwrap_or(now);
+            self.run.paused_ms += now.saturating_sub(since);
+        }
+        self.run.settled = settled;
+        true
     }
 
     /// Parar: rodando vira `stopped`, esperando vira `skipped`. Devolve as
     /// sessões a matar.
+    ///
+    /// Assentado, o trabalho já acabou: o Parar só fecha as sessões, os
+    /// agentes ficam prontos e o run, concluído, com o relógio onde parou.
     pub fn stop(&mut self, now: u64) -> Vec<String> {
         if self.run.status != RunStatus::Running {
             return Vec::new();
         }
+        let settled_at = self.settled_at();
         let mut kill = Vec::new();
         for n in self.run.nodes.values_mut() {
             match n.status {
                 NodeStatus::Running => {
-                    n.status = NodeStatus::Stopped;
-                    n.finished_at = Some(now);
+                    if settled_at.is_some() {
+                        n.status = NodeStatus::Done;
+                        n.orchestrating = false;
+                    } else {
+                        n.status = NodeStatus::Stopped;
+                    }
+                    n.finished_at = Some(settled_at.unwrap_or(now));
                     if let Some(s) = &n.session_id {
                         kill.push(s.clone());
                     }
@@ -552,8 +637,12 @@ impl Scheduler {
                 _ => {}
             }
         }
-        self.run.status = RunStatus::Stopped;
-        self.run.finished_at = Some(now);
+        self.run.status = match settled_at {
+            Some(_) => closed_status(&self.run.nodes),
+            None => RunStatus::Stopped,
+        };
+        self.run.finished_at = Some(settled_at.unwrap_or(now));
+        self.run.settled = false;
         kill
     }
 }
@@ -893,7 +982,30 @@ pub struct Runs<H: RunHost> {
     /// Runs que o dono parou: sessão que termina de subir depois disso morre
     /// na hora. Lock sempre depois de `active`.
     stopped: Mutex<HashSet<String>>,
+    /// Quanto tempo de tudo quieto assenta o run ([`SETTLE_MS`]; o teste
+    /// encurta).
+    settle_ms: std::sync::atomic::AtomicU64,
     me: Weak<Runs<H>>,
+}
+
+/// Quanto todo agente fica com o turno fechado, sem mais nada acontecendo,
+/// para o run assentar ([`Run::settled`]).
+pub const SETTLE_MS: u64 = 3_000;
+
+/// Assenta o run quando nada acontece, ou o tira do assentado quando algo
+/// volta a acontecer (ver [`Run::settled`]): só agentes que seguram o run,
+/// cada sessão de agente viva com o turno fechado há `after` ms, e nenhuma
+/// mensagem na fila. `live`: as sessões de agente do run que ainda rodam.
+/// Devolve `true` se mudou.
+fn refresh_settled(a: &mut Active, live: &[String], now: u64, after: u64) -> bool {
+    let quiet = a.sched.only_live_agents()
+        && !a.talk.any_waiting()
+        && a.sched.run.nodes.iter().all(|(id, n)| {
+            let live_agent = n.session_id.as_ref().is_some_and(|s| live.contains(s));
+            let needs_idle = n.status == NodeStatus::Running || live_agent;
+            !needs_idle || a.talk.idle_for(id, now).is_some_and(|t| t >= after)
+        });
+    a.sched.set_settled(quiet, now)
 }
 
 struct RunAgents {
@@ -935,6 +1047,7 @@ impl<H: RunHost> Runs<H> {
             active: Mutex::new(HashMap::new()),
             agents: Mutex::new(HashMap::new()),
             stopped: Mutex::new(HashSet::new()),
+            settle_ms: std::sync::atomic::AtomicU64::new(SETTLE_MS),
             me: me.clone(),
         })
     }
@@ -1070,7 +1183,12 @@ impl<H: RunHost> Runs<H> {
             None => {
                 let mut run = self.store.get_orbit_run(run_id).ok().flatten()?;
                 if run.status == RunStatus::Running {
-                    run.status = RunStatus::Stopped;
+                    run.status = if run.settled {
+                        RunStatus::Done
+                    } else {
+                        RunStatus::Stopped
+                    };
+                    run.settled = false;
                 }
                 run
             }
@@ -1151,12 +1269,12 @@ impl<H: RunHost> Runs<H> {
     /// Retrato novo, gravado e avisado. Run fechado só sai da memória depois
     /// de gravado: antes disso o `get` leria do banco um retrato mais velho.
     fn publish_current(&self, run_id: &str) {
-        let Some(run) = self
-            .active
-            .lock()
-            .get_mut(run_id)
-            .map(|a| a.sched.snapshot())
-        else {
+        let live = self.live_agents(run_id);
+        let after = self.settle_ms();
+        let Some(run) = self.active.lock().get_mut(run_id).map(|a| {
+            refresh_settled(a, &live, now(), after);
+            a.sched.snapshot()
+        }) else {
             return;
         };
         let closed = run.status != RunStatus::Running;
@@ -1164,6 +1282,10 @@ impl<H: RunHost> Runs<H> {
         if closed {
             self.active.lock().remove(run_id);
         }
+    }
+
+    fn settle_ms(&self) -> u64 {
+        self.settle_ms.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Poda o histórico do grafo. Run rodando ou com agente vivo fica, mesmo
@@ -1580,6 +1702,7 @@ impl<H: RunHost> Runs<H> {
                 self.browser_action(run_id, orchestrator, node.as_deref(), action)
             }
             ToolCall::Peers => self.peers(run_id, orchestrator),
+            ToolCall::Finish => self.finish_agent(run_id, orchestrator),
             ToolCall::Send { to, text } => {
                 let waiting = self.send_message(run_id, orchestrator, &to, &text)?;
                 Ok(serde_json::json!({ "to": to, "queued": waiting }))
@@ -1755,7 +1878,11 @@ impl<H: RunHost> Runs<H> {
     /// o terminal, fora do lock (numa linha só se a sessão não cola várias).
     /// A fila só esvazia com o envio Ok; com erro, as mensagens voltam a
     /// esperar e o retrato leva o motivo (`undelivered`).
+    ///
+    /// Sem entrega, é também o relógio do assentado: o watcher avisa o
+    /// estado a cada poll, e o run assenta (ou volta) por aqui.
     fn agent_state(&self, run_id: &str, node_id: &str, state: PeerState) {
+        let live = self.live_agents(run_id);
         let (session, delivery) = {
             let mut active = self.active.lock();
             let Some(a) = active.get_mut(run_id) else {
@@ -1773,6 +1900,11 @@ impl<H: RunHost> Runs<H> {
                     .as_deref()
                     .is_none_or(|s| self.host.owner_keys(s).quiet(at));
             let Some(delivery) = a.talk.on_state(node_id, state, at, quiet) else {
+                let changed = refresh_settled(a, &live, at, self.settle_ms());
+                drop(active);
+                if changed {
+                    self.publish_current(run_id);
+                }
                 return;
             };
             (session, delivery)
@@ -1811,6 +1943,91 @@ impl<H: RunHost> Runs<H> {
             }
         }
         self.publish_current(run_id);
+    }
+
+    /// `orbit_finish`: fecha a sessão do próprio agente, como sair do CLI —
+    /// só a dele (a ferramenta não tem argumento e o core usa o nó de quem
+    /// chama). A resposta ainda precisa chegar ao agente, então a saída
+    /// espera o turno fechar ([`FINISH_TURN_WAIT`] no máximo), escreve o
+    /// comando de sair do runner e, se a sessão não sair em
+    /// [`FINISH_GRACE`], mata. Daí segue o caminho de sempre: o nó fica
+    /// pronto e o run fecha quando não sobra sessão.
+    pub fn finish_agent(&self, run_id: &str, agent: &str) -> Result<serde_json::Value, String> {
+        let run = self.get(run_id).ok_or("execução não encontrada")?;
+        let session = run
+            .nodes
+            .get(agent)
+            .and_then(|n| n.session_id.clone())
+            .filter(|s| run.live_agents.contains(s))
+            .ok_or("a sua sessão já não está aberta")?;
+        let exit = match self.agent_runner(run_id, agent) {
+            Some(Runner::Codex) => "/quit",
+            _ => "/exit",
+        };
+        let called_at = now();
+        let me = self.me.clone();
+        let (run, node) = (run_id.to_string(), agent.to_string());
+        std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + FINISH_TURN_WAIT;
+            loop {
+                let Some(runs) = me.upgrade() else { return };
+                if !runs.host.alive(&session) {
+                    return;
+                }
+                // Turno fechado depois da chamada (o `Ready` de antes não
+                // vale: a resposta ainda não tinha chegado).
+                let t = now();
+                let closed = runs.active.lock().get(&run).is_none_or(|a| {
+                    a.talk
+                        .idle_for(&node, t)
+                        .is_some_and(|idle| t - idle >= called_at)
+                });
+                if closed || std::time::Instant::now() >= deadline {
+                    break;
+                }
+                drop(runs);
+                std::thread::sleep(FINISH_POLL);
+            }
+            let Some(runs) = me.upgrade() else { return };
+            if let Err(e) = runs.host.send_input(&session, exit) {
+                eprintln!("[orbit] orbit_finish de {node}: {e}");
+            }
+            let grace = std::time::Instant::now() + FINISH_GRACE;
+            while std::time::Instant::now() < grace {
+                if !runs.host.alive(&session) {
+                    return;
+                }
+                std::thread::sleep(FINISH_POLL);
+            }
+            runs.host.kill(&session);
+        });
+        Ok(serde_json::json!({
+            "finishing": true,
+            "note": "a sua sessão fecha quando este turno terminar; encerre o turno sem \
+                     mais ferramentas",
+        }))
+    }
+
+    /// O runner do agente `node`: do grafo do run (o do dono e os criados).
+    fn agent_runner(&self, run_id: &str, node: &str) -> Option<Runner> {
+        let kind = |n: &Node| match n.kind {
+            NodeKind::Agent { runner, .. } => Some(runner),
+            _ => None,
+        };
+        if let Some(a) = self.active.lock().get(run_id) {
+            return a.graph.nodes.iter().find(|n| n.id == node).and_then(kind);
+        }
+        let run = self.get(run_id)?;
+        if let Some(c) = run.created.iter().find(|c| c.node.id == node) {
+            return kind(&c.node);
+        }
+        self.saved_graph(&run.graph_id)
+            .ok()
+            .flatten()?
+            .nodes
+            .iter()
+            .find(|n| n.id == node)
+            .and_then(kind)
     }
 
     /// O grafo salvo agora (o dono edita no canvas durante o run).
@@ -2818,6 +3035,11 @@ impl<H: RunHost> Runs<H> {
 /// antes de responder: erro de subida (porta ocupada, módulo faltando) sai
 /// nisso.
 const PROCESS_SETTLE: std::time::Duration = std::time::Duration::from_secs(3);
+/// Quanto o `orbit_finish` espera o turno fechar antes de sair mesmo assim.
+const FINISH_TURN_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
+/// Quanto a sessão tem para sair depois do comando de sair, antes de morrer.
+const FINISH_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
+const FINISH_POLL: std::time::Duration = std::time::Duration::from_millis(200);
 /// Linhas do log na resposta do processo que caiu.
 const SETTLE_LOG_LINES: usize = 20;
 /// Teto de linhas que o card pede do log.
@@ -3752,6 +3974,10 @@ mod tests {
             self.inputs
                 .lock()
                 .push((session_id.to_string(), text.to_string()));
+            // Como o CLI de verdade: o comando de sair fecha a sessão.
+            if text == "/exit" {
+                self.exit_agent(session_id);
+            }
             Ok(())
         }
 
@@ -4711,6 +4937,251 @@ mod tests {
         assert!(last.live_agents.is_empty(), "{last:?}");
         let stored = runs.store.get_orbit_run(&run.id).unwrap().unwrap();
         assert!(stored.live_agents.is_empty(), "{stored:?}");
+    }
+
+    /// Assentar e voltar no agendador: o relógio para no momento em que
+    /// assentou, o tempo parado vai para `paused_ms`, e a sessão que sai
+    /// assentada fecha o run concluído com o tempo ativo.
+    #[test]
+    fn settled_run_stops_the_clock_resumes_and_closes_done() {
+        let g = graph(vec![orchestrator("a"), process("p", "x")], vec![]);
+        let mut s = Scheduler::new(&g, "r".into(), 0);
+        s.mark_running("a", 0);
+        s.set_session("a", "sess-a".into());
+        s.mark_running("p", 0);
+        // Primeiro turno ainda aberto, e um processo rodando: não assenta.
+        assert!(!s.only_live_agents());
+        assert!(s.orchestrate("a", HashMap::new()));
+        assert!(!s.only_live_agents());
+        assert!(s.finish("p", ok(), 1_000));
+        assert!(s.only_live_agents());
+
+        assert!(s.set_settled(true, 10_000));
+        assert_eq!(s.run().status, RunStatus::Running);
+        assert_eq!(s.run().finished_at, Some(10_000));
+        assert!(!s.set_settled(true, 11_000), "já assentado");
+        assert!(s.set_settled(false, 15_000));
+        assert_eq!(s.run().finished_at, None);
+        assert_eq!(s.run().paused_ms, 5_000);
+        assert!(s.set_settled(true, 20_000));
+
+        // A sessão sai com o run assentado: pronto no momento em que assentou.
+        assert!(s.finish("a", ok(), 30_000));
+        let r = s.run();
+        assert_eq!(r.status, RunStatus::Done);
+        assert!(!r.settled);
+        assert_eq!(r.finished_at, Some(20_000));
+        assert_eq!(r.nodes["a"].finished_at, Some(20_000));
+        // Tempo ativo: 20 s de relógio menos 5 s parado.
+        assert_eq!(r.finished_at.unwrap() - r.started_at - r.paused_ms, 15_000);
+        assert!(!s.set_settled(false, 31_000), "run fechado não muda");
+    }
+
+    /// Parar (ou o app fechar) com o run assentado: o trabalho já acabou —
+    /// concluído, agentes prontos, sessões a matar e o relógio onde parou.
+    #[test]
+    fn stop_and_boot_close_a_settled_run_as_done() {
+        let g = graph(vec![orchestrator("a"), note("n")], vec![]);
+        let mut s = Scheduler::new(&g, "r".into(), 0);
+        s.mark_running("a", 0);
+        s.set_session("a", "sess-a".into());
+        s.mark_running("n", 0);
+        assert!(s.finish("n", ok(), 1));
+        assert!(s.orchestrate("a", HashMap::new()));
+        assert!(s.set_settled(true, 5_000));
+        let mut booted = s.snapshot();
+
+        assert_eq!(s.stop(9_000), vec!["sess-a".to_string()]);
+        let r = s.run();
+        assert_eq!(r.status, RunStatus::Done);
+        assert_eq!(r.finished_at, Some(5_000));
+        assert_eq!(r.nodes["a"].status, NodeStatus::Done);
+        assert!(!r.nodes["a"].orchestrating);
+        assert!(!r.settled);
+
+        booted.close_interrupted(9_000);
+        assert_eq!(booted.status, RunStatus::Done);
+        assert_eq!(booted.finished_at, Some(5_000));
+        assert_eq!(booted.nodes["a"].status, NodeStatus::Done);
+        assert!(booted.nodes["a"].reason.is_none());
+        assert!(!booted.settled);
+    }
+
+    /// Espera o run assentar (`true`) ou sair do assentado.
+    fn wait_settled(runs: &Runs<Arc<PtyHost>>, run: &str, want: bool) -> Run {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let r = runs.get(run).unwrap();
+            if r.settled == want || Instant::now() > deadline {
+                return r;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// O run assenta quando todo agente fecha o turno há um tempo e nada mais
+    /// acontece, e volta a "ao vivo" na mesma execução por turno, mensagem
+    /// ou processo; o relógio para e retoma com o tempo ativo. Parar
+    /// assentado fecha concluído.
+    #[cfg(unix)]
+    #[test]
+    fn run_settles_when_all_rests_and_wakes_by_turn_message_and_process() {
+        use serde_json::json;
+        let dir = tempfile::tempdir().unwrap();
+        let (runs, host, _app) = pty_runs(dir.path().join("runs"));
+        runs.settle_ms
+            .store(150, std::sync::atomic::Ordering::Relaxed);
+        let mut a = orchestrator("a");
+        a.title = "Front".into();
+        let mut b = orchestrator("b");
+        b.title = "Revisor".into();
+        let g = graph(vec![a, b], vec![edge("t1", "a", "b", EdgeKind::Talk)]);
+        runs.store.save_orbit_graph(&g, true, None).unwrap();
+        let run = runs.start(g, vec![]).unwrap();
+        for id in ["a", "b"] {
+            wait_orchestrating(&runs, &run.id, id);
+        }
+        let rest = || {
+            std::thread::sleep(Duration::from_millis(200));
+            // O poll do watcher, que repete o estado.
+            host.set_state("Front", PeerState::Ready);
+            host.set_state("Revisor", PeerState::Ready);
+        };
+
+        // Turno fechado há pouco: ainda ao vivo.
+        host.set_state("Front", PeerState::Ready);
+        host.set_state("Revisor", PeerState::Ready);
+        assert!(!runs.get(&run.id).unwrap().settled);
+        rest();
+        let r = runs.get(&run.id).unwrap();
+        assert!(r.settled, "{r:?}");
+        assert_eq!(r.status, RunStatus::Running, "sessões abertas por baixo");
+        assert_eq!(r.live_agents.len(), 2);
+        let frozen = r.finished_at.expect("relógio parado");
+        assert!(runs.store.get_orbit_run(&run.id).unwrap().unwrap().settled);
+        rest();
+        assert_eq!(runs.get(&run.id).unwrap().finished_at, Some(frozen));
+
+        // Por turno: o dono digita e o Front trabalha.
+        host.set_state("Front", PeerState::Working);
+        let r = runs.get(&run.id).unwrap();
+        assert!(!r.settled, "{r:?}");
+        assert_eq!(r.finished_at, None);
+        let paused = r.paused_ms;
+        assert!(paused >= 200, "{paused}");
+        host.set_state("Front", PeerState::Ready);
+        rest();
+        assert!(runs.get(&run.id).unwrap().settled);
+        std::thread::sleep(Duration::from_millis(60));
+
+        // Por mensagem: na fila, ao vivo na hora; entregue, o turno fechado
+        // conta de novo.
+        tools_of(&host, "Front")
+            .call("orbit_send", &json!({"to": "b", "text": "revise"}))
+            .unwrap();
+        assert!(!runs.get(&run.id).unwrap().settled);
+        host.set_state("Revisor", PeerState::Ready);
+        assert!(host
+            .inputs
+            .lock()
+            .iter()
+            .any(|(_, t)| t.contains("> revise")));
+        assert!(!runs.get(&run.id).unwrap().settled);
+        rest();
+        let r = runs.get(&run.id).unwrap();
+        assert!(r.settled, "{r:?}");
+        assert!(r.paused_ms >= paused + 60, "{} {paused}", r.paused_ms);
+
+        // Por processo: um nó novo rodando tira do assentado; parado, volta.
+        let work = dir.path().join("api");
+        std::fs::create_dir(&work).unwrap();
+        let got = tools_of(&host, "Front")
+            .call(
+                "orbit_create_process",
+                &json!({"title": "api", "command": "sleep 30", "dir": work}),
+            )
+            .unwrap();
+        let created = got["node_id"].as_str().unwrap().to_string();
+        let r = runs.get(&run.id).unwrap();
+        assert_eq!(r.nodes[&created].status, NodeStatus::Running);
+        assert!(!r.settled, "{r:?}");
+        runs.stop_one(&run.id, &created).unwrap();
+        let r = wait_settled(&runs, &run.id, true);
+        assert!(r.settled, "{r:?}");
+        let frozen = r.finished_at.unwrap();
+
+        // Parar assentado: concluída, agentes prontos, sessões fechadas.
+        runs.stop(&run.id).unwrap();
+        let r = runs.get(&run.id).unwrap();
+        assert_eq!(r.status, RunStatus::Done, "{r:?}");
+        assert_eq!(r.finished_at, Some(frozen));
+        assert_eq!(r.nodes["a"].status, NodeStatus::Done);
+        assert_eq!(r.nodes["b"].status, NodeStatus::Done);
+        assert!(r.live_agents.is_empty(), "{r:?}");
+        let stored = runs.store.get_orbit_run(&run.id).unwrap().unwrap();
+        assert_eq!(stored.status, RunStatus::Done);
+        assert!(!stored.settled);
+    }
+
+    /// `orbit_finish` fecha só a sessão de quem chama, depois do turno
+    /// fechar; quando a última sai, o run fica concluído.
+    #[cfg(unix)]
+    #[test]
+    fn orbit_finish_closes_only_the_callers_session() {
+        use serde_json::json;
+        let dir = tempfile::tempdir().unwrap();
+        let (runs, host, _app) = pty_runs(dir.path().join("runs"));
+        let mut a = orchestrator("a");
+        a.title = "Front".into();
+        let mut b = orchestrator("b");
+        b.title = "Revisor".into();
+        let run = runs.start(graph(vec![a, b], vec![]), vec![]).unwrap();
+        for id in ["a", "b"] {
+            wait_orchestrating(&runs, &run.id, id);
+        }
+        let r = runs.get(&run.id).unwrap();
+        let (sa, sb) = (
+            r.nodes["a"].session_id.clone().unwrap(),
+            r.nodes["b"].session_id.clone().unwrap(),
+        );
+
+        // O dono disse que acabou: o Front trabalha e chama a ferramenta.
+        host.set_state("Front", PeerState::Ready);
+        host.set_state("Front", PeerState::Working);
+        let got = tools_of(&host, "Front")
+            .call("orbit_finish", &json!({}))
+            .unwrap();
+        assert_eq!(got["finishing"], true);
+        // A resposta ainda tem de chegar: nada sai no meio do turno.
+        std::thread::sleep(Duration::from_millis(400));
+        assert!(host.inputs.lock().is_empty());
+        assert!(host.alive(&sa));
+
+        // Turno fechado: sai como o /exit do claude, só ele.
+        host.set_state("Front", PeerState::Ready);
+        let r = wait_status(&runs, &run.id, "a", NodeStatus::Done);
+        assert_eq!(r.nodes["a"].status, NodeStatus::Done, "{r:?}");
+        assert_eq!(*host.inputs.lock(), vec![(sa.clone(), "/exit".to_string())]);
+        assert_eq!(r.nodes["b"].status, NodeStatus::Running);
+        assert!(host.alive(&sb));
+        assert!(!host.killed.lock().contains(&sb));
+        assert_eq!(r.status, RunStatus::Running);
+        assert_eq!(r.live_agents, vec![sb.clone()]);
+
+        // A última sessão fecha: o run fica concluído.
+        host.set_state("Revisor", PeerState::Working);
+        tools_of(&host, "Revisor")
+            .call("orbit_finish", &json!({}))
+            .unwrap();
+        host.set_state("Revisor", PeerState::Ready);
+        let r = wait_finished(&runs, &run.id);
+        assert_eq!(r.status, RunStatus::Done, "{r:?}");
+        assert!(r.live_agents.is_empty());
+        // A sessão fechada não fecha de novo.
+        let err = tools_of(&host, "Front")
+            .call("orbit_finish", &json!({}))
+            .unwrap_err();
+        assert!(err.contains("não está aberta"), "{err}");
     }
 
     /// As ferramentas que o run entregou à sessão do orquestrador.

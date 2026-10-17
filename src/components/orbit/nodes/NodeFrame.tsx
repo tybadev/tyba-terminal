@@ -42,6 +42,7 @@ import {
   pickConnection,
   produces,
   runCreated,
+  shownStatus,
   nodeDir,
   rememberDir,
   shortDir,
@@ -226,8 +227,8 @@ export function NodeStatusBadge({ nodeId, nodeRun }: { nodeId: string; nodeRun: 
   const { graph, run } = useOrbit();
   const now = useClock();
   const label = run ? nodeStatusLabel(graph, run, nodeId) : null;
-  const elapsed = nodeElapsed(nodeRun, now);
-  const tone = STATUS_TONE[nodeRun.status];
+  const elapsed = nodeElapsed(nodeRun, now, run);
+  const tone = STATUS_TONE[shownStatus(run, nodeRun)];
   return (
     <span
       className={`flex shrink-0 items-center gap-1.5 text-[11.5px] whitespace-nowrap ${tone.text}`}
@@ -360,7 +361,8 @@ export function NodeRing({
 /** O tempo do nó (só ele lê o relógio). */
 export function Elapsed({ nodeRun, className }: { nodeRun: NodeRun; className?: string }) {
   const now = useClock();
-  const elapsed = nodeElapsed(nodeRun, now);
+  const { run } = useOrbit();
+  const elapsed = nodeElapsed(nodeRun, now, run);
   return elapsed === null ? null : <span className={className}>{formatDuration(elapsed)}</span>;
 }
 
@@ -380,7 +382,7 @@ function CapsuleStatus({ nodeId, nodeRun }: { nodeId: string; nodeRun: NodeRun }
   if (!label) return null;
   return (
     <span
-      className={`min-w-0 shrink truncate text-[11.5px] ${STATUS_TONE[nodeRun.status].text}`}
+      className={`min-w-0 shrink truncate text-[11.5px] ${STATUS_TONE[shownStatus(run, nodeRun)].text}`}
       title={nodeRun.reason ?? undefined}
     >
       {t(label.key, {
@@ -693,7 +695,7 @@ export function NodeFrame({
   const orchestrates = !created && node.kind.type === "agent";
   const session = nodeSession(node.kind, run, id, live);
   const request = approvals.get(id) ?? null;
-  const ring = ringState(nodeRun, request !== null);
+  const ring = ringState(nodeRun, request !== null, run?.settled);
   const failed = ring === "failed";
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(false);
