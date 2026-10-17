@@ -527,8 +527,11 @@ function OrbitInner({
     }
   };
 
+  // O botão trava no clique, antes de o core responder: sem segundo ▶.
+  const [starting, setStarting] = useState(false);
   const start = async () => {
-    if (!snapshot || !meta) return;
+    if (!snapshot || !meta || starting) return;
+    setStarting(true);
     try {
       await flush();
       const id = await runStart(meta.id);
@@ -537,6 +540,8 @@ function OrbitInner({
       setError(null);
     } catch (e) {
       setError(t("orbitRunError", { error: String(e) }));
+    } finally {
+      setStarting(false);
     }
   };
 
@@ -1023,7 +1028,7 @@ function OrbitInner({
           {sep}
           <button
             type="button"
-            disabled={!meta || nodes.length === 0 || running !== null}
+            disabled={!meta || nodes.length === 0 || running !== null || starting}
             onClick={() => void start()}
             className={`${tbtn} enabled:border-tyba-green/45 enabled:bg-tyba-green-tint enabled:font-medium enabled:text-tyba-green enabled:hover:border-tyba-green enabled:hover:bg-tyba-green-tint`}
           >

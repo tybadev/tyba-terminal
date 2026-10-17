@@ -1008,6 +1008,9 @@ fn refresh_settled(a: &mut Active, live: &[String], now: u64, after: u64) -> boo
     a.sched.set_settled(quiet, now)
 }
 
+/// A thread que sobe os nós de um run que acabou de começar.
+type Launching = std::thread::JoinHandle<()>;
+
 struct RunAgents {
     graph_id: String,
     sessions: Vec<String>,
@@ -1055,7 +1058,19 @@ impl<H: RunHost> Runs<H> {
     /// Começa o run. O grafo já passou por consentimento e validação. Antes,
     /// para os runs anteriores do mesmo grafo que ainda têm agente: um ▶ novo
     /// não deixa o claude do run de antes vivo e fora de alcance.
+    ///
+    /// Volta com o run já publicado; os nós sobem em outra thread.
     pub fn start(&self, graph: Graph, integrations: Vec<Integration>) -> Result<Run, String> {
+        self.start_launching(graph, integrations)
+            .map(|(run, _)| run)
+    }
+
+    /// [`Runs::start`] com a thread que sobe os nós.
+    fn start_launching(
+        &self,
+        graph: Graph,
+        integrations: Vec<Integration>,
+    ) -> Result<(Run, Launching), String> {
         let previous: Vec<String> = self
             .agents
             .lock()
@@ -1078,6 +1093,16 @@ impl<H: RunHost> Runs<H> {
         integration: Integration,
         node_id: &str,
     ) -> Result<Run, String> {
+        self.test_integration_launching(graph, integration, node_id)
+            .map(|(run, _)| run)
+    }
+
+    fn test_integration_launching(
+        &self,
+        graph: Graph,
+        integration: Integration,
+        node_id: &str,
+    ) -> Result<(Run, Launching), String> {
         let root = self
             .root
             .clone()
@@ -1112,7 +1137,7 @@ impl<H: RunHost> Runs<H> {
         graph: Graph,
         integrations: Vec<Integration>,
         seed: Option<PathBuf>,
-    ) -> Result<Run, String> {
+    ) -> Result<(Run, Launching), String> {
         if let Some(bad) = graph.nodes.iter().find(|n| !safe_component(&n.id)) {
             return Err(format!(
                 "id de nó inválido para execução: {:?} (use letras, números, - e _)",
@@ -1163,9 +1188,16 @@ impl<H: RunHost> Runs<H> {
             );
         }
         self.publish(snapshot.clone());
-        self.prune(&graph_id);
-        self.advance(&run_id);
-        Ok(self.get(&run_id).unwrap_or(snapshot))
+        // O clique volta com o run já rodando; subir os nós (git, PTY, agente)
+        // e podar o histórico vão para outra thread.
+        let me = self.me.clone();
+        let launching = std::thread::spawn(move || {
+            if let Some(runs) = me.upgrade() {
+                runs.prune(&graph_id);
+                runs.advance(&run_id);
+            }
+        });
+        Ok((snapshot, launching))
     }
 
     /// Run em memória (rodando) ou do banco. Run `running` no banco sem estar
@@ -1337,57 +1369,78 @@ impl<H: RunHost> Runs<H> {
                 return;
             }
             self.publish_current(run_id);
-            for start in starts {
-                let node_id = start.node.id.clone();
-                let graph_id = start.graph_id.clone();
-                let is_agent = matches!(start.node.kind, NodeKind::Agent { .. });
-                let is_process = matches!(start.node.kind, NodeKind::Process { .. });
-                let out_dir = start.out_dir.clone();
-                let launched = self.launch(run_id, start);
-                // `active` na mão para decidir: o Parar marca `stopped` sob o
-                // mesmo lock, então ou ele já viu esta sessão no run, ou ela
-                // morre aqui.
-                let orphan = {
-                    let mut active = self.active.lock();
-                    match (active.get_mut(run_id), launched) {
-                        (Some(a), Launched::Session(session)) => {
-                            a.sched.set_session(&node_id, session.clone());
-                            if is_process {
-                                self.watch_ports(run_id, &node_id, &session, out_dir);
-                            }
-                            if is_agent {
-                                self.register_agent(run_id, &graph_id, session);
-                            }
-                            None
-                        }
-                        (Some(_), Launched::Pending) => None,
-                        (None, Launched::Pending) => return,
-                        (Some(a), Launched::Finished(outcome)) => {
-                            a.sched.finish(&node_id, outcome, now());
-                            None
-                        }
-                        (None, Launched::Session(session)) => {
-                            if self.stopped.lock().contains(run_id) {
-                                Some(session)
-                            } else {
-                                // O run fechou sozinho enquanto subia (o agente
-                                // fechou o turno antes): segue vivo e parável.
-                                if is_agent {
-                                    self.register_agent(run_id, &graph_id, session);
-                                }
-                                return;
-                            }
-                        }
-                        (None, Launched::Finished(_)) => return,
-                    }
-                };
-                if let Some(session) = orphan {
-                    self.host.kill(&session);
-                    return;
-                }
-                self.publish_current(run_id);
+            // Em paralelo: cada nó custa git (snapshot do diff), PTY e o
+            // agente; em fila, o último esperava a soma de todos.
+            let go_on = std::thread::scope(|s| {
+                let launches: Vec<_> = starts
+                    .into_iter()
+                    .map(|start| s.spawn(move || self.launch_and_record(run_id, start)))
+                    .collect();
+                // Espera todos (sem parar no primeiro `false`).
+                let results: Vec<bool> = launches
+                    .into_iter()
+                    .map(|l| l.join().unwrap_or(false))
+                    .collect();
+                results.into_iter().all(|go_on| go_on)
+            });
+            if !go_on {
+                return;
             }
         }
+    }
+
+    /// Sobe um nó e registra o que voltou. `false`: o run já não está ativo
+    /// e não há mais o que subir.
+    fn launch_and_record(&self, run_id: &str, start: Start) -> bool {
+        let node_id = start.node.id.clone();
+        let graph_id = start.graph_id.clone();
+        let is_agent = matches!(start.node.kind, NodeKind::Agent { .. });
+        let is_process = matches!(start.node.kind, NodeKind::Process { .. });
+        let out_dir = start.out_dir.clone();
+        let launched = self.launch(run_id, start);
+        // `active` na mão para decidir: o Parar marca `stopped` sob o
+        // mesmo lock, então ou ele já viu esta sessão no run, ou ela
+        // morre aqui.
+        let orphan = {
+            let mut active = self.active.lock();
+            match (active.get_mut(run_id), launched) {
+                (Some(a), Launched::Session(session)) => {
+                    a.sched.set_session(&node_id, session.clone());
+                    if is_process {
+                        self.watch_ports(run_id, &node_id, &session, out_dir);
+                    }
+                    if is_agent {
+                        self.register_agent(run_id, &graph_id, session);
+                    }
+                    None
+                }
+                (Some(_), Launched::Pending) => None,
+                (None, Launched::Pending) => return false,
+                (Some(a), Launched::Finished(outcome)) => {
+                    a.sched.finish(&node_id, outcome, now());
+                    None
+                }
+                (None, Launched::Session(session)) => {
+                    if self.stopped.lock().contains(run_id) {
+                        Some(session)
+                    } else {
+                        // O run fechou sozinho enquanto subia (o agente
+                        // fechou o turno antes): segue vivo e parável.
+                        if is_agent {
+                            self.register_agent(run_id, &graph_id, session);
+                        }
+                        return false;
+                    }
+                }
+                (None, Launched::Finished(_)) => return false,
+            }
+        };
+        if let Some(session) = orphan {
+            self.host.kill(&session);
+            return false;
+        }
+        self.publish_current(run_id);
+        true
     }
 
     fn launch(&self, run_id: &str, start: Start) -> Launched {
@@ -4003,6 +4056,27 @@ mod tests {
         }
     }
 
+    /// O run começado e com a primeira leva de nós já subida (o que o
+    /// `start` fazia antes de soltar o clique).
+    impl<H: RunHost> Runs<H> {
+        fn start_now(&self, graph: Graph, integrations: Vec<Integration>) -> Result<Run, String> {
+            let (run, launching) = self.start_launching(graph, integrations)?;
+            launching.join().unwrap();
+            Ok(self.get(&run.id).unwrap_or(run))
+        }
+
+        fn test_integration_now(
+            &self,
+            graph: Graph,
+            integration: Integration,
+            node_id: &str,
+        ) -> Result<Run, String> {
+            let (run, launching) = self.test_integration_launching(graph, integration, node_id)?;
+            launching.join().unwrap();
+            Ok(self.get(&run.id).unwrap_or(run))
+        }
+    }
+
     type TestRuns = (
         Arc<Runs<Arc<PtyHost>>>,
         Arc<PtyHost>,
@@ -4063,7 +4137,7 @@ mod tests {
             vec![edge("e1", "p", "q", EdgeKind::Log)],
         );
         g.variables.insert("palavra".into(), "oi".into());
-        let run = runs.start(g, vec![]).unwrap();
+        let run = runs.start_now(g, vec![]).unwrap();
         let run = wait_finished(&runs, &run.id);
         assert_eq!(run.status, RunStatus::Done, "{run:?}");
         let p = &run.nodes["p"];
@@ -4129,7 +4203,7 @@ mod tests {
         let (runs, _host, _app) = pty_runs(dir.path().join("runs"));
         let command = "rm -f dist/*.map; true\nf='a b'; for x in $f; do echo \"[$x]\"; done";
         let run = runs
-            .start(graph(vec![process("p", command)], vec![]), vec![])
+            .start_now(graph(vec![process("p", command)], vec![]), vec![])
             .unwrap();
         let run = wait_finished(&runs, &run.id);
         assert_eq!(run.status, RunStatus::Done, "{run:?}");
@@ -4161,7 +4235,7 @@ mod tests {
             ],
             vec![edge("e1", "p", "q", EdgeKind::Log)],
         );
-        let run = runs.start(g, vec![]).unwrap();
+        let run = runs.start_now(g, vec![]).unwrap();
         let run = wait_finished(&runs, &run.id);
         assert_eq!(run.status, RunStatus::Failed);
         assert_eq!(run.nodes["p"].exit_code, Some(3));
@@ -4181,7 +4255,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (runs, host, _app) = pty_runs(dir.path().join("runs"));
         let run = runs
-            .start(graph(vec![process("p", "sleep 30")], vec![]), vec![])
+            .start_now(graph(vec![process("p", "sleep 30")], vec![]), vec![])
             .unwrap();
         let session = run.nodes["p"].session_id.clone().unwrap();
         runs.stop(&run.id).unwrap();
@@ -4198,7 +4272,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (runs, host, _app) = pty_runs(dir.path().join("runs"));
         let run = runs
-            .start(
+            .start_now(
                 graph(
                     vec![process("p", "sleep 30"), process("q", "sleep 30")],
                     vec![],
@@ -4228,7 +4302,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (runs, host, _app) = pty_runs(dir.path().join("runs"));
         let run = runs
-            .start(graph(vec![agent("a", "x")], vec![]), vec![])
+            .start_now(graph(vec![agent("a", "x")], vec![]), vec![])
             .unwrap();
         let run = wait_finished(&runs, &run.id);
         let session = host.spawned.lock()[0].clone();
@@ -4289,7 +4363,7 @@ mod tests {
         );
         g.dir = repo.to_string_lossy().into_owned();
         g.variables.insert("coisa".into(), "o plano".into());
-        let run = runs.start(g, vec![]).unwrap();
+        let run = runs.start_now(g, vec![]).unwrap();
         // Os agentes publicam no fim do turno e seguram o run vivos.
         wait_status(&runs, &run.id, "q", NodeStatus::Done);
         wait_orchestrating(&runs, &run.id, "a");
@@ -4378,7 +4452,7 @@ mod tests {
             vec![],
         );
         g.dir = default.to_string_lossy().into_owned();
-        let run = runs.start(g, vec![]).unwrap();
+        let run = runs.start_now(g, vec![]).unwrap();
         let run = wait_finished(&runs, &run.id);
         assert_eq!(run.status, RunStatus::Done, "{run:?}");
 
@@ -4412,7 +4486,7 @@ mod tests {
         let (runs, host, _app) = pty_runs(dir.path().join("runs"));
         let mut g = graph(vec![in_dir(agent("a", "faça"), &mine)], vec![]);
         g.dir = other.to_string_lossy().into_owned();
-        let run = runs.start(g, vec![]).unwrap();
+        let run = runs.start_now(g, vec![]).unwrap();
         let run = wait_orchestrating(&runs, &run.id, "a");
         assert!(run.nodes["a"].orchestrating, "{run:?}");
 
@@ -4506,7 +4580,7 @@ mod tests {
                 },
             ),
         ];
-        let run = runs.start(g, integrations).unwrap();
+        let run = runs.start_now(g, integrations).unwrap();
 
         // on_input roda quando a entrada chega; o manual fica esperando.
         let snapshot = wait_status(&runs, &run.id, "o", NodeStatus::Done);
@@ -4548,11 +4622,11 @@ mod tests {
 
         // Sem execução anterior do nó: erro claro.
         let err = runs
-            .test_integration(g.clone(), first.clone(), "m")
+            .test_integration_now(g.clone(), first.clone(), "m")
             .unwrap_err();
         assert!(err.contains("ainda não rodou"), "{err}");
 
-        let run = runs.start(g.clone(), vec![first.clone()]).unwrap();
+        let run = runs.start_now(g.clone(), vec![first.clone()]).unwrap();
         let run = wait_finished(&runs, &run.id);
         assert_eq!(run.status, RunStatus::Done, "{run:?}");
 
@@ -4563,7 +4637,7 @@ mod tests {
             trigger: Trigger::Manual,
             ..first
         };
-        let test = runs.test_integration(g, edited, "m").unwrap();
+        let test = runs.test_integration_now(g, edited, "m").unwrap();
         assert_ne!(test.id, run.id);
         assert!(test.test, "run de teste marcado para a poda");
         assert!(!run.test);
@@ -4595,12 +4669,54 @@ mod tests {
             output: OutputKind::Diff,
             ..integration("i", "echo novo > gerado.txt", Trigger::Manual)
         };
-        let run = runs.start(g, vec![i]).unwrap();
+        let run = runs.start_now(g, vec![i]).unwrap();
         runs.run_node(&run.id, "m").unwrap();
         let run = wait_finished(&runs, &run.id);
         assert_eq!(run.status, RunStatus::Done, "{run:?}");
         let diff = std::fs::read_to_string(&run.nodes["m"].outputs[&EdgeKind::Diff]).unwrap();
         assert!(diff.contains("gerado.txt"), "{diff}");
+    }
+
+    /// O ▶ volta com o run rodando antes de qualquer nó subir, e os nós sobem
+    /// juntos: um agente preso no spawn não segura o outro.
+    #[cfg(unix)]
+    #[test]
+    fn start_returns_before_the_nodes_launch_and_they_launch_in_parallel() {
+        let dir = tempfile::tempdir().unwrap();
+        let (runs, host, _app) = pty_runs(dir.path().join("runs"));
+        let (entered_tx, entered) = std::sync::mpsc::channel();
+        let (release, release_rx) = std::sync::mpsc::channel();
+        *host.hold_spawn.lock() = Some((entered_tx, release_rx));
+
+        let (started_tx, started) = std::sync::mpsc::channel();
+        {
+            let runs = Arc::clone(&runs);
+            std::thread::spawn(move || {
+                let g = graph(vec![agent("a", "x"), agent("b", "x")], vec![]);
+                started_tx.send(runs.start(g, vec![])).unwrap();
+            });
+        }
+        let run = started
+            .recv_timeout(Duration::from_secs(20))
+            .expect("o start esperou os nós subirem")
+            .unwrap();
+        assert_eq!(run.status, RunStatus::Running);
+        entered.recv_timeout(Duration::from_secs(20)).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while host.spawned.lock().is_empty() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            host.spawned.lock().len(),
+            1,
+            "o segundo agente esperou o primeiro"
+        );
+        release.send(()).unwrap();
+        while host.spawned.lock().len() < 2 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(host.spawned.lock().len(), 2);
+        runs.stop(&run.id).unwrap();
     }
 
     #[cfg(unix)]
@@ -4614,7 +4730,7 @@ mod tests {
 
         let starter = {
             let runs = Arc::clone(&runs);
-            std::thread::spawn(move || runs.start(graph(vec![agent("a", "x")], vec![]), vec![]))
+            std::thread::spawn(move || runs.start_now(graph(vec![agent("a", "x")], vec![]), vec![]))
         };
         entered.recv_timeout(Duration::from_secs(20)).unwrap();
         // O spawn está no meio: o run já foi publicado, a sessão ainda não.
@@ -4644,7 +4760,7 @@ mod tests {
         let (runs, host, _app) = pty_runs(dir.path().join("runs"));
         let g = graph(vec![agent("a", "x")], vec![]);
 
-        let first = runs.start(g.clone(), vec![]).unwrap();
+        let first = runs.start_now(g.clone(), vec![]).unwrap();
         let first = wait_orchestrating(&runs, &first.id, "a");
         assert_eq!(first.status, RunStatus::Running, "{first:?}");
         let session = host.spawned.lock()[0].clone();
@@ -4653,7 +4769,7 @@ mod tests {
         assert_eq!(runs.list(&g.id)[0].live_agents, vec![session.clone()]);
 
         // Novo ▶ do mesmo grafo: o claude do run anterior morre antes.
-        let second = runs.start(g.clone(), vec![]).unwrap();
+        let second = runs.start_now(g.clone(), vec![]).unwrap();
         assert!(host.killed.lock().contains(&session));
         assert!(runs.get(&first.id).unwrap().live_agents.is_empty());
         let second = wait_orchestrating(&runs, &second.id, "a");
@@ -4664,7 +4780,7 @@ mod tests {
         // Outro grafo não mexe nos agentes deste.
         let mut h = graph(vec![note("n")], vec![]);
         h.id = "g-2".into();
-        runs.start(h, vec![]).unwrap();
+        runs.start_now(h, vec![]).unwrap();
         assert!(!host.killed.lock().contains(&other));
     }
 
@@ -4674,7 +4790,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (runs, host, _app) = pty_runs(dir.path().join("runs"));
         let run = runs
-            .start(graph(vec![process("p", "true"), note("n")], vec![]), vec![])
+            .start_now(graph(vec![process("p", "true"), note("n")], vec![]), vec![])
             .unwrap();
         let run = wait_finished(&runs, &run.id);
         assert_eq!(run.status, RunStatus::Done, "{run:?}");
@@ -4700,13 +4816,14 @@ mod tests {
         let (runs, _host, _app) = pty_runs(root.clone());
         // Integração manual: o run fica rodando, esperando o ▶ do nó.
         let waiting = runs
-            .start(
+            .start_now(
                 graph(vec![integration_node("m", "i")], vec![]),
                 vec![integration("i", "true", Trigger::Manual)],
             )
             .unwrap();
         for _ in 0..KEEP_RUNS + 2 {
-            runs.start(graph(vec![note("n")], vec![]), vec![]).unwrap();
+            runs.start_now(graph(vec![note("n")], vec![]), vec![])
+                .unwrap();
         }
         let got = runs.get(&waiting.id).unwrap();
         assert_eq!(got.status, RunStatus::Running);
@@ -4729,7 +4846,7 @@ mod tests {
             vec![process("p", "sleep 3"), browser("b", "")],
             vec![edge("e1", "p", "b", EdgeKind::Url)],
         );
-        let run = runs.start(g, vec![]).unwrap();
+        let run = runs.start_now(g, vec![]).unwrap();
         let mid = wait_status(&runs, &run.id, "b", NodeStatus::Done);
         assert_eq!(mid.nodes["p"].status, NodeStatus::Running, "{mid:?}");
         assert_eq!(mid.nodes["p"].url.as_deref(), Some("http://localhost:5173"));
@@ -4769,7 +4886,7 @@ mod tests {
                 edge("e2", "s", "q", EdgeKind::Log),
             ],
         );
-        let run = wait_finished(&runs, &runs.start(g, vec![]).unwrap().id);
+        let run = wait_finished(&runs, &runs.start_now(g, vec![]).unwrap().id);
         assert_eq!(run.status, RunStatus::Done, "{run:?}");
         assert_eq!(run.nodes["b"].url.as_deref(), Some("http://localhost:3000"));
         let q = std::fs::read_to_string(&run.nodes["q"].outputs[&EdgeKind::Log]).unwrap();
@@ -4781,7 +4898,7 @@ mod tests {
             vec![service, browser("b", "")],
             vec![edge("e1", "s", "b", EdgeKind::Url)],
         );
-        let run = wait_finished(&runs, &runs.start(g, vec![]).unwrap().id);
+        let run = wait_finished(&runs, &runs.start_now(g, vec![]).unwrap().id);
         assert_eq!(run.status, RunStatus::Failed);
         assert_eq!(
             run.nodes["s"].reason.as_deref(),
@@ -4858,7 +4975,7 @@ mod tests {
             vec![orchestrator("o"), agent("a", "x")],
             vec![edge("e1", "o", "a", EdgeKind::Context)],
         );
-        let run = runs.start(g, vec![]).unwrap();
+        let run = runs.start_now(g, vec![]).unwrap();
         wait_orchestrating(&runs, &run.id, "o");
         // Quem depende dele recebe o contexto do turno e fecha o dele.
         let r = wait_orchestrating(&runs, &run.id, "a");
@@ -4919,7 +5036,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (runs, host, _app) = pty_runs(dir.path().join("runs"));
         let run = runs
-            .start(graph(vec![agent("a", "x")], vec![]), vec![])
+            .start_now(graph(vec![agent("a", "x")], vec![]), vec![])
             .unwrap();
         let r = wait_orchestrating(&runs, &run.id, "a");
         assert_eq!(r.status, RunStatus::Running, "{r:?}");
@@ -5037,7 +5154,7 @@ mod tests {
         b.title = "Revisor".into();
         let g = graph(vec![a, b], vec![edge("t1", "a", "b", EdgeKind::Talk)]);
         runs.store.save_orbit_graph(&g, true, None).unwrap();
-        let run = runs.start(g, vec![]).unwrap();
+        let run = runs.start_now(g, vec![]).unwrap();
         for id in ["a", "b"] {
             wait_orchestrating(&runs, &run.id, id);
         }
@@ -5135,7 +5252,7 @@ mod tests {
         a.title = "Front".into();
         let mut b = orchestrator("b");
         b.title = "Revisor".into();
-        let run = runs.start(graph(vec![a, b], vec![]), vec![]).unwrap();
+        let run = runs.start_now(graph(vec![a, b], vec![]), vec![]).unwrap();
         for id in ["a", "b"] {
             wait_orchestrating(&runs, &run.id, id);
         }
@@ -5201,7 +5318,7 @@ mod tests {
         let (runs, _host, _app) = pty_runs(dir.path().join("runs"));
         let g = graph(vec![orchestrator("o"), process("p", "sleep 30")], vec![]);
         runs.store.save_orbit_graph(&g, true, None).unwrap();
-        let run = runs.start(g, vec![]).unwrap();
+        let run = runs.start_now(g, vec![]).unwrap();
         wait_orchestrating(&runs, &run.id, "o");
         let tools = tools_of(&_host, "o");
         // A porta fica ocupada por este teste; o processo imita o Python que
@@ -5269,7 +5386,7 @@ mod tests {
             vec![],
         );
         runs.store.save_orbit_graph(&g, true, None).unwrap();
-        let run = runs.start(g, vec![]).unwrap();
+        let run = runs.start_now(g, vec![]).unwrap();
         wait_orchestrating(&runs, &run.id, "o");
         // Todo agente do grafo do dono recebe as ferramentas, as de criar
         // inclusive.
@@ -5475,7 +5592,7 @@ mod tests {
         init_repo(&repo);
         let (runs, host, _app) = pty_runs(dir.path().join("runs"));
         let g = graph(vec![orchestrator("o"), process("p", "sleep 30")], vec![]);
-        let run = runs.start(g, vec![]).unwrap();
+        let run = runs.start_now(g, vec![]).unwrap();
         wait_orchestrating(&runs, &run.id, "o");
         let tools = tools_of(&host, "o");
         let rev = tools
@@ -5522,7 +5639,7 @@ mod tests {
         let (runs, host, _app) = pty_runs(dir.path().join("runs"));
         let g = graph(vec![orchestrator("o"), process("p", "sleep 30")], vec![]);
         runs.store.save_orbit_graph(&g, true, None).unwrap();
-        let run = runs.start(g.clone(), vec![]).unwrap();
+        let run = runs.start_now(g.clone(), vec![]).unwrap();
         wait_orchestrating(&runs, &run.id, "o");
         let rev = tools_of(&host, "o")
             .call(
@@ -5589,7 +5706,7 @@ mod tests {
         let (runs, host, _app) = pty_runs(dir.path().join("runs"));
         let g = graph(vec![orchestrator("o"), process("p", "sleep 30")], vec![]);
         runs.store.save_orbit_graph(&g, true, None).unwrap();
-        let run = runs.start(g.clone(), vec![]).unwrap();
+        let run = runs.start_now(g.clone(), vec![]).unwrap();
         wait_orchestrating(&runs, &run.id, "o");
         let tools = tools_of(&host, "o");
         let web = tools
@@ -5650,7 +5767,7 @@ mod tests {
         let (runs, host, _app) = pty_runs(dir.path().join("runs"));
         let g = graph(vec![orchestrator("o"), process("p", "sleep 30")], vec![]);
         runs.store.save_orbit_graph(&g, true, None).unwrap();
-        let run = runs.start(g.clone(), vec![]).unwrap();
+        let run = runs.start_now(g.clone(), vec![]).unwrap();
         wait_orchestrating(&runs, &run.id, "o");
         let page = tools_of(&host, "o")
             .call(
@@ -5724,7 +5841,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (runs, _host, _app) = pty_runs(dir.path().join("runs"));
         assert!(runs
-            .start(graph(vec![note("../fora")], vec![]), vec![])
+            .start_now(graph(vec![note("../fora")], vec![]), vec![])
             .is_err());
     }
 
@@ -5781,7 +5898,7 @@ mod tests {
             vec![edge("c1", "o", "b", EdgeKind::Control)],
         );
         runs.store.save_orbit_graph(&g, true, None).unwrap();
-        let run = runs.start(g, vec![]).unwrap();
+        let run = runs.start_now(g, vec![]).unwrap();
         wait_orchestrating(&runs, &run.id, "o");
         wait_orchestrating(&runs, &run.id, "x");
         let tools = tools_of(&host, "Claude");
@@ -5909,7 +6026,7 @@ mod tests {
             vec![edge("c1", "o", "b", EdgeKind::Control)],
         );
         runs.store.save_orbit_graph(&g, true, None).unwrap();
-        let run = runs.start(g.clone(), vec![]).unwrap();
+        let run = runs.start_now(g.clone(), vec![]).unwrap();
         wait_orchestrating(&runs, &run.id, "o");
         let tools = tools_of(&host, "Claude");
 
@@ -6001,7 +6118,7 @@ mod tests {
         o.position = Position { x: 100.0, y: 100.0 };
         let g = graph(vec![o, process("p", "sleep 30")], vec![]);
         runs.store.save_orbit_graph(&g, true, None).unwrap();
-        let run = runs.start(g, vec![]).unwrap();
+        let run = runs.start_now(g, vec![]).unwrap();
         wait_orchestrating(&runs, &run.id, "o");
         let tools = tools_of(&host, "o");
 
@@ -6145,7 +6262,7 @@ mod tests {
             ],
         );
         runs.store.save_orbit_graph(&g, true, None).unwrap();
-        let run = runs.start(g, vec![]).unwrap();
+        let run = runs.start_now(g, vec![]).unwrap();
         wait_orchestrating(&runs, &run.id, "o");
         wait_orchestrating(&runs, &run.id, "o2");
         let step = json!({"steps": [{"text": "Subir a api", "state": "todo"}]});
@@ -6206,7 +6323,7 @@ mod tests {
         c.title = "Solto".into();
         let g = graph(vec![a, b, c], vec![edge("t1", "a", "b", EdgeKind::Talk)]);
         runs.store.save_orbit_graph(&g, true, None).unwrap();
-        let run = runs.start(g, vec![]).unwrap();
+        let run = runs.start_now(g, vec![]).unwrap();
         for id in ["a", "b", "c"] {
             wait_orchestrating(&runs, &run.id, id);
         }
@@ -6326,7 +6443,7 @@ mod tests {
             ],
         );
         runs.store.save_orbit_graph(&g, true, None).unwrap();
-        let run = runs.start(g, vec![]).unwrap();
+        let run = runs.start_now(g, vec![]).unwrap();
         wait_orchestrating(&runs, &run.id, "a");
         wait_orchestrating(&runs, &run.id, "x");
         let front = tools_of(&host, "Front");
@@ -6454,7 +6571,7 @@ mod tests {
             vec![edge("m1", "a", "m", EdgeKind::Memory)],
         );
         runs.store.save_orbit_graph(&g, true, None).unwrap();
-        let run = runs.start(g.clone(), vec![]).unwrap();
+        let run = runs.start_now(g.clone(), vec![]).unwrap();
         wait_orchestrating(&runs, &run.id, "a");
         let front = tools_of(&host, "Front");
 
@@ -6508,7 +6625,7 @@ mod tests {
         let mut without = with.clone();
         without.edges.clear();
         runs.store.save_orbit_graph(&with, true, None).unwrap();
-        let run = runs.start(with.clone(), vec![]).unwrap();
+        let run = runs.start_now(with.clone(), vec![]).unwrap();
         wait_orchestrating(&runs, &run.id, "a");
         wait_orchestrating(&runs, &run.id, "b");
         let front = tools_of(&host, "Front");
@@ -6571,7 +6688,7 @@ mod tests {
         b.title = "Revisor".into();
         let g = graph(vec![a, b], vec![edge("t1", "a", "b", EdgeKind::Talk)]);
         runs.store.save_orbit_graph(&g, true, None).unwrap();
-        let run = runs.start(g, vec![]).unwrap();
+        let run = runs.start_now(g, vec![]).unwrap();
         wait_orchestrating(&runs, &run.id, "a");
         wait_orchestrating(&runs, &run.id, "b");
         let front = tools_of(&host, "Front");
@@ -6653,7 +6770,7 @@ mod tests {
             ],
         );
         runs.store.save_orbit_graph(&g, true, None).unwrap();
-        let run = runs.start(g.clone(), vec![]).unwrap();
+        let run = runs.start_now(g.clone(), vec![]).unwrap();
         wait_orchestrating(&runs, &run.id, "a");
         let front = tools_of(&host, "Front");
         front
@@ -6693,7 +6810,7 @@ mod tests {
         }
         let g = graph(vec![a, orchestrator("o")], vec![]);
         runs.store.save_orbit_graph(&g, true, None).unwrap();
-        let run = runs.start(g, vec![]).unwrap();
+        let run = runs.start_now(g, vec![]).unwrap();
         wait_orchestrating(&runs, &run.id, "a");
         wait_orchestrating(&runs, &run.id, "o");
         assert!(tools_of(&host, "o").can_create);

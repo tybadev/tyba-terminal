@@ -8706,24 +8706,26 @@ fn orbit_delete_integration(state: State<'_, AppState>, id: String) -> Result<()
 
 /// ▶ Executar. Recusa no core grafo importado e não confirmado, e revalida o
 /// grafo antes de rodar — o banco não é prova de que ele ainda é válido.
+/// Fora da main thread: parar o run anterior e gravar o novo não seguram a
+/// tela; os nós sobem depois, em outra thread (ver `Runs::start`).
 #[tauri::command]
-fn orbit_run_start(
-    state: State<'_, AppState>,
-    runs: State<'_, orbit::run::SharedRuns>,
-    graph_id: String,
-) -> Result<String, String> {
-    let stored = state
-        .store
-        .get_orbit_graph(&graph_id)
-        .map_err(|e| e.to_string())?
-        .ok_or("grafo não encontrado")?;
-    let graph = orbit::run::startable(stored)?;
-    let integrations = state
-        .store
-        .list_orbit_integrations()
-        .map_err(|e| e.to_string())?;
-    orbit::validate_graph(&graph, &integrations).map_err(|e| e.to_string())?;
-    Ok(runs.start(graph, integrations)?.id)
+async fn orbit_run_start(app: AppHandle, graph_id: String) -> Result<String, String> {
+    off_main(app, move |app, state| {
+        let stored = state
+            .store
+            .get_orbit_graph(&graph_id)
+            .map_err(|e| e.to_string())?
+            .ok_or("grafo não encontrado")?;
+        let graph = orbit::run::startable(stored)?;
+        let integrations = state
+            .store
+            .list_orbit_integrations()
+            .map_err(|e| e.to_string())?;
+        orbit::validate_graph(&graph, &integrations).map_err(|e| e.to_string())?;
+        let runs = app.state::<orbit::run::SharedRuns>();
+        Ok(runs.start(graph, integrations)?.id)
+    })
+    .await?
 }
 
 /// O ▶ num nó de integração manual: ele roda assim que as entradas chegarem.
@@ -11410,6 +11412,7 @@ mod command_threading_tests {
         "history::import::run(",
         "themes.import(",
         "files_for(",
+        "runs.start(",
     ];
 
     /// Síncronos de propósito, com o motivo.
