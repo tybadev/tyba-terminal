@@ -202,7 +202,6 @@ import {
 import {
   activateTab,
   activateWorkspace,
-  closeAgentViewers,
   closePane,
   closeSideView,
   closeTab,
@@ -366,17 +365,13 @@ import {
   type StatusGlyph,
 } from "./lib/sessionStatus";
 import {
-  AGENTS_PANEL_LINGER_MS,
   agentsPanelActionableIds,
-  agentsPanelRunConcluded,
   agentsPanelSession,
   agentsPanelUngated,
   deadAgentsPanels,
   mainColumn,
   showAgentsButton,
   subagentInlineApprovals,
-  trackPanelRun,
-  type PanelRunEntry,
 } from "./lib/agentsPanel";
 import { usePresence } from "./lib/usePresence";
 import {
@@ -1797,65 +1792,6 @@ export default function App() {
       );
     }
   }, [layout.workspaces, sessions]);
-
-  // Rodada de subagentes concluiu (todos Done e, em sessão gerenciada, turno
-  // encerrado) → o painel mostra a conclusão por um instante e fecha sozinho.
-  // Só no flanco de subida: painel reaberto DEPOIS da conclusão fica aberto —
-  // o usuário o abriu pra rever, não é lixo de rodada.
-  const layoutRef = useRef(layout);
-  layoutRef.current = layout;
-  const panelRuns = useRef<Map<string, PanelRunEntry>>(new Map());
-  const panelCloseTimers = useRef<Map<string, number>>(new Map());
-  useEffect(() => {
-    const cancelTimer = (wsId: string) => {
-      const timer = panelCloseTimers.current.get(wsId);
-      if (timer != null) {
-        window.clearTimeout(timer);
-        panelCloseTimers.current.delete(wsId);
-      }
-    };
-    const open = new Set<string>();
-    for (const ws of layout.workspaces) {
-      const sessionId = agentsPanelSession(ws.side_view);
-      if (!sessionId) continue;
-      const session = sessionById.get(sessionId);
-      if (!session) continue;
-      open.add(ws.id);
-      const concluded = agentsPanelRunConcluded(
-        session.kind,
-        session.status,
-        subagentsBySession.get(sessionId)?.subagents ?? [],
-      );
-      const { entry, action } = trackPanelRun(
-        panelRuns.current.get(ws.id),
-        sessionId,
-        concluded,
-      );
-      panelRuns.current.set(ws.id, entry);
-      if (action === "cancel") cancelTimer(ws.id);
-      if (action !== "schedule" || panelCloseTimers.current.has(ws.id)) {
-        continue;
-      }
-      const timer = window.setTimeout(() => {
-        panelCloseTimers.current.delete(ws.id);
-        const current = layoutRef.current.workspaces.find(
-          (w) => w.id === ws.id,
-        );
-        if (current && agentsPanelSession(current.side_view) === sessionId) {
-          void closeSideView(ws.id).catch(() => {});
-          // Viewer e painel são uma feature: o fim da rodada fecha os dois —
-          // o split do viewer não pode ficar órfão na tela.
-          void closeAgentViewers(sessionId).catch(() => {});
-        }
-      }, AGENTS_PANEL_LINGER_MS);
-      panelCloseTimers.current.set(ws.id, timer);
-    }
-    for (const wsId of [...panelRuns.current.keys()]) {
-      if (open.has(wsId)) continue;
-      panelRuns.current.delete(wsId);
-      cancelTimer(wsId);
-    }
-  }, [layout.workspaces, sessionById, subagentsBySession]);
 
   // `mainSlot`, não só `sideView`: o painel Agentes fecha com fade e só libera
   // a largura quando desmonta — ver `mainColumn`. O ResizeObserver do terminal
