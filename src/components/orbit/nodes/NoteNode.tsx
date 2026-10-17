@@ -4,7 +4,7 @@ import { List, LockSimple, LockSimpleOpen, NotePencil } from "@phosphor-icons/re
 import type { NodeProps } from "@xyflow/react";
 
 import type { NodeKind, StepState } from "@/lib/orbit";
-import { checklistCount, isPlanNote, noteEditable, parseChecklist } from "@/lib/orbitPlan";
+import { checklistCount, isPlanNote, noteEditable, parseChecklist, planShown } from "@/lib/orbitPlan";
 import { clockTime, freshWrite, lineAuthor, memoryAgents, noteMemoryLabel, writeOnBlur } from "@/lib/orbitTalk";
 import { NodeFrame, useCanvasActions, useOrbit, type OrbitFlowNode } from "./NodeFrame";
 
@@ -35,13 +35,23 @@ const OPENED_AT = Date.now();
 export function NoteNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
   const { t } = useTranslation();
   const { updateNode } = useCanvasActions();
-  const { graph, run } = useOrbit();
+  const { graph, run, live, runNumber, planWriters, createdIds } = useOrbit();
   const node = data.node;
   const kind = node.kind as Extract<NodeKind, { type: "note" }>;
   const locked = kind.locked === true;
   const [editing, setEditing] = useState(false);
-  const steps = parseChecklist(kind.markdown);
   const plan = isPlanNote(id, graph.edges);
+  // Plano: de qual execução é, e o texto dela (Execuções → #N mostra o daquela).
+  const shown = plan
+    ? planShown(id, kind.markdown, {
+        run,
+        number: runNumber,
+        live,
+        writer: planWriters.get(id),
+        created: createdIds.has(id),
+      })
+    : null;
+  const steps = parseChecklist(shown?.markdown ?? kind.markdown);
   const editable = noteEditable(id, graph.edges);
   const count = steps ? checklistCount(steps) : null;
   // Nota viva (quadro MaestroConversa): agentes ligados por memória leem e
@@ -82,6 +92,11 @@ export function NoteNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
       paper
       extra={
         <>
+          {shown?.number && (
+            <span className="shrink-0 text-[11.5px] text-tyba-text-faint">
+              · {t("orbitPlanRun", { number: shown.number })}
+            </span>
+          )}
           {count && (
             <span className="shrink-0 text-[11.5px] text-tyba-violet">
               {t("orbitPlanCount", count)}
@@ -110,8 +125,8 @@ export function NoteNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
         </>
       }
       meta={
-        plan
-          ? t("orbitPlanFooter")
+        shown
+          ? t(shown.previous ? "orbitPlanPrevious" : "orbitPlanFooter")
           : written
             ? t("orbitNoteWrittenBy", { name: written.by, time: clockTime(written.at) })
             : undefined
@@ -131,9 +146,16 @@ export function NoteNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
             onClick: () => setEditing(true),
             onKeyDown: (e: KeyboardEvent) => e.key === "Enter" && setEditing(true),
           })}
-          className={`nodrag nowheel min-h-0 flex-1 overflow-y-auto px-4 pt-1 pb-3 font-sans text-[13px] leading-[1.45] text-tyba-text${editable ? " cursor-text" : ""}`}
+          className={`nodrag nowheel min-h-0 flex-1 overflow-y-auto px-4 pt-1 pb-3 font-sans text-[13px] leading-[1.45] text-tyba-text${editable ? " cursor-text" : ""}${shown?.previous ? " opacity-50" : ""}`}
         >
-          {!steps && <NoteText markdown={kind.markdown} />}
+          {(shown?.waiting || shown?.none) && (
+            <div className="py-1.5 text-tyba-text-faint">
+              {t(shown.waiting ? "orbitPlanWaiting" : "orbitPlanNone")}
+            </div>
+          )}
+          {!steps && !shown?.waiting && !shown?.none && (
+            <NoteText markdown={shown?.markdown ?? kind.markdown} />
+          )}
           {steps?.map((s, i) => (
             <div key={i}>
               <div className="flex items-start gap-2.5 py-1.5">

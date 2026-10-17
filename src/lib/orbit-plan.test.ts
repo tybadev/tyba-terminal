@@ -21,6 +21,8 @@ import {
   isPlanNote,
   noteEditable,
   parseChecklist,
+  planShown,
+  planWriters,
 } from "./orbitPlan";
 
 // Fixtures sintéticas: nada aqui veio de sessão real.
@@ -117,6 +119,88 @@ describe("plano do run na tela", () => {
 
     // Orquestrador apagado da tela: a nota vem, a ligação não.
     expect(applyPlans([], [], [plan(3)]).edges).toEqual([]);
+  });
+});
+
+describe("de qual execução é o plano", () => {
+  const note = newNode("plano-1", "Plano", { type: "note", markdown: "" }, { x: 0, y: 0 });
+  const plan = (markdown: string): Plan => ({
+    orchestrator: "o",
+    note: { ...note, kind: { type: "note", markdown } },
+    edge: { id: "plano-1-plan", from: "o", to: "plano-1", kind: "plan" },
+    steps: markdown ? [{ text: "a", state: "done" }] : [],
+    updatedAt: 1,
+  });
+  const run = (status: Run["status"], plans: Plan[]) => ({ status, plans });
+  const base = { number: 4, live: true, writer: 4, created: false };
+
+  test("o mais novo que escreveu dá o número", () => {
+    const runs = [
+      { id: "r5", plans: [] },
+      { id: "r4", plans: [plan("- [x] a\n")] },
+      { id: "r3", plans: [plan("- [ ] velho\n")] },
+    ];
+    const n: Record<string, number> = { r5: 5, r4: 4, r3: 3 };
+    expect(planWriters(runs, (id) => n[id])).toEqual(new Map([["plano-1", 4]]));
+  });
+
+  test("execução rodando: atual, com o número dela", () => {
+    expect(planShown("plano-1", "x", { ...base, run: run("running", [plan("- [x] a\n")]) })).toEqual({
+      markdown: "- [x] a\n",
+      number: 4,
+      previous: false,
+      waiting: false,
+      none: false,
+    });
+  });
+
+  test("no ▶ o plano pendente espera o agente escrever", () => {
+    const shown = planShown("plano-1", "", { ...base, run: run("running", [plan("")]) });
+    expect(shown.waiting).toBe(true);
+    expect(shown.previous).toBe(false);
+  });
+
+  test("execução terminada ou parada: apagada, da execução anterior", () => {
+    for (const status of ["done", "stopped", "failed"] as const) {
+      const shown = planShown("plano-1", "x", { ...base, run: run(status, [plan("- [x] a\n")]) });
+      expect(shown.previous).toBe(true);
+      expect(shown.number).toBe(4);
+    }
+    // Terminou sem o agente escrever.
+    expect(planShown("plano-1", "", { ...base, run: run("done", [plan("")]) }).none).toBe(true);
+  });
+
+  test("Execuções → #N mostra o plano daquela execução, não o do grafo", () => {
+    const shown = planShown("plano-1", "- [ ] novo\n", {
+      run: run("done", [plan("- [x] velho\n")]),
+      number: 2,
+      live: false,
+      writer: 5,
+      created: false,
+    });
+    expect(shown.markdown).toBe("- [x] velho\n");
+    expect(shown.number).toBe(2);
+    expect(shown.previous).toBe(true);
+  });
+
+  test("execução à vista sem plano para a nota: o texto do grafo, apagado, com quem escreveu", () => {
+    expect(planShown("plano-1", "- [x] a\n", { ...base, run: run("running", []), writer: 3 })).toEqual({
+      markdown: "- [x] a\n",
+      number: 3,
+      previous: true,
+      waiting: false,
+      none: false,
+    });
+    // Ninguém escreveu ainda: nem número, nem "anterior".
+    const fresh = planShown("plano-1", "", { ...base, run: null, writer: undefined });
+    expect(fresh.number).toBeNull();
+    expect(fresh.previous).toBe(false);
+  });
+
+  test("nota criada por agente do run é daquela execução", () => {
+    const shown = planShown("plano-1", "- [~] a\n", { ...base, run: run("running", []), created: true });
+    expect(shown.number).toBe(4);
+    expect(shown.previous).toBe(false);
   });
 });
 

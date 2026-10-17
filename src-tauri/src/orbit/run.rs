@@ -1424,7 +1424,7 @@ impl<H: RunHost> Runs<H> {
     /// o nó manual não espera ▶ — o clique em Testar já é o ▶.
     fn begin(
         &self,
-        graph: Graph,
+        mut graph: Graph,
         integrations: Vec<Integration>,
         seed: Option<PathBuf>,
     ) -> Result<(Run, Launching), String> {
@@ -1466,6 +1466,7 @@ impl<H: RunHost> Runs<H> {
             for id in super::integration::manual_nodes(&graph, &integrations) {
                 sched.hold(&id);
             }
+            sched.run.plans = self.reset_plans(&mut graph);
         }
         let graph_id = graph.id.clone();
         let snapshot = sched.snapshot();
@@ -2982,6 +2983,80 @@ impl<H: RunHost> Runs<H> {
         };
         self.publish_current(run_id);
         Ok(note_id)
+    }
+
+    /// No ▶: a nota de plano de cada agente do run fica vazia na hora, antes
+    /// de ele escrever — o checklist da execução anterior não aparece como
+    /// se fosse desta. Vale a nota que o [`Runs::write_plan`] reaproveitaria (a
+    /// primeira ligada por `plan` com texto de plano); a do dono, com texto
+    /// próprio, fica como está. Zera no grafo do run e no salvo, e volta os
+    /// planos pendentes (sem passos) que o run guarda: a tela mostra
+    /// "esperando o agente escrever o plano…" e o `orbit_plan` reescreve a
+    /// mesma nota.
+    fn reset_plans(&self, graph: &mut Graph) -> Vec<Plan> {
+        let mut pending: Vec<Plan> = Vec::new();
+        for edge in graph.edges.iter().filter(|e| e.kind == EdgeKind::Plan) {
+            let agent = graph
+                .nodes
+                .iter()
+                .any(|n| n.id == edge.from && matches!(n.kind, NodeKind::Agent { .. }));
+            if !agent || pending.iter().any(|p| p.orchestrator == edge.from) {
+                continue;
+            }
+            let Some(note) = graph.nodes.iter().find(|n| n.id == edge.to) else {
+                continue;
+            };
+            let NodeKind::Note { markdown, locked } = &note.kind else {
+                continue;
+            };
+            if !orchestrator::is_plan_text(markdown) {
+                continue;
+            }
+            let mut note = note.clone();
+            note.kind = NodeKind::Note {
+                markdown: String::new(),
+                locked: *locked,
+            };
+            pending.push(Plan {
+                orchestrator: edge.from.clone(),
+                note,
+                edge: edge.clone(),
+                steps: Vec::new(),
+                updated_at: now(),
+            });
+        }
+        if pending.is_empty() {
+            return pending;
+        }
+        let blank = |nodes: &mut Vec<Node>| {
+            for p in &pending {
+                if let Some(n) = nodes.iter_mut().find(|n| {
+                    n.id == p.note.id
+                        && matches!(&n.kind, NodeKind::Note { markdown, .. } if orchestrator::is_plan_text(markdown))
+                }) {
+                    if let NodeKind::Note { markdown, .. } = &mut n.kind {
+                        markdown.clear();
+                    }
+                }
+            }
+        };
+        blank(&mut graph.nodes);
+        let save = || -> Result<(), String> {
+            let stored = self
+                .store
+                .get_orbit_graph(&graph.id)
+                .map_err(|e| e.to_string())?
+                .ok_or("grafo não encontrado")?;
+            let mut saved = stored.value;
+            blank(&mut saved.nodes);
+            self.store
+                .save_orbit_graph(&saved, stored.consented, None)
+                .map_err(|e| e.to_string())
+        };
+        if let Err(e) = save() {
+            eprintln!("[orbit] zerar a nota de plano no ▶: {e}");
+        }
+        pending
     }
 
     /// O plano do agente criado por outro: ele não está no grafo salvo, então
@@ -7032,6 +7107,87 @@ mod tests {
             )
             .unwrap_err();
         assert!(err.contains("já terminou"), "{err}");
+    }
+
+    /// O ▶ zera na hora a nota de plano de cada agente (no grafo salvo e no
+    /// run, com plano pendente sem passos); a do dono fica. O run anterior
+    /// guarda o plano dele, e o `orbit_plan` do novo reescreve a mesma nota.
+    #[cfg(unix)]
+    #[test]
+    fn run_starts_with_each_agents_plan_cleared_and_keeps_the_old_one() {
+        use serde_json::json;
+        let dir = tempfile::tempdir().unwrap();
+        let (runs, host, _app) = pty_runs(dir.path().join("runs"));
+        let g = graph(
+            vec![orchestrator("o"), orchestrator("o2"), note("n")],
+            vec![edge("p2", "o2", "n", EdgeKind::Plan)],
+        );
+        runs.store.save_orbit_graph(&g, true, None).unwrap();
+        let first = runs.start_now(g.clone(), vec![]).unwrap();
+        // A nota do dono ("# plano") não vira plano pendente.
+        assert!(first.plans.is_empty(), "{:?}", first.plans);
+        wait_orchestrating(&runs, &first.id, "o");
+        let step = json!({"steps": [{"text": "Subir a api", "state": "done"}]});
+        let note_id = tools_of(&host, "o").call("orbit_plan", &step).unwrap()["note_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        runs.stop(&first.id).unwrap();
+
+        let saved = runs.store.get_orbit_graph("g-1").unwrap().unwrap().value;
+        let second = runs.start_now(saved, vec![]).unwrap();
+        assert_eq!(second.number, first.number + 1);
+        // O retrato do ▶ já leva o plano pendente, vazio.
+        assert_eq!(second.plans.len(), 1, "{:?}", second.plans);
+        assert_eq!(second.plans[0].orchestrator, "o");
+        assert_eq!(second.plans[0].note.id, note_id);
+        assert!(second.plans[0].steps.is_empty());
+        let saved = runs.store.get_orbit_graph("g-1").unwrap().unwrap().value;
+        let kind = |id: &str| {
+            saved
+                .nodes
+                .iter()
+                .find(|n| n.id == id)
+                .unwrap()
+                .kind
+                .clone()
+        };
+        assert_eq!(
+            kind(&note_id),
+            NodeKind::Note {
+                markdown: String::new(),
+                locked: false,
+            }
+        );
+        assert_eq!(
+            kind("n"),
+            NodeKind::Note {
+                markdown: "# plano".into(),
+                locked: false,
+            }
+        );
+        // A execução anterior segue com o plano dela.
+        let old = runs.store.get_orbit_run(&first.id).unwrap().unwrap();
+        assert_eq!(old.plans.len(), 1);
+        assert_eq!(old.plans[0].steps[0].text, "Subir a api");
+
+        wait_orchestrating(&runs, &second.id, "o");
+        let again = json!({"steps": [{"text": "Abrir o login", "state": "doing"}]});
+        // As ferramentas da sessão nova (a última que subiu com o título).
+        let tools = {
+            let launches = host.agents.lock().clone();
+            let launch = launches.iter().rev().find(|l| l.title == "o").unwrap();
+            launch.tools.clone().unwrap()
+        };
+        let id = tools.call("orbit_plan", &again).unwrap()["note_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(id, note_id);
+        let r = runs.get(&second.id).unwrap();
+        assert_eq!(r.plans.len(), 1);
+        assert_eq!(r.plans[0].steps[0].text, "Abrir o login");
+        runs.stop(&second.id).unwrap();
     }
 
     /// Ligar o orquestrador a uma nota do dono não faz dela o plano: com texto

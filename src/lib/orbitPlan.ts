@@ -2,7 +2,7 @@
 // (`orbit_plan` → `plan_markdown`); aqui só se lê o checklist para desenhar
 // e se põe na tela a cópia que o run manda.
 
-import type { OrbitEdge, OrbitNode, Plan, StepState } from "./orbit";
+import type { OrbitEdge, OrbitNode, Plan, Run, StepState } from "./orbit";
 import { NEW_IN_HANDLE, OUT_HANDLE } from "./orbit";
 
 /** Um passo do checklist e o que ele criou (as linhas "  criou …" sob ele). */
@@ -123,6 +123,79 @@ export function applyPlans<
     }
   }
   return { nodes: outNodes, edges: outEdges };
+}
+
+/**
+ * Nota → "#N" da execução mais nova que escreveu nela (ou a zerou no ▶).
+ * `runs` vem do mais novo ao mais velho, como no `RunView`.
+ */
+export function planWriters(
+  runs: readonly Pick<Run, "id" | "plans">[],
+  numberOf: (runId: string) => number,
+): Map<string, number> {
+  const out = new Map<string, number>();
+  for (const r of runs) {
+    for (const p of r.plans ?? []) {
+      if (!out.has(p.note.id)) out.set(p.note.id, numberOf(r.id));
+    }
+  }
+  return out;
+}
+
+/** O que a nota de plano mostra (quadro OrbitPlano, "Plano · execução #N"). */
+export interface PlanShown {
+  /** O texto: o da execução à vista, ou o que ficou no grafo. */
+  markdown: string;
+  /** "#N" da execução de quem é o plano; `null` sem saber. */
+  number: number | null;
+  /** Apagada, "da execução anterior": a execução dele acabou ou não é a à vista. */
+  previous: boolean;
+  /** Execução rodando e o agente ainda não escreveu. */
+  waiting: boolean;
+  /** A execução acabou sem o agente escrever. */
+  none: boolean;
+}
+
+/**
+ * A nota de plano à vista. Com o run à vista tendo plano para ela (o ▶ já
+ * deixa um pendente, sem passos), vale o texto do run — é assim que
+ * Execuções → #N mostra o plano daquela execução; atual só com ele rodando
+ * (assentado conta: o agente segue vivo e marca). Sem, vale o texto do
+ * grafo, apagado, com o número de quem o escreveu por último. Nota criada
+ * por agente do run é dele.
+ */
+export function planShown(
+  noteId: string,
+  markdown: string,
+  view: {
+    run: Pick<Run, "status" | "plans"> | null;
+    number: number;
+    live: boolean;
+    writer: number | undefined;
+    created: boolean;
+  },
+): PlanShown {
+  const { run } = view;
+  const own = run?.plans?.find((p) => p.note.id === noteId);
+  if (run && (own || view.created)) {
+    const text = own?.note.kind.type === "note" ? own.note.kind.markdown : markdown;
+    const current = view.live && run.status === "running";
+    const empty = text.trim() === "";
+    return {
+      markdown: text,
+      number: view.number || null,
+      previous: !current,
+      waiting: empty && current,
+      none: empty && !current,
+    };
+  }
+  return {
+    markdown,
+    number: view.writer ?? null,
+    previous: view.writer !== undefined,
+    waiting: false,
+    none: false,
+  };
 }
 
 /**

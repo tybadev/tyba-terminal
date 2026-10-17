@@ -123,7 +123,7 @@ import {
   undo as undoShot,
 } from "@/lib/graphHistory";
 import { freeSpot, nodeRect, rightOf } from "@/lib/graphLayout";
-import { applyPlans, freshPlans } from "@/lib/orbitPlan";
+import { applyPlans, freshPlans, planWriters } from "@/lib/orbitPlan";
 import { deletedNotice } from "@/lib/orbitHandling";
 import { IS_MAC } from "@/lib/platform";
 import {
@@ -846,6 +846,15 @@ function OrbitInner({
     ],
   );
   const room = roomAgents(viewGraph.edges);
+  const shownNumber = run ? runNumber(runView, run.id) : 0;
+  const writers = useMemo(
+    () =>
+      planWriters(
+        runView.runs.filter((r) => r.graphId === meta?.id),
+        (id) => runNumber(runView, id),
+      ),
+    [runView, meta?.id],
+  );
   const ctx = useMemo(
     () => ({
       graph: viewGraph,
@@ -858,6 +867,8 @@ function OrbitInner({
       createdBy,
       approvals: nodeApprovals,
       telemetry,
+      runNumber: shownNumber,
+      planWriters: writers,
     }),
     [
       viewGraph,
@@ -871,6 +882,8 @@ function OrbitInner({
       createdBy,
       nodeApprovals,
       telemetry,
+      shownNumber,
+      writers,
     ],
   );
 

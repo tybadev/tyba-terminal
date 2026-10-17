@@ -120,6 +120,10 @@ export interface CanvasState {
   approvals: ReadonlyMap<string, ApprovalRequest>;
   /** O que a sessão de cada nó de agente reportou (modelo, contexto, diff). */
   telemetry: ReadonlyMap<string, AgentTelemetry>;
+  /** "#N" do run à vista (0 sem run). */
+  runNumber: number;
+  /** Nota de plano → "#N" da execução mais nova que escreveu nela. */
+  planWriters: ReadonlyMap<string, number>;
 }
 
 export type OrbitCtx = CanvasActions & CanvasState;
@@ -150,6 +154,8 @@ export const CanvasStateContext = createContext<CanvasState>({
   createdBy: new Map(),
   approvals: new Map(),
   telemetry: new Map(),
+  runNumber: 0,
+  planWriters: new Map(),
 });
 
 /**
