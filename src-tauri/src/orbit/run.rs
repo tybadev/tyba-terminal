@@ -108,6 +108,9 @@ fn closed_status(nodes: &HashMap<String, NodeRun>) -> RunStatus {
 /// Motivo do nó que rodava quando o app fechou.
 pub const APP_CLOSED: &str = "o TYBA fechou durante a execução";
 
+/// Motivo do nó que o dono parou antes de ele começar.
+pub const STOPPED_BEFORE_START: &str = "parado antes de começar";
+
 impl Run {
     /// Fecha o retrato de um run que o app deixou aberto ao fechar: o PTY de
     /// cada nó morreu junto (`kill_all` no quit). Rodando vira `stopped` com
@@ -197,6 +200,16 @@ pub struct NodeRun {
     /// dá certo.
     #[serde(default)]
     pub undelivered: Option<String>,
+    /// Quantas vezes o nó foi reiniciado ou rodado de novo neste run. O
+    /// aviso de saída da sessão (processo, agente) leva o número de quando
+    /// subiu: o da sessão velha, morta pelo reinício, não fecha a nova.
+    #[serde(default)]
+    pub attempt: u32,
+    /// "↻ para aplicar": uma origem deste nó rodou de novo depois que ele já
+    /// tinha começado com o valor antigo. Não reinicia sozinho; some quando
+    /// ele roda de novo.
+    #[serde(default)]
+    pub stale: bool,
 }
 
 /// A última mensagem que um agente mandou: a tela mostra "→ para X: …".
@@ -247,6 +260,8 @@ impl NodeRun {
             sent: None,
             written: None,
             undelivered: None,
+            attempt: 0,
+            stale: false,
         }
     }
 }
@@ -534,6 +549,9 @@ impl Scheduler {
             }
             NodeStatus::Waiting => {
                 n.status = NodeStatus::Skipped;
+                // Parado pelo dono, não pulado por uma origem: rodar a origem
+                // de novo não o traz de volta.
+                n.reason = Some(STOPPED_BEFORE_START.into());
                 None
             }
             _ => return None,
@@ -541,6 +559,91 @@ impl Scheduler {
         self.skip_dependents(id);
         self.settle(now);
         session
+    }
+
+    /// Quantas vezes o nó já foi reiniciado (ver [`NodeRun::attempt`]).
+    pub fn attempt(&self, id: &str) -> Option<u32> {
+        self.run.nodes.get(id).map(|n| n.attempt)
+    }
+
+    /// Reiniciar (nó rodando) ou rodar de novo (nó que terminou, falhou ou
+    /// foi parado), com a mesma config: o nó volta a esperar as entradas,
+    /// com a tentativa seguinte, e fica segurado até [`Scheduler::unhold`]
+    /// (quem reinicia limpa a `out/` antes). Quem depende dele e já começou
+    /// com o valor antigo fica "↻ para aplicar" ([`NodeRun::stale`]), sem
+    /// reiniciar sozinho; quem foi pulado por causa dele volta a esperar.
+    /// Devolve a sessão de antes, para matar (o agente vivo depois do turno
+    /// inclusive).
+    pub fn rerun(&mut self, id: &str) -> Result<Option<String>, String> {
+        if self.run.status != RunStatus::Running {
+            return Err("a execução já fechou: ▶ Executar de novo".into());
+        }
+        let n = self
+            .run
+            .nodes
+            .get_mut(id)
+            .ok_or_else(|| format!("nó não existe neste run: {id}"))?;
+        match n.status {
+            NodeStatus::Waiting => return Err("o nó ainda não começou".into()),
+            NodeStatus::Skipped => {
+                return Err(
+                    "o nó foi pulado porque uma origem dele não terminou: rode de novo a origem"
+                        .into(),
+                )
+            }
+            NodeStatus::Running | NodeStatus::Done | NodeStatus::Failed | NodeStatus::Stopped => {}
+        }
+        let session = n.session_id.take();
+        let mut fresh = NodeRun::waiting();
+        fresh.attempt = n.attempt + 1;
+        // A fila da conversa segue no core: a sessão nova a recebe.
+        fresh.inbox = n.inbox;
+        fresh.inbox_from = std::mem::take(&mut n.inbox_from);
+        *n = fresh;
+        self.held.insert(id.to_string());
+        let dependents = self.dependents.get(id).cloned().unwrap_or_default();
+        for d in &dependents {
+            if let Some(dn) = self.run.nodes.get_mut(d) {
+                if dn.started_at.is_some() {
+                    dn.stale = true;
+                }
+            }
+        }
+        self.unskip_dependents(id);
+        Ok(session)
+    }
+
+    /// Solta o nó segurado pelo [`Scheduler::rerun`].
+    pub fn unhold(&mut self, id: &str) {
+        self.held.remove(id);
+    }
+
+    /// Volta a esperar quem foi pulado em cascata por `id` e não tem mais
+    /// origem morta (falhou, parou ou foi pulada). O pulado com motivo (o
+    /// dono o parou antes de começar) fica.
+    fn unskip_dependents(&mut self, id: &str) {
+        let mut stack = vec![id.to_string()];
+        while let Some(current) = stack.pop() {
+            for next in self.dependents.get(&current).cloned().unwrap_or_default() {
+                let skipped = self
+                    .run
+                    .nodes
+                    .get(&next)
+                    .is_some_and(|n| n.status == NodeStatus::Skipped && n.reason.is_none());
+                let alive = self.sources.get(&next).into_iter().flatten().all(|(s, _)| {
+                    !matches!(
+                        self.status(s),
+                        Some(NodeStatus::Failed | NodeStatus::Skipped | NodeStatus::Stopped)
+                    )
+                });
+                if skipped && alive {
+                    if let Some(n) = self.run.nodes.get_mut(&next) {
+                        n.status = NodeStatus::Waiting;
+                    }
+                    stack.push(next);
+                }
+            }
+        }
     }
 
     fn skip_dependents(&mut self, id: &str) {
@@ -961,6 +1064,8 @@ struct Start {
     graph_id: String,
     /// Nó criado por outro agente neste run (`run.created`).
     created: bool,
+    /// A tentativa do nó ao subir ([`NodeRun::attempt`]).
+    attempt: u32,
 }
 
 enum Launched {
@@ -1397,6 +1502,7 @@ impl<H: RunHost> Runs<H> {
         let is_agent = matches!(start.node.kind, NodeKind::Agent { .. });
         let is_process = matches!(start.node.kind, NodeKind::Process { .. });
         let out_dir = start.out_dir.clone();
+        let attempt = start.attempt;
         let launched = self.launch(run_id, start);
         // `active` na mão para decidir: o Parar marca `stopped` sob o
         // mesmo lock, então ou ele já viu esta sessão no run, ou ela
@@ -1404,10 +1510,19 @@ impl<H: RunHost> Runs<H> {
         let orphan = {
             let mut active = self.active.lock();
             match (active.get_mut(run_id), launched) {
+                // Reiniciado enquanto subia: a sessão desta tentativa sobra.
+                (Some(a), Launched::Session(session))
+                    if a.sched.attempt(&node_id) != Some(attempt) =>
+                {
+                    Some(session)
+                }
+                (Some(a), Launched::Finished(_)) if a.sched.attempt(&node_id) != Some(attempt) => {
+                    None
+                }
                 (Some(a), Launched::Session(session)) => {
                     a.sched.set_session(&node_id, session.clone());
                     if is_process {
-                        self.watch_ports(run_id, &node_id, &session, out_dir);
+                        self.watch_ports(run_id, &node_id, &session, out_dir, attempt);
                     }
                     if is_agent {
                         self.register_agent(run_id, &graph_id, session);
@@ -1437,7 +1552,8 @@ impl<H: RunHost> Runs<H> {
         };
         if let Some(session) = orphan {
             self.host.kill(&session);
-            return false;
+            // Morta pelo reinício, o run segue; pelo Parar, acabou.
+            return self.active.lock().contains_key(run_id);
         }
         self.publish_current(run_id);
         true
@@ -1482,10 +1598,11 @@ impl<H: RunHost> Runs<H> {
     /// log pode levar segundos, e o resto do grafo não espera.
     fn launch_service(&self, run_id: &str, start: &Start, source: ServiceSource) -> Launched {
         let me = self.me.clone();
-        let (run, node, out_dir) = (
+        let (run, node, out_dir, attempt) = (
             run_id.to_string(),
             start.node.id.clone(),
             start.out_dir.clone(),
+            start.attempt,
         );
         std::thread::spawn(move || {
             let Some(runs) = me.upgrade() else { return };
@@ -1493,19 +1610,20 @@ impl<H: RunHost> Runs<H> {
                 Ok(ready) => service_outcome(&out_dir, ready),
                 Err(reason) => Outcome::failed(reason),
             };
-            runs.finish_later(&run, &node, outcome);
+            runs.finish_later(&run, &node, attempt, outcome);
         });
         Launched::Pending
     }
 
     /// Fecha um nó que terminou fora do `advance` e segue o grafo.
-    fn finish_later(&self, run_id: &str, node_id: &str, outcome: Outcome) {
+    fn finish_later(&self, run_id: &str, node_id: &str, attempt: u32, outcome: Outcome) {
         {
             let mut active = self.active.lock();
             let Some(a) = active.get_mut(run_id) else {
                 return;
             };
-            if !a.sched.finish(node_id, outcome, now()) {
+            if a.sched.attempt(node_id) != Some(attempt) || !a.sched.finish(node_id, outcome, now())
+            {
                 return;
             }
         }
@@ -1516,17 +1634,23 @@ impl<H: RunHost> Runs<H> {
     /// Olha as portas da sessão do processo até a primeira aparecer: aí grava
     /// `out/url.txt`, publica a url com o processo ainda rodando e segue o
     /// grafo (quem espera a url começa). Para quando o nó deixa de rodar.
-    fn watch_ports(&self, run_id: &str, node_id: &str, session: &str, out_dir: PathBuf) {
+    fn watch_ports(
+        &self,
+        run_id: &str,
+        node_id: &str,
+        session: &str,
+        out_dir: PathBuf,
+        attempt: u32,
+    ) {
         let me = self.me.clone();
         let (run, node, session) = (run_id.to_string(), node_id.to_string(), session.to_string());
         std::thread::spawn(move || loop {
             std::thread::sleep(PORT_POLL);
             let Some(runs) = me.upgrade() else { return };
-            let running = runs
-                .active
-                .lock()
-                .get(&run)
-                .is_some_and(|a| a.sched.status(&node) == Some(NodeStatus::Running));
+            let running = runs.active.lock().get(&run).is_some_and(|a| {
+                a.sched.status(&node) == Some(NodeStatus::Running)
+                    && a.sched.attempt(&node) == Some(attempt)
+            });
             if !running {
                 return;
             }
@@ -1538,8 +1662,9 @@ impl<H: RunHost> Runs<H> {
                 return;
             }
             let published = runs.active.lock().get_mut(&run).is_some_and(|a| {
-                a.sched
-                    .publish_url(&node, path.to_string_lossy().into_owned(), url)
+                a.sched.attempt(&node) == Some(attempt)
+                    && a.sched
+                        .publish_url(&node, path.to_string_lossy().into_owned(), url)
             });
             if published {
                 runs.publish_current(&run);
@@ -1573,10 +1698,10 @@ impl<H: RunHost> Runs<H> {
             .then(|| super::agent::snapshot(&start.node_dir))
             .flatten();
         let me = self.me.clone();
-        let (run, node) = (run_id.to_string(), start.node.id.clone());
+        let (run, node, attempt) = (run_id.to_string(), start.node.id.clone(), start.attempt);
         let on_exit = Box::new(move || {
             if let Some(runs) = me.upgrade() {
-                runs.process_exited(&run, &node, snapshot.as_ref());
+                runs.process_exited(&run, &node, attempt, snapshot.as_ref());
             }
         });
         let launch = ProcessLaunch {
@@ -1629,16 +1754,23 @@ impl<H: RunHost> Runs<H> {
         let prompt = super::agent::build_prompt(&prompt, &contexts, &inputs);
         let snapshot = super::agent::snapshot(&start.node_dir);
         let me = self.me.clone();
-        let (run, node, out_dir) = (
+        let (run, node, out_dir, attempt) = (
             run_id.to_string(),
             start.node.id.clone(),
             start.out_dir.clone(),
+            start.attempt,
         );
         let on_turn = {
             let (me, run, node) = (me.clone(), run.clone(), node.clone());
             Box::new(move |turn: AgentTurn| {
                 if let Some(runs) = me.upgrade() {
-                    runs.agent_turn_ended(&run, &node, &out_dir, snapshot.as_ref(), turn, holds);
+                    let end = TurnEnd {
+                        out_dir: &out_dir,
+                        snapshot: snapshot.as_ref(),
+                        holds,
+                        attempt,
+                    };
+                    runs.agent_turn_ended(&run, &node, end, turn);
                 }
             })
         };
@@ -1646,7 +1778,7 @@ impl<H: RunHost> Runs<H> {
             let (me, run, node) = (me.clone(), run.clone(), node.clone());
             Box::new(move |state| {
                 if let Some(runs) = me.upgrade() {
-                    runs.agent_state(&run, &node, state);
+                    runs.agent_state(&run, &node, attempt, state);
                 }
             })
         };
@@ -1654,7 +1786,7 @@ impl<H: RunHost> Runs<H> {
         // run) até ela; a de qualquer agente sai de `live_agents`.
         let on_exit: Box<dyn FnOnce() + Send> = Box::new(move || {
             if let Some(runs) = me.upgrade() {
-                runs.agent_exited(&run, &node, holds);
+                runs.agent_exited(&run, &node, holds, attempt);
             }
         });
         let no_create = matches!(
@@ -1743,6 +1875,7 @@ impl<H: RunHost> Runs<H> {
                 self.stop_created(run_id, orchestrator, &node_id)?;
                 Ok(serde_json::json!({ "node_id": node_id, "stopped": true }))
             }
+            ToolCall::Restart { node } => self.restart_by_agent(run_id, orchestrator, &node),
             ToolCall::Plan { steps } => {
                 let id = self.write_plan(run_id, orchestrator, steps)?;
                 Ok(serde_json::json!({ "note_id": id }))
@@ -1934,13 +2067,17 @@ impl<H: RunHost> Runs<H> {
     ///
     /// Sem entrega, é também o relógio do assentado: o watcher avisa o
     /// estado a cada poll, e o run assenta (ou volta) por aqui.
-    fn agent_state(&self, run_id: &str, node_id: &str, state: PeerState) {
+    fn agent_state(&self, run_id: &str, node_id: &str, attempt: u32, state: PeerState) {
         let live = self.live_agents(run_id);
         let (session, delivery) = {
             let mut active = self.active.lock();
             let Some(a) = active.get_mut(run_id) else {
                 return;
             };
+            // A sessão velha de um nó reiniciado não fala pela nova.
+            if a.sched.attempt(node_id) != Some(attempt) {
+                return;
+            }
             let session = a
                 .sched
                 .run
@@ -2753,17 +2890,7 @@ impl<H: RunHost> Runs<H> {
             .nodes
             .get(node_id)
             .ok_or_else(|| format!("nó não existe neste run: {node_id}"))?;
-        let made = run
-            .created
-            .iter()
-            .any(|c| c.node.id == node_id && c.created_by == caller);
-        let linked = || -> Result<bool, String> {
-            let saved = self.saved_graph(&run.graph_id)?;
-            Ok(current_edges(saved.as_ref(), &run.created).iter().any(|e| {
-                (e.from == caller && e.to == node_id) || (e.from == node_id && e.to == caller)
-            }))
-        };
-        if !made && !linked()? {
+        if !self.reaches(&run, caller, node_id)? {
             return Err(format!(
                 "{node_id} não está ligado a você nem foi criado por você: só vê o estado \
                  de nó ligado a você no canvas ou que você criou"
@@ -2801,6 +2928,70 @@ impl<H: RunHost> Runs<H> {
             "text_truncated": turn.as_ref().is_some_and(|(_, cut)| *cut),
             "diff": diff,
         }))
+    }
+
+    /// `caller` alcança `node_id`: criou o nó neste run, ou há ligação entre
+    /// os dois (qualquer tipo, qualquer sentido) nas ligações de agora.
+    fn reaches(&self, run: &Run, caller: &str, node_id: &str) -> Result<bool, String> {
+        let made = run
+            .created
+            .iter()
+            .any(|c| c.node.id == node_id && c.created_by == caller);
+        if made {
+            return Ok(true);
+        }
+        let saved = self.saved_graph(&run.graph_id)?;
+        Ok(current_edges(saved.as_ref(), &run.created).iter().any(|e| {
+            (e.from == caller && e.to == node_id) || (e.from == node_id && e.to == caller)
+        }))
+    }
+
+    /// `orbit_restart_node`: a régua do `orbit_node_status` (nó ligado a
+    /// quem chama ou criado por ele), nunca o próprio nó. Processo: responde
+    /// como o `orbit_create_process` (caiu de novo, a url, ou o estado).
+    fn restart_by_agent(
+        &self,
+        run_id: &str,
+        caller: &str,
+        node_id: &str,
+    ) -> Result<serde_json::Value, String> {
+        if node_id == caller {
+            return Err(
+                "orbit_restart_node não reinicia o seu próprio nó: para fechar a sua sessão, \
+                 orbit_finish"
+                    .into(),
+            );
+        }
+        let run = self.get(run_id).ok_or("execução não encontrada")?;
+        let process = match run.nodes.get(node_id) {
+            None => return Err(format!("nó não existe neste run: {node_id}")),
+            Some(_) => self.node_kind(run_id, node_id).is_some_and(|k| {
+                matches!(k, NodeKind::Process { .. } | NodeKind::Integration { .. })
+            }),
+        };
+        if !self.reaches(&run, caller, node_id)? {
+            return Err(format!(
+                "{node_id} não está ligado a você nem foi criado por você: só reinicia nó \
+                 ligado a você no canvas ou que você criou"
+            ));
+        }
+        self.restart_node(run_id, node_id)?;
+        if process {
+            return Ok(self.settle_process(run_id, node_id));
+        }
+        Ok(serde_json::json!({ "node_id": node_id, "restarted": true }))
+    }
+
+    /// O tipo do nó no grafo do run ativo (o do dono e os criados).
+    fn node_kind(&self, run_id: &str, node_id: &str) -> Option<NodeKind> {
+        let active = self.active.lock();
+        let a = active.get(run_id)?;
+        a.graph
+            .nodes
+            .iter()
+            .chain(a.sched.run.created.iter().map(|c| &c.node))
+            .find(|n| n.id == node_id)
+            .map(|n| n.kind.clone())
     }
 
     /// `orbit_stop_node`: só nó que este orquestrador criou. Mata o process
@@ -2883,6 +3074,55 @@ impl<H: RunHost> Runs<H> {
         Ok(())
     }
 
+    /// ↻ do nó, com a execução aberta (rodando ou assentada — que volta a
+    /// "ao vivo"): reiniciar o que roda (mata o process group e sobe de novo
+    /// com a mesma config) ou rodar de novo o que terminou, falhou ou parou.
+    /// A `out/` da tentativa de antes é limpa antes de subir; quem depende
+    /// do nó e já consumiu o valor antigo fica "↻ para aplicar".
+    pub fn restart_node(&self, run_id: &str, node_id: &str) -> Result<(), String> {
+        let (session, out_dir) = {
+            let mut active = self.active.lock();
+            let a = active
+                .get_mut(run_id)
+                .ok_or("a execução já fechou: ▶ Executar de novo")?;
+            let session = a.sched.rerun(node_id)?;
+            a.talk.reset_state(node_id);
+            (session, a.dir.join(node_id).join("out"))
+        };
+        // O nó segue segurado (`rerun`): nada o sobe antes de a sessão velha
+        // morrer e a `out/` dela sumir.
+        if let Some(session) = &session {
+            if let Some(a) = self.agents.lock().get_mut(run_id) {
+                a.sessions.retain(|s| s != session);
+            }
+            self.host.kill(session);
+        }
+        let cleared = match std::fs::remove_dir_all(&out_dir) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e),
+        }
+        .and_then(|()| create_private_dir(&out_dir));
+        {
+            let mut active = self.active.lock();
+            if let Some(a) = active.get_mut(run_id) {
+                a.sched.unhold(node_id);
+                if let Err(e) = &cleared {
+                    a.sched.mark_running(node_id, now());
+                    a.sched.finish(
+                        node_id,
+                        Outcome::failed(format!("limpar a saída anterior: {e}")),
+                        now(),
+                    );
+                }
+            }
+        }
+        eprintln!("[orbit] nó {node_id} reiniciado");
+        self.publish_current(run_id);
+        self.advance(run_id);
+        Ok(())
+    }
+
     /// Os nós criados ainda não mantidos do run (o "Manter no grafo"): do
     /// ativo ou do retrato guardado — o run terminado, parado ou do histórico
     /// também os deixa manter.
@@ -2941,28 +3181,29 @@ impl<H: RunHost> Runs<H> {
     /// O primeiro turno fechou: grava `context.md` (redigido) e `diff.patch`
     /// e segue o grafo. O agente continua vivo. O orquestrador publica as
     /// saídas mas segue rodando até a sessão sair.
-    fn agent_turn_ended(
-        &self,
-        run_id: &str,
-        node_id: &str,
-        out_dir: &Path,
-        snapshot: Option<&super::agent::Snapshot>,
-        turn: AgentTurn,
-        holds: bool,
-    ) {
-        if !self.active.lock().contains_key(run_id) {
+    fn agent_turn_ended(&self, run_id: &str, node_id: &str, end: TurnEnd<'_>, turn: AgentTurn) {
+        let current = self
+            .active
+            .lock()
+            .get(run_id)
+            .is_some_and(|a| a.sched.attempt(node_id) == Some(end.attempt));
+        if !current {
             return;
         }
         let outcome = match turn {
             AgentTurn::Exited => Outcome::failed("o agente saiu antes de fechar o turno"),
             AgentTurn::Failed(reason) => Outcome::failed(reason),
-            AgentTurn::Done { text } => agent_outputs(out_dir, snapshot, text.as_deref()),
+            AgentTurn::Done { text } => agent_outputs(end.out_dir, end.snapshot, text.as_deref()),
         };
+        let holds = end.holds;
         {
             let mut active = self.active.lock();
             let Some(a) = active.get_mut(run_id) else {
                 return;
             };
+            if a.sched.attempt(node_id) != Some(end.attempt) {
+                return;
+            }
             let changed = if holds && outcome.ok {
                 a.sched.orchestrate(node_id, outcome.outputs)
             } else {
@@ -2981,7 +3222,7 @@ impl<H: RunHost> Runs<H> {
     /// A sessão de agente saiu depois do primeiro turno. Run ativo: o
     /// orquestrador fecha o nó, e o retrato novo leva `live_agents` sem ela.
     /// Run já fechado: o retrato guardado é republicado só por isso.
-    fn agent_exited(&self, run_id: &str, node_id: &str, holds: bool) {
+    fn agent_exited(&self, run_id: &str, node_id: &str, holds: bool, attempt: u32) {
         {
             let active = self.active.lock();
             if !active.contains_key(run_id) {
@@ -2992,19 +3233,19 @@ impl<H: RunHost> Runs<H> {
             }
         }
         if holds {
-            self.orchestrator_exited(run_id, node_id);
+            self.orchestrator_exited(run_id, node_id, attempt);
         } else {
             self.publish_current(run_id);
         }
     }
 
-    fn orchestrator_exited(&self, run_id: &str, node_id: &str) {
+    fn orchestrator_exited(&self, run_id: &str, node_id: &str, attempt: u32) {
         {
             let mut active = self.active.lock();
             let Some(a) = active.get_mut(run_id) else {
                 return;
             };
-            if !a.sched.orchestrating(node_id) {
+            if a.sched.attempt(node_id) != Some(attempt) || !a.sched.orchestrating(node_id) {
                 return;
             }
             let ok = Outcome {
@@ -3019,12 +3260,22 @@ impl<H: RunHost> Runs<H> {
 
     /// O PTY do processo fechou: lê o `.exit` e segue o grafo. O diff (git)
     /// sai fora do lock.
-    fn process_exited(&self, run_id: &str, node_id: &str, snapshot: Option<&Snapshot>) {
+    fn process_exited(
+        &self,
+        run_id: &str,
+        node_id: &str,
+        attempt: u32,
+        snapshot: Option<&Snapshot>,
+    ) {
         let (out_dir, node_dir, declared, command, title) = {
             let active = self.active.lock();
             let Some(a) = active.get(run_id) else {
                 return;
             };
+            // O PTY velho de um nó reiniciado: a `out/` já é da tentativa nova.
+            if a.sched.attempt(node_id) != Some(attempt) {
+                return;
+            }
             let Some(node) = a.graph.nodes.iter().find(|n| n.id == node_id) else {
                 return;
             };
@@ -3075,7 +3326,8 @@ impl<H: RunHost> Runs<H> {
                 reason,
                 url: None,
             };
-            if !a.sched.finish(node_id, outcome, now()) {
+            if a.sched.attempt(node_id) != Some(attempt) || !a.sched.finish(node_id, outcome, now())
+            {
                 return;
             }
         }
@@ -3166,6 +3418,15 @@ fn service_outcome(out_dir: &Path, ready: ServiceReady) -> Outcome {
     }
 }
 
+/// O que o fim do primeiro turno precisa da largada do agente.
+struct TurnEnd<'a> {
+    out_dir: &'a Path,
+    snapshot: Option<&'a Snapshot>,
+    /// Agente do grafo do dono: segura o nó até a sessão sair.
+    holds: bool,
+    attempt: u32,
+}
+
 /// Saídas do agente pronto: `context.md` sempre (vazio sem fala) e
 /// `diff.patch` só com snapshot (sem git, o destino recebe diff vazio).
 fn agent_outputs(
@@ -3244,6 +3505,7 @@ fn prepare_start(a: &Active, id: &str) -> Option<Start> {
         integration,
         graph_id: a.graph.id.clone(),
         created: is_created(a, id),
+        attempt: a.sched.attempt(id).unwrap_or(0),
     })
 }
 
@@ -3711,6 +3973,7 @@ mod tests {
                     integration: None,
                     graph_id: "g".into(),
                     created: false,
+                    attempt: 0,
                 },
                 own,
             )
@@ -6830,6 +7093,340 @@ mod tests {
                 &json!({"steps": [{"text": "um", "state": "doing"}]}),
             )
             .unwrap();
+        runs.stop(&run.id).unwrap();
+    }
+
+    // ---- Parar / reiniciar / rodar de novo um nó (Fase 3) ----
+
+    /// Rodar de novo a origem que falhou: ela volta a esperar segurada (até
+    /// o `unhold`), com a tentativa seguinte, e quem foi pulado por ela volta
+    /// a esperar.
+    #[test]
+    fn rerun_brings_back_the_skipped_and_holds_until_unhold() {
+        let mut s = Scheduler::new(&diamond(), "r".into(), 0);
+        s.mark_running("a", 1);
+        s.mark_running("b", 1);
+        s.set_session("a", "sess-a".into());
+        s.finish("a", Outcome::failed("exit 1"), 2);
+        assert_eq!(status(&s, "c"), NodeStatus::Skipped);
+        assert_eq!(status(&s, "d"), NodeStatus::Skipped);
+
+        assert_eq!(s.rerun("a"), Ok(Some("sess-a".to_string())));
+        let a = &s.run().nodes["a"];
+        assert_eq!(a.status, NodeStatus::Waiting);
+        assert_eq!(a.attempt, 1);
+        assert!(a.reason.is_none() && a.exit_code.is_none() && a.session_id.is_none());
+        assert_eq!(status(&s, "c"), NodeStatus::Waiting);
+        assert_eq!(status(&s, "d"), NodeStatus::Waiting);
+        assert!(!s.run().nodes["c"].stale, "c nunca começou");
+        assert!(s.ready().is_empty(), "segurado até a out/ velha sumir");
+        s.unhold("a");
+        assert_eq!(s.ready(), vec!["a".to_string()]);
+    }
+
+    /// Quem já começou com o valor antigo fica "↻ para aplicar" e não
+    /// reinicia sozinho; rodá-lo de novo tira a marca.
+    #[test]
+    fn rerun_marks_the_consumers_that_already_started() {
+        let mut s = Scheduler::new(&diamond(), "r".into(), 0);
+        for id in ["a", "b"] {
+            s.mark_running(id, 1);
+            s.finish(id, ok(), 2);
+        }
+        s.mark_running("c", 3);
+        assert_eq!(s.rerun("a"), Ok(None));
+        let c = &s.run().nodes["c"];
+        assert!(c.stale);
+        assert_eq!(c.status, NodeStatus::Running, "não reinicia sozinho");
+        assert!(!s.run().nodes["b"].stale, "b não depende de a");
+        assert!(!s.run().nodes["d"].stale, "d ainda não começou");
+        s.unhold("a");
+        s.mark_running("a", 4);
+        s.finish("a", ok(), 5);
+        assert!(s.run().nodes["c"].stale, "a marca fica até c rodar de novo");
+        assert_eq!(s.rerun("c"), Ok(None));
+        assert!(!s.run().nodes["c"].stale);
+        assert_eq!(s.run().nodes["c"].attempt, 1);
+    }
+
+    #[test]
+    fn rerun_refuses_waiting_skipped_and_closed() {
+        let mut s = Scheduler::new(&diamond(), "r".into(), 0);
+        s.mark_running("a", 1);
+        s.mark_running("b", 1);
+        assert!(s.rerun("c").unwrap_err().contains("ainda não começou"));
+        assert!(s.rerun("x").unwrap_err().contains("não existe"));
+        // O dono parou c antes de começar: rodar a de novo não o traz.
+        s.stop_node("c", 2);
+        assert_eq!(
+            s.run().nodes["c"].reason.as_deref(),
+            Some(STOPPED_BEFORE_START)
+        );
+        s.finish("a", Outcome::failed("exit 1"), 3);
+        assert!(s.rerun("d").unwrap_err().contains("pulado"));
+        s.rerun("a").unwrap();
+        assert_eq!(status(&s, "c"), NodeStatus::Skipped);
+        assert_eq!(status(&s, "d"), NodeStatus::Skipped);
+        s.stop(4);
+        assert!(s.rerun("b").unwrap_err().contains("já fechou"));
+    }
+
+    fn wait_attempt(
+        runs: &Runs<Arc<PtyHost>>,
+        run: &str,
+        node: &str,
+        attempt: u32,
+        want: NodeStatus,
+    ) -> Run {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            let r = runs.get(run).unwrap();
+            let n = &r.nodes[node];
+            if (n.attempt == attempt && n.status == want) || Instant::now() > deadline {
+                return r;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// Reiniciar um processo rodando: o process group velho morre, sobe
+    /// outro com a mesma config, e o fim do PTY velho não fecha o novo.
+    #[cfg(unix)]
+    #[test]
+    fn restart_kills_the_running_process_and_starts_it_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let (runs, host, _app) = pty_runs(dir.path().join("runs"));
+        let run = runs
+            .start_now(
+                graph(vec![process("p", "echo oi; sleep 30")], vec![]),
+                vec![],
+            )
+            .unwrap();
+        let old = run.nodes["p"].session_id.clone().unwrap();
+        runs.restart_node(&run.id, "p").unwrap();
+        assert!(!host.pool.is_alive(old.parse().unwrap()));
+        let r = wait_attempt(&runs, &run.id, "p", 1, NodeStatus::Running);
+        let new = r.nodes["p"].session_id.clone().expect("sessão nova");
+        assert_ne!(new, old);
+        std::thread::sleep(Duration::from_millis(400));
+        let r = runs.get(&run.id).unwrap();
+        assert_eq!(r.nodes["p"].status, NodeStatus::Running, "{r:?}");
+        assert_eq!(r.status, RunStatus::Running);
+        assert!(host.pool.is_alive(new.parse().unwrap()));
+        runs.stop(&run.id).unwrap();
+    }
+
+    /// Rodar de novo o processo que falhou, com a execução aberta: ele roda
+    /// de novo na `out/` limpa (o `.exit` velho não vale) e o dependente que
+    /// tinha sido pulado roda com o valor novo.
+    #[cfg(unix)]
+    #[test]
+    fn rerun_failed_process_runs_the_skipped_dependent() {
+        let dir = tempfile::tempdir().unwrap();
+        let (runs, _host, _app) = pty_runs(dir.path().join("runs"));
+        let mark = dir.path().join("mark");
+        let command = format!(
+            "if [ -f '{m}' ]; then echo segunda; else touch '{m}'; echo primeira; exit 3; fi",
+            m = mark.display()
+        );
+        let g = graph(
+            vec![
+                process("p", &command),
+                process("q", "cat \"$TYBA_IN/log.txt\""),
+                process("keep", "sleep 30"),
+            ],
+            vec![edge("e1", "p", "q", EdgeKind::Log)],
+        );
+        let run = runs.start_now(g, vec![]).unwrap();
+        let r = wait_status(&runs, &run.id, "p", NodeStatus::Failed);
+        assert_eq!(r.nodes["q"].status, NodeStatus::Skipped);
+        assert_eq!(r.nodes["p"].exit_code, Some(3));
+
+        runs.restart_node(&run.id, "p").unwrap();
+        let r = wait_status(&runs, &run.id, "q", NodeStatus::Done);
+        let p = &r.nodes["p"];
+        assert_eq!(
+            (p.status, p.attempt, p.exit_code),
+            (NodeStatus::Done, 1, Some(0)),
+            "{r:?}"
+        );
+        assert!(p.reason.is_none());
+        let log = std::fs::read_to_string(&r.nodes["q"].outputs[&EdgeKind::Log]).unwrap();
+        assert!(
+            log.contains("segunda") && !log.contains("primeira"),
+            "{log:?}"
+        );
+        assert!(!r.nodes["q"].stale);
+        runs.stop(&run.id).unwrap();
+    }
+
+    /// O dependente que já consumiu fica "↻ para aplicar", sem reiniciar
+    /// sozinho; reiniciá-lo tira a marca e ele lê o valor novo.
+    #[cfg(unix)]
+    #[test]
+    fn consumer_of_a_rerun_node_is_marked_and_restarts_only_when_asked() {
+        let dir = tempfile::tempdir().unwrap();
+        let (runs, host, _app) = pty_runs(dir.path().join("runs"));
+        let count = dir.path().join("count");
+        let g = graph(
+            vec![
+                process(
+                    "p",
+                    &format!("echo x >> '{c}'; wc -l < '{c}'", c = count.display()),
+                ),
+                process("q", "cat \"$TYBA_IN/log.txt\"; sleep 30"),
+            ],
+            vec![edge("e1", "p", "q", EdgeKind::Log)],
+        );
+        let run = runs.start_now(g, vec![]).unwrap();
+        let r = wait_status(&runs, &run.id, "q", NodeStatus::Running);
+        let q_session = r.nodes["q"].session_id.clone().unwrap();
+        runs.restart_node(&run.id, "p").unwrap();
+        let r = wait_attempt(&runs, &run.id, "p", 1, NodeStatus::Done);
+        let q = &r.nodes["q"];
+        assert!(q.stale, "{r:?}");
+        assert_eq!(q.status, NodeStatus::Running);
+        assert_eq!(
+            q.session_id.as_deref(),
+            Some(q_session.as_str()),
+            "não reiniciou sozinho"
+        );
+        assert!(host.pool.is_alive(q_session.parse().unwrap()));
+
+        runs.restart_node(&run.id, "q").unwrap();
+        let r = wait_attempt(&runs, &run.id, "q", 1, NodeStatus::Running);
+        assert!(!r.nodes["q"].stale);
+        let input = dir
+            .path()
+            .join("runs")
+            .join(&run.id)
+            .join("q")
+            .join("in")
+            .join("log.txt");
+        assert_eq!(std::fs::read_to_string(input).unwrap().trim(), "2");
+        runs.stop(&run.id).unwrap();
+    }
+
+    /// Execução fechada não reinicia nó: o ▶ Executar é o caminho.
+    #[cfg(unix)]
+    #[test]
+    fn restart_needs_an_open_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let (runs, _host, _app) = pty_runs(dir.path().join("runs"));
+        let run = runs
+            .start_now(graph(vec![process("p", "exit 1")], vec![]), vec![])
+            .unwrap();
+        wait_finished(&runs, &run.id);
+        let err = runs.restart_node(&run.id, "p").unwrap_err();
+        assert!(err.contains("já fechou"), "{err}");
+    }
+
+    /// Reiniciar o agente do grafo: a sessão velha morre (e a saída dela
+    /// não fecha o nó), sobe outra com o mesmo prompt e ela segura o run.
+    #[cfg(unix)]
+    #[test]
+    fn restart_agent_kills_the_old_session_and_starts_a_new_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let (runs, host, _app) = pty_runs(dir.path().join("runs"));
+        let run = runs
+            .start_now(graph(vec![agent("a", "faça x")], vec![]), vec![])
+            .unwrap();
+        wait_orchestrating(&runs, &run.id, "a");
+        let old = host.spawned.lock()[0].clone();
+        runs.restart_node(&run.id, "a").unwrap();
+        assert!(host.killed.lock().contains(&old));
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let r = loop {
+            let r = runs.get(&run.id).unwrap();
+            if (r.nodes["a"].attempt == 1 && r.nodes["a"].orchestrating)
+                || Instant::now() > deadline
+            {
+                break r;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        assert_eq!(r.nodes["a"].status, NodeStatus::Running, "{r:?}");
+        assert_eq!(r.status, RunStatus::Running);
+        let new = host.spawned.lock()[1].clone();
+        assert_eq!(r.live_agents, vec![new.clone()]);
+        let prompts: Vec<String> = host
+            .agents
+            .lock()
+            .iter()
+            .map(|l| l.prompt.clone())
+            .collect();
+        assert_eq!(prompts.len(), 2);
+        assert_eq!(prompts[0], prompts[1], "mesma config");
+        runs.stop(&run.id).unwrap();
+        assert!(host.killed.lock().contains(&new));
+    }
+
+    /// Rodar de novo um nó de uma execução assentada a volta a "ao vivo".
+    #[cfg(unix)]
+    #[test]
+    fn rerun_in_a_settled_run_wakes_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (runs, host, _app) = pty_runs(dir.path().join("runs"));
+        runs.settle_ms
+            .store(150, std::sync::atomic::Ordering::Relaxed);
+        let mark = dir.path().join("mark");
+        let mut a = orchestrator("a");
+        a.title = "Front".into();
+        let command = format!(
+            "if [ -f '{m}' ]; then sleep 30; else touch '{m}'; fi",
+            m = mark.display()
+        );
+        let g = graph(vec![a, process("p", &command)], vec![]);
+        let run = runs.start_now(g, vec![]).unwrap();
+        wait_orchestrating(&runs, &run.id, "a");
+        wait_status(&runs, &run.id, "p", NodeStatus::Done);
+        host.set_state("Front", PeerState::Ready);
+        std::thread::sleep(Duration::from_millis(200));
+        host.set_state("Front", PeerState::Ready);
+        assert!(wait_settled(&runs, &run.id, true).settled);
+
+        runs.restart_node(&run.id, "p").unwrap();
+        let r = wait_attempt(&runs, &run.id, "p", 1, NodeStatus::Running);
+        assert!(!r.settled, "{r:?}");
+        assert_eq!(r.status, RunStatus::Running);
+        runs.stop(&run.id).unwrap();
+    }
+
+    /// `orbit_restart_node`: só nó ligado a quem chama ou criado por ele,
+    /// nunca o próprio; o processo responde com o estado novo.
+    #[cfg(unix)]
+    #[test]
+    fn agent_restarts_only_a_linked_or_created_node() {
+        use serde_json::json;
+        let dir = tempfile::tempdir().unwrap();
+        let (runs, host, _app) = pty_runs(dir.path().join("runs"));
+        let mut a = orchestrator("a");
+        a.title = "Front".into();
+        let g = graph(
+            vec![a, process("p", "sleep 30"), process("solto", "sleep 30")],
+            vec![edge("d1", "a", "p", EdgeKind::Diff)],
+        );
+        runs.store.save_orbit_graph(&g, true, None).unwrap();
+        let run = runs.start_now(g, vec![]).unwrap();
+        wait_orchestrating(&runs, &run.id, "a");
+        wait_status(&runs, &run.id, "p", NodeStatus::Running);
+        let front = tools_of(&host, "Front");
+        let err = front
+            .call("orbit_restart_node", &json!({"node": "solto"}))
+            .unwrap_err();
+        assert!(err.contains("não está ligado"), "{err}");
+        let err = front
+            .call("orbit_restart_node", &json!({"node": "a"}))
+            .unwrap_err();
+        assert!(err.contains("orbit_finish"), "{err}");
+        assert!(front.call("orbit_restart_node", &json!({})).is_err());
+        let answer = front
+            .call("orbit_restart_node", &json!({"node": "p"}))
+            .unwrap();
+        assert_eq!(answer["node_id"], "p");
+        let r = runs.get(&run.id).unwrap();
+        assert_eq!(r.nodes["p"].attempt, 1);
+        assert_eq!(r.nodes["solto"].attempt, 0);
         runs.stop(&run.id).unwrap();
     }
 }

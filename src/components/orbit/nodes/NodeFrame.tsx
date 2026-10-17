@@ -16,6 +16,7 @@ import {
   Broom,
   DotsThree,
   FolderSimple,
+  Stop,
   Trash,
 } from "@phosphor-icons/react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
@@ -36,6 +37,7 @@ import {
   OUT_HANDLE,
   accepts,
   formatDuration,
+  nodeControls,
   nodeElapsed,
   nodeSession,
   nodeStatusLabel,
@@ -82,6 +84,10 @@ export interface CanvasActions {
   /** Id do grafo à vista (o navegador nativo é por grafo + nó). */
   graphId: string;
   runNode: (nodeId: string) => void;
+  /** Parar só este nó, sem apagar (o core mata o process group dele). */
+  stopNode: (nodeId: string) => void;
+  /** ↻ Reiniciar o que roda ou rodar de novo o que terminou/falhou. */
+  restartNode: (nodeId: string) => void;
   setOpenSubagent: (nodeId: string | null) => void;
   setFocusNode: (nodeId: string | null) => void;
   /** "Abrir no navegador" do processo: o navegador ligado nele, ou um novo. */
@@ -124,6 +130,8 @@ export const CanvasActionsContext = createContext<CanvasActions>({
   graphDir: "",
   graphId: "",
   runNode: () => {},
+  stopNode: () => {},
+  restartNode: () => {},
   setOpenSubagent: () => {},
   setFocusNode: () => {},
   openInBrowser: () => {},
@@ -678,6 +686,8 @@ export function NodeFrame({
     integrations,
     setFocusNode,
     keepCreated,
+    stopNode,
+    restartNode,
     graph,
     run,
     live,
@@ -694,6 +704,8 @@ export function NodeFrame({
   const locked = createdIds.has(id);
   const orchestrates = !created && node.kind.type === "agent";
   const session = nodeSession(node.kind, run, id, live);
+  const controls = nodeControls(node.kind, run, id, live);
+  const again = controls.restart || controls.rerun;
   const request = approvals.get(id) ?? null;
   const ring = ringState(nodeRun, request !== null, run?.settled);
   const failed = ring === "failed";
@@ -876,6 +888,16 @@ export function NodeFrame({
         ) : (
           <>
             {status ?? (nodeRun && <CapsuleStatus nodeId={id} nodeRun={nodeRun} />)}
+            {nodeRun?.stale && again && (
+              <button
+                type="button"
+                title={t("orbitStaleHint")}
+                onClick={() => restartNode(id)}
+                className="nodrag shrink-0 truncate text-[11.5px] text-tyba-amber hover:underline"
+              >
+                {t("orbitStale")}
+              </button>
+            )}
             {extra}
             {!dragging && (
               <>
@@ -1006,26 +1028,44 @@ export function NodeFrame({
                   {t("orbitOpen")}
                 </button>
               )}
+              {(agent || again) && (
+                <button
+                  type="button"
+                  aria-disabled={again ? undefined : true}
+                  title={again ? undefined : t("orbitRestartNeedsRun")}
+                  onClick={() => {
+                    if (!again) return;
+                    setOpen(false);
+                    restartNode(id);
+                  }}
+                  className={`${detailBtn} ${again ? "text-tyba-text hover:bg-tyba-text/[.12]" : soonClass}`}
+                >
+                  <ArrowClockwise size={12} />
+                  {t(controls.rerun ? "orbitRerun" : "orbitRestart")}
+                </button>
+              )}
+              {controls.stop && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOpen(false);
+                    stopNode(id);
+                  }}
+                  className={`${detailBtn} text-tyba-text hover:bg-tyba-text/[.12]`}
+                >
+                  <Stop size={12} />
+                  {t("orbitStopNode")}
+                </button>
+              )}
               {agent && (
-                <>
-                  <button
-                    type="button"
-                    aria-disabled
-                    title={t("orbitRestartSoon")}
-                    className={`${detailBtn} ${soonClass}`}
-                  >
-                    <ArrowClockwise size={12} />
-                    {t("orbitRestart")}
-                  </button>
-                  <button
-                    type="button"
-                    aria-disabled
-                    title={t("orbitSwapRoleSoon")}
-                    className={`${detailBtn} ${soonClass}`}
-                  >
-                    {t("orbitSwapRole")}
-                  </button>
-                </>
+                <button
+                  type="button"
+                  aria-disabled
+                  title={t("orbitSwapRoleSoon")}
+                  className={`${detailBtn} ${soonClass}`}
+                >
+                  {t("orbitSwapRole")}
+                </button>
               )}
               {keepAll && (
                 <button

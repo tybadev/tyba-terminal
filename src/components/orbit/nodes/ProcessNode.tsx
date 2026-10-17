@@ -6,6 +6,7 @@ import type { NodeProps } from "@xyflow/react";
 import { Select } from "@/components/ui/select";
 import {
   OUTPUT_KINDS,
+  nodeControls,
   nodeDir,
   nodeLog,
   nodeSession,
@@ -32,7 +33,7 @@ type ProcessKind = Extract<NodeKind, { type: "process" }>;
 /** Nó de processo: um comando na pasta do nó e o tipo da saída. */
 export function ProcessNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
   const { t } = useTranslation();
-  const { updateNode, run, live, openInBrowser, graphDir } = useOrbit();
+  const { updateNode, run, live, openInBrowser, graphDir, restartNode } = useOrbit();
   const node = data.node;
   const kind = node.kind as ProcessKind;
   const session = nodeSession(kind, run, id, live);
@@ -44,6 +45,8 @@ export function ProcessNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
   const dir = nodeDir(kind, graphDir);
   const command = firstLine(kind.command);
   const failed = run?.nodes[id]?.status === "failed";
+  // O ↻ roda de novo só com a execução aberta; fechada, fica com a dica.
+  const rerun = nodeControls(kind, run, id, live).rerun;
   const failureLog = run && showsFailureLog(kind, run.nodes[id]) ? run.id : null;
 
   return (
@@ -59,10 +62,13 @@ export function ProcessNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
         failed ? (
           <button
             type="button"
-            aria-disabled
-            aria-label={t("orbitRestart")}
-            title={t("orbitRestartSoon")}
-            className={`nodrag shrink-0 rounded-full bg-tyba-text/[.08] px-2.5 py-[3px] ${soonClass}`}
+            aria-disabled={rerun ? undefined : true}
+            aria-label={t("orbitRerun")}
+            title={rerun ? t("orbitRerun") : t("orbitRestartNeedsRun")}
+            onClick={() => rerun && restartNode(id)}
+            className={`nodrag shrink-0 rounded-full bg-tyba-text/[.08] px-2.5 py-[3px] ${
+              rerun ? "text-tyba-text hover:bg-tyba-text/[.12]" : soonClass
+            }`}
           >
             <ArrowClockwise size={12} />
           </button>

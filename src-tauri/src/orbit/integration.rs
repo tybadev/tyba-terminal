@@ -169,6 +169,8 @@ mod tests {
             written: None,
             undelivered: None,
             inbox_from: Default::default(),
+            attempt: 0,
+            stale: false,
         };
         if started {
             n.status = NodeStatus::Done;

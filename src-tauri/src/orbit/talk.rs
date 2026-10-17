@@ -103,6 +103,14 @@ impl Mailbox {
             .then(|| now.saturating_sub(self.since.get(node).copied().unwrap_or(now)))
     }
 
+    /// O agente reiniciou: o estado da sessão velha não vale para a nova (a
+    /// fila fica e sai quando a nova fechar o turno).
+    pub fn reset_state(&mut self, node: &str) {
+        self.states.remove(node);
+        self.since.remove(node);
+        self.delivered.remove(node);
+    }
+
     /// Alguma mensagem esperando entrega, para qualquer agente do run.
     pub fn any_waiting(&self) -> bool {
         self.queues.values().any(|q| !q.is_empty())

@@ -638,6 +638,13 @@ export interface NodeRun {
   written?: NoteWritten | null;
   /** Agente: a última entrega da fila falhou ("não entregue: <motivo>"); as mensagens seguem na fila. */
   undelivered?: string | null;
+  /** Quantas vezes o nó foi reiniciado ou rodado de novo neste run. */
+  attempt?: number;
+  /**
+   * "↻ para aplicar": uma origem rodou de novo depois que este nó já tinha
+   * começado com o valor antigo. Não reinicia sozinho.
+   */
+  stale?: boolean;
 }
 
 /** Quem abriu a página do navegador (título do nó do agente) e quando (ms). */
@@ -820,6 +827,42 @@ export function nodeSession(
   return null;
 }
 
+/** Tipos de nó que param, reiniciam e rodam de novo pelo ⋯. */
+const CONTROLLED: readonly NodeKind["type"][] = ["agent", "process", "service", "integration"];
+
+/** O que o ⋯ do nó oferece agora. */
+export interface NodeControls {
+  /** Parar só ele (sem apagar): rodando, ou o agente vivo depois do turno. */
+  stop: boolean;
+  /** Reiniciar: parar e subir de novo com a mesma config. */
+  restart: boolean;
+  /** Rodar de novo o que terminou, falhou ou parou. */
+  rerun: boolean;
+}
+
+/**
+ * Parar / Reiniciar / Rodar de novo conforme o estado que veio do core. O
+ * core só reinicia com a execução aberta (rodando ou "concluída · sessões
+ * abertas", que segue `running` por baixo); fechada, o caminho é o ▶.
+ */
+export function nodeControls(
+  kind: NodeKind,
+  run: Pick<Run, "nodes" | "liveAgents" | "status"> | null,
+  nodeId: string,
+  live: boolean,
+): NodeControls {
+  const n = run?.nodes[nodeId];
+  if (!run || !n || !live || !CONTROLLED.includes(kind.type)) {
+    return { stop: false, restart: false, rerun: false };
+  }
+  const open = run.status === "running";
+  return {
+    stop: (open && n.status === "running") || nodeSession(kind, run, nodeId, live) !== null,
+    restart: open && n.status === "running",
+    rerun: open && (n.status === "done" || n.status === "failed" || n.status === "stopped"),
+  };
+}
+
 /**
  * Sessão de cada nó de agente com terminal no run à vista (nó → sessão): os
  * do grafo e os que o orquestrador criou. Daqui saem os subagentes que viram
@@ -933,9 +976,17 @@ export const runStart = (graphId: string) => invoke<string>("orbit_run_start", {
 /** ■ Parar: o core mata o process group de cada nó rodando. */
 export const runStop = (runId: string) => invoke<void>("orbit_run_stop", { runId });
 
-/** Apagar um nó rodando: o core para só ele (e o agente vivo depois do turno). */
+/** Parar ou apagar um nó rodando: o core para só ele (e o agente vivo depois do turno). */
 export const runStopNode = (runId: string, nodeId: string) =>
   invoke<void>("orbit_run_stop_node", { runId, nodeId });
+
+/**
+ * ↻ do nó: o core reinicia o que roda ou roda de novo o que terminou, falhou
+ * ou parou (só com a execução aberta). Quem já usou a saída antiga fica
+ * "↻ para aplicar".
+ */
+export const runRestartNode = (runId: string, nodeId: string) =>
+  invoke<void>("orbit_run_restart_node", { runId, nodeId });
 
 export const runGet = (runId: string) => invoke<Run | null>("orbit_run_get", { runId });
 

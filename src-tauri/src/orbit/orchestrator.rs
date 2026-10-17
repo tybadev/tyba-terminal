@@ -101,6 +101,11 @@ pub enum ToolCall {
     Stop {
         node_id: String,
     },
+    /// Reiniciar (rodando) ou rodar de novo (terminou/falhou) um nó ligado
+    /// a quem chama ou criado por ele.
+    Restart {
+        node: String,
+    },
     /// O plano inteiro, já validado e redigido.
     Plan {
         steps: Vec<PlanStep>,
@@ -435,6 +440,11 @@ pub fn parse_call(tool: &str, value: &Value) -> Result<ToolCall, String> {
             let a: NodeArgs = args(tool, value)?;
             required("node_id", &a.node_id)?;
             Ok(ToolCall::Stop { node_id: a.node_id })
+        }
+        "orbit_restart_node" => {
+            let a: NoteReadArgs = args(tool, value)?;
+            required("node", &a.node)?;
+            Ok(ToolCall::Restart { node: a.node })
         }
         "orbit_browser_open" => {
             let a: BrowserOpenArgs = args(tool, value)?;
@@ -1214,6 +1224,12 @@ mod tests {
         // Sem argumento: não há como apontar a sessão de outro.
         assert_eq!(parse_call("orbit_finish", &json!({})), Ok(ToolCall::Finish));
         assert!(parse_call("orbit_finish", &json!({"node": "b"})).is_err());
+        assert_eq!(
+            parse_call("orbit_restart_node", &json!({"node": "p"})),
+            Ok(ToolCall::Restart { node: "p".into() })
+        );
+        assert!(parse_call("orbit_restart_node", &json!({"node": " "})).is_err());
+        assert!(parse_call("orbit_restart_node", &json!({"node_id": "p"})).is_err());
         assert_eq!(
             parse_call("orbit_send", &json!({"to": "b", "text": " oi\n "})),
             Ok(ToolCall::Send {

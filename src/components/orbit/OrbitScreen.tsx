@@ -74,9 +74,11 @@ import {
   runGet,
   runNode,
   runNumber,
+  runRestartNode,
   runReducer,
   runStart,
   runStop,
+  runStopNode,
   runsList,
   saveGraph,
   selectedRun,
@@ -571,6 +573,29 @@ function OrbitInner({
     [t],
   );
 
+  // Parar / ↻ de um nó só: o core decide (e recusa, com o porquê, o que não
+  // pode); o retrato novo chega pelo evento do run.
+  const stopOneNode = useCallback(
+    (nodeId: string) => {
+      const runId = runIdRef.current;
+      if (!runId) return;
+      runStopNode(runId, nodeId).catch((e) =>
+        setError(t("orbitNodeStopError", { error: String(e) })),
+      );
+    },
+    [t],
+  );
+  const restartOneNode = useCallback(
+    (nodeId: string) => {
+      const runId = runIdRef.current;
+      if (!runId) return;
+      runRestartNode(runId, nodeId).catch((e) =>
+        setError(t("orbitRestartError", { error: String(e) })),
+      );
+    },
+    [t],
+  );
+
   const testIntegration = async (integrationId: string, nodeId: string) => {
     if (!meta) return;
     await flush();
@@ -796,6 +821,8 @@ function OrbitInner({
       graphDir,
       graphId,
       runNode: releaseNode,
+      stopNode: stopOneNode,
+      restartNode: restartOneNode,
       setOpenSubagent: setOpenSub,
       setFocusNode,
       openInBrowser,
@@ -806,7 +833,17 @@ function OrbitInner({
           setError(t("orbitApprovalError", { error: String(e) })),
         ),
     }),
-    [integrations, updateNode, graphDir, graphId, releaseNode, openInBrowser, t],
+    [
+      integrations,
+      updateNode,
+      graphDir,
+      graphId,
+      releaseNode,
+      stopOneNode,
+      restartOneNode,
+      openInBrowser,
+      t,
+    ],
   );
   const room = roomAgents(viewGraph.edges);
   const ctx = useMemo(

@@ -8808,6 +8808,23 @@ fn orbit_run_stop_node(
     runs.stop_one(&run_id, &node_id)
 }
 
+/// ↻ do nó: reiniciar o que roda ou rodar de novo o que terminou, falhou ou
+/// parou, sem ■ Parar tudo. Só com a execução aberta (rodando ou assentada).
+/// Fora da main thread: matar a sessão velha e subir a nova (git, PTY,
+/// agente) não seguram a tela.
+#[tauri::command]
+async fn orbit_run_restart_node(
+    app: AppHandle,
+    run_id: String,
+    node_id: String,
+) -> Result<(), String> {
+    off_main(app, move |app, _state| {
+        app.state::<orbit::run::SharedRuns>()
+            .restart_node(&run_id, &node_id)
+    })
+    .await?
+}
+
 /// "Manter no grafo": os nós que o orquestrador criou no run (ativo,
 /// terminado, parado ou do histórico) entram no grafo salvo como nós normais —
 /// só `node_id` (o "Manter" do nó) ou todos os do `orchestrator` (o "Manter
@@ -10115,6 +10132,7 @@ pub fn run() {
             orbit_integration_test,
             orbit_run_stop,
             orbit_run_stop_node,
+            orbit_run_restart_node,
             orbit_run_get,
             orbit_node_log,
             orbit_keep_created,

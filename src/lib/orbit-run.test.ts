@@ -7,6 +7,7 @@ import {
   edgeDetail,
   formatDuration,
   newNode,
+  nodeControls,
   nodeElapsed,
   nodeStatusLabel,
   runNumber,
@@ -282,5 +283,39 @@ describe("execução assentada (concluída, sessões abertas)", () => {
     expect(nodeStatusLabel(g, run("r", 0, { a: first }, { settled: true }), "a")?.key).toBe(
       "orbitStatus_running",
     );
+  });
+});
+
+describe("nodeControls", () => {
+  const procKind = proc("p", "API").kind;
+  const agentKind = agent("a", "Claude").kind;
+  const noteKind = note.kind;
+  const of = (status: NodeRun["status"], patch: Partial<Run> = {}, sessionId: string | null = null) =>
+    run("r", 1, { p: nodeRun({ status, sessionId }) }, patch);
+
+  test("rodando: Parar e Reiniciar; terminado, falhou ou parado: Rodar de novo", () => {
+    expect(nodeControls(procKind, of("running"), "p", true)).toEqual({ stop: true, restart: true, rerun: false });
+    for (const status of ["done", "failed", "stopped"] as const) {
+      expect(nodeControls(procKind, of(status), "p", true)).toEqual({ stop: false, restart: false, rerun: true });
+    }
+    for (const status of ["waiting", "skipped"] as const) {
+      expect(nodeControls(procKind, of(status), "p", true)).toEqual({ stop: false, restart: false, rerun: false });
+    }
+  });
+
+  test("execução fechada não reinicia; o agente vivo depois do turno ainda para", () => {
+    expect(nodeControls(procKind, of("failed", { status: "failed" }), "p", true).rerun).toBe(false);
+    const closed = of("done", { status: "done", liveAgents: ["7"] }, "7");
+    expect(nodeControls(agentKind, closed, "p", true)).toEqual({ stop: true, restart: false, rerun: false });
+  });
+
+  test("assentada segue aberta por baixo: Rodar de novo vale", () => {
+    expect(nodeControls(procKind, of("done", { settled: true }), "p", true).rerun).toBe(true);
+  });
+
+  test("run de outra vez, sem run ou nota: nada", () => {
+    expect(nodeControls(procKind, of("running"), "p", false).stop).toBe(false);
+    expect(nodeControls(procKind, null, "p", true).restart).toBe(false);
+    expect(nodeControls(noteKind, of("done"), "p", true).rerun).toBe(false);
   });
 });
