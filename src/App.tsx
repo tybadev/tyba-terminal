@@ -531,6 +531,7 @@ import {
   flattenPaste,
   openExternalUrl,
   readClipboardText,
+  pasteKeyRoute,
   routePaste,
   sanitizePaste,
   writeClipboardText,
@@ -4762,6 +4763,22 @@ export default function App() {
           setSearchOpen((v) => !v);
           return;
         }
+        if (action === "paste") {
+          const active = document.activeElement;
+          const route = pasteKeyRoute({
+            termFocused: focused,
+            focusIdle: !active || active === document.body,
+            termShown: Boolean(entry?.term.element?.offsetParent),
+          });
+          if (!entry || !activeId || route === "native") return;
+          e.preventDefault();
+          e.stopPropagation();
+          if (e.repeat) return;
+          suppressNativePaste();
+          if (!focused && !ownsLineRef.current[activeId]) entry.term.focus();
+          void pasteFromClipboard();
+          return;
+        }
         if (!entry || !focused) return;
         if (action === "copy") {
           if (!entry.term.hasSelection()) return;
@@ -4774,12 +4791,7 @@ export default function App() {
         e.preventDefault();
         e.stopPropagation();
         if (e.repeat) return;
-        if (action === "selectAll") {
-          entry.term.selectAll();
-        } else {
-          suppressNativePaste();
-          void pasteFromClipboard();
-        }
+        if (action === "selectAll") entry.term.selectAll();
         return;
       }
       if (action) {

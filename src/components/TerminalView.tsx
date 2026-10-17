@@ -63,9 +63,13 @@ import {
   unregisterTerm,
 } from "../lib/termRegistry";
 import {
+  cellAtPoint,
   createTerminalLinkProvider,
   hasOpenModifier,
+  linksAtBufferLine,
+  opensLinkOnMouseDown,
   parsePathUri,
+  rangeContains,
 } from "../lib/terminalLinks";
 import { fileLinksEnabled } from "../lib/fileLinks";
 import { openEditorTab } from "../lib/contentTabs";
@@ -582,6 +586,14 @@ export function TerminalView({
   const agentTuiRef = useRef(false);
   agentTuiRef.current = Boolean(agentTui);
   const hoveredLinkRef = useRef<string | null>(null);
+  // Dica "⌘+clique para abrir" sobre o link sob o mouse. Própria, e não o
+  // `title` do container: com o mouse tracking do Claude o xterm refaz o link a
+  // cada redesenho, e o `title` sumia e voltava antes de o balão aparecer.
+  const [linkTip, setLinkTip] = useState<{
+    uri: string;
+    x: number;
+    y: number;
+  } | null>(null);
   const [menuHasSelection, setMenuHasSelection] = useState(false);
   const [menuMouseMode, setMenuMouseMode] = useState(false);
   const [menuLink, setMenuLink] = useState<string | null>(null);
@@ -592,14 +604,11 @@ export function TerminalView({
 
     const revealLink = (uri: string) => {
       hoveredLinkRef.current = uri;
-      el.title = parsePathUri(uri)?.path ?? uri;
     };
     const clearLink = () => {
       hoveredLinkRef.current = null;
-      if (el.title) el.removeAttribute("title");
     };
-    const activateLink = (event: MouseEvent, uri: string) => {
-      if (!hasOpenModifier(event, IS_MAC)) return;
+    const openLink = (uri: string) => {
       // Caminho de arquivo abre no editor do TYBA, nunca no navegador.
       const file = parsePathUri(uri);
       if (file) {
@@ -607,6 +616,10 @@ export function TerminalView({
         return;
       }
       void openExternalUrl(uri);
+    };
+    const activateLink = (event: MouseEvent, uri: string) => {
+      if (!hasOpenModifier(event, IS_MAC)) return;
+      openLink(uri);
     };
 
     const theme = getTerminalTheme();
@@ -1064,6 +1077,74 @@ export function TerminalView({
       if (term.hasSelection()) return;
       onReclaimFocusRef.current?.();
     };
+    // O link sob o mouse, lido do buffer — não do Linkifier do xterm, que
+    // perde o link quando o programa redesenha a linha. O link de OSC 8 só o
+    // xterm conhece: fica no `hoveredLinkRef` pelo `linkHandler`.
+    const cellOf = (e: MouseEvent): { x: number; y: number } | null => {
+      const screen = term.element?.querySelector(".xterm-screen");
+      if (!screen) return null;
+      const cell = cellAtPoint(e, screen.getBoundingClientRect(), term.cols, term.rows);
+      if (!cell) return null;
+      return { x: cell.col + 1, y: term.buffer.active.viewportY + cell.row + 1 };
+    };
+    const linkAt = (e: MouseEvent): string | null => {
+      const at = cellOf(e);
+      if (!at) return null;
+      const hit = linksAtBufferLine(term, at.y, fileLinksEnabled()).find((l) =>
+        rangeContains(l.range, at.x, at.y),
+      );
+      return hit?.uri ?? hoveredLinkRef.current;
+    };
+    let tipUri: string | null = null;
+    let tipCell = "";
+    const setArmed = (armed: boolean) => {
+      el.classList.toggle("tyba-link-armed", armed && tipUri !== null);
+    };
+    const onLinkMove = (e: MouseEvent) => {
+      // Só relê o buffer quando o mouse muda de célula: o `mousemove` dispara
+      // a cada pixel, e cada leitura percorre as linhas vizinhas.
+      const at = e.buttons === 0 ? cellOf(e) : null;
+      const key = at ? `${at.x}:${at.y}` : "";
+      if (key !== tipCell) {
+        tipCell = key;
+        const uri = at ? linkAt(e) : null;
+        if (uri !== tipUri) {
+          tipUri = uri;
+          setLinkTip(uri ? { uri, x: e.clientX, y: e.clientY } : null);
+        }
+      }
+      setArmed(hasOpenModifier(e, IS_MAC));
+    };
+    const onLinkLeave = () => {
+      tipUri = null;
+      tipCell = "";
+      setLinkTip(null);
+      setArmed(false);
+    };
+    const onModifierKey = (e: KeyboardEvent) => {
+      if (tipUri !== null) setArmed(hasOpenModifier(e, IS_MAC));
+    };
+    // ⌘+clique (Ctrl+clique fora do mac) abre ANTES de o xterm ver o clique:
+    // em captura no container, que é ancestral do xterm. Com o mouse tracking
+    // ligado o xterm mandaria o clique ao programa; sem ele o Linkifier abriria
+    // de novo no mouseup — por isso o mouseup desse clique também morre aqui.
+    let swallowUp = false;
+    const onLinkDown = (e: MouseEvent) => {
+      swallowUp = false;
+      const uri = hasOpenModifier(e, IS_MAC) ? linkAt(e) : null;
+      if (!opensLinkOnMouseDown(e, IS_MAC, uri !== null) || uri === null) return;
+      e.preventDefault();
+      e.stopPropagation();
+      swallowUp = true;
+      onFocusRef.current?.();
+      openLink(uri);
+    };
+    const onLinkUp = (e: MouseEvent) => {
+      if (!swallowUp) return;
+      swallowUp = false;
+      e.preventDefault();
+      e.stopPropagation();
+    };
     const onNativePaste = (e: ClipboardEvent) => {
       e.preventDefault();
       e.stopPropagation();
@@ -1076,6 +1157,12 @@ export function TerminalView({
     el.addEventListener("mousedown", onMouseDown);
     el.addEventListener("mouseup", onMouseUp);
     el.addEventListener("paste", onNativePaste, true);
+    el.addEventListener("mousedown", onLinkDown, true);
+    el.addEventListener("mouseup", onLinkUp, true);
+    el.addEventListener("mousemove", onLinkMove, true);
+    el.addEventListener("mouseleave", onLinkLeave);
+    window.addEventListener("keydown", onModifierKey, true);
+    window.addEventListener("keyup", onModifierKey, true);
 
     return () => {
       disposed = true;
@@ -1088,6 +1175,12 @@ export function TerminalView({
       el.removeEventListener("mousedown", onMouseDown);
     el.removeEventListener("mouseup", onMouseUp);
       el.removeEventListener("paste", onNativePaste, true);
+      el.removeEventListener("mousedown", onLinkDown, true);
+      el.removeEventListener("mouseup", onLinkUp, true);
+      el.removeEventListener("mousemove", onLinkMove, true);
+      el.removeEventListener("mouseleave", onLinkLeave);
+      window.removeEventListener("keydown", onModifierKey, true);
+      window.removeEventListener("keyup", onModifierKey, true);
       offTheme();
       linkProvider.dispose();
       queryHandlers.forEach((h) => h.dispose());
@@ -1458,6 +1551,18 @@ export function TerminalView({
         </ContextMenuItem>
       </ContextMenuContent>
     </ContextMenu>
+    {linkTip && visible && (
+      <div
+        role="tooltip"
+        className="pointer-events-none fixed z-50 max-w-[420px] rounded-[4px] border border-tyba-border-strong bg-tyba-overlay px-2.5 py-1 text-xs text-tyba-text shadow-lg"
+        style={{ left: linkTip.x + 12, top: linkTip.y + 18 }}
+      >
+        <div>{i18n.t(IS_MAC ? "openLinkHintMac" : "openLinkHintOther")}</div>
+        <div className="truncate font-mono text-[11px] text-tyba-text-muted">
+          {parsePathUri(linkTip.uri)?.path ?? linkTip.uri}
+        </div>
+      </div>
+    )}
     </>
   );
 }
