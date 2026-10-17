@@ -4,12 +4,14 @@ import { DotsSixVertical, Plus, PlugsConnected, X } from "@phosphor-icons/react"
 
 import {
   INTEGRATION_DRAG_TYPE,
+  deleteIntegration,
   integrationNode,
   newIntegration,
   saveIntegration,
   type Integration,
   type OrbitNode,
 } from "@/lib/orbit";
+import { ConfirmDelete } from "./ConfirmDelete";
 import { IntegrationEditor } from "./IntegrationEditor";
 
 /**
@@ -21,6 +23,7 @@ export function IntegrationsPanel({
   integrations,
   nodes,
   onSaved,
+  onDeleted,
   onTest,
   onClose,
 }: {
@@ -28,6 +31,7 @@ export function IntegrationsPanel({
   /** Nós do canvas: o "Testar" usa o `in/` do nó que tem a integração. */
   nodes: readonly OrbitNode[];
   onSaved: (integration: Integration) => void;
+  onDeleted: (id: string) => void;
   onTest: (integrationId: string, nodeId: string) => Promise<void>;
   onClose: () => void;
 }) {
@@ -35,6 +39,7 @@ export function IntegrationsPanel({
   const [draft, setDraft] = useState<Integration | null>(() => integrations[0] ?? null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [askDelete, setAskDelete] = useState(false);
 
   // Lista recarregada (outra gravação, importação): sem nada aberto, abre a primeira.
   useEffect(() => {
@@ -174,6 +179,7 @@ export function IntegrationsPanel({
             error={error}
             onSave={() => void save()}
             onTest={() => void test()}
+            onDelete={saved ? () => setAskDelete(true) : null}
           />
         ) : (
           <div className="flex flex-1 items-center justify-center px-6 text-center text-[12px] text-tyba-text-faint">
@@ -181,6 +187,18 @@ export function IntegrationsPanel({
           </div>
         )}
       </div>
+      {askDelete && saved && (
+        <ConfirmDelete
+          title={t("orbitIntDeleteTitle", { name: saved.name })}
+          body={t("orbitIntDeleteBody")}
+          onConfirm={async () => {
+            await deleteIntegration(saved.id);
+            onDeleted(saved.id);
+            setDraft(null);
+          }}
+          onClose={() => setAskDelete(false)}
+        />
+      )}
     </aside>
   );
 }

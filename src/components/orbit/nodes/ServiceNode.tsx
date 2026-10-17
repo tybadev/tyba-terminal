@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ArrowClockwise, Cube } from "@phosphor-icons/react";
+import { ArrowClockwise, Cube, Play } from "@phosphor-icons/react";
 import type { NodeProps } from "@xyflow/react";
 
 import { Select, type SelectOption } from "@/components/ui/select";
@@ -14,9 +14,14 @@ import {
   SERVICE_SOURCES,
   emptySource,
   onServiceLogs,
+  serviceLiveLabel,
   serviceLogsStart,
+  serviceProbe,
+  serviceStart,
   sourceDetail,
   urlPort,
+  withLiveContainer,
+  type ServiceLive,
   type NodeKind,
   type ServiceLogLine,
   type ServiceSource,
@@ -49,11 +54,20 @@ async function loadTargets(type: ServiceSourceType): Promise<Target[]> {
     const list = await dockerListContainers(null, false);
     return list.map((c) => ({
       option: { value: c.id, label: c.ports ? `${c.name} · ${c.ports}` : c.name },
-      source: { type, containerId: c.id, name: c.name },
+      source: {
+        type,
+        containerId: c.id,
+        name: c.name,
+        project: c.compose_project ?? "",
+        service: c.service ?? "",
+      },
     }));
   }
   const sessions = (await listSessions()).value;
   const title = new Map(sessions.map((s) => [s.id, s.title]));
+  const hostOf = new Map(
+    sessions.flatMap((s) => (s.kind.type === "ssh" ? [[s.id, s.kind.host_id] as const] : [])),
+  );
   if (type === "port") {
     const ports = await servicesSessionPorts();
     return Object.entries(ports).flatMap(([sessionId, list]) =>
@@ -73,7 +87,13 @@ async function loadTargets(type: ServiceSourceType): Promise<Target[]> {
   return lists.flat().flatMap((tn) => {
     // Só o -L serve página aqui (o core recusa o resto na execução).
     if (tn.kind !== "local") return [];
-    const source: ServiceSource = { type, sessionId: tn.session_id, tunnelId: tn.id };
+    const source: ServiceSource = {
+      type,
+      sessionId: tn.session_id,
+      tunnelId: tn.id,
+      hostId: hostOf.get(tn.session_id) ?? "",
+      listenPort: tn.listen_port,
+    };
     const target = `${tn.target_host ?? "?"}:${tn.target_port ?? "?"}`;
     return [
       {
@@ -88,6 +108,29 @@ async function loadTargets(type: ServiceSourceType): Promise<Target[]> {
 }
 
 const LOG_KEEP = 200;
+/** De quanto em quanto o card relê o estado vivo do serviço no core. */
+const PROBE_MS = 3000;
+
+/** No ar / caiu / parado, lido do core a cada {@link PROBE_MS}. */
+function useServiceLive(source: ServiceSource): [ServiceLive | null, (live: ServiceLive) => void] {
+  const [live, setLive] = useState<ServiceLive | null>(null);
+  const key = JSON.stringify(source);
+  useEffect(() => {
+    setLive(null);
+    let alive = true;
+    const read = () =>
+      serviceProbe(JSON.parse(key) as ServiceSource)
+        .then((l) => alive && setLive(l))
+        .catch(() => {});
+    void read();
+    const timer = setInterval(read, PROBE_MS);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
+  }, [key]);
+  return [live, setLive];
+}
 
 /** Log ao vivo do contêiner: o que o seguidor já leu e o que chega por evento. */
 function useContainerLog(containerId: string | null): { lines: ServiceLogLine[]; error: string | null } {
@@ -126,7 +169,7 @@ function useContainerLog(containerId: string | null): { lines: ServiceLogLine[];
  */
 export function ServiceNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
   const { t } = useTranslation();
-  const { updateNode, run } = useOrbit();
+  const { updateNode, run, graphId } = useOrbit();
   const node = data.node;
   const { source } = node.kind as ServiceKind;
   const nodeRun = run?.nodes[id];
@@ -152,6 +195,26 @@ export function ServiceNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
 
   const setSource = (next: ServiceSource) =>
     updateNode(id, (n) => ({ ...n, kind: { type: "service", source: next } }));
+
+  const [live, setLive] = useServiceLive(source);
+  const [starting, setStarting] = useState(false);
+  const [startError, setStartError] = useState<string | null>(null);
+  // Contêiner recriado: o nó guarda o id de agora (o log segue o certo).
+  const drifted = withLiveContainer(source, live);
+  useEffect(() => {
+    if (drifted) setSource(drifted);
+    // `setSource` é refeito a cada render: só o id novo dispara.
+  }, [drifted?.type === "container" ? drifted.containerId : null]);
+  const label = serviceLiveLabel(live);
+  const canStart = !!live && live.state !== "up" && live.canStart;
+  const start = () => {
+    setStarting(true);
+    setStartError(null);
+    serviceStart(graphId, id)
+      .then(setLive)
+      .catch((e) => setStartError(t("orbitServiceStartError", { error: String(e) })))
+      .finally(() => setStarting(false));
+  };
 
   const containerId =
     source.type === "container" && source.containerId ? source.containerId : null;
@@ -179,9 +242,34 @@ export function ServiceNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
       mark={<Cube size={13} weight="bold" />}
       markTone="text-tyba-blue"
       status={
-        nodeRun?.status === "running" && runUrl ? (
-          <span className="shrink-0 text-[11.5px] text-tyba-green">{t("orbitLive")}</span>
+        label ? (
+          <span
+            title={live?.detail ?? undefined}
+            className={`shrink-0 text-[11.5px] ${
+              label.tone === "green"
+                ? "text-tyba-green"
+                : label.tone === "red"
+                  ? "text-tyba-red"
+                  : "text-tyba-text-faint"
+            }`}
+          >
+            {t(label.key)}
+          </span>
         ) : undefined
+      }
+      extra={
+        canStart ? (
+          <button
+            type="button"
+            title={t("orbitServiceStartHint")}
+            disabled={starting}
+            onClick={start}
+            className="nodrag flex shrink-0 items-center gap-1 rounded-full bg-tyba-green px-3 text-[11.5px] leading-[22px] text-tyba-text-inverse hover:opacity-90 disabled:opacity-60"
+          >
+            <Play size={10} weight="fill" />
+            {t("orbitServiceStart")}
+          </button>
+        ) : null
       }
       meta={detail}
       details={[
@@ -261,6 +349,12 @@ export function ServiceNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
         className="nodrag nowheel min-h-0 flex-1 overflow-y-auto bg-tyba-sunken px-3.5 py-2.5 font-mono text-[11.5px] leading-[17px] text-tyba-text-muted"
       >
         {loadError && <p className="text-tyba-amber">{loadError}</p>}
+        {startError && <p className="text-tyba-amber">{startError}</p>}
+        {live?.detail && live.state !== "up" && (
+          <p className={live.state === "down" ? "text-tyba-red" : "text-tyba-text-faint"}>
+            {live.detail}
+          </p>
+        )}
         {containerId ? (
           <>
             {log.error && <p className="text-tyba-amber">{log.error}</p>}

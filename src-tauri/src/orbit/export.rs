@@ -542,6 +542,8 @@ mod tests {
                     source: ServiceSource::Container {
                         container_id: "abc123def456".into(),
                         name: "api".into(),
+                        project: "muriki".into(),
+                        service: "api".into(),
                     },
                 },
             ),

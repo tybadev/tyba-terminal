@@ -596,15 +596,39 @@ pub fn validate_structure(graph: &Graph, integrations: &[Integration]) -> Result
     check_acyclic(graph)
 }
 
+/// Nomes dos grafos com nó desta integração. Apagar a integração que algum
+/// grafo usa é recusado: o grafo deixaria de validar no ▶.
+pub fn graphs_using_integration<'a>(graphs: &'a [Graph], integration: &str) -> Vec<&'a str> {
+    graphs
+        .iter()
+        .filter(|g| {
+            g.nodes.iter().any(|n| {
+                matches!(&n.kind, NodeKind::Integration { integration_id, .. }
+                    if integration_id == integration)
+            })
+        })
+        .map(|g| g.name.as_str())
+        .collect()
+}
+
 /// Fonte do serviço: texto sem controle e id de contêiner na forma do docker.
 /// Fonte incompleta (porta 0, contêiner vazio) grava: o nó acabou de nascer e
 /// o dono ainda escolhe; a execução falha com o motivo.
 fn check_source(node: &str, source: &ServiceSource) -> Result<(), OrbitError> {
     let what = || format!("nó \"{node}\"");
     match source {
-        ServiceSource::Container { container_id, name } => {
+        ServiceSource::Container {
+            container_id,
+            name,
+            project,
+            service,
+        } => {
             check_text(what, name)?;
+            check_text(what, service)?;
             if !container_id.is_empty() && !crate::docker::is_valid_container_id(container_id) {
+                return Err(OrbitError::InvalidContainer(node.to_string()));
+            }
+            if !project.is_empty() && !crate::docker::is_valid_project_name(project) {
                 return Err(OrbitError::InvalidContainer(node.to_string()));
             }
         }
@@ -614,9 +638,12 @@ fn check_source(node: &str, source: &ServiceSource) -> Result<(), OrbitError> {
         ServiceSource::Tunnel {
             session_id,
             tunnel_id,
+            host_id,
+            ..
         } => {
             check_text(what, session_id)?;
             check_text(what, tunnel_id)?;
+            check_text(what, host_id)?;
         }
     }
     Ok(())
@@ -795,6 +822,25 @@ mod tests {
             validate_graph(&g, &[]),
             Err(OrbitError::NotProduced { .. })
         ));
+    }
+
+    #[test]
+    fn integration_in_use_is_named_by_graph() {
+        let int_node = |id: &str| {
+            node(
+                "i",
+                NodeKind::Integration {
+                    integration_id: id.into(),
+                    dir: String::new(),
+                },
+            )
+        };
+        let mut other = graph(vec![int_node("i-2")], vec![]);
+        other.name = "outro".into();
+        let graphs = [graph(vec![note("n"), int_node("i-1")], vec![]), other];
+        assert_eq!(graphs_using_integration(&graphs, "i-1"), vec!["teste"]);
+        assert_eq!(graphs_using_integration(&graphs, "i-2"), vec!["outro"]);
+        assert!(graphs_using_integration(&graphs, "i-3").is_empty());
     }
 
     #[test]
@@ -1197,7 +1243,9 @@ mod tests {
             validate_graph(
                 &with(ServiceSource::Container {
                     container_id: String::new(),
-                    name: String::new()
+                    name: String::new(),
+                    project: String::new(),
+                    service: String::new(),
                 }),
                 &[]
             ),
@@ -1207,7 +1255,9 @@ mod tests {
             validate_graph(
                 &with(ServiceSource::Container {
                     container_id: "abc123def456".into(),
-                    name: "api".into()
+                    name: "api".into(),
+                    project: "muriki".into(),
+                    service: "api".into(),
                 }),
                 &[]
             ),
@@ -1217,7 +1267,21 @@ mod tests {
             validate_graph(
                 &with(ServiceSource::Container {
                     container_id: "--privileged".into(),
-                    name: "api".into()
+                    name: "api".into(),
+                    project: String::new(),
+                    service: String::new(),
+                }),
+                &[]
+            ),
+            Err(OrbitError::InvalidContainer("s".into()))
+        );
+        assert_eq!(
+            validate_graph(
+                &with(ServiceSource::Container {
+                    container_id: String::new(),
+                    name: String::new(),
+                    project: "-p x".into(),
+                    service: "api".into(),
                 }),
                 &[]
             ),
@@ -1227,7 +1291,9 @@ mod tests {
             validate_graph(
                 &with(ServiceSource::Tunnel {
                     session_id: "x\u{1b}".into(),
-                    tunnel_id: "t".into()
+                    tunnel_id: "t".into(),
+                    host_id: String::new(),
+                    listen_port: 0,
                 }),
                 &[]
             ),

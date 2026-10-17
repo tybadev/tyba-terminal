@@ -8682,6 +8682,9 @@ fn orbit_delete_graph(
     views: State<'_, orbit::browser::BrowserViews>,
     id: String,
 ) -> Result<(), String> {
+    // Com execução aberta recusa; senão as execuções (linha e pasta) saem
+    // antes do grafo.
+    app.state::<orbit::run::SharedRuns>().forget_graph(&id)?;
     let before = state
         .store
         .get_orbit_graph(&id)
@@ -8724,6 +8727,19 @@ fn orbit_save_integration(
 
 #[tauri::command]
 fn orbit_delete_integration(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    // Integração em uso não sai: o grafo dela deixaria de validar no ▶.
+    let graphs = state.store.list_orbit_graphs().map_err(|e| e.to_string())?;
+    let users = orbit::graphs_using_integration(&graphs, &id);
+    if !users.is_empty() {
+        return Err(format!(
+            "em uso no grafo {}: tire o nó antes de apagar",
+            users
+                .iter()
+                .map(|n| format!("\"{n}\""))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
     state
         .store
         .delete_orbit_integration(&id)
@@ -8922,6 +8938,48 @@ async fn orbit_service_logs_start(
     container_id: String,
 ) -> Result<docker::logs::LogsSnapshot, String> {
     docker_blocking(move || orbit::service::start_logs(&app, &container_id)).await?
+}
+
+/// Estado vivo do serviço no card (no ar / caiu / parado) e se "Subir"
+/// vale. Só lê: o card chama de tempos em tempos.
+#[tauri::command]
+async fn orbit_service_probe(
+    app: AppHandle,
+    source: orbit::ServiceSource,
+) -> Result<orbit::service::ServiceLive, String> {
+    docker_blocking(move || orbit::service::probe(&app, &source)).await
+}
+
+/// "Subir" do nó de serviço: o alvo sai do grafo salvo (não do front), o
+/// contêiner parado sobe e fica registrado para o ⌘Q; o nó que tinha caído
+/// no run aberto roda de novo.
+#[tauri::command]
+async fn orbit_service_start(
+    app: AppHandle,
+    graph_id: String,
+    node_id: String,
+) -> Result<orbit::service::ServiceLive, String> {
+    off_main(app, move |app, state| {
+        let graph = state
+            .store
+            .get_orbit_graph(&graph_id)
+            .map_err(|e| e.to_string())?
+            .ok_or("grafo não encontrado")?
+            .value;
+        let source = graph
+            .nodes
+            .iter()
+            .find_map(|n| match &n.kind {
+                orbit::NodeKind::Service { source } if n.id == node_id => Some(source.clone()),
+                _ => None,
+            })
+            .ok_or("nó de serviço não encontrado")?;
+        orbit::service::start(app, &source)?;
+        app.state::<orbit::run::SharedRuns>()
+            .rerun_service(&graph_id, &node_id);
+        Ok(orbit::service::probe(app, &source))
+    })
+    .await?
 }
 
 /// Só sobrevive o seguidor de contêiner que algum nó de serviço do canvas
@@ -9746,6 +9804,7 @@ pub fn run() {
             );
             app.manage(orbit_runs);
             app.manage(orbit::service::ServiceLogs::default());
+            app.manage(orbit::service::StartedContainers::default());
             app.manage(orbit::browser::BrowserViews::default());
 
             // O canal shim↔core (shim v2, passo 2, tech-spec §3/§4): socket por
@@ -10167,6 +10226,8 @@ pub fn run() {
             orbit_browser_retain,
             orbit_browser_clear_data,
             orbit_service_logs_retain,
+            orbit_service_probe,
+            orbit_service_start,
             orbit_export,
             orbit_import_preview,
             orbit_import_confirm,
@@ -10264,6 +10325,19 @@ pub fn run() {
                 }
                 if let Some(logs) = app_handle.try_state::<orbit::service::ServiceLogs>() {
                     logs.0.stop_all();
+                }
+                // ⌘Q: o contêiner que o Orbit subiu nesta execução do TYBA
+                // para; o que já rodava antes não é tocado.
+                if let (Some(started), Some(state)) = (
+                    app_handle.try_state::<orbit::service::StartedContainers>(),
+                    app_handle.try_state::<AppState>(),
+                ) {
+                    let ids = started.take();
+                    if !ids.is_empty() {
+                        if let Err(e) = state.docker.stop_many(&ids) {
+                            eprintln!("[orbit] parar contêineres do Orbit na saída: {e}");
+                        }
+                    }
                 }
             }
         });

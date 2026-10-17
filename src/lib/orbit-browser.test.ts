@@ -11,6 +11,9 @@ import {
   edgeHasValue,
   emptySource,
   importItems,
+  serviceLiveLabel,
+  sourceDetail,
+  withLiveContainer,
   isLocalUrl,
   localUrl,
   newNode,
@@ -127,8 +130,20 @@ describe("navegador e serviço no grafo", () => {
 
   test("fonte vazia de cada tipo", () => {
     expect(emptySource("port")).toEqual({ type: "port", sessionId: null, port: 0 });
-    expect(emptySource("tunnel")).toEqual({ type: "tunnel", sessionId: "", tunnelId: "" });
-    expect(emptySource("container")).toEqual({ type: "container", containerId: "", name: "" });
+    expect(emptySource("tunnel")).toEqual({
+      type: "tunnel",
+      sessionId: "",
+      tunnelId: "",
+      hostId: "",
+      listenPort: 0,
+    });
+    expect(emptySource("container")).toEqual({
+      type: "container",
+      containerId: "",
+      name: "",
+      project: "",
+      service: "",
+    });
   });
 
   test("contêineres a manter e navegador já ligado", () => {
@@ -198,5 +213,34 @@ describe("navegador aberto por agente", () => {
     expect(openedChipLeft(opened, 10_000 + OPENED_CHIP_MS)).toBe(0);
     expect(openedChipLeft(null, 0)).toBe(0);
     expect(openedChipLeft(undefined, 0)).toBe(0);
+  });
+});
+
+describe("serviço vivo", () => {
+  const live = (state: "up" | "down" | "stopped", containerId: string | null = null) => ({
+    state,
+    detail: null,
+    canStart: state !== "up",
+    containerId,
+  });
+
+  test("a cápsula diz no ar / caiu / parado", () => {
+    expect(serviceLiveLabel(null)).toBeNull();
+    expect(serviceLiveLabel(live("up"))).toEqual({ key: "orbitServiceUp", tone: "green" });
+    expect(serviceLiveLabel(live("down"))).toEqual({ key: "orbitServiceDown", tone: "red" });
+    expect(serviceLiveLabel(live("stopped"))).toEqual({ key: "orbitServiceStopped", tone: "faint" });
+  });
+
+  test("contêiner recriado: o nó passa a guardar o id de agora", () => {
+    const source = { type: "container" as const, containerId: "old", name: "api", project: "m", service: "api" };
+    expect(withLiveContainer(source, live("up", "new"))).toEqual({ ...source, containerId: "new" });
+    expect(withLiveContainer(source, live("up", "old"))).toBeNull();
+    expect(withLiveContainer(source, null)).toBeNull();
+    expect(withLiveContainer({ type: "port", sessionId: null, port: 1 }, live("up", "x"))).toBeNull();
+  });
+
+  test("túnel mostra a porta local", () => {
+    expect(sourceDetail({ type: "tunnel", sessionId: "s", tunnelId: "abcdefghij", listenPort: 5173 })).toBe(":5173");
+    expect(sourceDetail({ type: "tunnel", sessionId: "s", tunnelId: "abcdefghij" })).toBe("abcdefgh");
   });
 });

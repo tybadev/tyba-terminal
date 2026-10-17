@@ -1488,7 +1488,7 @@ impl<H: RunHost> Runs<H> {
         let me = self.me.clone();
         let launching = std::thread::spawn(move || {
             if let Some(runs) = me.upgrade() {
-                runs.prune(&graph_id);
+                runs.prune(&graph_id, KEEP_RUNS);
                 runs.advance(&run_id);
             }
         });
@@ -1626,9 +1626,31 @@ impl<H: RunHost> Runs<H> {
         self.settle_ms.load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    /// Poda o histórico do grafo. Run rodando ou com agente vivo fica, mesmo
-    /// fora da janela: a pasta dele está em uso.
-    fn prune(&self, graph_id: &str) {
+    /// O dono apagou o grafo: as execuções dele saem junto (linha e pasta).
+    /// Com execução aberta ou agente vivo, recusa: pare antes.
+    pub fn forget_graph(&self, graph_id: &str) -> Result<(), String> {
+        let busy = self.active.lock().values().any(|a| a.graph.id == graph_id) || {
+            let with_agents: Vec<String> = self
+                .agents
+                .lock()
+                .iter()
+                .filter(|(_, a)| a.graph_id == graph_id)
+                .map(|(id, _)| id.clone())
+                .collect();
+            with_agents
+                .iter()
+                .any(|id| !self.live_agents(id).is_empty())
+        };
+        if busy {
+            return Err("pare a execução do grafo antes de apagá-lo".into());
+        }
+        self.prune(graph_id, 0);
+        Ok(())
+    }
+
+    /// Poda o histórico do grafo às `keep` mais recentes. Run rodando ou com
+    /// agente vivo fica, mesmo fora da janela: a pasta dele está em uso.
+    fn prune(&self, graph_id: &str, keep: usize) {
         let Some(root) = &self.root else { return };
         let mut protect: HashSet<String> = self.active.lock().keys().cloned().collect();
         let with_agents: Vec<String> = self.agents.lock().keys().cloned().collect();
@@ -1637,7 +1659,7 @@ impl<H: RunHost> Runs<H> {
                 protect.insert(id);
             }
         }
-        let removed = match self.store.prune_orbit_runs(graph_id, KEEP_RUNS, &protect) {
+        let removed = match self.store.prune_orbit_runs(graph_id, keep, &protect) {
             Ok(ids) => ids,
             Err(e) => {
                 eprintln!("[orbit] podar execuções: {e}");
@@ -3477,6 +3499,30 @@ impl<H: RunHost> Runs<H> {
         Ok(())
     }
 
+    /// O serviço subiu ("Subir"): o nó dele que caiu ou parou no run aberto
+    /// do grafo roda de novo, e quem esperava por ele segue.
+    pub fn rerun_service(&self, graph_id: &str, node_id: &str) {
+        let runs: Vec<String> = self
+            .active
+            .lock()
+            .iter()
+            .filter(|(_, a)| {
+                a.graph.id == graph_id
+                    && !a.sched.run.test
+                    && matches!(
+                        a.sched.status(node_id),
+                        Some(NodeStatus::Failed | NodeStatus::Stopped)
+                    )
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        for run_id in runs {
+            if let Err(e) = self.restart_node(&run_id, node_id) {
+                eprintln!("[orbit] rodar de novo o serviço {node_id}: {e}");
+            }
+        }
+    }
+
     /// O dono salvou o grafo com execução aberta: o core reconcilia cada run
     /// aberto dele (não o de teste).
     /// - Nó que saiu do grafo e ainda roda ou espera: para (o `stop_one`,
@@ -3510,10 +3556,16 @@ impl<H: RunHost> Runs<H> {
                             // navegador troca de página sozinho (a url que
                             // chega e a que o agente abre vão para o nó).
                             // O título não muda o que roda.
-                            let marks = !matches!(
-                                node.kind,
-                                NodeKind::Note { .. } | NodeKind::Browser { .. }
-                            );
+                            // O serviço com o mesmo alvo e id novo (o card
+                            // copia o do contêiner recriado) também não.
+                            let marks = match (&node.kind, &new.kind) {
+                                (NodeKind::Note { .. } | NodeKind::Browser { .. }, _) => false,
+                                (
+                                    NodeKind::Service { source: old },
+                                    NodeKind::Service { source: next },
+                                ) => !old.same_target(next),
+                                _ => true,
+                            };
                             node.kind = new.kind.clone();
                             if marks {
                                 changed |= a.sched.mark_changed(&node.id);
@@ -5704,6 +5756,34 @@ mod tests {
         );
         // A poda segue valendo para os outros.
         assert_eq!(runs.list("g-1").len(), KEEP_RUNS);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn deleting_a_graph_refuses_an_open_run_then_drops_its_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("runs");
+        let (runs, _host, _app) = pty_runs(root.clone());
+        // Integração manual: o run fica rodando, esperando o ▶ do nó.
+        let waiting = runs
+            .start_now(
+                graph(vec![integration_node("m", "i")], vec![]),
+                vec![integration("i", "true", Trigger::Manual)],
+            )
+            .unwrap();
+        assert!(runs.forget_graph("g-1").is_err(), "execução aberta");
+        assert!(root.join(&waiting.id).is_dir());
+        runs.stop(&waiting.id).unwrap();
+        let done = runs
+            .start_now(graph(vec![note("n")], vec![]), vec![])
+            .unwrap();
+        wait_finished(&runs, &done.id);
+        assert_eq!(runs.forget_graph("outro"), Ok(()), "outro grafo não mexe");
+        assert_eq!(runs.list("g-1").len(), 2);
+        assert_eq!(runs.forget_graph("g-1"), Ok(()));
+        assert!(runs.list("g-1").is_empty());
+        assert!(!root.join(&waiting.id).exists(), "pasta ficou");
+        assert!(!root.join(&done.id).exists(), "pasta ficou");
     }
 
     #[cfg(unix)]

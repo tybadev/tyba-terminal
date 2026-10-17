@@ -6,6 +6,7 @@ import {
   FolderSimple,
   ShieldCheck,
   Stop,
+  Trash,
   Warning,
 } from "@phosphor-icons/react";
 
@@ -44,6 +45,7 @@ export function IntegrationEditor({
   error,
   onSave,
   onTest,
+  onDelete,
 }: {
   draft: Integration;
   onChange: (draft: Integration) => void;
@@ -54,6 +56,8 @@ export function IntegrationEditor({
   error: string | null;
   onSave: () => void;
   onTest: () => void;
+  /** Só a integração já gravada se apaga (com confirmação). */
+  onDelete: (() => void) | null;
 }) {
   const { t } = useTranslation();
   const gutter = useRef<HTMLDivElement>(null);
@@ -272,6 +276,16 @@ export function IntegrationEditor({
         >
           {t("orbitIntTest")}
         </button>
+        {onDelete && (
+          <button
+            type="button"
+            onClick={onDelete}
+            className="inline-flex items-center gap-[7px] rounded-[6px] px-2.5 py-[7px] text-[12px] whitespace-nowrap text-tyba-text-muted hover:text-tyba-red"
+          >
+            <Trash size={12} />
+            {t("orbitIntDelete")}
+          </button>
+        )}
         <span className="flex-1" />
         <Button type="submit" size="sm" disabled={!!problem || saving || !dirty}>
           {t("orbitIntSave")}

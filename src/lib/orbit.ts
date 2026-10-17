@@ -65,9 +65,23 @@ export type NodeKind =
 
 /** De onde o nó de Serviço lê (espelha `ServiceSource` do core). */
 export type ServiceSource =
-  | { type: "container"; containerId: string; name: string }
+  | {
+      type: "container";
+      containerId: string;
+      name: string;
+      /** Projeto e serviço do compose: a identidade que sobrevive ao contêiner recriado. */
+      project?: string;
+      service?: string;
+    }
   | { type: "port"; sessionId: string | null; port: number }
-  | { type: "tunnel"; sessionId: string; tunnelId: string };
+  | {
+      type: "tunnel";
+      sessionId: string;
+      tunnelId: string;
+      /** Host SSH e porta local do `-L`: a identidade que sobrevive à sessão fechada. */
+      hostId?: string;
+      listenPort?: number;
+    };
 
 export type ServiceSourceType = ServiceSource["type"];
 
@@ -77,11 +91,11 @@ export const SERVICE_SOURCES: readonly ServiceSourceType[] = ["container", "port
 export function emptySource(type: ServiceSourceType): ServiceSource {
   switch (type) {
     case "container":
-      return { type, containerId: "", name: "" };
+      return { type, containerId: "", name: "", project: "", service: "" };
     case "port":
       return { type, sessionId: null, port: 0 };
     case "tunnel":
-      return { type, sessionId: "", tunnelId: "" };
+      return { type, sessionId: "", tunnelId: "", hostId: "", listenPort: 0 };
   }
 }
 
@@ -150,8 +164,50 @@ export function sourceDetail(source: ServiceSource): string {
     case "port":
       return source.port > 0 ? `:${source.port}` : "";
     case "tunnel":
+      if (source.listenPort) return `:${source.listenPort}`;
       return source.tunnelId ? source.tunnelId.slice(0, 8) : "";
   }
+}
+
+/** Estado vivo do serviço (espelha `service::ServiceLive` do core). */
+export interface ServiceLive {
+  state: "up" | "down" | "stopped";
+  detail: string | null;
+  canStart: boolean;
+  containerId: string | null;
+}
+
+/** Lê agora: no ar / caiu / parado, e se "Subir" vale. */
+export const serviceProbe = (source: ServiceSource) =>
+  invoke<ServiceLive>("orbit_service_probe", { source });
+
+/** "Subir": o core lê o alvo do grafo salvo, sobe e registra para o ⌘Q. */
+export const serviceStart = (graphId: string, nodeId: string) =>
+  invoke<ServiceLive>("orbit_service_start", { graphId, nodeId });
+
+/** A palavra e o tom da cápsula do serviço; `null` sem leitura ainda. */
+export function serviceLiveLabel(
+  live: ServiceLive | null,
+): { key: string; tone: "green" | "red" | "faint" } | null {
+  if (!live) return null;
+  switch (live.state) {
+    case "up":
+      return { key: "orbitServiceUp", tone: "green" };
+    case "down":
+      return { key: "orbitServiceDown", tone: "red" };
+    case "stopped":
+      return { key: "orbitServiceStopped", tone: "faint" };
+  }
+}
+
+/**
+ * O contêiner recriado (mesmo serviço do compose ou mesmo nome) tem id novo:
+ * o nó passa a guardar o de agora, para o log ao vivo seguir o certo. O core
+ * não conta isso como config mudada (`ServiceSource::same_target`).
+ */
+export function withLiveContainer(source: ServiceSource, live: ServiceLive | null): ServiceSource | null {
+  if (source.type !== "container" || !live?.containerId) return null;
+  return live.containerId === source.containerId ? null : { ...source, containerId: live.containerId };
 }
 
 /** `http://localhost:<porta>` (espelha `service::local_url`). */

@@ -1474,6 +1474,23 @@ impl DockerManager {
         Ok(())
     }
 
+    /// `docker stop` de vários de uma vez, com 5 s de graça (a saída do app
+    /// espera por isto). Id inválido é recusado antes de virar argumento.
+    pub fn stop_many(&self, ids: &[String]) -> Result<(), DockerError> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        if let Some(bad) = ids.iter().find(|id| !is_valid_container_id(id)) {
+            return Err(DockerError::UnknownContainer(
+                bad.chars().take(12).collect(),
+            ));
+        }
+        let mut args = vec!["stop", "-t", "5"];
+        args.extend(ids.iter().map(String::as_str));
+        run_docker(&args, CONTAINER_OP_TIMEOUT, None)?;
+        Ok(())
+    }
+
     fn prune_tabs(&self) {
         let known = self.known.lock();
         self.tabs
@@ -2575,6 +2592,19 @@ ls: cannot access 'x': Permission denied\n";
         ));
         assert!(matches!(
             mgr.container_op("--help", ContainerOp::Restart, None),
+            Err(DockerError::UnknownContainer(_))
+        ));
+    }
+
+    /// A saída do app (⌘Q) para os contêineres do Orbit: id que não é id
+    /// nunca vira argumento do `docker stop`, nem misturado a ids bons.
+    #[test]
+    fn stop_many_rejects_a_bad_id_before_running_docker() {
+        let mgr = DockerManager::new();
+        assert!(mgr.stop_many(&[]).is_ok());
+        let good = "a1b2c3d4e5f6".to_string() + &"0".repeat(52);
+        assert!(matches!(
+            mgr.stop_many(&[good, "--time=0".into()]),
             Err(DockerError::UnknownContainer(_))
         ));
     }

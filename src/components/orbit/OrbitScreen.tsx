@@ -27,6 +27,7 @@ import {
   PlugsConnected,
   Plus,
   Stop,
+  Trash,
   Warning,
   X,
 } from "@phosphor-icons/react";
@@ -48,6 +49,7 @@ import {
   integrationsById,
   invalidEdges,
   createdByOf,
+  deleteGraph,
   ephemeralCreated,
   keepCreated,
   NEW_IN_HANDLE,
@@ -95,6 +97,7 @@ import {
 } from "@/lib/orbit";
 import { browserRetain } from "@/lib/orbitBrowser";
 import { roomAgents } from "@/lib/orbitTalk";
+import { ConfirmDelete } from "./ConfirmDelete";
 import { ImportDialog } from "./ImportDialog";
 import { IntegrationsPanel } from "./IntegrationsPanel";
 import { OrbitCanvas, type CreatedView, type OrbitFlowEdge } from "./OrbitCanvas";
@@ -255,6 +258,10 @@ function OrbitInner({
     preview: ImportPreview;
   } | null>(null);
   const [reload, setReload] = useState(0);
+  // Apagar o grafo: o diálogo aberto, e o id apagado (o salvar no debounce
+  // não o grava de volta).
+  const [askDelete, setAskDelete] = useState(false);
+  const deletedId = useRef<string | null>(null);
 
   // Carrega o grafo escolhido (ou começa um vazio, gravado na primeira edição).
   useEffect(() => {
@@ -359,7 +366,9 @@ function OrbitInner({
   useEffect(() => {
     if (!snapshot || snapshot === lastSaved.current) return;
     const timer = setTimeout(() => {
-      saveGraph(JSON.parse(snapshot) as Graph)
+      const graph = JSON.parse(snapshot) as Graph;
+      if (graph.id === deletedId.current) return;
+      saveGraph(graph)
         .then(() => {
           lastSaved.current = snapshot;
           setError(null);
@@ -600,6 +609,19 @@ function OrbitInner({
     if (!meta) return;
     await flush();
     dispatchRun({ type: "update", run: await integrationTest(integrationId, meta.id, nodeId) });
+  };
+
+  /** Apaga o grafo aberto (o core recusa com execução aberta) e abre outro. */
+  const removeGraph = async () => {
+    if (!meta) return;
+    deletedId.current = meta.id;
+    try {
+      await deleteGraph(meta.id);
+    } catch (e) {
+      deletedId.current = null;
+      throw e;
+    }
+    setWant({ id: null, fresh: false });
   };
 
   const integrationSaved = (saved: Integration) =>
@@ -1067,6 +1089,15 @@ function OrbitInner({
                 <PencilSimple size={12} />
                 {t("orbitRenameGraph")}
               </DropdownMenuItem>
+              <DropdownMenuItem
+                className="gap-2 text-xs text-tyba-red focus:text-tyba-red"
+                disabled={!meta || running !== null}
+                title={running !== null ? t("orbitDeleteGraphRunning") : undefined}
+                onSelect={() => setAskDelete(true)}
+              >
+                <Trash size={12} />
+                {t("orbitDeleteGraph")}
+              </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
           {/* Quadro MaestroConversa: run vivo com agentes em conversa. */}
@@ -1287,10 +1318,19 @@ function OrbitInner({
                 integrations={integrations}
                 nodes={graph.nodes}
                 onSaved={integrationSaved}
+                onDeleted={(gone) => setIntegrations((list) => list.filter((i) => i.id !== gone))}
                 onTest={testIntegration}
                 onClose={() => setShowInts(false)}
               />
             </>
+          )}
+          {askDelete && meta && (
+            <ConfirmDelete
+              title={t("orbitDeleteGraphTitle", { name: meta.name || t("orbitGraphUntitled") })}
+              body={t("orbitDeleteGraphBody")}
+              onConfirm={removeGraph}
+              onClose={() => setAskDelete(false)}
+            />
           )}
           {notice?.undo ? (
             // Quadro OrbitManuseio 4: a pílula embaixo, com o desfazer do ⌘Z.
