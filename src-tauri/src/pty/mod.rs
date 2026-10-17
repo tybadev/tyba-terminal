@@ -519,11 +519,19 @@ pub struct LoginPipe {
     pub on_finish: Box<dyn FnOnce(CanoOutcome) + Send>,
 }
 
+/// Quem lê o fluxo do pane além da tela: o `log.txt` do processo do Orbit.
+/// Roda na thread leitora, com os bytes do pane (já sem o protocolo do tmux),
+/// e é solto antes do `on_exit` — o que ele grava está no disco quando a
+/// sessão avisa que saiu.
+pub type OutputTap = Box<dyn FnMut(&[u8]) + Send>;
+
 #[derive(Default)]
 pub struct PtyPool {
     ptys: Mutex<HashMap<PtyId, PtyHandle>>,
     observers: Mutex<Option<ScreenObserverFactory>>,
     auth_watchers: Mutex<Option<AuthWatchFactory>>,
+    /// Taps esperando o spawn da sessão ([`PtyPool::set_tap`]).
+    taps: Mutex<HashMap<PtyId, OutputTap>>,
 }
 
 /// A parte visual das ações, sob um lock só.
@@ -821,6 +829,16 @@ impl PtyPool {
         *self.auth_watchers.lock() = Some(factory);
     }
 
+    /// O próximo spawn de `id` entrega o fluxo do pane a `tap`. Spawn que
+    /// falha deixa o tap aqui: quem o pôs tira com [`PtyPool::clear_tap`].
+    pub fn set_tap(&self, id: PtyId, tap: OutputTap) {
+        self.taps.lock().insert(id, tap);
+    }
+
+    pub fn clear_tap(&self, id: PtyId) {
+        self.taps.lock().remove(&id);
+    }
+
     /// Acorda a thread emissora para reavaliar a tela desta sessão.
     ///
     /// Chamado quando o poll de processo descobre (ou perde) o binário de um
@@ -985,6 +1003,7 @@ impl PtyPool {
         // Entrega C: o inverso do palpite de tela acima — só sessão de
         // AGENTE (Claude Code, hoje) ganha o scanner de auth de runtime.
         let auth_watch = self.auth_pipe(session_id, kind);
+        let tap = self.taps.lock().remove(&session_id);
         if let Some(env) = env {
             cmd.env_clear();
             for (k, v) in env {
@@ -1130,6 +1149,7 @@ impl PtyPool {
                 let mut buf = [0u8; READ_BUF_SIZE];
                 let mut hold_back = holdback::HoldBack::new();
                 let mut auth_watch = auth_watch;
+                let mut tap = tap;
                 let mut login = login;
                 let mut on_login = login
                     .as_mut()
@@ -1227,6 +1247,9 @@ impl PtyPool {
                             if let Some(w) = auth_watch.as_mut() {
                                 w.feed(bytes);
                             }
+                            if let Some(t) = tap.as_mut() {
+                                t(bytes);
+                            }
                             if bytes.is_empty() {
                                 continue;
                             }
@@ -1248,6 +1271,8 @@ impl PtyPool {
                 if let Some(l) = login {
                     (l.on_finish)(l.watch.finish());
                 }
+                // Idem: o tap fecha (grava o resto) antes do `on_exit`.
+                drop(tap);
                 drop(tx);
             })
             .map_err(|e| {

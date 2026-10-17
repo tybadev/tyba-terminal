@@ -994,6 +994,16 @@ export const runGet = (runId: string) => invoke<Run | null>("orbit_run_get", { r
 export const nodeLog = (runId: string, nodeId: string, lines: number) =>
   invoke<string[]>("orbit_node_log", { runId, nodeId, lines });
 
+/** "Ver log inteiro": o log do nó gravado pelo core (sem cor, redigido). */
+export interface WholeLog {
+  text: string;
+  /** O começo passou do teto da leitura e ficou de fora. */
+  cut: boolean;
+}
+
+export const nodeLogWhole = (runId: string, nodeId: string) =>
+  invoke<WholeLog>("orbit_node_log_whole", { runId, nodeId });
+
 /** As 20 últimas execuções do grafo, mais nova primeiro. */
 export const runsList = (graphId: string) => invoke<Run[]>("orbit_runs_list", { graphId });
 

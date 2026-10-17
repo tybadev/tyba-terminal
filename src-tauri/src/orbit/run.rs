@@ -440,6 +440,30 @@ impl Scheduler {
         true
     }
 
+    /// A url impressa chegou depois da porta da varredura: ela vale (o
+    /// arquivo em `outputs` já foi reescrito por quem chama). Quem já começou
+    /// com a de antes fica "↻ para aplicar". Devolve `true` se mudou.
+    pub fn replace_url(&mut self, id: &str, url: String) -> bool {
+        let Some(n) = self.run.nodes.get_mut(id) else {
+            return false;
+        };
+        if n.status != NodeStatus::Running
+            || !n.outputs.contains_key(&EdgeKind::Url)
+            || n.url.as_deref() == Some(url.as_str())
+        {
+            return false;
+        }
+        n.url = Some(url);
+        for d in self.dependents.get(id).cloned().unwrap_or_default() {
+            if let Some(dn) = self.run.nodes.get_mut(&d) {
+                if dn.started_at.is_some() {
+                    dn.stale = true;
+                }
+            }
+        }
+        true
+    }
+
     /// O orquestrador fechou o primeiro turno: publica as saídas para quem
     /// depende dele, mas o nó segue rodando até a sessão sair. Devolve `true`
     /// se gravou.
@@ -877,8 +901,11 @@ fn bash_program() -> PathBuf {
 /// `bash -lc` com o wrapper de rules — o contrato do comando salvo, qualquer
 /// que seja o `$SHELL` do dono (glob sem match e divisão de palavras do bash). `TYBA_IN`/`TYBA_OUT` (e o PATH)
 /// chegam como argumentos posicionais e são exportados antes do comando —
-/// assim o caminho não passa por aspas montadas à mão. O `}` vai em linha
-/// própria para um comentário no fim do comando não engolir o fechamento.
+/// assim o caminho não passa por aspas montadas à mão. O comando roda num
+/// subshell — o `exit 3` dele não pula a gravação do `.exit` — direto no PTY
+/// (sem `| tee`: cor e saída sem buffer de pipe; o `log.txt` o core grava do
+/// fluxo). O `)` vai em linha própria para um comentário no fim do comando
+/// não engolir o fechamento.
 ///
 /// `path` é o PATH do shell de login do dono ([`crate::shell_path::login_env`]):
 /// o app aberto pelo Dock herda o do launchd, e o `-l` não lê o `.zshrc`
@@ -897,8 +924,7 @@ pub fn process_argv(
     };
     let script = format!(
         "export TYBA_IN=\"$1\" TYBA_OUT=\"$2\"{export_path}; shift {shift}\n\
-         set -o pipefail; {{ {command}\n}} 2>&1 | tee \"$TYBA_OUT/log.txt\"; \
-         echo $? > \"$TYBA_OUT/.exit\""
+         set -o pipefail; ( {command}\n); echo $? > \"$TYBA_OUT/.exit\""
     );
     let mut args = vec![
         "-lc".into(),
@@ -961,6 +987,14 @@ pub fn create_private_dir(path: &Path) -> std::io::Result<()> {
     builder.create(path)
 }
 
+/// O log inteiro de um nó, para a tela.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct WholeLog {
+    pub text: String,
+    /// O começo ficou de fora (passou do teto da leitura).
+    pub cut: bool,
+}
+
 /// O que o host precisa para subir o processo de um nó.
 #[derive(Debug, Clone)]
 pub struct ProcessLaunch {
@@ -1009,17 +1043,19 @@ pub trait RunHost: Send + Sync + 'static {
     fn multiline(&self, session_id: &str) -> bool;
     /// O que o dono anda digitando no terminal da sessão.
     fn owner_keys(&self, session_id: &str) -> talk::OwnerKeys;
-    /// Sobe o processo num PTY e devolve o id da sessão. `on_exit` roda quando
-    /// o PTY fecha.
+    /// Sobe o processo num PTY e devolve o id da sessão. `tap` recebe o
+    /// fluxo do pane (o `log.txt`) e é solto antes do `on_exit`, que roda
+    /// quando o PTY fecha.
     fn spawn_process(
         &self,
         launch: ProcessLaunch,
+        tap: crate::pty::OutputTap,
         on_exit: Box<dyn FnOnce() + Send>,
     ) -> Result<String, String>;
     /// Mata o process group da sessão.
     fn kill(&self, session_id: &str);
-    /// Portas em que a sessão escuta, do último retrato do poll de serviços
-    /// (`services::CHIP_POLL`).
+    /// Portas em LISTEN do process group da sessão, agora (varredura curta,
+    /// com teto de tempo; bloqueia — fora da main thread).
     fn session_ports(&self, session_id: &str) -> Vec<u16>;
     /// Acha o serviço e espera ficar pronto (bloqueia). `Err` diz por que não
     /// achou o alvo.
@@ -1500,8 +1536,6 @@ impl<H: RunHost> Runs<H> {
         let node_id = start.node.id.clone();
         let graph_id = start.graph_id.clone();
         let is_agent = matches!(start.node.kind, NodeKind::Agent { .. });
-        let is_process = matches!(start.node.kind, NodeKind::Process { .. });
-        let out_dir = start.out_dir.clone();
         let attempt = start.attempt;
         let launched = self.launch(run_id, start);
         // `active` na mão para decidir: o Parar marca `stopped` sob o
@@ -1521,9 +1555,6 @@ impl<H: RunHost> Runs<H> {
                 }
                 (Some(a), Launched::Session(session)) => {
                     a.sched.set_session(&node_id, session.clone());
-                    if is_process {
-                        self.watch_ports(run_id, &node_id, &session, out_dir, attempt);
-                    }
                     if is_agent {
                         self.register_agent(run_id, &graph_id, session);
                     }
@@ -1580,7 +1611,7 @@ impl<H: RunHost> Runs<H> {
                 }
             }
             NodeKind::Integration { .. } => match &start.integration {
-                Some(i) => self.launch_script(run_id, &start, &i.script, i.output),
+                Some(i) => self.launch_script(run_id, &start, &i.script, i.output, false),
                 None => Launched::Finished(Outcome::failed("integração não encontrada")),
             },
             NodeKind::Agent { runner, prompt, .. } => {
@@ -1588,7 +1619,7 @@ impl<H: RunHost> Runs<H> {
             }
             NodeKind::Process {
                 command, output, ..
-            } => self.launch_script(run_id, &start, command, *output),
+            } => self.launch_script(run_id, &start, command, *output, true),
             NodeKind::Browser { url } => Launched::Finished(browser_outcome(&start, url)),
             NodeKind::Service { source } => self.launch_service(run_id, &start, source.clone()),
         }
@@ -1631,9 +1662,13 @@ impl<H: RunHost> Runs<H> {
         self.advance(run_id);
     }
 
-    /// Olha as portas da sessão do processo até a primeira aparecer: aí grava
-    /// `out/url.txt`, publica a url com o processo ainda rodando e segue o
-    /// grafo (quem espera a url começa). Para quando o nó deixa de rodar.
+    /// A url do processo rodando: primeiro a que ele imprime
+    /// ([`super::log::printed_url`], chega por `printed`), depois a porta da
+    /// varredura do process group a cada [`PORT_POLL`]
+    /// ([`super::log::PortPick`]). Achou: grava `out/url.txt`, publica a url
+    /// com o processo ainda rodando e segue o grafo (quem espera a url
+    /// começa). Publicada pela varredura, a impressa que vier depois ainda a
+    /// troca. Para quando o nó deixa de rodar ou o PTY fecha.
     fn watch_ports(
         &self,
         run_id: &str,
@@ -1641,47 +1676,79 @@ impl<H: RunHost> Runs<H> {
         session: &str,
         out_dir: PathBuf,
         attempt: u32,
+        printed: std::sync::mpsc::Receiver<String>,
     ) {
+        use std::sync::mpsc::RecvTimeoutError;
         let me = self.me.clone();
         let (run, node, session) = (run_id.to_string(), node_id.to_string(), session.to_string());
-        std::thread::spawn(move || loop {
-            std::thread::sleep(PORT_POLL);
-            let Some(runs) = me.upgrade() else { return };
-            let running = runs.active.lock().get(&run).is_some_and(|a| {
-                a.sched.status(&node) == Some(NodeStatus::Running)
-                    && a.sched.attempt(&node) == Some(attempt)
-            });
-            if !running {
-                return;
+        std::thread::spawn(move || {
+            let mut pick = super::log::PortPick::default();
+            let mut from_scan = false;
+            loop {
+                let url = match printed.recv_timeout(PORT_POLL) {
+                    Ok(url) => Some((url, true)),
+                    Err(RecvTimeoutError::Timeout) => None,
+                    // O PTY fechou: o fim do processo segue por `process_exited`.
+                    Err(RecvTimeoutError::Disconnected) => return,
+                };
+                let Some(runs) = me.upgrade() else { return };
+                let running = runs.active.lock().get(&run).is_some_and(|a| {
+                    a.sched.status(&node) == Some(NodeStatus::Running)
+                        && a.sched.attempt(&node) == Some(attempt)
+                });
+                if !running {
+                    return;
+                }
+                let url = match url {
+                    Some(found) => Some(found),
+                    None if from_scan => None,
+                    None => pick
+                        .observe(&runs.host.session_ports(&session))
+                        .map(|port| (service::local_url(port), false)),
+                };
+                let Some((url, is_printed)) = url else {
+                    continue;
+                };
+                let path = out_dir.join("url.txt");
+                if std::fs::write(&path, &url).is_err() {
+                    return;
+                }
+                let changed = runs.active.lock().get_mut(&run).is_some_and(|a| {
+                    if a.sched.attempt(&node) != Some(attempt) {
+                        return false;
+                    }
+                    if from_scan {
+                        a.sched.replace_url(&node, url)
+                    } else {
+                        a.sched
+                            .publish_url(&node, path.to_string_lossy().into_owned(), url)
+                    }
+                });
+                if changed {
+                    runs.publish_current(&run);
+                    runs.advance(&run);
+                }
+                if is_printed {
+                    return;
+                }
+                from_scan = true;
             }
-            let Some(url) = service::first_port_url(&runs.host.session_ports(&session)) else {
-                continue;
-            };
-            let path = out_dir.join("url.txt");
-            if std::fs::write(&path, &url).is_err() {
-                return;
-            }
-            let published = runs.active.lock().get_mut(&run).is_some_and(|a| {
-                a.sched.attempt(&node) == Some(attempt)
-                    && a.sched
-                        .publish_url(&node, path.to_string_lossy().into_owned(), url)
-            });
-            if published {
-                runs.publish_current(&run);
-                runs.advance(&run);
-            }
-            return;
         });
     }
 
     /// Processo e integração: o texto (com variáveis) no wrapper de rules,
     /// rodado em `bash -lc` com o PATH de login do dono, num PTY, na pasta do nó.
+    ///
+    /// O comando roda no PTY de verdade (cor, sem buffer de pipe); o
+    /// `log.txt` sai do fluxo ([`super::log::LogWriter`]). Processo (`watch`)
+    /// também publica a url com ele rodando ([`Runs::watch_ports`]).
     fn launch_script(
         &self,
         run_id: &str,
         start: &Start,
         command: &str,
         output: OutputKind,
+        watch: bool,
     ) -> Launched {
         if let Err(e) = materialize(&start.in_dir, &start.inputs) {
             return Launched::Finished(Outcome::failed(format!("preparar entradas: {e}")));
@@ -1710,8 +1777,38 @@ impl<H: RunHost> Runs<H> {
             program,
             args,
         };
-        match self.host.spawn_process(launch, on_exit) {
-            Ok(session) => Launched::Session(session),
+        let log = match super::log::LogWriter::create(
+            &start.out_dir.join("log.txt"),
+            super::log::LOG_MAX_BYTES,
+        ) {
+            Ok(log) => log,
+            Err(e) => return Launched::Finished(Outcome::failed(format!("criar o log: {e}"))),
+        };
+        // A primeira url local impressa vai ao vigia; depois disso, nada.
+        let (tx, printed) = std::sync::mpsc::channel::<String>();
+        let mut tx = watch.then_some(tx);
+        let mut log = log.on_line(move |line| {
+            if let Some(url) = tx.as_ref().and_then(|_| super::log::printed_url(line)) {
+                if let Some(tx) = tx.take() {
+                    let _ = tx.send(url);
+                }
+            }
+        });
+        let tap: crate::pty::OutputTap = Box::new(move |bytes| log.feed(bytes));
+        match self.host.spawn_process(launch, tap, on_exit) {
+            Ok(session) => {
+                if watch {
+                    self.watch_ports(
+                        run_id,
+                        &start.node.id,
+                        &session,
+                        start.out_dir.clone(),
+                        start.attempt,
+                        printed,
+                    );
+                }
+                Launched::Session(session)
+            }
             Err(e) => Launched::Finished(Outcome::failed(format!("subir o processo: {e}"))),
         }
     }
@@ -1958,6 +2055,21 @@ impl<H: RunHost> Runs<H> {
         Ok(orchestrator::log_tail(&path, lines.min(NODE_LOG_MAX_LINES))
             .map(|t| t.lines().map(String::from).collect())
             .unwrap_or_default())
+    }
+
+    /// "Ver log inteiro": o `log.txt` do nó (com o rotacionado antes), sem
+    /// cor e redigido, até [`super::log::LOG_VIEW_MAX_BYTES`] do fim. `cut`
+    /// diz que o começo ficou de fora.
+    pub fn node_log_whole(&self, run_id: &str, node_id: &str) -> Result<WholeLog, String> {
+        let run = self.get(run_id).ok_or("execução não encontrada")?;
+        if !run.nodes.contains_key(node_id) {
+            return Err(format!("nó não existe neste run: {node_id}"));
+        }
+        let root = self.root.as_ref().ok_or("sem pasta para as execuções")?;
+        let path = root.join(run_id).join(node_id).join("out").join("log.txt");
+        let (text, cut) =
+            super::log::read_whole(&path, super::log::LOG_VIEW_MAX_BYTES).unwrap_or_default();
+        Ok(WholeLog { text, cut })
     }
 
     /// Os agentes ligados a `agent` por `talk` (nos dois sentidos), com o
@@ -3350,9 +3462,9 @@ const SETTLE_LOG_LINES: usize = 20;
 /// Teto de linhas que o card pede do log.
 const NODE_LOG_MAX_LINES: usize = 200;
 
-/// De quanto em quanto o processo olha se a sessão abriu porta. O retrato das
-/// portas é o do poll de serviços (`services::CHIP_POLL`); isto só lê dele.
-const PORT_POLL: std::time::Duration = std::time::Duration::from_millis(500);
+/// De quanto em quanto o processo olha as portas em LISTEN do process group
+/// da sessão (a varredura própria, não o retrato de 10 s do chip).
+const PORT_POLL: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// Navegador: a url dele, quando tem uma; sem ela, a que chegou pela
 /// ligação. A ligação ainda serve para esperar o nó ficar pronto: o Caddy
@@ -3608,6 +3720,7 @@ impl RunHost for TauriHost {
     fn spawn_process(
         &self,
         launch: ProcessLaunch,
+        tap: crate::pty::OutputTap,
         on_exit: Box<dyn FnOnce() + Send>,
     ) -> Result<String, String> {
         use tauri::Manager;
@@ -3627,6 +3740,7 @@ impl RunHost for TauriHost {
                 crate::session::SessionKind::Shell,
                 // Sessão de nó é do run, não da grade: nunca vai ao banco.
                 crate::session::SessionOwner::Orbit,
+                Some(tap),
                 move |id| {
                     let state = handle.state::<crate::AppState>();
                     state.sessions.set_status(
@@ -3765,7 +3879,11 @@ impl RunHost for TauriHost {
             return Vec::new();
         };
         let state = self.app.state::<crate::AppState>();
-        state.services.chip().remove(&id).unwrap_or_default()
+        state
+            .pty_pool
+            .leader_pid(id)
+            .map(crate::services::listen::group_ports)
+            .unwrap_or_default()
     }
 
     fn resolve_service(&self, source: &ServiceSource) -> Result<ServiceReady, String> {
@@ -4232,12 +4350,14 @@ mod tests {
         fn spawn_process(
             &self,
             launch: ProcessLaunch,
+            tap: crate::pty::OutputTap,
             on_exit: Box<dyn FnOnce() + Send>,
         ) -> Result<String, String> {
             let mut cmd = portable_pty::CommandBuilder::new(&launch.program);
             cmd.args(&launch.args);
             cmd.cwd(&launch.cwd);
             let id = uuid::Uuid::new_v4();
+            self.pool.set_tap(id, tap);
             self.pool
                 .spawn(
                     self.app.clone(),
@@ -4423,6 +4543,71 @@ mod tests {
         }
     }
 
+    /// Sem `| tee`: o comando vê um terminal (cor, sem buffer de pipe) e o
+    /// core grava o `log.txt` do fluxo — sem ANSI e redigido. A url que ele
+    /// imprime vira a url do nó com ele rodando, sem esperar a varredura.
+    #[cfg(unix)]
+    #[test]
+    fn process_runs_on_a_real_tty_and_its_printed_url_wins() {
+        let dir = tempfile::tempdir().unwrap();
+        let (runs, host, _app) = pty_runs(dir.path().join("runs"));
+        // A varredura acharia outra porta: a impressa chega antes e vale.
+        *host.ports.lock() = vec![2019];
+        let command = format!(
+            "[ -t 1 ] && echo terminal; printf '\\033[32mchave %s\\033[0m\\r\\n' {key}; \
+             printf '  Local:   \\033[36mhttp://0.0.0.0:\\033[1m5999\\033[22m/\\033[39m\\n'; sleep 30",
+            key = fake_key()
+        );
+        let g = graph(vec![process("p", &command)], vec![]);
+        let run = runs.start_now(g, vec![]).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let url = loop {
+            let r = runs.get(&run.id).unwrap();
+            if let Some(url) = r.nodes["p"].url.clone() {
+                break url;
+            }
+            assert!(Instant::now() < deadline, "sem url: {r:?}");
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        assert_eq!(url, "http://localhost:5999/");
+        let out = dir.path().join("runs").join(&run.id).join("p").join("out");
+        assert_eq!(
+            std::fs::read_to_string(out.join("url.txt")).unwrap(),
+            "http://localhost:5999/"
+        );
+        let log = std::fs::read_to_string(out.join("log.txt")).unwrap();
+        assert!(log.starts_with("terminal\n"), "{log:?}");
+        assert!(!log.contains('\x1b'), "{log:?}");
+        assert!(!log.contains(&fake_key()), "{log:?}");
+        assert!(log.contains("Local:   http://0.0.0.0:5999/"), "{log:?}");
+        runs.stop(&run.id).unwrap();
+    }
+
+    /// Sem url impressa: a porta da varredura do process group, depois de
+    /// aparecer em duas varreduras seguidas — a primeira que abriu, não a
+    /// menor.
+    #[test]
+    fn process_without_printed_url_takes_the_first_scanned_port() {
+        let dir = tempfile::tempdir().unwrap();
+        let (runs, host, _app) = pty_runs(dir.path().join("runs"));
+        *host.ports.lock() = vec![8080];
+        let g = graph(vec![process("p", "echo subiu; sleep 30")], vec![]);
+        let run = runs.start_now(g, vec![]).unwrap();
+        std::thread::sleep(Duration::from_millis(1300));
+        *host.ports.lock() = vec![3000, 8080];
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let url = loop {
+            let r = runs.get(&run.id).unwrap();
+            if let Some(url) = r.nodes["p"].url.clone() {
+                break url;
+            }
+            assert!(Instant::now() < deadline, "sem url: {r:?}");
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        assert_eq!(url, "http://localhost:8080");
+        runs.stop(&run.id).unwrap();
+    }
+
     /// App aberto pelo Dock: o processo herda o PATH do launchd e o `-l` não
     /// lê o `.zshrc`. O comando que mora num bin do dono (fixture sintética)
     /// só é achado com o PATH de login exportado pelo wrapper.
@@ -4444,16 +4629,18 @@ mod tests {
         let (program, args) =
             process_argv(Some(&login_path), "tyba-fixture-tool", &in_dir, &out_dir);
         assert_eq!(program, bash_program());
-        let status = std::process::Command::new(&program)
+        let out = std::process::Command::new(&program)
             .args(&args)
             .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
             .env("HOME", dir.path())
-            .status()
+            .output()
             .unwrap();
-        assert!(status.success());
+        assert!(out.status.success());
         assert_eq!(read_exit(&out_dir), Some(0));
-        let log = std::fs::read_to_string(out_dir.join("log.txt")).unwrap();
-        assert_eq!(log.trim(), "achei");
+        // Sem `| tee`: a saída vai direto para o terminal (o `log.txt` o core
+        // grava do PTY).
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "achei");
+        assert!(!out_dir.join("log.txt").exists());
     }
 
     /// O comando salvo roda em `bash -lc`, qualquer que seja o `$SHELL` do
@@ -7279,8 +7466,17 @@ mod tests {
             vec![edge("e1", "p", "q", EdgeKind::Log)],
         );
         let run = runs.start_now(g, vec![]).unwrap();
-        let r = wait_status(&runs, &run.id, "q", NodeStatus::Running);
-        let q_session = r.nodes["q"].session_id.clone().unwrap();
+        wait_status(&runs, &run.id, "q", NodeStatus::Running);
+        // `running` vem antes da sessão gravada (ela sai do spawn).
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let q_session = loop {
+            let r = runs.get(&run.id).unwrap();
+            match r.nodes["q"].session_id.clone() {
+                Some(s) => break s,
+                None if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
+                None => panic!("q sem sessão: {r:?}"),
+            }
+        };
         runs.restart_node(&run.id, "p").unwrap();
         let r = wait_attempt(&runs, &run.id, "p", 1, NodeStatus::Done);
         let q = &r.nodes["q"];

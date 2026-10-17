@@ -192,11 +192,13 @@ export function failureFooter(
 }
 
 /**
- * O card do processo que caiu mostra o fim do `log.txt` no lugar do
- * terminal: a sessão já morreu (o terminal some quando o nó sai de
- * `running`) e o erro de quem cai em 0s ficava invisível. Só quem rodou
- * (teve sessão) tem log.
+ * O card do processo que acabou (caiu, terminou ou foi parado) mostra o fim
+ * do `log.txt` no lugar do terminal: a sessão já morreu (o terminal some
+ * quando o nó sai de `running`) e a saída e o erro de quem cai em 0s ficavam
+ * invisíveis. Só quem rodou (teve sessão) tem log.
  */
-export function showsFailureLog(kind: NodeKind, nodeRun: NodeRun | undefined): boolean {
-  return kind.type === "process" && nodeRun?.status === "failed" && !!nodeRun.sessionId;
+export function showsEndLog(kind: NodeKind, nodeRun: NodeRun | undefined): boolean {
+  const ended =
+    nodeRun?.status === "failed" || nodeRun?.status === "done" || nodeRun?.status === "stopped";
+  return kind.type === "process" && ended && !!nodeRun?.sessionId;
 }

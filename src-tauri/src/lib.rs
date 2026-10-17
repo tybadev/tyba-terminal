@@ -5645,6 +5645,7 @@ fn open_container_tab(
                         container_id: container_id.to_string(),
                     },
                     crate::session::SessionOwner::Grid,
+                    None,
                     move |id| session_exited(&handle, id),
                 )
                 .map_err(|e| e.to_string())?;
@@ -5772,6 +5773,7 @@ fn spawn_tab_session(
             30,
             kind,
             crate::session::SessionOwner::Grid,
+            None,
             move |id| session_exited(&handle, id),
         )
         .map_err(|e| e.to_string())?;
@@ -6438,6 +6440,7 @@ fn screen_container_session(
                 container_id: container_id.to_string(),
             },
             crate::session::SessionOwner::Grid,
+            None,
             move |id| session_exited(&handle, id),
         )
         .map_err(|e| e.to_string())?;
@@ -8887,6 +8890,16 @@ fn orbit_node_log(
     runs.node_log(&run_id, &node_id, lines)
 }
 
+/// "Ver log inteiro" do nó: o log gravado pelo core, sem cor e redigido.
+#[tauri::command]
+fn orbit_node_log_whole(
+    runs: State<'_, orbit::run::SharedRuns>,
+    run_id: String,
+    node_id: String,
+) -> Result<orbit::run::WholeLog, String> {
+    runs.node_log_whole(&run_id, &node_id)
+}
+
 #[tauri::command]
 fn orbit_runs_list(
     runs: State<'_, orbit::run::SharedRuns>,
@@ -10135,6 +10148,7 @@ pub fn run() {
             orbit_run_restart_node,
             orbit_run_get,
             orbit_node_log,
+            orbit_node_log_whole,
             orbit_keep_created,
             orbit_runs_list,
             orbit_service_logs_start,

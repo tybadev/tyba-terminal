@@ -1,14 +1,22 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ArrowClockwise, TerminalWindow } from "@phosphor-icons/react";
 import type { NodeProps } from "@xyflow/react";
 
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Select } from "@/components/ui/select";
 import {
   OUTPUT_KINDS,
   nodeControls,
   nodeDir,
   nodeLog,
+  nodeLogWhole,
   nodeSession,
   shortDir,
   urlPort,
@@ -16,7 +24,7 @@ import {
   type OutputKind,
 } from "@/lib/orbit";
 import { firstLine } from "@/lib/nodeSummary";
-import { showsFailureLog } from "@/lib/orbitCard";
+import { showsEndLog } from "@/lib/orbitCard";
 import {
   NodeDir,
   NodeFrame,
@@ -47,7 +55,8 @@ export function ProcessNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
   const failed = run?.nodes[id]?.status === "failed";
   // O ↻ roda de novo só com a execução aberta; fechada, fica com a dica.
   const rerun = nodeControls(kind, run, id, live).rerun;
-  const failureLog = run && showsFailureLog(kind, run.nodes[id]) ? run.id : null;
+  // Acabou (caiu, terminou, parado): a saída fica no card, sem o terminal.
+  const endLog = run && showsEndLog(kind, run.nodes[id]) ? run.id : null;
 
   return (
     <NodeFrame
@@ -120,8 +129,8 @@ export function ProcessNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
       )}
       {session ? (
         <NodeTerminal nodeId={id} sessionId={session} selected={selected} />
-      ) : failureLog ? (
-        <FailureLog runId={failureLog} nodeId={id} command={command} />
+      ) : endLog ? (
+        <EndLog runId={endLog} nodeId={id} command={command} title={node.title} />
       ) : (
         <div className="flex min-h-0 flex-1 bg-tyba-sunken">
           <span className="select-none pt-2.5 pl-3.5 font-mono text-[11.5px] leading-[17px] text-tyba-green">
@@ -143,18 +152,30 @@ export function ProcessNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
   );
 }
 
-const FAILURE_LOG_LINES = 14;
+const END_LOG_LINES = 14;
 
 /**
- * O processo que caiu: o comando e o fim do `log.txt`, lido do core (a sessão
- * já morreu e o terminal saiu do card). Quem cai em 0s deixava só o comando
- * à vista, sem o erro.
+ * O processo que acabou: o comando e o fim do `log.txt`, lido do core (a
+ * sessão já morreu e o terminal saiu do card). Quem cai em 0s deixava só o
+ * comando à vista, sem o erro. "Ver log inteiro" abre o log gravado.
  */
-function FailureLog({ runId, nodeId, command }: { runId: string; nodeId: string; command: string }) {
+function EndLog({
+  runId,
+  nodeId,
+  command,
+  title,
+}: {
+  runId: string;
+  nodeId: string;
+  command: string;
+  title: string;
+}) {
+  const { t } = useTranslation();
   const [lines, setLines] = useState<string[]>([]);
+  const [whole, setWhole] = useState(false);
   useEffect(() => {
     let disposed = false;
-    void nodeLog(runId, nodeId, FAILURE_LOG_LINES)
+    void nodeLog(runId, nodeId, END_LOG_LINES)
       .then((rows) => {
         if (!disposed) setLines(rows);
       })
@@ -175,6 +196,69 @@ function FailureLog({ runId, nodeId, command }: { runId: string; nodeId: string;
           {line || " "}
         </div>
       ))}
+      <button
+        type="button"
+        onClick={() => setWhole(true)}
+        className="nodrag absolute top-2 right-2.5 rounded-full bg-tyba-surface px-2.5 text-[11px] leading-[20px] text-tyba-text-muted hover:text-tyba-text"
+      >
+        {t("orbitWholeLog")}
+      </button>
+      {whole && (
+        <WholeLogDialog runId={runId} nodeId={nodeId} title={title} onClose={() => setWhole(false)} />
+      )}
     </div>
+  );
+}
+
+function WholeLogDialog({
+  runId,
+  nodeId,
+  title,
+  onClose,
+}: {
+  runId: string;
+  nodeId: string;
+  title: string;
+  onClose: () => void;
+}) {
+  const { t } = useTranslation();
+  const [log, setLog] = useState<{ text: string; cut: boolean } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    let disposed = false;
+    void nodeLogWhole(runId, nodeId)
+      .then((l) => !disposed && setLog(l))
+      .catch((e: unknown) => !disposed && setError(String(e)));
+    return () => {
+      disposed = true;
+    };
+  }, [runId, nodeId]);
+  // O fim do log é o que importa: abre rolado até lá.
+  const pre = useRef<HTMLPreElement>(null);
+  useEffect(() => {
+    if (pre.current) pre.current.scrollTop = pre.current.scrollHeight;
+  }, [log]);
+
+  return (
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="flex max-h-[86vh] max-w-[880px] flex-col gap-0 rounded-[6px] border-tyba-border-strong bg-tyba-surface p-0 font-mono shadow-2xl sm:max-w-[880px]">
+        <DialogHeader className="tyba-divide-b px-4 py-3">
+          <DialogTitle className="text-[13px] text-tyba-text">
+            {t("orbitWholeLogTitle", { title })}
+          </DialogTitle>
+          {log?.cut && (
+            <DialogDescription className="text-[12px] text-tyba-text-faint">
+              {t("orbitWholeLogCut")}
+            </DialogDescription>
+          )}
+        </DialogHeader>
+        <pre
+          ref={pre}
+          className="min-h-[120px] flex-1 overflow-auto bg-tyba-sunken px-4 py-3 text-[11.5px] leading-[17px] whitespace-pre text-tyba-text-muted select-text"
+        >
+          {error ?? (log ? log.text || t("orbitWholeLogEmpty") : "")}
+        </pre>
+      </DialogContent>
+    </Dialog>
   );
 }

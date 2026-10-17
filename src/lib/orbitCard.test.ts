@@ -8,7 +8,7 @@ import {
   approvalLine,
   diffSummary,
   failureFooter,
-  showsFailureLog,
+  showsEndLog,
   nodeApproval,
   ringState,
   visibleCardApprovalIds,
@@ -191,7 +191,7 @@ describe("cards no quadro OrbitCardsD", () => {
   });
 });
 
-describe("showsFailureLog", () => {
+describe("showsEndLog", () => {
   const process = {
     type: "process",
     command: "python3 -m http.server 8765",
@@ -199,10 +199,13 @@ describe("showsFailureLog", () => {
     file: null,
     dir: "",
   } as const;
-  test("processo que rodou e caiu mostra o log; o resto não", () => {
-    expect(showsFailureLog(process, nodeRun({ status: "failed", exitCode: 1 }))).toBe(true);
-    expect(showsFailureLog(process, nodeRun({ status: "failed", sessionId: null }))).toBe(false);
-    expect(showsFailureLog(process, nodeRun({ status: "running" }))).toBe(false);
-    expect(showsFailureLog(process, undefined)).toBe(false);
+  test("processo que rodou e acabou mostra o log; o resto não", () => {
+    expect(showsEndLog(process, nodeRun({ status: "failed", exitCode: 1 }))).toBe(true);
+    expect(showsEndLog(process, nodeRun({ status: "done", exitCode: 0 }))).toBe(true);
+    expect(showsEndLog(process, nodeRun({ status: "stopped" }))).toBe(true);
+    expect(showsEndLog(process, nodeRun({ status: "failed", sessionId: null }))).toBe(false);
+    expect(showsEndLog(process, nodeRun({ status: "running" }))).toBe(false);
+    expect(showsEndLog(process, nodeRun({ status: "skipped", sessionId: null }))).toBe(false);
+    expect(showsEndLog(process, undefined)).toBe(false);
   });
 });

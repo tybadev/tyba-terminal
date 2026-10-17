@@ -13,6 +13,7 @@ pub mod browser;
 pub mod export;
 pub mod failure;
 pub mod integration;
+pub mod log;
 pub mod mcp;
 pub mod orchestrator;
 pub mod run;

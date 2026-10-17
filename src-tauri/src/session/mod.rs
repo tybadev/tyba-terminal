@@ -629,6 +629,7 @@ impl SessionManager {
         rows: u16,
         kind: SessionKind,
         owner: SessionOwner,
+        tap: Option<crate::pty::OutputTap>,
         on_exit: impl FnOnce(SessionId) + Send + 'static,
     ) -> Result<Session, PtyError> {
         let id = Uuid::new_v4();
@@ -648,10 +649,17 @@ impl SessionManager {
         ) {
             crate::ssh::command::apply_pty_env(&mut cmd);
         }
-        self.spawn_session(
+        if let Some(tap) = tap {
+            pty_pool.set_tap(id, tap);
+        }
+        let spawned = self.spawn_session(
             app, pty_pool, id, cmd, kind, title, None, None, None, cols, rows, false, owner,
             on_exit,
-        )
+        );
+        if spawned.is_err() {
+            pty_pool.clear_tap(id);
+        }
+        spawned
     }
 
     #[allow(clippy::too_many_arguments)]
