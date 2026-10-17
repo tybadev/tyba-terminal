@@ -1602,3 +1602,11 @@ samp {
   height: 1px;
   background: var(--tyba-border-soft);
 }
+
+/* ⌘ (Ctrl fora do mac) apertado sobre um link do terminal: mão, como no Warp.
+   Por cima do cursor do xterm, que com o mouse tracking do programa é o padrão. */
+.tyba-link-armed,
+.tyba-link-armed .xterm,
+.tyba-link-armed .xterm * {
+  cursor: pointer !important;
+}

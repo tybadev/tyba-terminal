@@ -1,12 +1,17 @@
 import { describe, expect, it, test } from "bun:test";
 
 import {
+  cellAtPoint,
+  findLinksInRows,
   findPathsInLine,
   findUrlsAcrossRows,
   findUrlsInLine,
   hasOpenModifier,
   logicalLineWindow,
+  opensLinkOnMouseDown,
   parsePathUri,
+  rangeContains,
+  type LinkRow,
   type WrappedRow,
 } from "./terminalLinks";
 
@@ -167,5 +172,133 @@ describe("parsePathUri", () => {
     expect(parsePathUri("tyba-path:src/a.ts:12")).toEqual({ path: "src/a.ts", line: 12 });
     expect(parsePathUri("tyba-path:src/a.ts")).toEqual({ path: "src/a.ts", line: undefined });
     expect(parsePathUri("https://x.dev")).toBeNull();
+  });
+});
+
+describe("findLinksInRows", () => {
+  const COLS = 40;
+  // O Claude Code quebra a URL ele mesmo: `\n` + recuo, sem `isWrapped`.
+  const claude: LinkRow[] = [
+    { text: "⏺ Abra https://claude.ai/design/p/0f3a9", isWrapped: false },
+    { text: "  c2e-b1c2-4e5f-9a8b-1234567890ab no", isWrapped: false },
+    { text: "  navegador.", isWrapped: false },
+  ];
+  const full = "https://claude.ai/design/p/0f3a9c2e-b1c2-4e5f-9a8b-1234567890ab";
+
+  test("junta a URL que o programa quebrou na borda, pulando o recuo", () => {
+    const [link] = findLinksInRows(claude, 0, COLS);
+    expect(link?.uri).toBe(full);
+    expect(link?.start).toEqual({ row: 0, index: 7 });
+    expect(link?.end).toEqual({ row: 1, index: 32 });
+  });
+
+  test("a mesma URL inteira vale de cima da linha de continuação", () => {
+    const [link] = findLinksInRows(claude, 1, COLS);
+    expect(link?.uri).toBe(full);
+  });
+
+  test("linha que não continua a URL fica fora do trecho", () => {
+    expect(findLinksInRows(claude, 2, COLS)).toEqual([]);
+  });
+
+  test("URL longe da borda não junta com a palavra de baixo", () => {
+    const rows: LinkRow[] = [
+      { text: "veja https://example.com/docs", isWrapped: false },
+      { text: "para detalhes", isWrapped: false },
+    ];
+    const [link] = findLinksInRows(rows, 0, 80);
+    expect(link?.uri).toBe("https://example.com/docs");
+    expect(findLinksInRows(rows, 1, 80)).toEqual([]);
+  });
+
+  test("uma URL nova na linha de baixo não é continuação", () => {
+    const rows: LinkRow[] = [
+      { text: "a https://one.example.com/aaaaaaaaaaaaaaa", isWrapped: false },
+      { text: "https://two.example.com", isWrapped: false },
+    ];
+    const links = findLinksInRows(rows, 0, 40);
+    expect(links.map((l) => l.uri)).toEqual(["https://one.example.com/aaaaaaaaaaaaaaa"]);
+  });
+
+  test("continua juntando o wrap do próprio xterm", () => {
+    const rows: LinkRow[] = [
+      { text: "grab https://example.com/very/long/", isWrapped: false },
+      { text: "path/to/a/page?token=abc123", isWrapped: true },
+    ];
+    const [link] = findLinksInRows(rows, 1, 35);
+    expect(link?.uri).toBe("https://example.com/very/long/path/to/a/page?token=abc123");
+    expect(link?.start).toEqual({ row: 0, index: 5 });
+  });
+
+  test("caminho de arquivo só com `files`", () => {
+    const rows: LinkRow[] = [{ text: "erro em src/app.tsx:12", isWrapped: false }];
+    expect(findLinksInRows(rows, 0, 80)).toEqual([]);
+    const [link] = findLinksInRows(rows, 0, 80, { files: true });
+    expect(link?.uri).toBe("tyba-path:src/app.tsx:12");
+  });
+});
+
+describe("rangeContains", () => {
+  const range = { start: { x: 8, y: 3 }, end: { x: 36, y: 4 } };
+
+  test("cobre do início na primeira linha ao fim na última", () => {
+    expect(rangeContains(range, 8, 3)).toBe(true);
+    expect(rangeContains(range, 40, 3)).toBe(true);
+    expect(rangeContains(range, 1, 4)).toBe(true);
+    expect(rangeContains(range, 36, 4)).toBe(true);
+  });
+
+  test("fora das pontas e das linhas não conta", () => {
+    expect(rangeContains(range, 7, 3)).toBe(false);
+    expect(rangeContains(range, 37, 4)).toBe(false);
+    expect(rangeContains(range, 10, 2)).toBe(false);
+    expect(rangeContains(range, 10, 5)).toBe(false);
+  });
+});
+
+describe("cellAtPoint", () => {
+  const box = { left: 100, top: 50, width: 800, height: 400 };
+
+  test("converte o ponto na célula da viewport", () => {
+    expect(cellAtPoint({ clientX: 100, clientY: 50 }, box, 80, 20)).toEqual({ col: 0, row: 0 });
+    expect(cellAtPoint({ clientX: 155, clientY: 95 }, box, 80, 20)).toEqual({ col: 5, row: 2 });
+    expect(cellAtPoint({ clientX: 899, clientY: 449 }, box, 80, 20)).toEqual({ col: 79, row: 19 });
+  });
+
+  test("fora da tela não há célula", () => {
+    expect(cellAtPoint({ clientX: 99, clientY: 60 }, box, 80, 20)).toBeNull();
+    expect(cellAtPoint({ clientX: 900, clientY: 60 }, box, 80, 20)).toBeNull();
+    expect(cellAtPoint({ clientX: 200, clientY: 60 }, { ...box, width: 0 }, 80, 20)).toBeNull();
+  });
+});
+
+describe("opensLinkOnMouseDown", () => {
+  const click = { button: 0, metaKey: false, ctrlKey: false };
+
+  test("⌘+clique no mac abre — com o mouse tracking do programa ligado ou não", () => {
+    // A decisão não olha o tracking de propósito: com ele ligado o xterm
+    // mandaria o clique ao Claude, e é por isso que o TYBA intercepta antes.
+    expect(opensLinkOnMouseDown({ ...click, metaKey: true }, true, true)).toBe(true);
+  });
+
+  test("Ctrl+clique abre fora do mac; ⌘ não", () => {
+    expect(opensLinkOnMouseDown({ ...click, ctrlKey: true }, false, true)).toBe(true);
+    expect(opensLinkOnMouseDown({ ...click, metaKey: true }, false, true)).toBe(false);
+  });
+
+  test("Ctrl+clique no mac não abre (é o menu de contexto)", () => {
+    expect(opensLinkOnMouseDown({ ...click, ctrlKey: true }, true, true)).toBe(false);
+  });
+
+  test("clique sem modificador vai para o programa", () => {
+    expect(opensLinkOnMouseDown(click, true, true)).toBe(false);
+  });
+
+  test("sem link sob o mouse o clique segue para o terminal", () => {
+    expect(opensLinkOnMouseDown({ ...click, metaKey: true }, true, false)).toBe(false);
+  });
+
+  test("só o botão principal", () => {
+    expect(opensLinkOnMouseDown({ ...click, button: 2, metaKey: true }, true, true)).toBe(false);
   });
 });

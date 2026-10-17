@@ -78,6 +78,26 @@ export function routePaste(input: {
   return { to: risky ? "confirm" : "terminal", text };
 }
 
+/**
+ * Quem atende o ⌘V: o TYBA (lê a área de transferência e entrega pelo
+ * `deliverPaste`, com bracketed paste quando o programa pediu) ou o WebView (o
+ * `paste` nativo vai para o campo que tem o foco).
+ *
+ * O foco solto — no `body`, depois de clicar em algo que não é campo (a lista
+ * de blocos, a barra lateral, um aviso) ou de um modal fechar — era o "nem
+ * sempre": o atalho só agia com o textarea do xterm focado, e o `paste` nativo
+ * caía no `body`, onde ninguém o ouve. Sem erro, sem texto. Com o terminal do
+ * painel ativo na tela, o foco solto também é dele.
+ */
+export function pasteKeyRoute(input: {
+  termFocused: boolean;
+  focusIdle: boolean;
+  termShown: boolean;
+}): "tyba" | "native" {
+  if (input.termFocused) return "tyba";
+  return input.focusIdle && input.termShown ? "tyba" : "native";
+}
+
 export function flattenPaste(text: string): string {
   return stripTrailingNewline(text)
     .replace(NEWLINE_RUN, " ")

