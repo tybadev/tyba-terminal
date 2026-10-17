@@ -647,6 +647,98 @@ impl Scheduler {
         self.held.remove(id);
     }
 
+    /// A config do nó mudou no grafo salvo com o run aberto: quem já
+    /// começou fica "↻ para aplicar" (a config nova vale quando o dono o
+    /// reinicia); quem ainda espera começa com ela, sem marca. Devolve
+    /// `true` se marcou.
+    pub fn mark_changed(&mut self, id: &str) -> bool {
+        match self.run.nodes.get_mut(id) {
+            Some(n) if n.started_at.is_some() && !n.stale => {
+                n.stale = true;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// As ligações de valor do grafo salvo valem na hora (o dono edita com o
+    /// run aberto). Ligação com ponta fora do run não conta (nó novo só entra
+    /// no próximo ▶). Quem ainda espera passa a esperar as origens novas;
+    /// quem já começou e teve as entradas mudadas fica "↻ para aplicar".
+    /// Esperando com origem morta é pulado; pulado em cascata cuja origem
+    /// morta saiu volta a esperar. Devolve `true` se algo mudou.
+    pub fn rewire(&mut self, edges: &[Edge]) -> bool {
+        let mut sources: HashMap<String, Vec<(String, EdgeKind)>> = HashMap::new();
+        let mut dependents: HashMap<String, Vec<String>> = HashMap::new();
+        for e in edges.iter().filter(|e| e.kind.carries_data()) {
+            if !self.run.nodes.contains_key(&e.from) || !self.run.nodes.contains_key(&e.to) {
+                continue;
+            }
+            sources
+                .entry(e.to.clone())
+                .or_default()
+                .push((e.from.clone(), e.kind));
+            dependents
+                .entry(e.from.clone())
+                .or_default()
+                .push(e.to.clone());
+        }
+        let same = |a: Option<&Vec<(String, EdgeKind)>>, b: Option<&Vec<(String, EdgeKind)>>| {
+            let (a, b) = (
+                a.map_or(&[][..], Vec::as_slice),
+                b.map_or(&[][..], Vec::as_slice),
+            );
+            a.len() == b.len() && a.iter().all(|x| b.contains(x))
+        };
+        let mut changed = false;
+        for (id, n) in self.run.nodes.iter_mut() {
+            if same(self.sources.get(id), sources.get(id)) {
+                continue;
+            }
+            changed = true;
+            if n.started_at.is_some() {
+                n.stale = true;
+            }
+        }
+        self.sources = sources;
+        self.dependents = dependents;
+        let dead = |s: &Self, id: &str| {
+            s.sources.get(id).into_iter().flatten().any(|(from, _)| {
+                matches!(
+                    s.status(from),
+                    Some(NodeStatus::Failed | NodeStatus::Skipped | NodeStatus::Stopped)
+                )
+            })
+        };
+        // Até assentar: pular um pode matar a origem de outro, e voltar um
+        // pode ressuscitar a de outro (cada volta move ao menos um nível).
+        for _ in 0..=self.order.len() {
+            let mut moved = false;
+            for id in self.order.clone() {
+                let Some(status) = self.status(&id) else {
+                    continue;
+                };
+                let skipped_by_source = status == NodeStatus::Skipped
+                    && self.run.nodes[&id].reason.is_none()
+                    && self.run.nodes[&id].started_at.is_none();
+                let next = match status {
+                    NodeStatus::Waiting if dead(self, &id) => NodeStatus::Skipped,
+                    _ if skipped_by_source && !dead(self, &id) => NodeStatus::Waiting,
+                    _ => continue,
+                };
+                if let Some(n) = self.run.nodes.get_mut(&id) {
+                    n.status = next;
+                }
+                moved = true;
+            }
+            if !moved {
+                break;
+            }
+            changed = true;
+        }
+        changed
+    }
+
     /// Volta a esperar quem foi pulado em cascata por `id` e não tem mais
     /// origem morta (falhou, parou ou foi pulada). O pulado com motivo (o
     /// dono o parou antes de começar) fica.
@@ -3308,6 +3400,122 @@ impl<H: RunHost> Runs<H> {
         self.publish_current(run_id);
         self.advance(run_id);
         Ok(())
+    }
+
+    /// O dono salvou o grafo com execução aberta: o core reconcilia cada run
+    /// aberto dele (não o de teste).
+    /// - Nó que saiu do grafo e ainda roda ou espera: para (o `stop_one`,
+    ///   que mata o process group). O criado no run não está no salvo e fica.
+    /// - Nó cuja config mudou (comando, prompt, pasta, url, alvo…): a nova
+    ///   vale no próximo começo; quem já começou fica "↻ para aplicar"
+    ///   ([`Scheduler::mark_changed`]) e só muda quando o dono reinicia.
+    /// - Ligações de valor valem na hora ([`Scheduler::rewire`]); as de
+    ///   permissão já são lidas do salvo a cada chamada.
+    pub fn graph_saved(&self, graph: &Graph) {
+        let mut removed: Vec<(String, String)> = Vec::new();
+        let mut touched: Vec<String> = Vec::new();
+        {
+            let mut active = self.active.lock();
+            for (run_id, a) in active
+                .iter_mut()
+                .filter(|(_, a)| a.graph.id == graph.id && !a.sched.run.test)
+            {
+                let created: HashSet<String> = a
+                    .sched
+                    .run
+                    .created
+                    .iter()
+                    .map(|c| c.node.id.clone())
+                    .collect();
+                let mut changed = false;
+                for node in a.graph.nodes.iter_mut() {
+                    match graph.nodes.iter().find(|n| n.id == node.id) {
+                        Some(new) if node.kind != new.kind => {
+                            // A nota é lida do salvo por quem a usa; o
+                            // navegador troca de página sozinho (a url que
+                            // chega e a que o agente abre vão para o nó).
+                            // O título não muda o que roda.
+                            let marks = !matches!(
+                                node.kind,
+                                NodeKind::Note { .. } | NodeKind::Browser { .. }
+                            );
+                            node.kind = new.kind.clone();
+                            if marks {
+                                changed |= a.sched.mark_changed(&node.id);
+                            }
+                        }
+                        Some(_) => {}
+                        None if created.contains(&node.id) => {}
+                        None => {
+                            if matches!(
+                                a.sched.status(&node.id),
+                                Some(NodeStatus::Running | NodeStatus::Waiting)
+                            ) {
+                                removed.push((run_id.clone(), node.id.clone()));
+                            }
+                        }
+                    }
+                }
+                let ids: HashSet<&str> = a.graph.nodes.iter().map(|n| n.id.as_str()).collect();
+                let edges: Vec<Edge> = current_edges(Some(graph), &a.sched.run.created)
+                    .into_iter()
+                    .filter(|e| ids.contains(e.from.as_str()) && ids.contains(e.to.as_str()))
+                    .collect();
+                if a.graph.edges != edges {
+                    changed |= a.sched.rewire(&edges);
+                    a.graph.edges = edges;
+                    a.sched.settle(now());
+                }
+                if changed {
+                    touched.push(run_id.clone());
+                }
+            }
+        }
+        for (run_id, node_id) in &removed {
+            eprintln!("[orbit] nó {node_id} saiu do grafo com o run aberto: parado");
+            let _ = self.stop_one(run_id, node_id);
+        }
+        for run_id in touched {
+            self.publish_current(&run_id);
+            self.advance(&run_id);
+        }
+    }
+
+    /// A integração mudou na biblioteca com execução aberta: o nó que a usa
+    /// e ainda espera roda o script novo; o que já começou fica "↻ para
+    /// aplicar".
+    pub fn integration_saved(&self, integration: &Integration) {
+        let mut touched = Vec::new();
+        {
+            let mut active = self.active.lock();
+            for (run_id, a) in active.iter_mut() {
+                if a.integrations.get(&integration.id) == Some(integration) {
+                    continue;
+                }
+                let users: Vec<String> = a
+                    .graph
+                    .nodes
+                    .iter()
+                    .filter(|n| matches!(&n.kind, NodeKind::Integration { integration_id, .. } if *integration_id == integration.id))
+                    .map(|n| n.id.clone())
+                    .collect();
+                if users.is_empty() {
+                    continue;
+                }
+                a.integrations
+                    .insert(integration.id.clone(), integration.clone());
+                let mut changed = false;
+                for id in &users {
+                    changed |= a.sched.mark_changed(id);
+                }
+                if changed {
+                    touched.push(run_id.clone());
+                }
+            }
+        }
+        for run_id in touched {
+            self.publish_current(&run_id);
+        }
     }
 
     /// Os nós criados ainda não mantidos do run (o "Manter no grafo"): do
@@ -7637,6 +7845,141 @@ mod tests {
             .join("in")
             .join("log.txt");
         assert_eq!(std::fs::read_to_string(input).unwrap().trim(), "2");
+        runs.stop(&run.id).unwrap();
+    }
+
+    /// Ligação nova com o run aberto: quem espera passa a esperar a origem
+    /// nova; quem já começou e teve as entradas mudadas fica marcado.
+    #[test]
+    fn rewire_applies_new_edges_now() {
+        let mut s = Scheduler::new(&diamond(), "r".into(), 0);
+        s.mark_running("a", 1);
+        s.mark_running("b", 1);
+        s.finish("a", ok(), 2);
+        s.finish("b", ok(), 2);
+        s.mark_running("c", 3);
+        // c perde a ligação de b; d ganha uma de a (d ainda espera c).
+        let mut g = diamond();
+        g.edges.retain(|e| e.id != "e2");
+        g.edges.push(edge("e4", "a", "d", EdgeKind::Log));
+        assert!(s.rewire(&g.edges));
+        assert!(s.run().nodes["c"].stale, "c já tinha começado");
+        assert!(!s.run().nodes["d"].stale, "d ainda não começou");
+        assert!(s.ready().is_empty(), "d segue esperando c");
+        s.finish("c", ok(), 4);
+        assert_eq!(s.ready(), vec!["d".to_string()]);
+        // As mesmas ligações de novo não mudam nada.
+        assert!(!s.rewire(&g.edges));
+    }
+
+    /// Ligação para uma origem morta pula quem espera; tirar a ligação da
+    /// origem morta traz de volta o pulado em cascata. Ponta fora do run
+    /// não conta.
+    #[test]
+    fn rewire_skips_and_unskips_by_the_dead_source() {
+        let mut s = Scheduler::new(&diamond(), "r".into(), 0);
+        s.mark_running("a", 1);
+        s.finish("a", Outcome::failed("exit 1"), 2);
+        assert_eq!(status(&s, "c"), NodeStatus::Skipped);
+        assert_eq!(status(&s, "d"), NodeStatus::Skipped);
+        let mut g = diamond();
+        g.edges.retain(|e| e.id != "e1");
+        g.edges.push(edge("e9", "novo", "b", EdgeKind::Log));
+        assert!(s.rewire(&g.edges));
+        assert_eq!(status(&s, "c"), NodeStatus::Waiting);
+        assert_eq!(status(&s, "d"), NodeStatus::Waiting);
+        assert_eq!(
+            s.ready(),
+            vec!["b".to_string()],
+            "a ligação de fora não segura b"
+        );
+        g.edges.push(edge("e5", "a", "b", EdgeKind::Log));
+        assert!(s.rewire(&g.edges));
+        assert_eq!(status(&s, "b"), NodeStatus::Skipped);
+        assert_eq!(status(&s, "c"), NodeStatus::Skipped);
+    }
+
+    #[test]
+    fn mark_changed_only_marks_who_already_started() {
+        let mut s = Scheduler::new(&diamond(), "r".into(), 0);
+        s.mark_running("a", 1);
+        assert!(s.mark_changed("a"));
+        assert!(!s.mark_changed("a"), "já marcado");
+        assert!(!s.mark_changed("c"), "espera: começa com a config nova");
+        assert!(!s.run().nodes["c"].stale);
+    }
+
+    /// Editar o grafo com o run aberto: o comando novo não reinicia o nó
+    /// sozinho (fica "↻ para aplicar") e vale no reinício; o nó apagado
+    /// que rodava morre (process group inteiro); a ligação nova vale na hora.
+    #[cfg(unix)]
+    #[test]
+    fn saving_the_graph_reconciles_the_open_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let (runs, host, _app) = pty_runs(dir.path().join("runs"));
+        let g = graph(
+            vec![
+                process("p", "echo velho; sleep 30"),
+                process("gone", "sleep 30"),
+                process("q", "cat \"$TYBA_IN/log.txt\""),
+                process("w", "cat \"$TYBA_IN/log.txt\"; sleep 30"),
+            ],
+            vec![
+                edge("e1", "gone", "q", EdgeKind::Log),
+                edge("e2", "p", "w", EdgeKind::Log),
+            ],
+        );
+        runs.store.save_orbit_graph(&g, true, None).unwrap();
+        let run = runs.start_now(g.clone(), vec![]).unwrap();
+        let r = wait_status(&runs, &run.id, "gone", NodeStatus::Running);
+        let gone_session = r.nodes["gone"].session_id.clone().unwrap();
+        let p_session = r.nodes["p"].session_id.clone().unwrap();
+        assert_eq!(r.nodes["q"].status, NodeStatus::Waiting);
+
+        // O dono apaga "gone", liga p → q no lugar e troca o comando de p.
+        let mut edited = g.clone();
+        edited.nodes.retain(|n| n.id != "gone");
+        edited.edges.retain(|e| e.id != "e1");
+        edited.edges.push(edge("e3", "p", "q", EdgeKind::Log));
+        if let NodeKind::Process { command, .. } = &mut edited.nodes[0].kind {
+            *command = "echo novo; sleep 30".into();
+        }
+        runs.store.save_orbit_graph(&edited, true, None).unwrap();
+        runs.graph_saved(&edited);
+
+        let r = runs.get(&run.id).unwrap();
+        assert_eq!(r.nodes["gone"].status, NodeStatus::Stopped, "{r:?}");
+        assert!(!host.pool.is_alive(gone_session.parse().unwrap()));
+        let p = &r.nodes["p"];
+        assert!(p.stale, "config nova espera o reinício");
+        assert_eq!(p.session_id.as_deref(), Some(p_session.as_str()));
+        assert!(host.pool.is_alive(p_session.parse().unwrap()));
+        assert_eq!(r.nodes["q"].status, NodeStatus::Waiting, "agora espera p");
+        assert!(!r.nodes["w"].stale, "a ligação de w não mudou");
+
+        runs.restart_node(&run.id, "p").unwrap();
+        let r = wait_attempt(&runs, &run.id, "p", 1, NodeStatus::Running);
+        assert!(!r.nodes["p"].stale);
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let log = dir
+            .path()
+            .join("runs")
+            .join(&run.id)
+            .join("p")
+            .join("out")
+            .join("log.txt");
+        loop {
+            let text = std::fs::read_to_string(&log).unwrap_or_default();
+            if text.contains("novo") {
+                assert!(!text.contains("velho"), "{text:?}");
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "o reinício não usou o comando novo: {text:?}"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
         runs.stop(&run.id).unwrap();
     }
 

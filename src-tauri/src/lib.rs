@@ -8650,6 +8650,7 @@ fn orbit_save_graph(
     app: AppHandle,
     state: State<'_, AppState>,
     views: State<'_, orbit::browser::BrowserViews>,
+    runs: State<'_, orbit::run::SharedRuns>,
     graph: orbit::Graph,
 ) -> Result<(), String> {
     let integrations = state
@@ -8665,6 +8666,7 @@ fn orbit_save_graph(
         .store
         .save_orbit_graph(&graph, true, None)
         .map_err(|e| e.to_string())?;
+    runs.graph_saved(&graph);
     if let Some(before) = before {
         for node in orbit::browser::removed_browsers(&before.value, &graph) {
             views.forget(&app, &browser_key(graph.id.clone(), node));
@@ -8708,13 +8710,16 @@ fn orbit_list_integrations(state: State<'_, AppState>) -> Result<Vec<orbit::Inte
 #[tauri::command]
 fn orbit_save_integration(
     state: State<'_, AppState>,
+    runs: State<'_, orbit::run::SharedRuns>,
     integration: orbit::Integration,
 ) -> Result<(), String> {
     orbit::validate_integration(&integration).map_err(|e| e.to_string())?;
     state
         .store
         .save_orbit_integration(&integration, true, None)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    runs.integration_saved(&integration);
+    Ok(())
 }
 
 #[tauri::command]
