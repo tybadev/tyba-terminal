@@ -92,15 +92,6 @@ export const SETTLE_MS = 150;
 export const OCCLUDER_SELECTOR =
   "[data-radix-popper-content-wrapper],[role=dialog],[role=menu],[role=listbox],[data-occludes]";
 
-export function rectInside(inner: BrowserRect, outer: BrowserRect): boolean {
-  return (
-    inner.x >= outer.x - 0.5 &&
-    inner.y >= outer.y - 0.5 &&
-    inner.x + inner.w <= outer.x + outer.w + 0.5 &&
-    inner.y + inner.h <= outer.y + outer.h + 0.5
-  );
-}
-
 export function rectsIntersect(a: BrowserRect, b: BrowserRect): boolean {
   return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
 }
@@ -136,10 +127,19 @@ export function samplePoints(r: BrowserRect, n = 5): Array<[number, number]> {
   return pts;
 }
 
+/** A parte comum de dois retângulos (sem área: `null`). */
+export function rectIntersection(a: BrowserRect, b: BrowserRect): BrowserRect | null {
+  const x = Math.max(a.x, b.x);
+  const y = Math.max(a.y, b.y);
+  const w = Math.min(a.x + a.w, b.x + b.w) - x;
+  const h = Math.min(a.y + a.h, b.y + b.h) - y;
+  return w >= 1 && h >= 1 ? { x, y, w, h } : null;
+}
+
 export interface OcclusionInput {
   /** O marcador, em px CSS da janela. */
   marker: BrowserRect;
-  /** A área útil do canvas. */
+  /** A área útil do canvas (já cortada pela janela). */
   area: BrowserRect;
   /** Zoom do canvas. */
   zoom: number;
@@ -147,26 +147,61 @@ export interface OcclusionInput {
   moving: boolean;
   /** Retângulos de menus, diálogos e afins abertos. */
   occluders: BrowserRect[];
-  /** Algum ponto de amostra caiu em outro elemento (algo por cima). */
+  /**
+   * Algum ponto de amostra da parte à vista ({@link visiblePart}) caiu em
+   * outro elemento (algo por cima).
+   */
   covered: boolean;
 }
 
+/** A parte do marcador dentro da área útil (`null`: nada à vista). */
+export function visiblePart(marker: BrowserRect, area: BrowserRect): BrowserRect | null {
+  if (marker.w < 1 || marker.h < 1) return null;
+  return rectIntersection(marker, area);
+}
+
 /**
- * A view pode ficar viva? Só com o marcador inteiro na área útil, zoom na
- * faixa, canvas parado e nada do DOM por cima. Vale também com o dono usando
- * a página: a roda e o trackpad fora dela ainda movem o canvas, e a view
- * nativa não segue o pan a cada frame.
+ * A view pode ficar viva, e em que parte? Devolve a parte do marcador à
+ * vista na área útil (o core recorta a view nela; no Windows e no Linux, só o
+ * marcador inteiro vale), ou `null` para esconder: nada à vista, zoom fora da
+ * faixa, canvas mexendo ou algo do DOM por cima da parte à vista. Vale também
+ * com o dono usando a página: a roda e o trackpad fora dela ainda movem o
+ * canvas, e a view nativa não segue o pan a cada frame.
  */
-export function occlusionVerdict(i: OcclusionInput): boolean {
-  const over = i.covered || i.occluders.some((o) => rectsIntersect(o, i.marker));
-  if (i.marker.w < 1 || i.marker.h < 1) return false;
-  return (
-    !over &&
-    !i.moving &&
-    i.zoom >= NATIVE_ZOOM_MIN &&
-    i.zoom <= NATIVE_ZOOM_MAX &&
-    rectInside(i.marker, i.area)
-  );
+export function occlusionClip(i: OcclusionInput): BrowserRect | null {
+  const part = visiblePart(i.marker, i.area);
+  if (!part) return null;
+  const over = i.covered || i.occluders.some((o) => rectsIntersect(o, part));
+  const ok = !over && !i.moving && i.zoom >= NATIVE_ZOOM_MIN && i.zoom <= NATIVE_ZOOM_MAX;
+  return ok ? part : null;
+}
+
+/** O que o corpo do card desenha embaixo da view nativa. */
+export type BrowserBody =
+  | { kind: "preview" }
+  | { kind: "empty"; key: string; icon: "browser" | "loading" | "move" };
+
+/**
+ * O corpo do card: o último print quando existe; sem ele, um aviso legível
+ * — nunca o fundo vazio. Fica embaixo da view nativa (viva, ela cobre; a
+ * página escura ou ainda sem pintar não deixa o card preto).
+ */
+export function browserBody(i: {
+  current: string;
+  loading: boolean;
+  live: boolean;
+  refused: string | null;
+  hasPreview: boolean;
+}): BrowserBody {
+  if (i.current === "")
+    return {
+      kind: "empty",
+      key: i.refused ? `orbitBrowserRefused_${i.refused}` : "orbitBrowserEmpty",
+      icon: "browser",
+    };
+  if (i.hasPreview) return { kind: "preview" };
+  if (i.loading || i.live) return { kind: "empty", key: "orbitBrowserLoadingPage", icon: "loading" };
+  return { kind: "empty", key: "orbitBrowserMoveToSee", icon: "move" };
 }
 
 /** Onde o marcador estava e desde quando (para o debounce do pan/zoom). */
@@ -204,13 +239,18 @@ export const browserNative = (): Promise<boolean> =>
 export const browserNavigate = (graphId: string, nodeId: string, url: string) =>
   invoke<void>("orbit_browser_navigate", { graphId, nodeId, url });
 
+/**
+ * A geometria do card: `rect` o marcador inteiro e `clip` a parte dele à
+ * vista (`rect: null` esconde).
+ */
 export const browserView = (
   graphId: string,
   nodeId: string,
   rect: BrowserRect | null,
+  clip: BrowserRect | null,
   zoom: number,
   center: [number, number] | null,
-) => invoke<void>("orbit_browser_view", { graphId, nodeId, rect, zoom, center });
+) => invoke<void>("orbit_browser_view", { graphId, nodeId, rect, clip, zoom, center });
 
 export const browserBack = (graphId: string, nodeId: string) =>
   invoke<void>("orbit_browser_back", { graphId, nodeId });

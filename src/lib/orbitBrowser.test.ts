@@ -8,14 +8,16 @@ import {
   NATIVE_ZOOM_MAX,
   NATIVE_ZOOM_MIN,
   SETTLE_MS,
-  occlusionVerdict,
+  browserBody,
+  occlusionClip,
   ownerFooter,
   previewTime,
-  rectInside,
+  rectIntersection,
   rectsIntersect,
   sameRect,
   samplePoints,
   trackMotion,
+  visiblePart,
   type OcclusionInput,
 } from "./orbitBrowser";
 
@@ -30,37 +32,101 @@ const base: OcclusionInput = {
   covered: false,
 };
 
-describe("occlusionVerdict", () => {
-  test("inteiro, parado, zoom 1 e nada por cima: viva", () => {
-    expect(occlusionVerdict(base)).toBe(true);
+describe("occlusionClip", () => {
+  test("inteiro, parado, zoom 1 e nada por cima: viva no marcador inteiro", () => {
+    expect(occlusionClip(base)).toEqual(marker);
   });
 
-  test("cortado pela borda da área útil: prévia", () => {
-    expect(occlusionVerdict({ ...base, marker: { ...marker, y: 20 } })).toBe(false);
-    expect(occlusionVerdict({ ...base, marker: { ...marker, x: 1000 } })).toBe(false);
+  test("cortado pela borda da área útil: viva só na parte à vista", () => {
+    // Passa do topo (a área começa em 40).
+    expect(occlusionClip({ ...base, marker: { ...marker, y: 20 } })).toEqual({
+      x: 100,
+      y: 40,
+      w: 400,
+      h: 280,
+    });
+    // Passa da direita e de baixo (o caso do nó criado por agente).
+    expect(occlusionClip({ ...base, marker: { x: 1000, y: 600, w: 400, h: 300 } })).toEqual({
+      x: 1000,
+      y: 600,
+      w: 200,
+      h: 200,
+    });
+  });
+
+  test("todo fora da área: prévia", () => {
+    expect(occlusionClip({ ...base, marker: { ...marker, x: 1300 } })).toBeNull();
+    expect(occlusionClip({ ...base, marker: { ...marker, y: -400 } })).toBeNull();
   });
 
   test("zoom fora da faixa: prévia", () => {
-    expect(occlusionVerdict({ ...base, zoom: 0.37 })).toBe(false);
-    expect(occlusionVerdict({ ...base, zoom: 2.5 })).toBe(false);
-    expect(occlusionVerdict({ ...base, zoom: NATIVE_ZOOM_MIN })).toBe(true);
-    expect(occlusionVerdict({ ...base, zoom: NATIVE_ZOOM_MAX })).toBe(true);
+    expect(occlusionClip({ ...base, zoom: 0.37 })).toBeNull();
+    expect(occlusionClip({ ...base, zoom: 2.5 })).toBeNull();
+    expect(occlusionClip({ ...base, zoom: NATIVE_ZOOM_MIN })).toEqual(marker);
+    expect(occlusionClip({ ...base, zoom: NATIVE_ZOOM_MAX })).toEqual(marker);
   });
 
   test("menu por cima ou ponto coberto: prévia", () => {
     const menu = { x: 450, y: 380, w: 200, h: 120 };
-    expect(occlusionVerdict({ ...base, occluders: [menu] })).toBe(false);
-    expect(occlusionVerdict({ ...base, occluders: [{ x: 600, y: 0, w: 10, h: 10 }] })).toBe(true);
-    expect(occlusionVerdict({ ...base, covered: true })).toBe(false);
+    expect(occlusionClip({ ...base, occluders: [menu] })).toBeNull();
+    expect(occlusionClip({ ...base, occluders: [{ x: 600, y: 0, w: 10, h: 10 }] })).toEqual(
+      marker,
+    );
+    expect(occlusionClip({ ...base, covered: true })).toBeNull();
+  });
+
+  test("menu só sobre a parte fora da área não esconde", () => {
+    const cut = { x: 1000, y: 600, w: 400, h: 300 };
+    const outside = { x: 1250, y: 850, w: 100, h: 40 };
+    expect(occlusionClip({ ...base, marker: cut, occluders: [outside] })).not.toBeNull();
   });
 
   test("pan ou zoom em andamento: prévia", () => {
-    expect(occlusionVerdict({ ...base, moving: true })).toBe(false);
+    expect(occlusionClip({ ...base, moving: true })).toBeNull();
   });
 
-
   test("marcador sem tamanho nunca fica vivo", () => {
-    expect(occlusionVerdict({ ...base, marker: { ...marker, w: 0 } })).toBe(false);
+    expect(occlusionClip({ ...base, marker: { ...marker, w: 0 } })).toBeNull();
+    expect(visiblePart({ ...marker, h: 0.5 }, area)).toBeNull();
+  });
+});
+
+describe("browserBody", () => {
+  const b = {
+    current: "http://127.0.0.1:8787/",
+    loading: false,
+    live: false,
+    refused: null,
+    hasPreview: false,
+  };
+  test("com print: a prévia, viva ou não", () => {
+    expect(browserBody({ ...b, hasPreview: true })).toEqual({ kind: "preview" });
+    expect(browserBody({ ...b, hasPreview: true, live: true })).toEqual({ kind: "preview" });
+  });
+  test("sem print: nunca o fundo vazio", () => {
+    expect(browserBody({ ...b, loading: true })).toEqual({
+      kind: "empty",
+      key: "orbitBrowserLoadingPage",
+      icon: "loading",
+    });
+    expect(browserBody({ ...b, live: true })).toEqual({
+      kind: "empty",
+      key: "orbitBrowserLoadingPage",
+      icon: "loading",
+    });
+    expect(browserBody(b)).toEqual({ kind: "empty", key: "orbitBrowserMoveToSee", icon: "move" });
+  });
+  test("sem endereço: o aviso de endereço ou a recusa", () => {
+    expect(browserBody({ ...b, current: "" })).toEqual({
+      kind: "empty",
+      key: "orbitBrowserEmpty",
+      icon: "browser",
+    });
+    expect(browserBody({ ...b, current: "", refused: "notLocal", hasPreview: true })).toEqual({
+      kind: "empty",
+      key: "orbitBrowserRefused_notLocal",
+      icon: "browser",
+    });
   });
 });
 
@@ -96,8 +162,14 @@ describe("geometria", () => {
   });
 
   test("dentro, interseção e igualdade", () => {
-    expect(rectInside(marker, area)).toBe(true);
-    expect(rectInside(area, marker)).toBe(false);
+    expect(rectIntersection(marker, area)).toEqual(marker);
+    expect(rectIntersection(marker, { x: 400, y: 300, w: 500, h: 500 })).toEqual({
+      x: 400,
+      y: 300,
+      w: 100,
+      h: 100,
+    });
+    expect(rectIntersection(marker, { x: 500, y: 100, w: 5, h: 5 })).toBeNull();
     expect(rectsIntersect(marker, { x: 499, y: 399, w: 5, h: 5 })).toBe(true);
     expect(rectsIntersect(marker, { x: 500, y: 100, w: 5, h: 5 })).toBe(false);
     expect(sameRect(null, null)).toBe(true);

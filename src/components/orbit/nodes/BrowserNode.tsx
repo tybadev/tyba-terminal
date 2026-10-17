@@ -1,6 +1,13 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { ArrowClockwise, ArrowLeft, ArrowSquareOut, Browser } from "@phosphor-icons/react";
+import {
+  ArrowClockwise,
+  ArrowLeft,
+  ArrowSquareOut,
+  ArrowsOutCardinal,
+  Browser,
+  CircleNotch,
+} from "@phosphor-icons/react";
 import type { NodeProps } from "@xyflow/react";
 
 import { openExternalUrl } from "@/lib/clipboard";
@@ -10,6 +17,7 @@ import {
   agentActiveLeft,
   agentStepKey,
   browserBack,
+  browserBody,
   browserClearData,
   browserNative,
   browserNavigate,
@@ -253,6 +261,13 @@ function NativeBrowserNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
   const marker = useRef<HTMLDivElement>(null);
   useNativeOcclusion(graphId, id, marker, graphId !== "");
   const preview = useBrowserPreview(graphId, id, state?.previewAt);
+  const body = browserBody({
+    current,
+    loading: state?.loading ?? false,
+    live: state?.live ?? false,
+    refused: state?.refused ?? null,
+    hasPreview: preview !== null,
+  });
 
   const go = (url: string) => {
     if (graphId) void browserNavigate(graphId, id, url).catch(() => {});
@@ -338,13 +353,14 @@ function NativeBrowserNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
         outside={isLocalUrl(current) ? current : null}
         outsideHint={t("orbitBrowserOpenOutsideNativeHint")}
       />
-      {/* O marcador: a view nativa fica exatamente aqui, por cima. Quando ela
-          some, aparece o que está dentro (o último print ou o aviso). */}
+      {/* O marcador: a view nativa fica exatamente aqui, por cima. Embaixo
+          dela fica sempre o último print ou um aviso legível: quando ela some
+          (ou ainda não pintou), o card nunca fica só no fundo. */}
       <div
         ref={marker}
         className="nodrag relative mx-1.5 mb-0.5 min-h-0 flex-1 overflow-hidden rounded-[10px] border border-tyba-border bg-tyba-sunken"
       >
-        {!state?.live && current !== "" && preview && (
+        {body.kind === "preview" && preview ? (
           // A prévia no tamanho da view (o print é da página inteira à
           // vista, sem o zoom do canvas).
           <img
@@ -353,19 +369,24 @@ function NativeBrowserNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
             draggable={false}
             className="absolute inset-0 h-full w-full object-cover object-left-top"
           />
-        )}
-        {(!state?.live || current === "") && !(preview && current !== "") && (
-          <p className="absolute inset-0 flex items-center justify-center px-6 text-center font-mono text-[12px] text-tyba-text-faint">
-            {current === ""
-              ? state?.refused
-                ? t(`orbitBrowserRefused_${state.refused}`)
-                : t("orbitBrowserEmpty")
-              : state?.loading
-                ? t("orbitBrowserLoading")
-                : state?.title || current}
-          </p>
-        )}
-        {!state?.live && state?.previewAt != null && (
+        ) : body.kind === "empty" ? (
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 px-6 text-center text-tyba-text-muted">
+            {body.icon === "loading" ? (
+              <CircleNotch size={28} className="animate-spin" />
+            ) : body.icon === "move" ? (
+              <ArrowsOutCardinal size={28} />
+            ) : (
+              <Browser size={28} />
+            )}
+            <p className="text-[14px] leading-snug">{t(body.key)}</p>
+            {body.icon !== "browser" && (state?.title || current) && (
+              <p className="max-w-full truncate font-mono text-[12px] text-tyba-text-faint">
+                {state?.title || current}
+              </p>
+            )}
+          </div>
+        ) : null}
+        {!state?.live && state?.previewAt != null && preview && (
           <span className="absolute bottom-1.5 right-1.5 rounded-full bg-tyba-surface/90 px-2 py-[1px] text-[10.5px] text-tyba-text-muted">
             {t("orbitBrowserPreview", { time: previewTime(state.previewAt) })}
           </span>

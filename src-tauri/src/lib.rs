@@ -8954,19 +8954,29 @@ async fn orbit_browser_clear_data(app: AppHandle, graph_id: String, node_id: Str
     .await;
 }
 
-/// A intenção de geometria do card: `rect` com o marcador inteiro à vista
-/// e nada por cima, ou `null` para esconder (o card mostra o print).
+/// A intenção de geometria do card: `rect` com o marcador e `clip` com a
+/// parte dele à vista, sem nada por cima (sem `clip`, o marcador inteiro),
+/// ou `null` para esconder (o card mostra o print).
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 fn orbit_browser_view(
     app: AppHandle,
     views: State<'_, orbit::browser::BrowserViews>,
     graph_id: String,
     node_id: String,
     rect: Option<orbit::browser::ViewRect>,
+    clip: Option<orbit::browser::ViewRect>,
     zoom: f64,
     center: Option<(f64, f64)>,
 ) {
-    views.set_view(&app, &browser_key(graph_id, node_id), rect, zoom, center);
+    views.set_view(
+        &app,
+        &browser_key(graph_id, node_id),
+        rect,
+        clip,
+        zoom,
+        center,
+    );
 }
 
 #[tauri::command]

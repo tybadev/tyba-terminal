@@ -80,6 +80,88 @@ impl ViewRect {
             && self.w <= 20_000.0
             && self.h <= 20_000.0
     }
+
+    /// A parte comum dos dois retângulos (sem área: `None`).
+    fn intersect(&self, o: &ViewRect) -> Option<ViewRect> {
+        let x = self.x.max(o.x);
+        let y = self.y.max(o.y);
+        let w = (self.x + self.w).min(o.x + o.w) - x;
+        let h = (self.y + self.h).min(o.y + o.h) - y;
+        (w > 0.0 && h > 0.0).then_some(ViewRect { x, y, w, h })
+    }
+
+    /// O mesmo retângulo, a meio ponto.
+    fn same(&self, o: &ViewRect) -> bool {
+        (self.x - o.x).abs() < 0.5
+            && (self.y - o.y).abs() < 0.5
+            && (self.w - o.w).abs() < 0.5
+            && (self.h - o.h).abs() < 0.5
+    }
+}
+
+/// O sistema recorta a view na parte à vista do card? No macOS, sim: a
+/// página fica dentro de um container que corta (ver `macos.rs`). No Windows
+/// e no Linux ainda não (ver `fase5-navegador`, "Card cortado"): lá só o
+/// marcador inteiro à vista deixa a view viva.
+pub const CLIPS: bool = cfg!(target_os = "macos");
+
+/// A intenção de geometria do front, conferida: `rect` é o marcador inteiro
+/// e `clip` a parte dele à vista (sem `clip`, o marcador inteiro). Devolve
+/// `(rect, clip)` com o `clip` sempre dentro do `rect`, ou `None` para
+/// esconder: sem marcador, sem parte à vista, ou cortado num sistema que não
+/// recorta (`clips = false`).
+pub fn visible_part(
+    rect: Option<ViewRect>,
+    clip: Option<ViewRect>,
+    clips: bool,
+) -> Option<(ViewRect, ViewRect)> {
+    let rect = rect.filter(ViewRect::valid)?;
+    let clip = match clip {
+        None => rect,
+        Some(c) if [c.x, c.y, c.w, c.h].iter().all(|v| v.is_finite()) => {
+            rect.intersect(&c).filter(ViewRect::valid)?
+        }
+        Some(_) => return None,
+    };
+    if !clips && !clip.same(&rect) {
+        return None;
+    }
+    Some((rect, clip))
+}
+
+/// Os dois frames do recorte no macOS, em pontos do `contentView` (altura
+/// `parent_h`; sem `flipped`, a origem é embaixo e o y sobe): o container
+/// ocupa só `clip`, e a página, dentro dele, fica no deslocamento que a
+/// mantém exatamente onde o marcador está — com o tamanho inteiro, então ela
+/// não encolhe nem desliza, só é cortada.
+pub fn clip_frames(
+    rect: ViewRect,
+    clip: ViewRect,
+    parent_h: f64,
+    flipped: bool,
+) -> (ViewRect, ViewRect) {
+    let (cy, iy) = if flipped {
+        (clip.y, rect.y - clip.y)
+    } else {
+        (
+            parent_h - clip.y - clip.h,
+            clip.h - (rect.y - clip.y) - rect.h,
+        )
+    };
+    (
+        ViewRect {
+            x: clip.x,
+            y: cy,
+            w: clip.w,
+            h: clip.h,
+        },
+        ViewRect {
+            x: rect.x - clip.x,
+            y: iy,
+            w: rect.w,
+            h: rect.h,
+        },
+    )
 }
 
 /// Quem está com a página.
@@ -265,7 +347,11 @@ struct BrowserEvent<'a> {
 /// Onde e como a view nativa fica.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Place {
+    /// O marcador inteiro (o tamanho da página).
     pub rect: Option<ViewRect>,
+    /// A parte do marcador à vista (só no sistema que recorta, [`CLIPS`]);
+    /// `None` = o marcador inteiro.
+    pub clip: Option<ViewRect>,
     pub zoom: f64,
     pub visible: bool,
     /// A view some com o dono usando: o teclado volta ao app (o core já
@@ -326,6 +412,8 @@ pub enum Op {
 struct Entry {
     state: BrowserState,
     rect: Option<ViewRect>,
+    /// A parte de `rect` à vista (macOS recorta a view nela).
+    clip: Option<ViewRect>,
     zoom: f64,
     /// Raízes canônicas do `orbit-file` (para mostrar a url).
     roots: Vec<PathBuf>,
@@ -518,16 +606,19 @@ pub fn pick_live(wanted: &[(ViewRect, bool)], center: (f64, f64), max: usize) ->
 fn place_all(
     entries: &mut HashMap<ViewKey, Entry>,
     key: &ViewKey,
-    rect: Option<ViewRect>,
+    part: Option<(ViewRect, ViewRect)>,
     zoom: f64,
     center: (f64, f64),
 ) -> Vec<(ViewKey, Place, BrowserState)> {
-    if rect.is_none() && !entries.contains_key(key) {
+    if part.is_none() && !entries.contains_key(key) {
         return Vec::new();
     }
+    let rect = part.map(|(r, _)| r);
+    let clip = part.map(|(_, c)| c);
     let entry = entries.entry(key.clone()).or_insert_with(Entry::fresh);
-    let moved = entry.rect != rect || entry.zoom != zoom;
+    let moved = entry.rect != rect || entry.clip != clip || entry.zoom != zoom;
     entry.rect = rect;
+    entry.clip = clip;
     entry.zoom = zoom;
     // Só as do mesmo grafo disputam o teto (o Orbit mostra um).
     let keys: Vec<ViewKey> = entries
@@ -567,6 +658,7 @@ fn place_all(
                 k.clone(),
                 Place {
                     rect: e.rect,
+                    clip: e.clip,
                     zoom: e.zoom,
                     visible: now_live,
                     give_back,
@@ -802,6 +894,7 @@ impl BrowserViews {
             e.state.loading = true;
             place = Some(Place {
                 rect: e.rect,
+                clip: e.clip,
                 zoom: e.zoom,
                 visible: e.state.live,
                 give_back: false,
@@ -809,6 +902,7 @@ impl BrowserViews {
         });
         let place = place.unwrap_or(Place {
             rect: None,
+            clip: None,
             zoom: 1.0,
             visible: false,
             give_back: false,
@@ -825,18 +919,21 @@ impl BrowserViews {
         Ok(())
     }
 
-    /// A intenção de geometria do front: `rect` = o marcador inteiro à
-    /// vista e nada por cima; `None` = esconder (o card mostra o print).
-    /// Recalcula quem fica vivo (teto [`MAX_LIVE`]) e reposiciona.
+    /// A intenção de geometria do front: `rect` = o marcador, com nada por
+    /// cima da parte à vista (`clip`; sem ele, o marcador inteiro); `None` =
+    /// esconder (o card mostra o print). Cortado num sistema que não recorta
+    /// também esconde ([`visible_part`]). Recalcula quem fica vivo (teto
+    /// [`MAX_LIVE`]) e reposiciona.
     pub fn set_view(
         &self,
         app: &AppHandle,
         key: &ViewKey,
         rect: Option<ViewRect>,
+        clip: Option<ViewRect>,
         zoom: f64,
         center: Option<(f64, f64)>,
     ) {
-        let rect = rect.filter(ViewRect::valid);
+        let part = visible_part(rect, clip, CLIPS);
         let zoom = if zoom.is_finite() {
             zoom.clamp(0.1, 5.0)
         } else {
@@ -846,7 +943,7 @@ impl BrowserViews {
             *self.center.lock() = c;
         }
         let center = *self.center.lock();
-        let placed = place_all(&mut self.entries.lock(), key, rect, zoom, center);
+        let placed = place_all(&mut self.entries.lock(), key, part, zoom, center);
         for (k, _, s) in &placed {
             Self::emit(app, k, s);
         }
@@ -1895,12 +1992,24 @@ mod tests {
         let mut entries: HashMap<ViewKey, Entry> = HashMap::new();
         let k = key("g", "b");
         let center = (0.0, 0.0);
-        let placed = place_all(&mut entries, &k, Some(rect(0.0, 0.0)), 1.0, center);
+        let placed = place_all(
+            &mut entries,
+            &k,
+            Some((rect(0.0, 0.0), rect(0.0, 0.0))),
+            1.0,
+            center,
+        );
         assert_eq!(placed.len(), 1);
         assert!(placed[0].1.visible && !placed[0].1.give_back);
         entries.get_mut(&k).unwrap().state.focus = Focus::Owner;
         // Mexeu, segue viva: o dono continua.
-        let placed = place_all(&mut entries, &k, Some(rect(5.0, 0.0)), 1.0, center);
+        let placed = place_all(
+            &mut entries,
+            &k,
+            Some((rect(5.0, 0.0), rect(5.0, 0.0))),
+            1.0,
+            center,
+        );
         assert!(!placed[0].1.give_back);
         assert_eq!(entries[&k].state.focus, Focus::Owner);
         // Some: o "você" sai e o estado emitido já diz isso.
@@ -1911,6 +2020,74 @@ mod tests {
         // Esconder o que nem existe não cria nada.
         assert!(place_all(&mut entries, &key("g", "x"), None, 1.0, center).is_empty());
         assert!(!entries.contains_key(&key("g", "x")));
+    }
+
+    fn r(x: f64, y: f64, w: f64, h: f64) -> ViewRect {
+        ViewRect { x, y, w, h }
+    }
+
+    #[test]
+    fn visible_part_clips_to_the_marker_and_needs_a_clipping_system() {
+        let marker = r(100.0, 400.0, 400.0, 300.0);
+        // Inteiro: vale em todo sistema.
+        assert_eq!(
+            visible_part(Some(marker), None, false),
+            Some((marker, marker))
+        );
+        assert_eq!(
+            visible_part(Some(marker), Some(marker), false),
+            Some((marker, marker))
+        );
+        // Cortado embaixo: só onde recorta.
+        let bottom = r(100.0, 400.0, 400.0, 200.0);
+        assert_eq!(
+            visible_part(Some(marker), Some(bottom), true),
+            Some((marker, bottom))
+        );
+        assert_eq!(visible_part(Some(marker), Some(bottom), false), None);
+        // O recorte nunca passa do marcador.
+        assert_eq!(
+            visible_part(Some(marker), Some(r(0.0, 0.0, 450.0, 2000.0)), true),
+            Some((marker, r(100.0, 400.0, 350.0, 300.0)))
+        );
+        // Nada à vista, recorte inválido ou sem marcador: esconde.
+        assert_eq!(
+            visible_part(Some(marker), Some(r(0.0, 0.0, 50.0, 50.0)), true),
+            None
+        );
+        assert_eq!(
+            visible_part(Some(marker), Some(r(f64::NAN, 0.0, 1.0, 1.0)), true),
+            None
+        );
+        assert_eq!(visible_part(None, Some(bottom), true), None);
+    }
+
+    #[test]
+    fn clip_frames_keep_the_page_in_place() {
+        // contentView de 1000 de altura, origem embaixo (o padrão do macOS).
+        let marker = r(100.0, 600.0, 400.0, 300.0);
+        // Inteiro: o container é o marcador e a página ocupa todo ele.
+        let (c, i) = clip_frames(marker, marker, 1000.0, false);
+        assert_eq!(c, r(100.0, 100.0, 400.0, 300.0));
+        assert_eq!(i, r(0.0, 0.0, 400.0, 300.0));
+        // Cortado embaixo (só 200 à vista): o topo da página fica no topo
+        // do container e o pé dela sai por baixo dele.
+        let (c, i) = clip_frames(marker, r(100.0, 600.0, 400.0, 200.0), 1000.0, false);
+        assert_eq!(c, r(100.0, 200.0, 400.0, 200.0));
+        assert_eq!(i, r(0.0, -100.0, 400.0, 300.0));
+        // Cortado em cima e à esquerda: a página desce e vai para a esquerda.
+        let marker = r(-50.0, -40.0, 400.0, 300.0);
+        let clip = r(0.0, 0.0, 350.0, 260.0);
+        let (c, i) = clip_frames(marker, clip, 1000.0, false);
+        assert_eq!(c, r(0.0, 740.0, 350.0, 260.0));
+        assert_eq!(i, r(-50.0, 0.0, 400.0, 300.0));
+        // Em coordenadas de janela, a página continua no marcador: topo do
+        // container (740 + 260 = 1000) + o que sobra acima (300 - 260).
+        assert_eq!(c.y + i.y + i.h, 1000.0 + 40.0);
+        // contentView com origem em cima: sem inverter.
+        let (c, i) = clip_frames(marker, clip, 1000.0, true);
+        assert_eq!(c, r(0.0, 0.0, 350.0, 260.0));
+        assert_eq!(i, r(-50.0, -40.0, 400.0, 300.0));
     }
 
     #[test]

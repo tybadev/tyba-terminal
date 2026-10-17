@@ -13,6 +13,13 @@
 //!   abre com o dono usando, e janela nova cai no mesmo nó (a política de
 //!   navegação confere);
 //! - sem download, sem área de transferência por script, sem devtools.
+//!
+//! **Recorte.** O `WKWebView` não fica direto no `contentView`: ele mora num
+//! `NSView` container que corta o que passa da borda (`masksToBounds`). O
+//! container ocupa só a parte do card à vista, e a página, dentro dele, fica
+//! no tamanho inteiro do marcador e no deslocamento certo
+//! ([`super::clip_frames`]). Card cortado pela borda do canvas continua
+//! vivo, sem a página encolher nem deslizar.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -23,11 +30,12 @@ use std::sync::Arc;
 use block2::{Block, RcBlock};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObject, ProtocolObject};
-use objc2::{define_class, msg_send, DefinedClass, MainThreadMarker, MainThreadOnly};
+use objc2::{define_class, msg_send, sel, DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
-    NSEvent, NSEventMask, NSEventModifierFlags, NSModalResponseOK, NSOpenPanel, NSView, NSWindow,
+    NSAutoresizingMaskOptions, NSEvent, NSEventMask, NSEventModifierFlags, NSModalResponseOK,
+    NSOpenPanel, NSView, NSWindow, NSWindowOrderingMode,
 };
-use objc2_foundation::{NSArray, NSObjectProtocol, NSProcessInfo, NSURL};
+use objc2_foundation::{NSArray, NSObjectProtocol, NSPoint, NSProcessInfo, NSRect, NSSize, NSURL};
 use objc2_web_kit::{
     WKFrameInfo, WKMediaCaptureType, WKNavigationAction, WKOpenPanelParameters,
     WKPermissionDecision, WKSecurityOrigin, WKUIDelegate, WKWebView, WKWebViewConfiguration,
@@ -42,12 +50,16 @@ use super::native::{
     serve_file, HIDDEN_H, HIDDEN_W, ISOLATED_JS, PAGE_SHIM_JS, PREVIEW_MAX_W, RUN_JS, WORLD,
 };
 use super::{
-    policy, route_key, store_identity, BrowserViews, Focus, KeyRoute, Mods, Op, Place, ViewKey,
+    clip_frames, policy, route_key, store_identity, BrowserViews, Focus, KeyRoute, Mods, Op, Place,
+    ViewKey, ViewRect,
 };
 
 struct NativeView {
     webview: wry::WebView,
     wk: Retained<WKWebView>,
+    /// O container que corta a página na parte do card à vista; é ele que
+    /// fica no `contentView`, com o `wk` dentro.
+    clip: Retained<NSView>,
     /// O `UIDelegate` do `WKWebView` é fraco: quem o segura é este campo.
     _ui: Retained<OrbitUiDelegate>,
     roots: Arc<Mutex<Vec<PathBuf>>>,
@@ -157,7 +169,12 @@ fn destroy(dead: impl Fn(&ViewKey) -> bool) {
         let keys: Vec<ViewKey> = v.keys().filter(|k| dead(k)).cloned().collect();
         keys.iter().filter_map(|k| v.remove(k)).collect()
     });
-    drop(gone);
+    for view in gone {
+        let clip = view.clip.clone();
+        // O `Drop` do wry tira o `wk` do container; depois sai o container.
+        drop(view);
+        clip.removeFromSuperview();
+    }
 }
 
 /// Quantas vezes tentar apagar o armazenamento (o WebKit recusa enquanto
@@ -201,14 +218,27 @@ fn remove_store(app: &AppHandle, key: ViewKey, reload: bool, attempt: u32) {
     });
 }
 
-/// Posição, zoom e visibilidade. Mostra só depois de posicionar.
+fn ns_rect(r: ViewRect) -> NSRect {
+    NSRect::new(NSPoint::new(r.x, r.y), NSSize::new(r.w, r.h))
+}
+
+/// Posição, recorte, zoom e visibilidade. Mostra só depois de posicionar.
+/// O container ocupa a parte à vista (`clip`) e a página, dentro dele, o
+/// marcador inteiro.
 fn set_place(view: &NativeView, place: &Place) {
     let visible = place.visible && place.rect.is_some();
     if let Some(r) = place.rect {
-        let _ = view.webview.set_bounds(Rect {
-            position: LogicalPosition::new(r.x, r.y).into(),
-            size: LogicalSize::new(r.w, r.h).into(),
-        });
+        // SAFETY: main thread; o container é filho do `contentView`.
+        if let Some(parent) = unsafe { view.clip.superview() } {
+            let (outer, inner) = clip_frames(
+                r,
+                place.clip.unwrap_or(r),
+                parent.frame().size.height,
+                parent.isFlipped(),
+            );
+            view.clip.setFrame(ns_rect(outer));
+            view.wk.setFrame(ns_rect(inner));
+        }
         // `setPageZoom`: reescala o layout como o `transform` do canvas (o
         // `setMagnification` seria zoom de pinça e deslocaria o viewport).
         let _ = view.webview.zoom(place.zoom.clamp(0.25, 5.0));
@@ -217,6 +247,39 @@ fn set_place(view: &NativeView, place: &Place) {
         give_back_if_inside(view);
     }
     let _ = view.webview.set_visible(visible);
+    // Escondido também: um container vazio à vista pegaria o clique do app.
+    view.clip.setHidden(!visible);
+}
+
+/// Põe o `wk` dentro de um container que corta (no lugar dele no
+/// `contentView`, mesma ordem). O container começa escondido e com o frame
+/// que o wry deu ao `wk`; a página fica inteira dentro dele.
+fn wrap_in_clip(mtm: MainThreadMarker, wk: &WKWebView) -> Result<Retained<NSView>, String> {
+    // SAFETY: main thread; o `wk` acabou de entrar no `contentView`.
+    let parent = unsafe { wk.superview() }.ok_or("a view do navegador ficou sem pai")?;
+    let frame = wk.frame();
+    let clip = NSView::initWithFrame(mtm.alloc::<NSView>(), frame);
+    clip.setWantsLayer(true);
+    // SAFETY: `layer` de uma view com `wantsLayer`; `masksToBounds` é do
+    // `CALayer`. `clipsToBounds` (macOS 14+) só se a view o tiver.
+    unsafe {
+        let layer: *mut AnyObject = msg_send![&*clip, layer];
+        if let Some(layer) = layer.as_ref() {
+            let _: () = msg_send![layer, setMasksToBounds: true];
+        }
+        if clip.respondsToSelector(sel!(setClipsToBounds:)) {
+            let _: () = msg_send![&*clip, setClipsToBounds: true];
+        }
+    }
+    // Como o wry faz com a view filha: preso ao topo quando a janela muda.
+    clip.setAutoresizingMask(NSAutoresizingMaskOptions::ViewMinYMargin);
+    clip.setHidden(true);
+    parent.addSubview_positioned_relativeTo(&clip, NSWindowOrderingMode::Above, Some(wk));
+    wk.removeFromSuperview();
+    clip.addSubview(wk);
+    wk.setAutoresizingMask(NSAutoresizingMaskOptions::ViewNotSizable);
+    wk.setFrame(NSRect::new(NSPoint::new(0.0, 0.0), frame.size));
+    Ok(clip)
 }
 
 /// macOS 14+: `WKWebsiteDataStore(forIdentifier:)` por nó. Antes disso o
@@ -292,6 +355,7 @@ fn create(app: &AppHandle, key: &ViewKey) -> Result<NativeView, String> {
     let webview = builder.build_as_child(&window).map_err(|e| e.to_string())?;
     // SAFETY: o `WryWebView` do wry é subclasse de `WKWebView`.
     let wk: Retained<WKWebView> = unsafe { Retained::cast_unchecked(webview.webview()) };
+    let clip = wrap_in_clip(mtm, &wk)?;
     install_scripts(mtm, &wk);
     let ui = OrbitUiDelegate::new(mtm, app.clone(), key.clone());
     // SAFETY: main thread; o delegate é segurado pela `NativeView`.
@@ -300,6 +364,7 @@ fn create(app: &AppHandle, key: &ViewKey) -> Result<NativeView, String> {
     Ok(NativeView {
         webview,
         wk,
+        clip,
         _ui: ui,
         roots,
     })
@@ -401,7 +466,8 @@ impl OrbitUiDelegate {
 // ── foco e teclado ──────────────────────────────────────────────────────────
 
 /// A view do app (a webview do Tauri): a subview do `contentView` que não é
-/// de nenhum nó. É para ela que o foco volta.
+/// de nenhum nó (o container de um nó guarda o `wk` dele). É para ela que o
+/// foco volta.
 fn app_view(window: &NSWindow) -> Option<Retained<NSView>> {
     let content = window.contentView()?;
     let subviews = content.subviews();
@@ -409,8 +475,9 @@ fn app_view(window: &NSWindow) -> Option<Retained<NSView>> {
         let v = v.borrow();
         subviews.iter().find(|sub| {
             !v.values().any(|n| {
+                let clip: &NSView = &n.clip;
                 let wk: &NSView = &n.wk;
-                std::ptr::eq(wk, &**sub)
+                std::ptr::eq(clip, &**sub) || std::ptr::eq(wk, &**sub)
             })
         })
     })

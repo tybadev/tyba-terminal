@@ -7,10 +7,12 @@ import {
   browserPreview,
   browserState,
   browserView,
-  occlusionVerdict,
+  occlusionClip,
   onBrowserState,
+  rectIntersection,
   samplePoints,
   trackMotion,
+  visiblePart,
   type BrowserRect,
   type BrowserState,
   type Motion,
@@ -72,10 +74,12 @@ export function useBrowserPreview(
 /**
  * Decide quando a view nativa do nó pode aparecer e manda a geometria ao
  * core (`orbit_browser_view`). A view fica por cima de todo o HTML, então ela
- * só vive com o marcador inteiro na área do canvas, zoom na faixa, canvas
- * parado há 150 ms e nada do DOM por cima (grade de pontos + menus/diálogos
- * medidos). Senão manda `null` e o card mostra o último print. Só a mudança
- * vai ao core.
+ * só vive com parte do marcador na área do canvas, zoom na faixa, canvas
+ * parado há 150 ms e nada do DOM por cima da parte à vista (grade de pontos +
+ * menus/diálogos medidos). Vai o marcador inteiro e a parte à vista: o core
+ * recorta a view nela (macOS) ou, no sistema que não recorta, só a mostra
+ * com o marcador inteiro à vista. Senão manda `null` e o card mostra o
+ * último print. Só a mudança vai ao core.
  *
  * Confere num `requestAnimationFrame` depois de cada mudança do xyflow, de
  * mutação no DOM, de resize e de foco — e a cada 500 ms, de seguro.
@@ -94,13 +98,18 @@ export function useNativeOcclusion(
     let motion: Motion = { rect: null, changedAt: 0 };
     let sent: string | null = null;
 
-    const send = (rect: BrowserRect | null, zoom: number, center: [number, number] | null) => {
-      const key = rect
-        ? `${Math.round(rect.x)},${Math.round(rect.y)},${Math.round(rect.w)},${Math.round(rect.h)}@${zoom.toFixed(3)}`
-        : "null";
+    const round = (r: BrowserRect) =>
+      `${Math.round(r.x)},${Math.round(r.y)},${Math.round(r.w)},${Math.round(r.h)}`;
+    const send = (
+      rect: BrowserRect | null,
+      clip: BrowserRect | null,
+      zoom: number,
+      center: [number, number] | null,
+    ) => {
+      const key = rect && clip ? `${round(rect)}|${round(clip)}@${zoom.toFixed(3)}` : "null";
       if (key === sent) return;
       sent = key;
-      void browserView(graphId, nodeId, rect, zoom, center).catch(() => {});
+      void browserView(graphId, nodeId, clip ? rect : null, clip, zoom, center).catch(() => {});
     };
 
     const check = () => {
@@ -117,19 +126,22 @@ export function useNativeOcclusion(
         s.userSelectionActive ||
         s.connection.inProgress ||
         s.nodes.some((n) => n.dragging);
+      const win = { x: 0, y: 0, w: window.innerWidth, h: window.innerHeight };
       const areaEl = el.closest(".react-flow");
-      const area = areaEl
-        ? toRect(areaEl.getBoundingClientRect())
-        : { x: 0, y: 0, w: window.innerWidth, h: window.innerHeight };
-      const covered = samplePoints(marker).some(([x, y]) => {
-        const top = document.elementFromPoint(x, y);
-        return !top || !(top === el || el.contains(top));
-      });
+      const area = (areaEl && rectIntersection(toRect(areaEl.getBoundingClientRect()), win)) ?? win;
+      // Só a parte à vista conta: o resto do card está fora do canvas.
+      const part = visiblePart(marker, area);
+      const covered =
+        !part ||
+        samplePoints(part).some(([x, y]) => {
+          const top = document.elementFromPoint(x, y);
+          return !top || !(top === el || el.contains(top));
+        });
       const occluders: BrowserRect[] = [];
       document.querySelectorAll(OCCLUDER_SELECTOR).forEach((o) => {
         if (!el.contains(o)) occluders.push(toRect(o.getBoundingClientRect()));
       });
-      const live = occlusionVerdict({
+      const clip = occlusionClip({
         marker,
         area,
         zoom,
@@ -137,7 +149,7 @@ export function useNativeOcclusion(
         occluders,
         covered,
       });
-      send(live ? marker : null, zoom, [area.x + area.w / 2, area.y + area.h / 2]);
+      send(marker, clip, zoom, [area.x + area.w / 2, area.y + area.h / 2]);
       // Ainda mexendo: confere de novo quando assentar.
       if (tracked.moving || busy) {
         window.clearTimeout(settle);
@@ -180,7 +192,7 @@ export function useNativeOcclusion(
       window.clearTimeout(soon);
       if (raf) cancelAnimationFrame(raf);
       // Card saiu (Orbit fechado, nó apagado): a view some na hora.
-      void browserView(graphId, nodeId, null, 1, null).catch(() => {});
+      void browserView(graphId, nodeId, null, null, 1, null).catch(() => {});
     };
   }, [enabled, graphId, nodeId, store, markerRef]);
 }
