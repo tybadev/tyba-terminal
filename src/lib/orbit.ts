@@ -692,6 +692,8 @@ export interface Run {
   created?: Created[];
   /** A nota de plano de cada orquestrador do run (`orbit_plan`), como está no grafo salvo. */
   plans?: Plan[];
+  /** "#N" dado pelo core no ▶ (estável na poda); 0/ausente = gravada antes da numeração. */
+  number?: number;
 }
 
 /** Estado de um passo do plano (espelha `orchestrator::StepState`). */
@@ -1102,9 +1104,11 @@ export const selectedRun = (view: RunView): Run | null =>
   view.runs.find((r) => r.id === view.selectedId) ?? null;
 
 /** Número da execução na lista guardada: a mais antiga é #1. */
+/** O "#N" do core; a execução de antes da numeração conta pela posição. */
 export const runNumber = (view: RunView, runId: string): number => {
   const i = view.runs.findIndex((r) => r.id === runId);
-  return i < 0 ? 0 : view.runs.length - i;
+  if (i < 0) return 0;
+  return view.runs[i].number || view.runs.length - i;
 };
 
 /** "3m10s", "42s", "1h02m". */

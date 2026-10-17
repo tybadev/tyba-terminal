@@ -295,13 +295,13 @@ pub enum OrbitError {
     DuplicateEdge(String),
     #[error("ligação {edge} aponta para nó inexistente: {node}")]
     UnknownNode { edge: String, node: String },
-    #[error("ligação {edge}: o nó {node} não produz {kind:?}")]
+    #[error("ligação {edge}: o nó \"{node}\" não produz {kind:?}")]
     NotProduced {
         edge: String,
         node: String,
         kind: EdgeKind,
     },
-    #[error("ligação {edge}: o nó {node} não aceita {kind:?}")]
+    #[error("ligação {edge}: o nó \"{node}\" não aceita {kind:?}")]
     NotAccepted {
         edge: String,
         node: String,
@@ -309,7 +309,7 @@ pub enum OrbitError {
     },
     #[error("ligação {0} fecha um ciclo")]
     Cycle(String),
-    #[error("nó {node} usa integração inexistente: {integration}")]
+    #[error("nó \"{node}\" usa integração inexistente: {integration}")]
     UnknownIntegration { node: String, integration: String },
     #[error("integração sem id")]
     EmptyIntegrationId,
@@ -321,11 +321,11 @@ pub enum OrbitError {
     ControlChars(String),
     #[error("{0}: o arquivo de saída tem que ficar dentro da pasta (sem caminho absoluto nem ..)")]
     FileOutsideDir(String),
-    #[error("nó {0}: escolha a pasta onde ele roda (caminho absoluto)")]
+    #[error("nó \"{0}\": escolha a pasta onde ele roda (caminho absoluto)")]
     NodeDir(String),
-    #[error("nó {0}: só endereço local (http/https em {hosts})", hosts = service::LOCAL_HOSTS)]
+    #[error("nó \"{0}\": só endereço local (http/https em {hosts})", hosts = service::LOCAL_HOSTS)]
     NotLocalUrl(String),
-    #[error("nó {0}: id de contêiner inválido")]
+    #[error("nó \"{0}\": id de contêiner inválido")]
     InvalidContainer(String),
     #[error("ligação {0}: esses dois agentes já conversam por outra ligação")]
     DuplicateTalk(String),
@@ -452,6 +452,16 @@ fn accepts(kind: &NodeKind, integrations: &HashMap<&str, &Integration>) -> Vec<E
     }
 }
 
+/// O nó nas mensagens: o título (o dono não vê o id); sem título, o id.
+fn title_or_id(node: &Node) -> String {
+    let title = node.title.trim();
+    if title.is_empty() {
+        node.id.clone()
+    } else {
+        title.to_string()
+    }
+}
+
 /// Barreira do core antes de gravar ou rodar um grafo: a estrutura
 /// ([`validate_structure`]) e a pasta de cada nó executável — não vazia e
 /// absoluta (a do nó ou, sem ela, a padrão do grafo).
@@ -463,7 +473,7 @@ pub fn validate_graph(graph: &Graph, integrations: &[Integration]) -> Result<(),
         }
         let dir = graph.node_dir(node);
         if dir.trim().is_empty() || !std::path::Path::new(dir).is_absolute() {
-            return Err(OrbitError::NodeDir(node.id.clone()));
+            return Err(OrbitError::NodeDir(title_or_id(node)));
         }
     }
     Ok(())
@@ -505,21 +515,21 @@ pub fn validate_structure(graph: &Graph, integrations: &[Integration]) -> Result
                 reason,
             });
         }
-        let what = || format!("nó {}", node.id);
+        let what = || format!("nó \"{}\"", title_or_id(node));
         if let Some(dir) = node.kind.dir() {
-            check_text(|| format!("pasta do nó {}", node.id), dir)?;
+            check_text(|| format!("pasta do nó \"{}\"", title_or_id(node)), dir)?;
         }
         match &node.kind {
             NodeKind::Agent { prompt, .. } => check_text(what, prompt)?,
             NodeKind::Process { command, file, .. } => {
                 check_text(what, command)?;
-                check_file(|| format!("nó {}", node.id), file.as_deref())?;
+                check_file(what, file.as_deref())?;
             }
             NodeKind::Note { markdown, .. } => check_text(what, markdown)?,
             NodeKind::Integration { integration_id, .. } => {
                 let integration = by_id.get(integration_id.as_str()).ok_or_else(|| {
                     OrbitError::UnknownIntegration {
-                        node: node.id.clone(),
+                        node: title_or_id(node),
                         integration: integration_id.clone(),
                     }
                 })?;
@@ -528,10 +538,10 @@ pub fn validate_structure(graph: &Graph, integrations: &[Integration]) -> Result
             NodeKind::Browser { url } => {
                 check_text(what, url)?;
                 if !url.is_empty() && !service::is_local_url(url) {
-                    return Err(OrbitError::NotLocalUrl(node.id.clone()));
+                    return Err(OrbitError::NotLocalUrl(title_or_id(node)));
                 }
             }
-            NodeKind::Service { source } => check_source(&node.id, source)?,
+            NodeKind::Service { source } => check_source(&title_or_id(node), source)?,
         }
     }
 
@@ -557,14 +567,14 @@ pub fn validate_structure(graph: &Graph, integrations: &[Integration]) -> Result
         if !produces(&from.kind, &by_id).contains(&edge.kind) {
             return Err(OrbitError::NotProduced {
                 edge: edge.id.clone(),
-                node: from.id.clone(),
+                node: title_or_id(from),
                 kind: edge.kind,
             });
         }
         if !accepts(&to.kind, &by_id).contains(&edge.kind) {
             return Err(OrbitError::NotAccepted {
                 edge: edge.id.clone(),
-                node: to.id.clone(),
+                node: title_or_id(to),
                 kind: edge.kind,
             });
         }
@@ -590,7 +600,7 @@ pub fn validate_structure(graph: &Graph, integrations: &[Integration]) -> Result
 /// Fonte incompleta (porta 0, contêiner vazio) grava: o nó acabou de nascer e
 /// o dono ainda escolhe; a execução falha com o motivo.
 fn check_source(node: &str, source: &ServiceSource) -> Result<(), OrbitError> {
-    let what = || format!("nó {node}");
+    let what = || format!("nó \"{node}\"");
     match source {
         ServiceSource::Container { container_id, name } => {
             check_text(what, name)?;
@@ -969,7 +979,7 @@ mod tests {
         ] {
             assert_eq!(
                 validate_graph(&with_file(bad), &[]),
-                Err(OrbitError::FileOutsideDir("nó p".into())),
+                Err(OrbitError::FileOutsideDir("nó \"p\"".into())),
                 "{bad}"
             );
         }

@@ -94,6 +94,10 @@ pub struct Run {
     /// Cópia da nota de plano de cada orquestrador (a nota vive no grafo).
     #[serde(default)]
     pub plans: Vec<Plan>,
+    /// "#N" da execução no grafo, dado no ▶ e gravado: não muda quando a
+    /// poda tira as velhas. 0 = gravada antes da numeração.
+    #[serde(default)]
+    pub number: u32,
 }
 
 /// Como fecha um run sem nada rodando: falhou se algum nó falhou.
@@ -332,6 +336,7 @@ impl Scheduler {
             paused_ms: 0,
             created: Vec::new(),
             plans: Vec::new(),
+            number: 0,
         };
         if run.nodes.is_empty() {
             run.status = RunStatus::Done;
@@ -782,6 +787,57 @@ pub fn startable(stored: Stored<Graph>) -> Result<Graph, String> {
         );
     }
     Ok(stored.value)
+}
+
+/// [`node_label`] de um nó do run ativo (o criado por agente inclusive).
+fn active_label(a: &Active, id: &str) -> String {
+    a.graph
+        .nodes
+        .iter()
+        .find(|n| n.id == id)
+        .map_or_else(|| format!("nó {id}"), node_label)
+}
+
+/// O nó numa mensagem de erro: o título entre aspas (o id quando não há).
+pub(super) fn node_label(node: &Node) -> String {
+    let title = node.title.trim();
+    if title.is_empty() {
+        format!("nó {}", node.id)
+    } else {
+        format!("\"{title}\"")
+    }
+}
+
+/// Variável usada (`{{nome}}`) em comando, script ou prompt sem valor no
+/// grafo nem padrão no texto: o ▶ recusa, citando o nó — sem isto ela virava
+/// texto vazio e o comando rodava pela metade.
+pub fn missing_variable(graph: &Graph, integrations: &[&Integration]) -> Result<(), String> {
+    for node in &graph.nodes {
+        let text = match &node.kind {
+            NodeKind::Process { command, .. } => command.as_str(),
+            NodeKind::Agent { prompt, .. } => prompt.as_str(),
+            NodeKind::Integration { integration_id, .. } => integrations
+                .iter()
+                .find(|i| &i.id == integration_id)
+                .map_or("", |i| i.script.as_str()),
+            _ => continue,
+        };
+        let empty = crate::snippet::placeholders(text).into_iter().find(|p| {
+            p.default.as_deref().is_none_or(str::is_empty)
+                && graph
+                    .variables
+                    .get(&p.name)
+                    .is_none_or(|v| v.trim().is_empty())
+        });
+        if let Some(p) = empty {
+            return Err(format!(
+                "{}: a variável {{{{{}}}}} está sem valor — preencha em Variáveis antes do ▶",
+                node_label(node),
+                p.name
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Id de nó vira nome de pasta: só o que não escapa de `runs/<run>/`.
@@ -1261,12 +1317,13 @@ impl<H: RunHost> Runs<H> {
 
     /// O ▶ num nó de integração manual de um run rodando.
     pub fn run_node(&self, run_id: &str, node_id: &str) -> Result<(), String> {
-        self.active
-            .lock()
-            .get_mut(run_id)
-            .ok_or("execução não está rodando")?
-            .sched
-            .release(node_id)?;
+        {
+            let mut active = self.active.lock();
+            let a = active.get_mut(run_id).ok_or("execução não está rodando")?;
+            a.sched
+                .release(node_id)
+                .map_err(|e| format!("{}: {e}", active_label(a, node_id)))?;
+        }
         self.advance(run_id);
         Ok(())
     }
@@ -1281,10 +1338,13 @@ impl<H: RunHost> Runs<H> {
     ) -> Result<(Run, Launching), String> {
         if let Some(bad) = graph.nodes.iter().find(|n| !safe_component(&n.id)) {
             return Err(format!(
-                "id de nó inválido para execução: {:?} (use letras, números, - e _)",
+                "{}: id de nó inválido para execução ({:?}; use letras, números, - e _)",
+                node_label(bad),
                 bad.id
             ));
         }
+        let integration_list: Vec<&Integration> = integrations.iter().collect();
+        missing_variable(&graph, &integration_list)?;
         let root = self
             .root
             .clone()
@@ -1309,6 +1369,7 @@ impl<H: RunHost> Runs<H> {
             .collect();
         let mut sched = Scheduler::new(&graph, run_id.clone(), now());
         sched.run.test = seed.is_some();
+        sched.run.number = self.next_number(&graph.id);
         if seed.is_none() {
             for id in super::integration::manual_nodes(&graph, &integrations) {
                 sched.hold(&id);
@@ -1339,6 +1400,17 @@ impl<H: RunHost> Runs<H> {
             }
         });
         Ok((snapshot, launching))
+    }
+
+    /// O "#N" da execução nova: um a mais que a mais nova gravada. As de
+    /// antes da numeração (0) contam pela posição, como a tela as mostrava.
+    fn next_number(&self, graph_id: &str) -> u32 {
+        let previous = self
+            .store
+            .list_orbit_runs(graph_id, KEEP_RUNS)
+            .unwrap_or_default();
+        let top = previous.iter().map(|r| r.number).max().unwrap_or(0);
+        top.max(previous.len() as u32) + 1
     }
 
     /// Run em memória (rodando) ou do banco. Run `running` no banco sem estar
@@ -3197,7 +3269,10 @@ impl<H: RunHost> Runs<H> {
             let a = active
                 .get_mut(run_id)
                 .ok_or("a execução já fechou: ▶ Executar de novo")?;
-            let session = a.sched.rerun(node_id)?;
+            let session = a
+                .sched
+                .rerun(node_id)
+                .map_err(|e| format!("{}: {e}", active_label(a, node_id)))?;
             a.talk.reset_state(node_id);
             (session, a.dir.join(node_id).join("out"))
         };
@@ -4222,6 +4297,68 @@ mod tests {
             std::fs::read_to_string(in_dir.join("diff-2.patch")).unwrap(),
             ""
         );
+    }
+
+    #[test]
+    fn empty_variable_refuses_the_run_citing_the_node_title() {
+        let mut build = process("p", "cargo build --bin {{alvo}}");
+        build.title = "Build do app".into();
+        let mut g = graph(vec![build], vec![]);
+        let err = missing_variable(&g, &[]).unwrap_err();
+        assert!(
+            err.contains("\"Build do app\"") && err.contains("{{alvo}}"),
+            "{err}"
+        );
+        // Valor em branco também conta como sem valor.
+        g.variables.insert("alvo".into(), "  ".into());
+        assert!(missing_variable(&g, &[]).is_err());
+        g.variables.insert("alvo".into(), "tyba".into());
+        assert_eq!(missing_variable(&g, &[]), Ok(()));
+        // Padrão no próprio texto basta; `awk '{{print $1}}'` não é variável.
+        let g = graph(
+            vec![process("p", "echo {{modo=dev}}; awk '{{print $1}}' x")],
+            vec![],
+        );
+        assert_eq!(missing_variable(&g, &[]), Ok(()));
+        // Script de integração e prompt de agente também.
+        let i = Integration {
+            id: "i-1".into(),
+            name: "avisar".into(),
+            script: "curl {{hook}}".into(),
+            trigger: Trigger::Manual,
+            output: OutputKind::Json,
+            file: None,
+        };
+        let mut n = node(
+            "n",
+            NodeKind::Integration {
+                integration_id: "i-1".into(),
+                dir: String::new(),
+            },
+        );
+        n.title = "Avisar".into();
+        let err = missing_variable(&graph(vec![n], vec![]), &[&i]).unwrap_err();
+        assert!(err.starts_with("\"Avisar\""), "{err}");
+    }
+
+    #[test]
+    fn begin_refuses_empty_variable_and_numbers_runs_stably() {
+        let dir = tempfile::tempdir().unwrap();
+        let (runs, _host, _app) = pty_runs(dir.path().join("runs"));
+        let g = graph(vec![process("p", "echo {{quem}}")], vec![]);
+        let err = runs.start_now(g.clone(), vec![]).unwrap_err();
+        assert!(err.contains("\"p\"") && err.contains("{{quem}}"), "{err}");
+
+        let mut g = g;
+        g.variables.insert("quem".into(), "dono".into());
+        let mut numbers = Vec::new();
+        for _ in 0..(KEEP_RUNS + 3) {
+            let run = runs.start_now(g.clone(), vec![]).unwrap();
+            let run = wait_finished(&runs, &run.id);
+            numbers.push(run.number);
+        }
+        let want: Vec<u32> = (1..=(KEEP_RUNS as u32 + 3)).collect();
+        assert_eq!(numbers, want, "a poda não renumera");
     }
 
     #[test]

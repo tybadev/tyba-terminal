@@ -5115,6 +5115,7 @@ mod tests {
             paused_ms: 0,
             created: Vec::new(),
             plans: Vec::new(),
+            number: 0,
         };
         {
             // Grava pelo caminho normal e devolve as tabelas ao nome antigo:
@@ -7094,6 +7095,7 @@ mod tests {
             paused_ms: 0,
             created: Vec::new(),
             plans: Vec::new(),
+            number: 0,
         };
         for i in 0..5u64 {
             store
@@ -7142,6 +7144,7 @@ mod tests {
             paused_ms: 0,
             created: Vec::new(),
             plans: Vec::new(),
+            number: 0,
         };
         store.save_orbit_run(&snap(1, RunStatus::Running)).unwrap();
         store.save_orbit_run(&snap(3, RunStatus::Done)).unwrap();
@@ -7170,6 +7173,7 @@ mod tests {
             paused_ms: 0,
             created: Vec::new(),
             plans: Vec::new(),
+            number: 0,
         };
         // r0 é o mais velho e está ativo; depois dele, 3 testes e 2 runs.
         store.save_orbit_run(&run("r0", 0, false)).unwrap();

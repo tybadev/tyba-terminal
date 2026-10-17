@@ -148,6 +148,15 @@ describe("runReducer", () => {
     expect(runNumber(view, view.runs[KEEP_RUNS - 1].id)).toBe(1);
   });
 
+  test("o número do core vale e não muda com a poda", () => {
+    let view = EMPTY_RUN_VIEW;
+    for (let i = 1; i <= KEEP_RUNS + 2; i++) {
+      view = runReducer(view, { type: "update", run: { ...run(`r${i}`, i, {}), number: i } });
+    }
+    expect(runNumber(view, `r${KEEP_RUNS + 2}`)).toBe(KEEP_RUNS + 2);
+    expect(runNumber(view, view.runs[KEEP_RUNS - 1].id)).toBe(3);
+  });
+
   test("selecionar run desconhecido não muda nada; reset limpa", () => {
     const view = runReducer(EMPTY_RUN_VIEW, { type: "update", run: run("r", 1, {}) });
     expect(runReducer(view, { type: "select", runId: "x" })).toBe(view);

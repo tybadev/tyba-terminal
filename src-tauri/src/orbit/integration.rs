@@ -190,6 +190,7 @@ mod tests {
             paused_ms: 0,
             created: Vec::new(),
             plans: Vec::new(),
+            number: 0,
         }
     }
 
