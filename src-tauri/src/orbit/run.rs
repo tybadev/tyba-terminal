@@ -965,6 +965,14 @@ fn node_missing_variable(
     let Some(text) = run_text(node, integration) else {
         return Ok(());
     };
+    // Processo sem comando viraria `( \n)` no wrapper, erro de sintaxe do
+    // bash que o dono lê como falha do Orbit.
+    if matches!(node.kind, NodeKind::Process { .. }) && text.trim().is_empty() {
+        return Err(format!(
+            "{}: falta o comando — escreva o que ele roda antes do ▶",
+            node_label(node)
+        ));
+    }
     let empty = crate::snippet::placeholders(text).into_iter().find(|p| {
         p.default.as_deref().is_none_or(str::is_empty)
             && variables.get(&p.name).is_none_or(|v| v.trim().is_empty())
@@ -4815,6 +4823,19 @@ mod tests {
         n.title = "Avisar".into();
         let err = missing_variable(&graph(vec![n], vec![]), &[&i]).unwrap_err();
         assert!(err.starts_with("\"Avisar\""), "{err}");
+    }
+
+    #[test]
+    fn process_without_command_refuses_the_run_citing_the_node_title() {
+        for command in ["", "  \n "] {
+            let mut p = process("p", command);
+            p.title = "Processo".into();
+            let err = missing_variable(&graph(vec![p], vec![]), &[]).unwrap_err();
+            assert!(
+                err.starts_with("\"Processo\"") && err.contains("falta o comando"),
+                "{err}"
+            );
+        }
     }
 
     #[test]
