@@ -21,6 +21,7 @@ use observe::ScreenPipe;
 mod capture;
 mod holdback;
 mod observe;
+mod session_kill;
 pub mod tmux_control;
 
 #[cfg(target_os = "windows")]
@@ -472,6 +473,9 @@ struct PtyHandle {
     /// A ponta compartilhada com o decodificador desta sessão. `None` no
     /// transporte cru.
     control: Option<tmux_control::ControlLink>,
+    /// Sessão efêmera ([`PtyPool::set_ephemeral`]): o SID cujos process
+    /// groups o kill derruba todos, além do grupo do líder. `None` na grade.
+    sweep_session: Option<u32>,
 }
 
 impl PtyHandle {
@@ -532,6 +536,8 @@ pub struct PtyPool {
     auth_watchers: Mutex<Option<AuthWatchFactory>>,
     /// Taps esperando o spawn da sessão ([`PtyPool::set_tap`]).
     taps: Mutex<HashMap<PtyId, OutputTap>>,
+    /// Sessões marcadas efêmeras esperando o spawn ([`PtyPool::set_ephemeral`]).
+    ephemeral: Mutex<std::collections::HashSet<PtyId>>,
 }
 
 /// A parte visual das ações, sob um lock só.
@@ -738,6 +744,39 @@ struct ActionSink<R: Runtime> {
     command_event: String,
     cwd_event: String,
     prompt_mode_event: String,
+    /// `false` na sessão efêmera ([`PtyPool::set_ephemeral`]): nada vai ao
+    /// banco, e o bloco só sai como evento.
+    persist: bool,
+}
+
+/// O que a captura manda ao banco. Um ponto só: é aqui que o teste vê o que
+/// uma sessão gravaria.
+enum Persist {
+    History(crate::history::CommandRecord),
+    Block(crate::blocks::Finished),
+    Checkpoint(crate::blocks::Checkpoint),
+}
+
+#[cfg(test)]
+thread_local! {
+    static PERSISTED: std::cell::RefCell<Vec<&'static str>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn persist(work: Persist) {
+    #[cfg(test)]
+    PERSISTED.with(|log| {
+        log.borrow_mut().push(match &work {
+            Persist::History(_) => "history",
+            Persist::Block(_) => "block",
+            Persist::Checkpoint(_) => "checkpoint",
+        })
+    });
+    match work {
+        Persist::History(record) => crate::history::record(record),
+        Persist::Block(finished) => crate::blocks::finalize(finished),
+        Persist::Checkpoint(cp) => crate::blocks::submit(crate::blocks::Work::Save(cp)),
+    }
 }
 
 impl<R: Runtime> ActionSink<R> {
@@ -758,7 +797,11 @@ impl<R: Runtime> ActionSink<R> {
                     started |= state.running;
                     let _ = self.app.emit(&self.command_event, state);
                 }
-                capture::Action::Record(record) => crate::history::record(record),
+                capture::Action::Record(record) => {
+                    if self.persist {
+                        persist(Persist::History(record));
+                    }
+                }
                 capture::Action::ShellPath(path) => {
                     crate::completion::binary::set_path(&self.session_id.to_string(), &path);
                 }
@@ -772,7 +815,7 @@ impl<R: Runtime> ActionSink<R> {
                     crate::blocks::submit(crate::blocks::Work::Wipe(self.session_id.to_string()))
                 }
                 capture::Action::Finalize(block) => {
-                    crate::blocks::finalize(crate::blocks::Finished {
+                    let finished = crate::blocks::Finished {
                         session_id: self.session_id.to_string(),
                         command: block.command,
                         exit_code: block.exit_code,
@@ -784,7 +827,12 @@ impl<R: Runtime> ActionSink<R> {
                         rows,
                         dropped: block.dropped,
                         alt_screen: block.alt_screen,
-                    })
+                    };
+                    if self.persist {
+                        persist(Persist::Block(finished));
+                    } else {
+                        crate::blocks::show(finished);
+                    }
                 }
                 // Emitido a CADA prompt, não só na mudança: um evento só chega
                 // a quem já estava ouvindo, e quem assinou tarde ficaria sem
@@ -808,6 +856,29 @@ impl<R: Runtime> ActionSink<R> {
             }
         }
         started
+    }
+
+    /// Checkpoint do comando longo em voo. Devolve `true` quando gravou — é o
+    /// sinal para reiniciar o relógio. A sessão efêmera nunca grava: o
+    /// checkpoint são os bytes CRUS do PTY, e o dreno do boot os vira bloco.
+    fn checkpoint(&self, machine: &capture::CaptureMachine, cols: u16, rows: u16) -> bool {
+        if !self.persist {
+            return false;
+        }
+        // Sem isto, um crash no meio de um comando longo perde a saída
+        // inteira: o bloco só nasce no `133;D`.
+        let Some(snapshot) = machine.checkpoint(now_ms()) else {
+            return false;
+        };
+        persist(Persist::Checkpoint(crate::blocks::Checkpoint {
+            session_id: self.session_id.to_string(),
+            command: snapshot.command,
+            started_at_ms: snapshot.started_at_ms,
+            bytes: snapshot.bytes,
+            cols,
+            rows,
+        }));
+        true
     }
 }
 
@@ -837,6 +908,15 @@ impl PtyPool {
 
     pub fn clear_tap(&self, id: PtyId) {
         self.taps.lock().remove(&id);
+    }
+
+    /// O próximo spawn de `id` é efêmero (sessão de um nó do Orbit): nada do
+    /// que a captura vê vai ao banco — nem histórico, nem bloco, nem
+    /// checkpoint; o bloco só sai como evento para a tela viva —, e o kill
+    /// derruba todo process group da sessão POSIX do líder, não só o dele
+    /// (princípios #9 e #10). Consumido pelo spawn, que falhe ou não.
+    pub fn set_ephemeral(&self, id: PtyId) {
+        self.ephemeral.lock().insert(id);
     }
 
     /// Acorda a thread emissora para reavaliar a tela desta sessão.
@@ -1004,6 +1084,7 @@ impl PtyPool {
         // AGENTE (Claude Code, hoje) ganha o scanner de auth de runtime.
         let auth_watch = self.auth_pipe(session_id, kind);
         let tap = self.taps.lock().remove(&session_id);
+        let ephemeral = self.ephemeral.lock().remove(&session_id);
         if let Some(env) = env {
             cmd.env_clear();
             for (k, v) in env {
@@ -1061,6 +1142,9 @@ impl PtyPool {
 
         let leader_pid = child.process_id();
         let leader_start = leader_pid.and_then(crate::repo::process_start_time);
+        let sweep_session = leader_pid
+            .filter(|_| ephemeral)
+            .and_then(session_kill::session_of_leader);
 
         let mut reader = master
             .try_clone_reader()
@@ -1122,6 +1206,7 @@ impl PtyPool {
                 nudge,
                 transport,
                 control,
+                sweep_session,
             },
         );
 
@@ -1296,6 +1381,7 @@ impl PtyPool {
                     command_event,
                     cwd_event,
                     prompt_mode_event,
+                    persist: !ephemeral,
                 };
 
                 loop {
@@ -1378,23 +1464,10 @@ impl PtyPool {
                             if sink.run(actions, cols, rows) {
                                 last_checkpoint = Instant::now();
                             }
-                            if last_checkpoint.elapsed() >= crate::blocks::CHECKPOINT_EVERY {
-                                // Sem isto, um crash no meio de um comando longo
-                                // perde a saída inteira: o bloco só nasce no
-                                // `133;D`.
-                                if let Some(snapshot) = machine.checkpoint(now_ms()) {
-                                    last_checkpoint = Instant::now();
-                                    crate::blocks::submit(crate::blocks::Work::Save(
-                                        crate::blocks::Checkpoint {
-                                            session_id: session_id.to_string(),
-                                            command: snapshot.command,
-                                            started_at_ms: snapshot.started_at_ms,
-                                            bytes: snapshot.bytes,
-                                            cols,
-                                            rows,
-                                        },
-                                    ));
-                                }
+                            if last_checkpoint.elapsed() >= crate::blocks::CHECKPOINT_EVERY
+                                && sink.checkpoint(&machine, cols, rows)
+                            {
+                                last_checkpoint = Instant::now();
                             }
                         }
                         None => {
@@ -1769,6 +1842,11 @@ impl PtyPool {
 }
 
 fn kill_handle(mut handle: PtyHandle) {
+    // Sessão efêmera: cada job do shell interativo tem grupo próprio e
+    // escaparia do `killpg` do líder logo abaixo (princípio #9).
+    if let Some(sid) = handle.sweep_session {
+        session_kill::kill_session(sid);
+    }
     if let Some(pid) = handle.leader_pid {
         let _ = kill_process_group(pid);
     }
@@ -3376,6 +3454,7 @@ mod tests {
             nudge: std::sync::Weak::new(),
             transport: super::Transport::Raw,
             control: None,
+            sweep_session: None,
         };
         pool.ptys.lock().insert(uuid::Uuid::new_v4(), handle);
 
@@ -3414,6 +3493,7 @@ mod tests {
             nudge: std::sync::Weak::new(),
             transport: super::Transport::Raw,
             control: None,
+            sweep_session: None,
         };
         pool.ptys.lock().insert(id, handle);
         id
@@ -3538,5 +3618,170 @@ mod tests {
             pool.ptys.lock().is_empty(),
             "pool kept handles after kill_all"
         );
+    }
+}
+
+#[cfg(test)]
+mod ephemeral_tests {
+    use super::{capture, ActionSink, PtyId, PtyPool, PERSISTED};
+    use crate::session::SessionKind;
+    use base64::Engine;
+    use portable_pty::CommandBuilder;
+    use std::time::{Duration, Instant};
+    use tauri::test::MockRuntime;
+
+    fn sink(app: &tauri::AppHandle<MockRuntime>, persist: bool) -> ActionSink<MockRuntime> {
+        ActionSink {
+            app: app.clone(),
+            session_id: PtyId::new_v4(),
+            command_event: "c".into(),
+            cwd_event: "w".into(),
+            prompt_mode_event: "p".into(),
+            persist,
+        }
+    }
+
+    /// Um comando que acaba (histórico + bloco) e um longo em voo
+    /// (checkpoint), passados pela sessão como a thread emissora passa.
+    fn store_writes(persist: bool) -> Vec<&'static str> {
+        let app = tauri::test::mock_app();
+        let sink = sink(app.handle(), persist);
+        PERSISTED.with(|log| log.borrow_mut().clear());
+        let b64 = |s: &str| base64::engine::general_purpose::STANDARD.encode(s);
+        let chunk = format!(
+            "\x1b]633;P;tyba-prompt=1\x07\
+             \x1b]633;E;{}\x07\x1b]133;C\x07hi\r\n\x1b]133;D;0\x07\x1b]133;A\x07\
+             \x1b]633;E;{}\x07\x1b]133;C\x07TOKEN=sk-cru-no-checkpoint\r\n",
+            b64("echo hi"),
+            b64("sleep 60"),
+        );
+        let mut machine = capture::CaptureMachine::new("s".into());
+        let actions = machine.on_chunk(chunk.as_bytes(), 2_000, false);
+        sink.run(actions, 80, 24);
+        sink.checkpoint(&machine, 80, 24);
+        PERSISTED.with(|log| std::mem::take(&mut *log.borrow_mut()))
+    }
+
+    #[test]
+    fn a_sessao_da_grade_grava_historico_bloco_e_checkpoint() {
+        assert_eq!(store_writes(true), ["history", "block", "checkpoint"]);
+    }
+
+    #[test]
+    fn a_sessao_efemera_nao_grava_nada_no_banco() {
+        // Princípio #10 e a promessa do nó Terminal: o checkpoint são bytes
+        // CRUS do PTY e o dreno do boot os vira bloco sem redação.
+        assert_eq!(store_writes(false), Vec::<&str>::new());
+    }
+
+    #[cfg(unix)]
+    fn alive(pid: i32) -> bool {
+        unsafe { libc::kill(pid, 0) == 0 }
+    }
+
+    #[cfg(unix)]
+    fn wait_dead(pid: i32, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            if !alive(pid) {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        false
+    }
+
+    /// Um shell com controle de job (`set -m`, como todo shell interativo) e
+    /// um `sleep` em segundo plano — no grupo PRÓPRIO dele, que é o que fazia
+    /// o job escapar do `killpg` do líder. Devolve o pid do `sleep`.
+    #[cfg(unix)]
+    fn shell_with_background_job(pool: &PtyPool, id: PtyId, ephemeral: bool) -> i32 {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pid_file = dir.path().join("job.pid");
+        let mut cmd = CommandBuilder::new("/bin/sh");
+        cmd.arg("-c");
+        cmd.arg(format!(
+            "set -m; sleep 300 & echo $! > '{}'; wait",
+            pid_file.display()
+        ));
+        if ephemeral {
+            pool.set_ephemeral(id);
+        }
+        let app = tauri::test::mock_app();
+        pool.spawn(
+            app.handle().clone(),
+            id,
+            cmd,
+            None,
+            None,
+            80,
+            24,
+            &SessionKind::Shell,
+            Box::new(|| {}),
+        )
+        .expect("spawn");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let job = loop {
+            if let Some(pid) = std::fs::read_to_string(&pid_file)
+                .ok()
+                .and_then(|s| s.trim().parse::<i32>().ok())
+            {
+                break pid;
+            }
+            assert!(Instant::now() < deadline, "o job nunca subiu");
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        let leader = pool.leader_pid(id).expect("líder vivo") as i32;
+        assert_ne!(
+            unsafe { libc::getpgid(job) },
+            unsafe { libc::getpgid(leader) },
+            "o job precisa de grupo próprio para o teste medir alguma coisa"
+        );
+        job
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fechar_a_sessao_efemera_mata_os_jobs_do_shell() {
+        let pool = PtyPool::new();
+        let id = PtyId::new_v4();
+        let job = shell_with_background_job(&pool, id, true);
+
+        pool.kill(id).expect("kill");
+
+        assert!(
+            wait_dead(job, Duration::from_secs(3)),
+            "o job em segundo plano sobreviveu ao fechar do nó: {job}"
+        );
+    }
+
+    /// A aba da grade não passa pelo caminho novo: o job com grupo próprio
+    /// segue sobrevivendo ao fechar (decisão de produto à parte).
+    #[cfg(unix)]
+    #[test]
+    fn a_sessao_da_grade_segue_com_o_killpg_do_lider() {
+        let pool = PtyPool::new();
+        let id = PtyId::new_v4();
+        let job = shell_with_background_job(&pool, id, false);
+        assert!(pool.ptys.lock()[&id].sweep_session.is_none());
+
+        pool.kill(id).expect("kill");
+        std::thread::sleep(Duration::from_millis(300));
+        let survived = alive(job);
+        unsafe { libc::kill(job, libc::SIGKILL) };
+
+        assert!(survived, "a grade mudou de comportamento");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn nunca_varre_a_sessao_do_proprio_app() {
+        let own_pid = std::process::id();
+        assert_eq!(super::session_kill::session_of_leader(own_pid), None);
+        // Se a guarda falhar, o processo de teste se mata e a suíte acusa.
+        let own_sid = unsafe { libc::getsid(0) } as u32;
+        super::session_kill::kill_session(own_sid);
+        super::session_kill::kill_session(1);
+        super::session_kill::kill_session(0);
     }
 }

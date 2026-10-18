@@ -802,6 +802,9 @@ pub struct Checkpoint {
 
 pub enum Work {
     Finish(Finished),
+    /// O bloco de uma sessão efêmera (nó do Orbit): sai como evento para a
+    /// tela viva e nunca vai ao banco.
+    Show(Finished),
     Save(Checkpoint),
     Clear(String),
     /// `clear`/`reset`: a lista de blocos some, e some do disco também.
@@ -877,6 +880,10 @@ pub fn install(app: tauri::AppHandle, store: std::sync::Arc<crate::session::stor
                             eprintln!("tyba: bloco não persistido: {err}");
                         }
                         let _ = store.clear_checkpoint(&session);
+                    }
+                    Work::Show(finished) => {
+                        let event = format!("block://finalized/{}", finished.session_id);
+                        let _ = app.emit(&event, build(finished));
                     }
                     Work::Save(cp) => {
                         let _ = store.save_checkpoint(
@@ -970,6 +977,11 @@ pub fn submit(work: Work) {
 
 pub fn finalize(finished: Finished) {
     submit(Work::Finish(finished));
+}
+
+/// [`finalize`] sem gravar: o bloco só vai à tela viva.
+pub fn show(finished: Finished) {
+    submit(Work::Show(finished));
 }
 
 #[cfg(test)]

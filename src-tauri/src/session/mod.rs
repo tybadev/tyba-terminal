@@ -894,6 +894,13 @@ impl SessionManager {
     ) -> Result<Session, PtyError> {
         let cwd = self.prepare_env(&mut cmd, id);
 
+        // A sessão do Orbit não toca o banco nem pela captura do PTY (histórico,
+        // blocos, checkpoint com byte cru), e o kill leva todo job do shell
+        // interativo junto. Ver `PtyPool::set_ephemeral`.
+        if owner == SessionOwner::Orbit {
+            pty_pool.set_ephemeral(id);
+        }
+
         // O tipo vai junto porque o palpite de tela depende dele: sessão de
         // agente do TYBA não recebe nenhum, e a sessão só entra no mapa DEPOIS
         // do spawn — quem resolve isso lá dentro não teria onde perguntar.
