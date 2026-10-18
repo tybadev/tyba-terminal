@@ -164,6 +164,7 @@ export function buildMenuSpec(t: Translate, bindings: Bindings): MenuSpec {
           action("filesFinder", t, bindings),
           { kind: "separator" },
           action("panel", t, bindings),
+          action("toggleOrbit", t, bindings),
           action("files", t, bindings),
           extra("menu:services", t("servicesTitle")),
         ],

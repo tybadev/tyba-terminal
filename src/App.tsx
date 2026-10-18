@@ -4094,6 +4094,12 @@ export default function App() {
         void closeActivePane();
       } else if (action === "openFolder") {
         void openProjectFolder();
+      } else if (action === "toggleOrbit") {
+        // Indo para o Orbit, o terminal de baixo não fica com o foco: as
+        // teclas cairiam num xterm escondido.
+        (document.activeElement as HTMLElement | null)?.blur();
+        setMachineScreen(null);
+        setOrbitOpen((o) => !o);
       } else if (action === "newSession") {
         openNewSession();
       } else if (action === "newWorktreeSession") {
@@ -5431,6 +5437,10 @@ export default function App() {
       />
       <NewSessionPrompt
         onConnectHost={(host) => void connectToHost(host)}
+        onOpenOrbit={() => {
+          (document.activeElement as HTMLElement | null)?.blur();
+          setOrbitOpen(true);
+        }}
         open={newSessionOpen}
         onOpenChange={(open) => {
           setNewSessionOpen(open);

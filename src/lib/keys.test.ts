@@ -376,4 +376,8 @@ describe("nos-2: com o Orbit aberto, o teclado é dele", () => {
   it("nova janela segue valendo", () => {
     expect(allowedUnderOrbit("newWindow")).toBe(true);
   });
+
+  it("alternar Terminal / Orbit vale dentro do Orbit, senão não se volta", () => {
+    expect(allowedUnderOrbit("toggleOrbit")).toBe(true);
+  });
 });
