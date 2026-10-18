@@ -192,6 +192,7 @@ mod tests {
             created: Vec::new(),
             plans: Vec::new(),
             number: 0,
+            terminal: None,
         }
     }
 

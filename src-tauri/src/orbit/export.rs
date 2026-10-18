@@ -176,7 +176,9 @@ fn secret_fields(graph: &Graph, integrations: &[Integration]) -> Vec<SecretField
             NodeKind::Process { command, .. } => ("command", command),
             NodeKind::Note { markdown, .. } => ("markdown", markdown),
             NodeKind::Browser { url } => ("url", url),
-            NodeKind::Integration { .. } | NodeKind::Service { .. } => continue,
+            NodeKind::Integration { .. } | NodeKind::Service { .. } | NodeKind::Terminal { .. } => {
+                continue
+            }
         };
         check(SecretOwner::Node, &node.id, &node.title, field, text);
     }

@@ -126,6 +126,14 @@ pub enum NodeKind {
     },
     /// Liga num serviço que já roda: produz `log` e `url`.
     Service { source: ServiceSource },
+    /// Shell do dono no canvas, aberto na hora (sem ▶): não aceita ligação
+    /// nem produz valor (ver [`produces`]). O `claude` digitado nele recebe as ferramentas do
+    /// Orbit (ver `run::Runs::open_terminal`).
+    Terminal {
+        /// Pasta onde o shell abre. Vazio: `Graph::dir`.
+        #[serde(default)]
+        dir: String,
+    },
 }
 
 impl NodeKind {
@@ -134,7 +142,8 @@ impl NodeKind {
         match self {
             NodeKind::Agent { dir, .. }
             | NodeKind::Process { dir, .. }
-            | NodeKind::Integration { dir, .. } => Some(dir),
+            | NodeKind::Integration { dir, .. }
+            | NodeKind::Terminal { dir } => Some(dir),
             NodeKind::Note { .. } | NodeKind::Browser { .. } | NodeKind::Service { .. } => None,
         }
     }
@@ -143,7 +152,8 @@ impl NodeKind {
         match self {
             NodeKind::Agent { dir, .. }
             | NodeKind::Process { dir, .. }
-            | NodeKind::Integration { dir, .. } => Some(dir),
+            | NodeKind::Integration { dir, .. }
+            | NodeKind::Terminal { dir } => Some(dir),
             NodeKind::Note { .. } | NodeKind::Browser { .. } | NodeKind::Service { .. } => None,
         }
     }
@@ -427,6 +437,10 @@ pub(crate) fn produces(
             .unwrap_or_default(),
         NodeKind::Browser { .. } => Vec::new(),
         NodeKind::Service { .. } => vec![EdgeKind::Log, EdgeKind::Url],
+        // Nenhum valor. Só as ligações que o core cria a partir de quem chama
+        // as ferramentas (o `claude` digitado nele): a nota de plano
+        // (`orbit_plan`) e o navegador que ele cria (controla).
+        NodeKind::Terminal { .. } => vec![EdgeKind::Plan, EdgeKind::Control],
     }
 }
 
@@ -440,7 +454,7 @@ fn accepts(kind: &NodeKind, integrations: &HashMap<&str, &Integration>) -> Vec<E
         }
         NodeKind::Process { .. } => EdgeKind::data(),
         NodeKind::Note { .. } => vec![EdgeKind::Plan, EdgeKind::Memory],
-        NodeKind::Service { .. } => Vec::new(),
+        NodeKind::Service { .. } | NodeKind::Terminal { .. } => Vec::new(),
         NodeKind::Browser { .. } => vec![EdgeKind::Url, EdgeKind::Control],
         NodeKind::Integration { integration_id, .. } => {
             match integrations.get(integration_id.as_str()).map(|i| i.trigger) {
@@ -542,6 +556,8 @@ pub fn validate_structure(graph: &Graph, integrations: &[Integration]) -> Result
                 }
             }
             NodeKind::Service { source } => check_source(&title_or_id(node), source)?,
+            // A pasta já passou pelo `check_text` acima.
+            NodeKind::Terminal { .. } => {}
         }
     }
 
@@ -1535,5 +1551,89 @@ mod tests {
             vec![edge("m", "a", "n", EdgeKind::Memory)],
         );
         assert_eq!(validate_graph(&g, &[]), Ok(()));
+    }
+
+    fn terminal(id: &str, dir: &str) -> Node {
+        node(id, NodeKind::Terminal { dir: dir.into() })
+    }
+
+    /// O nó Terminal: só a pasta, que vale como a dos outros nós (a dele,
+    /// senão a padrão do grafo; absoluta, sem controle).
+    #[test]
+    fn terminal_node_needs_an_absolute_folder() {
+        assert_eq!(
+            validate_graph(&graph(vec![terminal("t", "/srv/api")], vec![]), &[]),
+            Ok(())
+        );
+        // Sem pasta própria, a padrão do grafo.
+        assert_eq!(
+            validate_graph(&graph(vec![terminal("t", "")], vec![]), &[]),
+            Ok(())
+        );
+        for bad in ["", "relativa", "  "] {
+            let mut g = graph(vec![terminal("t", bad)], vec![]);
+            g.dir.clear();
+            assert_eq!(
+                validate_graph(&g, &[]),
+                Err(OrbitError::NodeDir("t".into())),
+                "{bad:?}"
+            );
+        }
+        assert!(matches!(
+            validate_graph(&graph(vec![terminal("t", "/tmp/x\u{1b}")], vec![]), &[]),
+            Err(OrbitError::ControlChars(_))
+        ));
+    }
+
+    #[test]
+    fn terminal_node_roundtrips_as_camel_case_json() {
+        let n = terminal("t", "/srv/api");
+        let json = serde_json::to_value(&n.kind).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({"type": "terminal", "dir": "/srv/api"})
+        );
+        let back: NodeKind = serde_json::from_value(json).unwrap();
+        assert_eq!(back, n.kind);
+        // Sem `dir`, lê vazio (a padrão do grafo).
+        let bare: NodeKind = serde_json::from_str(r#"{"type":"terminal"}"#).unwrap();
+        assert_eq!(bare, NodeKind::Terminal { dir: String::new() });
+        assert_eq!(n.kind.dir(), Some("/srv/api"));
+    }
+
+    /// Não aceita ligação nem produz valor; só o plano e o controla que o
+    /// core cria a partir do `claude` digitado nele.
+    #[test]
+    fn terminal_node_accepts_nothing_and_gives_only_plan_and_control() {
+        let browser = node("b", NodeKind::Browser { url: String::new() });
+        for kind in [EdgeKind::Context, EdgeKind::Log, EdgeKind::Url] {
+            let g = graph(
+                vec![process("p", OutputKind::Log), terminal("t", "/srv")],
+                vec![edge("e", "p", "t", kind)],
+            );
+            assert!(
+                matches!(
+                    validate_graph(&g, &[]),
+                    Err(OrbitError::NotAccepted { .. }) | Err(OrbitError::NotProduced { .. })
+                ),
+                "{kind:?}"
+            );
+        }
+        let g = graph(
+            vec![terminal("t", "/srv"), note("n"), browser],
+            vec![
+                edge("p", "t", "n", EdgeKind::Plan),
+                edge("c", "t", "b", EdgeKind::Control),
+            ],
+        );
+        assert_eq!(validate_graph(&g, &[]), Ok(()));
+        let g = graph(
+            vec![terminal("t", "/srv"), note("n")],
+            vec![edge("x", "t", "n", EdgeKind::Context)],
+        );
+        assert!(matches!(
+            validate_graph(&g, &[]),
+            Err(OrbitError::NotProduced { .. })
+        ));
     }
 }

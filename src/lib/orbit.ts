@@ -61,7 +61,12 @@ export type NodeKind =
   /** Mostra uma página local. Recebe `url` (ou usa a dele); não produz nada. */
   | { type: "browser"; url: string }
   /** Serviço que já roda: produz `log` e `url`. */
-  | { type: "service"; source: ServiceSource };
+  | { type: "service"; source: ServiceSource }
+  /**
+   * Shell do dono no canvas, aberto por `orbit_terminal_open` (sem ▶). Não
+   * aceita ligação nem produz valor (só plano/controla do `claude` dele).
+   */
+  | { type: "terminal"; dir: string };
 
 /** De onde o nó de Serviço lê (espelha `ServiceSource` do core). */
 export type ServiceSource =
@@ -303,6 +308,9 @@ export function produces(kind: NodeKind, integrations: IntegrationsById): EdgeKi
       return [];
     case "service":
       return ["log", "url"];
+    case "terminal":
+      // Só o que o core cria a partir do `claude` digitado nele.
+      return ["plan", "control"];
   }
 }
 
@@ -316,6 +324,7 @@ export function accepts(kind: NodeKind, integrations: IntegrationsById): EdgeKin
     case "note":
       return ["plan", "memory"];
     case "service":
+    case "terminal":
       return [];
     case "browser":
       return ["url", "control"];
@@ -589,6 +598,7 @@ export const DEFAULT_SIZE: Record<NodeKind["type"], { w: number; h: number }> = 
   integration: { w: 360, h: 200 },
   browser: { w: 640, h: 420 },
   service: { w: 380, h: 300 },
+  terminal: { w: 560, h: 440 },
 };
 
 export function newNode(
@@ -760,6 +770,11 @@ export interface Run {
   plans?: Plan[];
   /** "#N" dado pelo core no ▶ (estável na poda); 0/ausente = gravada antes da numeração. */
   number?: number;
+  /**
+   * Sessão ao vivo (sem ▶): o id do nó Terminal cujo shell a segura
+   * (`orbit_terminal_open`). Ausente/null no run do ▶.
+   */
+  terminal?: string | null;
 }
 
 /** Estado de um passo do plano (espelha `orchestrator::StepState`). */
@@ -1520,7 +1535,8 @@ export type ImportItem =
   | { type: "note"; node: OrbitNode; markdown: string }
   | { type: "integration"; node: OrbitNode; integration: Integration | null }
   | { type: "browser"; node: OrbitNode; url: string }
-  | { type: "service"; node: OrbitNode; source: ServiceSource };
+  | { type: "service"; node: OrbitNode; source: ServiceSource }
+  | { type: "terminal"; node: OrbitNode; dir: string };
 
 /**
  * Tudo que o arquivo traz para rodar, por nó, com o texto inteiro (nunca
@@ -1549,6 +1565,8 @@ export function importItems(preview: Pick<ImportPreview, "graph" | "integrations
         return { type: "browser", node, url: k.url };
       case "service":
         return { type: "service", node, source: k.source };
+      case "terminal":
+        return { type: "terminal", node, dir: k.dir };
     }
   });
 }

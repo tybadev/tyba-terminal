@@ -477,7 +477,21 @@ impl SessionManager {
         &self,
         app: AppHandle,
         pty_pool: &SharedPtyPool,
+        opts: CreateSessionOpts,
+        on_exit: impl FnOnce(SessionId) + Send + 'static,
+    ) -> Result<Session, PtyError> {
+        self.create_shell_session_as(app, pty_pool, opts, SessionOwner::Grid, on_exit)
+    }
+
+    /// [`Self::create_shell_session`] com o dono da sessão: o nó Terminal do
+    /// Orbit abre o mesmo shell com `SessionOwner::Orbit` (fora da grade e do
+    /// banco).
+    pub fn create_shell_session_as(
+        &self,
+        app: AppHandle,
+        pty_pool: &SharedPtyPool,
         mut opts: CreateSessionOpts,
+        owner: SessionOwner,
         on_exit: impl FnOnce(SessionId) + Send + 'static,
     ) -> Result<Session, PtyError> {
         let id = Uuid::new_v4();
@@ -584,7 +598,7 @@ impl SessionManager {
             opts.cols,
             opts.rows,
             opts.opened_by_gate,
-            SessionOwner::Grid,
+            owner,
             on_exit,
         );
         if result.is_ok() {

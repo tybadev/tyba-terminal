@@ -8770,6 +8770,48 @@ async fn orbit_run_start(app: AppHandle, graph_id: String) -> Result<String, Str
     .await?
 }
 
+/// Abre o nó Terminal (sem ▶): uma sessão ao vivo do grafo com o shell do
+/// dono na pasta do nó. Nunca no boot nem ao carregar o grafo — só por este
+/// pedido do dono. Mesmas barreiras do ▶: grafo consentido e válido.
+#[tauri::command]
+async fn orbit_terminal_open(
+    app: AppHandle,
+    graph_id: String,
+    node_id: String,
+) -> Result<orbit::run::Run, String> {
+    off_main(app, move |app, state| {
+        let stored = state
+            .store
+            .get_orbit_graph(&graph_id)
+            .map_err(|e| e.to_string())?
+            .ok_or("grafo não encontrado")?;
+        let graph = orbit::run::startable(stored)?;
+        let integrations = state
+            .store
+            .list_orbit_integrations()
+            .map_err(|e| e.to_string())?;
+        orbit::validate_graph(&graph, &integrations).map_err(|e| e.to_string())?;
+        app.state::<orbit::run::SharedRuns>()
+            .open_terminal(graph, &node_id)
+    })
+    .await?
+}
+
+/// Fecha o nó Terminal (⋯ → Fechar): mata o process group do shell e fecha a
+/// sessão ao vivo dele, parando os nós criados nela (salvo os mantidos).
+#[tauri::command]
+async fn orbit_terminal_close(
+    app: AppHandle,
+    graph_id: String,
+    node_id: String,
+) -> Result<(), String> {
+    off_main(app, move |app, _state| {
+        app.state::<orbit::run::SharedRuns>()
+            .close_terminal(&graph_id, &node_id)
+    })
+    .await?
+}
+
 /// O ▶ num nó de integração manual: ele roda assim que as entradas chegarem.
 #[tauri::command]
 fn orbit_run_node(
@@ -10215,6 +10257,8 @@ pub fn run() {
             orbit_node_log_whole,
             orbit_keep_created,
             orbit_runs_list,
+            orbit_terminal_open,
+            orbit_terminal_close,
             orbit_service_logs_start,
             orbit_browser_native,
             orbit_browser_navigate,

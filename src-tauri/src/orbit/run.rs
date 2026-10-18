@@ -98,6 +98,11 @@ pub struct Run {
     /// poda tira as velhas. 0 = gravada antes da numeração.
     #[serde(default)]
     pub number: u32,
+    /// Sessão ao vivo (sem ▶): o id do nó Terminal cujo shell a segura. Ela
+    /// segue `running` enquanto o shell vive, não assenta, e fecha quando ele
+    /// sai ou o dono o fecha ([`Runs::open_terminal`]). `None` no run do ▶.
+    #[serde(default)]
+    pub terminal: Option<String>,
 }
 
 /// Como fecha um run sem nada rodando: falhou se algum nó falhou.
@@ -367,6 +372,7 @@ impl Scheduler {
             created: Vec::new(),
             plans: Vec::new(),
             number: 0,
+            terminal: None,
         };
         if run.nodes.is_empty() {
             run.status = RunStatus::Done;
@@ -896,6 +902,29 @@ impl Scheduler {
         self.run.settled = false;
         kill
     }
+
+    /// Fecha a sessão ao vivo porque o Terminal fechou (saiu ou o dono o
+    /// fechou): o [`Scheduler::stop`] de sempre para os nós criados nela, mas
+    /// o Terminal fica pronto e o run fecha concluído (falhou só se um nó
+    /// falhou), não parado. Devolve as sessões a matar.
+    pub fn close_live(&mut self, now: u64) -> Vec<String> {
+        let open = self.run.status == RunStatus::Running;
+        let kill = self.stop(now);
+        if let Some(n) = self
+            .run
+            .terminal
+            .clone()
+            .and_then(|t| self.run.nodes.get_mut(&t))
+        {
+            if n.status == NodeStatus::Stopped {
+                n.status = NodeStatus::Done;
+            }
+        }
+        if open {
+            self.run.status = closed_status(&self.run.nodes);
+        }
+        kill
+    }
 }
 
 /// Grafo importado e não confirmado não roda — no core, não só no botão.
@@ -915,6 +944,17 @@ fn active_label(a: &Active, id: &str) -> String {
         .iter()
         .find(|n| n.id == id)
         .map_or_else(|| format!("nó {id}"), node_label)
+}
+
+/// O grafo da sessão ao vivo: só o nó Terminal, sem ligações (o mesmo
+/// caminho do teste de integração, [`super::integration::test_graph`]). O
+/// resto do grafo salvo não roda; os nós que o `claude` criar entram nele.
+fn terminal_graph(graph: &Graph, node: &Node) -> Graph {
+    Graph {
+        nodes: vec![node.clone()],
+        edges: Vec::new(),
+        ..graph.clone()
+    }
 }
 
 /// O nó numa mensagem de erro: o título entre aspas (o id quando não há).
@@ -1233,6 +1273,13 @@ pub struct AgentLaunch {
     pub tools: Option<ToolHandler>,
 }
 
+/// O que o host precisa para abrir o shell de um nó Terminal.
+#[derive(Debug, Clone)]
+pub struct ShellLaunch {
+    pub title: String,
+    pub cwd: PathBuf,
+}
+
 /// Efeitos fora do agendador: subir processo, matar, avisar o front.
 pub trait RunHost: Send + Sync + 'static {
     /// Sobe o agente livre e devolve o id da sessão. `on_turn` roda uma vez,
@@ -1265,6 +1312,14 @@ pub trait RunHost: Send + Sync + 'static {
         &self,
         launch: ProcessLaunch,
         tap: crate::pty::OutputTap,
+        on_exit: Box<dyn FnOnce() + Send>,
+    ) -> Result<String, String>;
+    /// Abre o shell do dono (o da aba Terminal: shell, integração e env dele)
+    /// fora da grade e devolve o id da sessão. `on_exit` roda quando o PTY
+    /// fecha.
+    fn spawn_shell(
+        &self,
+        launch: ShellLaunch,
         on_exit: Box<dyn FnOnce() + Send>,
     ) -> Result<String, String>;
     /// Mata o process group da sessão.
@@ -1338,6 +1393,10 @@ pub struct Runs<H: RunHost> {
     /// Runs que o dono parou: sessão que termina de subir depois disso morre
     /// na hora. Lock sempre depois de `active`.
     stopped: Mutex<HashSet<String>>,
+    /// Shell de cada nó Terminal aberto: sessão → (run, nó, tentativa). É por
+    /// aqui que o `claude` digitado nele ganha as ferramentas
+    /// ([`Runs::terminal_tools`]). Lock sempre depois de `active`.
+    terminals: Mutex<HashMap<String, (String, String, u32)>>,
     /// Quanto tempo de tudo quieto assenta o run ([`SETTLE_MS`]; o teste
     /// encurta).
     settle_ms: std::sync::atomic::AtomicU64,
@@ -1406,6 +1465,7 @@ impl<H: RunHost> Runs<H> {
             active: Mutex::new(HashMap::new()),
             agents: Mutex::new(HashMap::new()),
             stopped: Mutex::new(HashSet::new()),
+            terminals: Mutex::new(HashMap::new()),
             settle_ms: std::sync::atomic::AtomicU64::new(SETTLE_MS),
             me: me.clone(),
         })
@@ -1427,6 +1487,13 @@ impl<H: RunHost> Runs<H> {
         graph: Graph,
         integrations: Vec<Integration>,
     ) -> Result<(Run, Launching), String> {
+        // O ▶ mata os runs de antes do grafo; matar o shell do dono por um
+        // clique no ▶ seria pior que recusar.
+        if let Some(label) = self.live_terminal(&graph.id) {
+            return Err(format!(
+                "{label} está aberto: feche o Terminal ou ■ Pare a sessão ao vivo antes do ▶"
+            ));
+        }
         let previous: Vec<String> = self
             .agents
             .lock()
@@ -1438,7 +1505,108 @@ impl<H: RunHost> Runs<H> {
             // Erro aqui é só "já não havia o que parar".
             let _ = self.stop(&run_id);
         }
-        self.begin(graph, integrations, None)
+        self.begin(graph, integrations, None, None)
+    }
+
+    /// O nó Terminal aberto do grafo (a sessão ao vivo dele), para as
+    /// mensagens: o título entre aspas.
+    fn live_terminal(&self, graph_id: &str) -> Option<String> {
+        self.active.lock().values().find_map(|a| {
+            let terminal = a.sched.run.terminal.as_deref()?;
+            (a.graph.id == graph_id).then(|| active_label(a, terminal))
+        })
+    }
+
+    /// Abre o nó Terminal `node_id`: uma sessão ao vivo (sem ▶) sobre um
+    /// grafo derivado só com ele, cujo único nó é o shell do dono na pasta do
+    /// nó. Segue `running` enquanto o shell vive e fecha quando ele sai
+    /// ([`Runs::close_terminal`]). Um Terminal aberto por grafo.
+    pub fn open_terminal(&self, graph: Graph, node_id: &str) -> Result<Run, String> {
+        self.open_terminal_launching(graph, node_id)
+            .map(|(run, _)| run)
+    }
+
+    fn open_terminal_launching(
+        &self,
+        graph: Graph,
+        node_id: &str,
+    ) -> Result<(Run, Launching), String> {
+        let node = graph
+            .nodes
+            .iter()
+            .find(|n| n.id == node_id)
+            .ok_or("nó não encontrado no grafo")?;
+        if !matches!(node.kind, NodeKind::Terminal { .. }) {
+            return Err(format!("{}: não é um nó Terminal", node_label(node)));
+        }
+        let dir = graph.node_dir(node);
+        if !Path::new(dir).is_dir() {
+            return Err(format!(
+                "{}: a pasta {dir} não existe — escolha outra no nó",
+                node_label(node)
+            ));
+        }
+        if let Some(open) = self.live_terminal(&graph.id) {
+            return Err(format!(
+                "{open} já está aberto neste grafo: um Terminal por grafo — feche-o antes de abrir {}",
+                node_label(node)
+            ));
+        }
+        let single = terminal_graph(&graph, node);
+        self.begin(single, Vec::new(), None, Some(node_id.to_string()))
+    }
+
+    /// Fecha o Terminal `node_id` do grafo (⋯ → Fechar): mata o process group
+    /// do shell e fecha a sessão ao vivo dele ([`Scheduler::close_live`]).
+    /// Já fechado: nada a fazer.
+    pub fn close_terminal(&self, graph_id: &str, node_id: &str) -> Result<(), String> {
+        let run_id = self.active.lock().iter().find_map(|(id, a)| {
+            (a.graph.id == graph_id && a.sched.run.terminal.as_deref() == Some(node_id))
+                .then(|| id.clone())
+        });
+        match run_id {
+            Some(run_id) => self.close_live(&run_id),
+            None => Ok(()),
+        }
+    }
+
+    /// O shell do Terminal saiu (`exit`, ou morto pelo fechar/■ Parar): a
+    /// sessão ao vivo fecha. A saída de uma tentativa velha (reiniciada) não
+    /// fecha a nova.
+    fn terminal_exited(&self, run_id: &str, node_id: &str, attempt: u32) {
+        self.terminals
+            .lock()
+            .retain(|_, t| !(t.0 == run_id && t.1 == node_id && t.2 == attempt));
+        let current = self
+            .active
+            .lock()
+            .get(run_id)
+            .is_some_and(|a| a.sched.attempt(node_id) == Some(attempt));
+        if current {
+            let _ = self.close_live(run_id);
+        }
+    }
+
+    /// [`Runs::stop`] da sessão ao vivo que fecha com o Terminal: os nós
+    /// criados nela param (process group) e o run fecha concluído.
+    fn close_live(&self, run_id: &str) -> Result<(), String> {
+        self.halt(run_id, true)
+    }
+
+    /// As ferramentas do Orbit para o `claude` digitado no shell `session`,
+    /// quando ele é o de um nó Terminal aberto: quem chama é o nó Terminal,
+    /// que cria nós (o teto e o sem-cascata de sempre). Qualquer outra
+    /// sessão: `None`. A sessão sai da árvore de processos (o canal), nunca
+    /// de um id que o cliente manda.
+    pub fn terminal_tools(&self, session: &str) -> Option<ToolHandler> {
+        let (run_id, node_id, attempt) = self.terminals.lock().get(session).cloned()?;
+        let open = self.active.lock().get(&run_id).is_some_and(|a| {
+            a.sched.attempt(&node_id) == Some(attempt)
+                && a.sched.run.nodes.get(&node_id).is_some_and(|n| {
+                    n.status == NodeStatus::Running && n.session_id.as_deref() == Some(session)
+                })
+        });
+        open.then(|| self.tool_handler(&run_id, &node_id, true))
     }
 
     /// "Testar com a última entrada": roda só o script da integração no lugar
@@ -1471,7 +1639,7 @@ impl<H: RunHost> Runs<H> {
             "este nó ainda não rodou: execute o grafo uma vez antes de testar com a última entrada",
         )?;
         let single = super::integration::test_graph(&graph, node_id, &integration.id)?;
-        self.begin(single, vec![integration], Some(seed))
+        self.begin(single, vec![integration], Some(seed), None)
     }
 
     /// O ▶ num nó de integração manual de um run rodando.
@@ -1488,12 +1656,14 @@ impl<H: RunHost> Runs<H> {
     }
 
     /// `seed`: `in/` a copiar para o único nó (teste de integração). No teste
-    /// o nó manual não espera ▶ — o clique em Testar já é o ▶.
+    /// o nó manual não espera ▶ — o clique em Testar já é o ▶. `terminal`: o
+    /// nó Terminal da sessão ao vivo ([`Runs::open_terminal`]).
     fn begin(
         &self,
         mut graph: Graph,
         integrations: Vec<Integration>,
         seed: Option<PathBuf>,
+        terminal: Option<String>,
     ) -> Result<(Run, Launching), String> {
         if let Some(bad) = graph.nodes.iter().find(|n| !safe_component(&n.id)) {
             return Err(format!(
@@ -1528,6 +1698,7 @@ impl<H: RunHost> Runs<H> {
             .collect();
         let mut sched = Scheduler::new(&graph, run_id.clone(), now());
         sched.run.test = seed.is_some();
+        sched.run.terminal = terminal;
         sched.run.number = self.next_number(&graph.id);
         if seed.is_none() {
             for id in super::integration::manual_nodes(&graph, &integrations) {
@@ -1627,12 +1798,22 @@ impl<H: RunHost> Runs<H> {
     }
 
     pub fn stop(&self, run_id: &str) -> Result<(), String> {
+        self.halt(run_id, false)
+    }
+
+    /// O ■ Parar (`closing` falso) ou o fechar do Terminal da sessão ao vivo
+    /// (`closing`: [`Scheduler::close_live`]).
+    fn halt(&self, run_id: &str, closing: bool) -> Result<(), String> {
         // Tudo com `active` na mão: quem termina de subir uma sessão olha
         // `active` e `stopped` sob o mesmo lock (ver `advance`).
         let (stopped, agents) = {
             let mut active = self.active.lock();
             let stopped = active.remove(run_id).map(|mut a| {
-                let kill = a.sched.stop(now());
+                let kill = if closing {
+                    a.sched.close_live(now())
+                } else {
+                    a.sched.stop(now())
+                };
                 (a.sched.snapshot(), kill)
             });
             let agents = self
@@ -1889,6 +2070,33 @@ impl<H: RunHost> Runs<H> {
             } => self.launch_script(run_id, &start, command, *output, true),
             NodeKind::Browser { url } => Launched::Finished(browser_outcome(&start, url)),
             NodeKind::Service { source } => self.launch_service(run_id, &start, source.clone()),
+            NodeKind::Terminal { .. } => self.launch_terminal(run_id, &start),
+        }
+    }
+
+    /// O shell do nó Terminal. Fica rodando (não é agente que fecha turno:
+    /// o run não assenta) até sair; aí a sessão ao vivo fecha.
+    fn launch_terminal(&self, run_id: &str, start: &Start) -> Launched {
+        let me = self.me.clone();
+        let (run, node, attempt) = (run_id.to_string(), start.node.id.clone(), start.attempt);
+        let on_exit = Box::new(move || {
+            if let Some(runs) = me.upgrade() {
+                runs.terminal_exited(&run, &node, attempt);
+            }
+        });
+        let launch = ShellLaunch {
+            title: start.node.title.clone(),
+            cwd: start.node_dir.clone(),
+        };
+        match self.host.spawn_shell(launch, on_exit) {
+            Ok(session) => {
+                self.terminals.lock().insert(
+                    session.clone(),
+                    (run_id.to_string(), start.node.id.clone(), attempt),
+                );
+                Launched::Session(session)
+            }
+            Err(e) => Launched::Finished(Outcome::failed(format!("abrir o terminal: {e}"))),
         }
     }
 
@@ -2272,6 +2480,10 @@ impl<H: RunHost> Runs<H> {
                 self.browser_action(run_id, orchestrator, node.as_deref(), action)
             }
             ToolCall::Peers => self.peers(run_id, orchestrator),
+            ToolCall::Finish if self.is_terminal(run_id, orchestrator) => Err(
+                "orbit_finish não vale no Terminal: saia do claude com /exit (o shell segue aberto)"
+                    .into(),
+            ),
             ToolCall::Finish => self.finish_agent(run_id, orchestrator),
             ToolCall::Send { to, text } => {
                 let waiting = self.send_message(run_id, orchestrator, &to, &text)?;
@@ -4199,6 +4411,16 @@ fn talk_peers(edges: &[Edge], agent: &str) -> Vec<String> {
     peers
 }
 
+impl<H: RunHost> Runs<H> {
+    /// `node` é o nó Terminal da sessão ao vivo `run_id`.
+    fn is_terminal(&self, run_id: &str, node: &str) -> bool {
+        self.active
+            .lock()
+            .get(run_id)
+            .is_some_and(|a| a.sched.run.terminal.as_deref() == Some(node))
+    }
+}
+
 fn is_created(a: &Active, id: &str) -> bool {
     a.sched.run.created.iter().any(|c| c.node.id == id)
 }
@@ -4302,6 +4524,55 @@ impl RunHost for TauriHost {
                 Some(tap),
                 move |id| {
                     let state = handle.state::<crate::AppState>();
+                    state.sessions.set_status(
+                        &handle,
+                        id,
+                        crate::session::SessionStatus::Exited { code: -1 },
+                    );
+                    on_exit();
+                },
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(session.id.to_string())
+    }
+
+    /// O `create_shell_session` da aba Terminal (shell, integração OSC 133 /
+    /// ZDOTDIR e env do dono), com `SessionOwner::Orbit`: só no canvas,
+    /// nunca na grade nem no banco (o scrollback não é gravado).
+    fn spawn_shell(
+        &self,
+        launch: ShellLaunch,
+        on_exit: Box<dyn FnOnce() + Send>,
+    ) -> Result<String, String> {
+        use tauri::Manager;
+        let state = self.app.state::<crate::AppState>();
+        let handle = self.app.clone();
+        let opts = crate::session::CreateSessionOpts {
+            kind: crate::session::SessionKind::Shell,
+            title: Some(launch.title),
+            cwd: Some(launch.cwd),
+            cols: 100,
+            rows: 30,
+            worktree_task: None,
+            attach_existing: false,
+            shell: None,
+            initial_prompt: None,
+            opened_by_gate: false,
+            resume_conversation: None,
+            agent_model: None,
+            prepared_worktree: None,
+        };
+        let session = state
+            .sessions
+            .create_shell_session_as(
+                self.app.clone(),
+                &state.pty_pool,
+                opts,
+                crate::session::SessionOwner::Orbit,
+                move |id| {
+                    let state = handle.state::<crate::AppState>();
+                    // O `claude` que rodava nele: socket de hooks e subagentes.
+                    crate::teardown_agent_session(&handle, &state, id);
                     state.sessions.set_status(
                         &handle,
                         id,
@@ -4916,6 +5187,8 @@ mod tests {
         owner: talk::OwnerInput,
         /// As ferramentas de navegador que chegaram ao host: (nó, quem, ação).
         browser: Mutex<Vec<(String, String, AgentAction)>>,
+        /// Os shells de nó Terminal abertos.
+        shells: Mutex<Vec<ShellLaunch>>,
     }
 
     impl PtyHost {
@@ -5006,6 +5279,20 @@ mod tests {
                 )
                 .map_err(|e| e.to_string())?;
             Ok(id.to_string())
+        }
+
+        /// Sem shell de verdade: a sessão sai por [`PtyHost::exit_agent`]
+        /// (o `exit`) ou pelo `kill`.
+        fn spawn_shell(
+            &self,
+            launch: ShellLaunch,
+            on_exit: Box<dyn FnOnce() + Send>,
+        ) -> Result<String, String> {
+            self.shells.lock().push(launch);
+            let session = format!("terminal-{}", uuid::Uuid::new_v4());
+            self.exits.lock().insert(session.clone(), on_exit);
+            self.spawned.lock().push(session.clone());
+            Ok(session)
         }
 
         fn kill(&self, session_id: &str) {
@@ -5126,6 +5413,7 @@ mod tests {
             multiline: Mutex::new(true),
             owner: talk::OwnerInput::default(),
             browser: Mutex::new(Vec::new()),
+            shells: Mutex::new(Vec::new()),
         });
         (Runs::new(Arc::clone(&host), store, Some(root)), host, app)
     }
@@ -8807,5 +9095,261 @@ mod tests {
         });
         assert!(in_dir.join("log.txt").is_file());
         runs.stop(&run.id).unwrap();
+    }
+
+    fn terminal(id: &str, dir: &Path) -> Node {
+        node(
+            id,
+            NodeKind::Terminal {
+                dir: dir.to_string_lossy().into_owned(),
+            },
+        )
+    }
+
+    impl<H: RunHost> Runs<H> {
+        fn open_terminal_now(&self, graph: Graph, node_id: &str) -> Result<Run, String> {
+            let (run, launching) = self.open_terminal_launching(graph, node_id)?;
+            launching.join().unwrap();
+            Ok(self.get(&run.id).unwrap_or(run))
+        }
+    }
+
+    /// O shell do nó Terminal aberto (a sessão dele no run).
+    fn terminal_session(runs: &Runs<Arc<PtyHost>>, run: &str, node: &str) -> String {
+        wait_until(runs, run, "o shell abre", |r| {
+            r.nodes[node].session_id.is_some()
+        })
+        .nodes[node]
+            .session_id
+            .clone()
+            .unwrap()
+    }
+
+    /// Abrir o Terminal: sessão ao vivo só com ele (o resto do grafo não
+    /// roda), o shell na pasta do nó, `running` e sem assentar enquanto o
+    /// shell vive. Um Terminal por grafo; o ▶ recusa em vez de matar o shell.
+    #[test]
+    fn terminal_opens_a_live_run_that_never_settles_and_refuses_a_second_and_the_play() {
+        let dir = tempfile::tempdir().unwrap();
+        let work = dir.path().join("api");
+        std::fs::create_dir(&work).unwrap();
+        let (runs, host, _app) = pty_runs(dir.path().join("runs"));
+        runs.settle_ms
+            .store(0, std::sync::atomic::Ordering::Relaxed);
+        let g = graph(
+            vec![
+                terminal("t", &work),
+                terminal("t2", &work),
+                process("p", "sleep 30"),
+            ],
+            vec![],
+        );
+        let run = runs.open_terminal_now(g.clone(), "t").unwrap();
+        assert_eq!(run.terminal.as_deref(), Some("t"));
+        assert_eq!(run.status, RunStatus::Running);
+        assert_eq!(run.nodes.keys().collect::<Vec<_>>(), ["t"]);
+        let shell = terminal_session(&runs, &run.id, "t");
+        assert_eq!(host.shells.lock()[0].cwd, work);
+
+        std::thread::sleep(Duration::from_millis(30));
+        runs.publish_current(&run.id);
+        let r = runs.get(&run.id).unwrap();
+        assert_eq!(r.status, RunStatus::Running, "{r:?}");
+        assert!(!r.settled, "a sessão ao vivo não assenta: {r:?}");
+        assert_eq!(r.nodes["t"].status, NodeStatus::Running);
+
+        let err = runs.open_terminal_now(g.clone(), "t2").unwrap_err();
+        assert!(err.contains("\"t\" já está aberto"), "{err}");
+        assert!(err.contains("um Terminal por grafo"), "{err}");
+        let err = runs.open_terminal_now(g.clone(), "t").unwrap_err();
+        assert!(err.contains("um Terminal por grafo"), "{err}");
+        let err = runs.start_now(g.clone(), vec![]).unwrap_err();
+        assert!(
+            err.contains("feche o Terminal ou ■ Pare a sessão ao vivo antes do ▶"),
+            "{err}"
+        );
+        assert!(err.contains("\"t\""), "{err}");
+        assert!(!host.killed.lock().contains(&shell), "o ▶ não mata o shell");
+        assert_eq!(host.shells.lock().len(), 1);
+
+        let err = runs.open_terminal_now(g.clone(), "p").unwrap_err();
+        assert!(err.contains("\"p\": não é um nó Terminal"), "{err}");
+        runs.stop(&run.id).unwrap();
+    }
+
+    /// Pasta que não existe: recusa citando o nó, sem abrir shell.
+    #[test]
+    fn terminal_in_a_missing_folder_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let (runs, host, _app) = pty_runs(dir.path().join("runs"));
+        let g = graph(vec![terminal("t", &dir.path().join("sumiu"))], vec![]);
+        let err = runs.open_terminal_now(g, "t").unwrap_err();
+        assert!(err.starts_with("\"t\": a pasta"), "{err}");
+        assert!(host.shells.lock().is_empty());
+    }
+
+    /// Fechar o Terminal (⋯ → Fechar) mata o shell, para os nós criados na
+    /// sessão ao vivo (o agente vivo depois do turno inclusive) e fecha o
+    /// run concluído. As ferramentas valem só com ele aberto.
+    #[test]
+    fn closing_the_terminal_closes_the_live_run_and_stops_what_it_created() {
+        use serde_json::json;
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        init_repo(&repo);
+        let (runs, host, _app) = pty_runs(dir.path().join("runs"));
+        let g = graph(vec![terminal("t", &repo)], vec![]);
+        runs.store.save_orbit_graph(&g, true, None).unwrap();
+        let run = runs.open_terminal_now(g, "t").unwrap();
+        let shell = terminal_session(&runs, &run.id, "t");
+
+        assert!(runs.terminal_tools("outra-sessao").is_none());
+        let tools = runs.terminal_tools(&shell).expect("o shell do Terminal");
+        assert!(tools.can_create);
+        let rev = tools
+            .call(
+                "orbit_create_agent",
+                &json!({"title": "revisor", "runner": "claude", "prompt": "revise", "dir": repo}),
+            )
+            .unwrap()["node_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let r = wait_status(&runs, &run.id, &rev, NodeStatus::Done);
+        let agent = r.nodes[&rev].session_id.clone().unwrap();
+        assert_eq!(r.created[0].created_by, "t");
+        assert_eq!(r.status, RunStatus::Running, "{r:?}");
+        let err = tools.call("orbit_finish", &json!({})).unwrap_err();
+        assert!(err.contains("orbit_finish não vale no Terminal"), "{err}");
+
+        runs.close_terminal("g-1", "t").unwrap();
+        let r = runs.get(&run.id).unwrap();
+        assert_eq!(r.status, RunStatus::Done, "{r:?}");
+        assert_eq!(r.nodes["t"].status, NodeStatus::Done);
+        assert!(r.finished_at.is_some());
+        let killed = host.killed.lock().clone();
+        assert!(killed.contains(&shell), "{killed:?}");
+        assert!(killed.contains(&agent), "{killed:?}");
+        assert!(r.live_agents.is_empty(), "{r:?}");
+        assert!(runs.terminal_tools(&shell).is_none());
+        let err = tools
+            .call(
+                "orbit_create_agent",
+                &json!({"title": "outro", "runner": "claude", "prompt": "x", "dir": repo}),
+            )
+            .unwrap_err();
+        assert!(err.contains("já terminou"), "{err}");
+        // Já fechado: nada a fazer.
+        runs.close_terminal("g-1", "t").unwrap();
+        // E abre de novo, numa sessão ao vivo nova.
+        let g = graph(vec![terminal("t", &repo)], vec![]);
+        let again = runs.open_terminal_now(g, "t").unwrap();
+        assert_ne!(again.id, run.id);
+        runs.close_terminal("g-1", "t").unwrap();
+    }
+
+    /// `exit` no shell: a sessão ao vivo fecha sozinha, e o processo criado
+    /// nela para (process group).
+    #[cfg(unix)]
+    #[test]
+    fn exit_in_the_terminal_closes_the_live_run() {
+        use serde_json::json;
+        let dir = tempfile::tempdir().unwrap();
+        let (runs, host, _app) = pty_runs(dir.path().join("runs"));
+        let g = graph(vec![terminal("t", dir.path())], vec![]);
+        let run = runs.open_terminal_now(g, "t").unwrap();
+        let shell = terminal_session(&runs, &run.id, "t");
+        let tools = runs.terminal_tools(&shell).unwrap();
+        let out = tools
+            .call(
+                "orbit_create_process",
+                &json!({"title": "api", "command": "sleep 30", "dir": dir.path()}),
+            )
+            .unwrap();
+        let id = out["node_id"].as_str().unwrap().to_string();
+        let process = wait_until(&runs, &run.id, "o processo sobe", |r| {
+            r.nodes[&id].session_id.is_some()
+        })
+        .nodes[&id]
+            .session_id
+            .clone()
+            .unwrap();
+
+        host.exit_agent(&shell);
+        let r = wait_until(&runs, &run.id, "a sessão ao vivo fecha", |r| {
+            r.status != RunStatus::Running
+        });
+        assert_eq!(r.status, RunStatus::Done, "{r:?}");
+        assert_eq!(r.nodes["t"].status, NodeStatus::Done);
+        assert_eq!(r.nodes[&id].status, NodeStatus::Stopped);
+        assert!(host.killed.lock().contains(&process));
+        assert!(runs.terminal_tools(&shell).is_none());
+    }
+
+    /// ■ Parar na sessão ao vivo: o shell morre junto e o run fica parado.
+    #[test]
+    fn stop_kills_the_terminal_shell() {
+        let dir = tempfile::tempdir().unwrap();
+        let (runs, host, _app) = pty_runs(dir.path().join("runs"));
+        let g = graph(vec![terminal("t", dir.path())], vec![]);
+        let run = runs.open_terminal_now(g, "t").unwrap();
+        let shell = terminal_session(&runs, &run.id, "t");
+        runs.stop(&run.id).unwrap();
+        let r = runs.get(&run.id).unwrap();
+        assert_eq!(r.status, RunStatus::Stopped, "{r:?}");
+        assert!(host.killed.lock().contains(&shell));
+        assert!(runs.terminal_tools(&shell).is_none());
+    }
+
+    /// O app fechou com o Terminal aberto: o boot fecha a sessão ao vivo
+    /// como as outras, e nenhum shell abre sozinho.
+    #[test]
+    fn boot_closes_a_leftover_live_run_and_opens_nothing() {
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        let dir = tempfile::tempdir().unwrap();
+        let g = graph(vec![terminal("t", dir.path())], vec![]);
+        let mut s = Scheduler::new(&g, "r-vivo".into(), 1);
+        s.run.terminal = Some("t".into());
+        s.mark_running("t", 2);
+        s.set_session("t", "shell-morto".into());
+        store.save_orbit_run(&s.snapshot()).unwrap();
+
+        let (runs, host, _app) = pty_runs_on(dir.path().join("runs"), Arc::clone(&store));
+        let r = store.get_orbit_run("r-vivo").unwrap().unwrap();
+        assert_eq!(r.status, RunStatus::Stopped, "{r:?}");
+        assert_eq!(r.terminal.as_deref(), Some("t"));
+        assert_eq!(r.nodes["t"].status, NodeStatus::Stopped);
+        assert_eq!(r.nodes["t"].reason.as_deref(), Some(APP_CLOSED));
+        assert_eq!(r.nodes["t"].session_id, None);
+        assert!(runs.terminal_tools("shell-morto").is_none());
+        assert!(host.shells.lock().is_empty());
+    }
+
+    /// O fechar da sessão ao vivo: o Terminal fica pronto, o criado que
+    /// rodava para, e o run fecha concluído (não parado).
+    #[test]
+    fn close_live_keeps_the_terminal_done_and_stops_the_rest() {
+        let dir = tempfile::tempdir().unwrap();
+        let g = graph(
+            vec![terminal("t", dir.path()), process("c", "sleep 30")],
+            vec![],
+        );
+        let mut s = Scheduler::new(&g, "r".into(), 1);
+        s.run.terminal = Some("t".into());
+        s.mark_running("t", 2);
+        s.set_session("t", "shell".into());
+        s.mark_running("c", 2);
+        s.set_session("c", "proc".into());
+        assert!(!s.only_live_agents());
+        let mut kill = s.close_live(3);
+        kill.sort();
+        assert_eq!(kill, ["proc", "shell"]);
+        assert_eq!(s.run.status, RunStatus::Done);
+        assert_eq!(status(&s, "t"), NodeStatus::Done);
+        assert_eq!(status(&s, "c"), NodeStatus::Stopped);
+        assert_eq!(s.run.finished_at, Some(3));
+        // Já fechado: nada muda.
+        assert!(s.close_live(4).is_empty());
+        assert_eq!(s.run.finished_at, Some(3));
     }
 }
