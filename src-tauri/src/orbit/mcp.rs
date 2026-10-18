@@ -23,6 +23,45 @@ pub const MODE: &str = "_orbit-mcp";
 /// anuncia as `orbit_create_*` (sem cascata). Quem recusa de verdade é o
 /// core; isto só evita oferecer o que ele recusaria.
 pub const NO_CREATE_ARG: &str = "--no-create";
+/// Segundo argumento do `claude`/`codex` digitado no shell de um nó Terminal:
+/// o `tools/list` não anuncia `orbit_finish` (a sessão é do dono, que sai do
+/// agente) nem fala do `$BROWSER`, que o shell dele não tem. O core recusa
+/// `orbit_finish` do Terminal de todo jeito.
+pub const TERMINAL_ARG: &str = "--terminal";
+
+/// Quem fala com o servidor: o que ele anuncia e aceita.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Caller {
+    /// Agente do grafo do dono: tudo.
+    Node,
+    /// Agente criado por outro ([`NO_CREATE_ARG`]): sem `orbit_create_*`.
+    Created,
+    /// O agente digitado no nó Terminal ([`TERMINAL_ARG`]): sem `orbit_finish`.
+    Terminal,
+}
+
+impl Caller {
+    fn from_arg(arg: Option<&str>) -> Self {
+        match arg {
+            Some(NO_CREATE_ARG) => Self::Created,
+            Some(TERMINAL_ARG) => Self::Terminal,
+            _ => Self::Node,
+        }
+    }
+
+    fn can_create(self) -> bool {
+        self != Self::Created
+    }
+
+    /// A ferramenta aparece no `tools/list` deste chamador.
+    fn lists(self, tool: &str) -> bool {
+        match self {
+            Self::Node => true,
+            Self::Created => !super::orchestrator::is_create_tool(tool),
+            Self::Terminal => tool != "orbit_finish",
+        }
+    }
+}
 /// Nome do servidor no CLI do agente (as ferramentas viram `mcp__orbit__*`
 /// no Claude).
 pub const SERVER_NAME: &str = "orbit";
@@ -72,10 +111,10 @@ pub fn maybe_run_orbit_mcp_mode() -> Option<i32> {
         return None;
     }
     let socket = std::env::var_os("TYBA_HOOK_SOCKET").map(PathBuf::from);
-    let can_create = std::env::args().nth(2).as_deref() != Some(NO_CREATE_ARG);
+    let caller = Caller::from_arg(std::env::args().nth(2).as_deref());
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
-    serve(stdin.lock(), stdout.lock(), can_create, |tool, args| {
+    serve(stdin.lock(), stdout.lock(), caller, |tool, args| {
         call_core(socket.as_deref(), tool, args)
     });
     Some(0)
@@ -201,7 +240,7 @@ fn call_core(socket: Option<&Path>, tool: &str, args: &Value) -> Result<Value, S
 pub fn serve<R: BufRead, W: Write>(
     reader: R,
     mut writer: W,
-    can_create: bool,
+    caller: Caller,
     mut call: impl FnMut(&str, &Value) -> Result<Value, String>,
 ) {
     for line in reader.lines() {
@@ -209,7 +248,7 @@ pub fn serve<R: BufRead, W: Write>(
         if line.trim().is_empty() {
             continue;
         }
-        if let Some(response) = handle_line(&line, can_create, &mut call) {
+        if let Some(response) = handle_line(&line, caller, &mut call) {
             let Ok(mut out) = serde_json::to_vec(&response) else {
                 continue;
             };
@@ -234,11 +273,11 @@ fn ok(id: Value, result: Value) -> Value {
 }
 
 /// Uma mensagem JSON-RPC → a resposta, ou `None` (notificação, resposta do
-/// cliente a algo nosso). Sem `can_create`, as `orbit_create_*` não
-/// aparecem nem são aceitas.
+/// cliente a algo nosso). Agente criado ([`Caller::Created`]): as
+/// `orbit_create_*` não aparecem nem são aceitas.
 pub fn handle_line(
     line: &str,
-    can_create: bool,
+    caller: Caller,
     call: &mut impl FnMut(&str, &Value) -> Result<Value, String>,
 ) -> Option<Value> {
     let message: Value = match serde_json::from_str(line) {
@@ -273,15 +312,15 @@ pub fn handle_line(
     let id = id?;
     let params = obj.get("params").cloned().unwrap_or(Value::Null);
     Some(match method {
-        "initialize" => ok(id, initialize_result(&params, can_create)),
+        "initialize" => ok(id, initialize_result(&params, caller)),
         "ping" => ok(id, json!({})),
-        "tools/list" => ok(id, json!({"tools": tool_list(can_create)})),
-        "tools/call" => tools_call(id, &params, can_create, call),
+        "tools/list" => ok(id, json!({"tools": tool_list(caller)})),
+        "tools/call" => tools_call(id, &params, caller, call),
         _ => error(id, METHOD_NOT_FOUND, "Method not found"),
     })
 }
 
-fn initialize_result(params: &Value, can_create: bool) -> Value {
+fn initialize_result(params: &Value, caller: Caller) -> Value {
     let asked = params.get("protocolVersion").and_then(Value::as_str);
     let version = asked
         .filter(|v| PROTOCOL_VERSIONS.contains(v))
@@ -290,8 +329,8 @@ fn initialize_result(params: &Value, can_create: bool) -> Value {
         "protocolVersion": version,
         "capabilities": {"tools": {"listChanged": false}},
         "serverInfo": {"name": "tyba-orbit", "version": env!("CARGO_PKG_VERSION")},
-        "instructions": if can_create {
-            "Ferramentas do Orbit do TYBA. Escreva e marque o plano com orbit_plan. \
+        "instructions": match caller {
+            Caller::Node => "Ferramentas do Orbit do TYBA. Escreva e marque o plano com orbit_plan. \
             Página local num navegador ligado a você por controla: orbit_browser_open; ler e usar a página: \
             orbit_browser_snapshot, orbit_browser_click, orbit_browser_type, \
             orbit_browser_console e orbit_browser_screenshot. \
@@ -301,16 +340,26 @@ fn initialize_result(params: &Value, can_create: bool) -> Value {
             Para subir servidor, processo longo ou outro agente, crie um nó com elas \
             em vez de rodar dentro da sua sessão: o dono vê e para cada nó no canvas. \
             Página local vai num nó de navegador (orbit_create_browser), nunca no \
-            navegador do sistema."
-        } else {
-            "Ferramentas do Orbit do TYBA. Escreva e marque o plano com orbit_plan. \
+            navegador do sistema.",
+            Caller::Terminal => "Ferramentas do Orbit do TYBA. Escreva e marque o plano com orbit_plan. \
+            Página local num navegador ligado a você por controla: orbit_browser_open; ler e usar a página: \
+            orbit_browser_snapshot, orbit_browser_click, orbit_browser_type, \
+            orbit_browser_console e orbit_browser_screenshot. \
+            Agente ligado por conversa: orbit_peers e orbit_send. Nota ligada por \
+            memória: orbit_note_read e orbit_note_write. \
+            Você roda no shell de um nó Terminal: a sessão é do dono, que sai de você quando quiser. \
+            Para subir servidor, processo longo ou outro agente, crie um nó com elas \
+            em vez de rodar dentro da sua sessão: o dono vê e para cada nó no canvas. \
+            Página local vai num nó de navegador (orbit_create_browser, ou \
+            orbit_browser_open num já ligado), nunca no navegador do sistema.",
+            Caller::Created => "Ferramentas do Orbit do TYBA. Escreva e marque o plano com orbit_plan. \
             Página local num navegador ligado a você por controla: orbit_browser_open; ler e usar a página: \
             orbit_browser_snapshot, orbit_browser_click, orbit_browser_type, \
             orbit_browser_console e orbit_browser_screenshot. \
             Agente ligado por conversa: orbit_peers e orbit_send. Nota ligada por \
             memória: orbit_note_read e orbit_note_write. \
             Trabalho acabado: orbit_finish fecha a sua sessão. \
-            Você foi criado por outro agente e não cria nós."
+            Você foi criado por outro agente e não cria nós.",
         },
     })
 }
@@ -318,13 +367,14 @@ fn initialize_result(params: &Value, can_create: bool) -> Value {
 fn tools_call(
     id: Value,
     params: &Value,
-    can_create: bool,
+    caller: Caller,
     call: &mut impl FnMut(&str, &Value) -> Result<Value, String>,
 ) -> Value {
     let Some(name) = params.get("name").and_then(Value::as_str) else {
         return error(id, INVALID_PARAMS, "tools/call sem name");
     };
-    if !TOOLS.contains(&name) || (!can_create && super::orchestrator::is_create_tool(name)) {
+    if !TOOLS.contains(&name) || (!caller.can_create() && super::orchestrator::is_create_tool(name))
+    {
         return error(id, INVALID_PARAMS, &format!("Unknown tool: {name}"));
     }
     let args = match params.get("arguments") {
@@ -353,9 +403,15 @@ fn string_prop(description: &str) -> Value {
     json!({"type": "string", "description": description})
 }
 
-/// As ferramentas como o `tools/list` as anuncia; sem `can_create`, menos
-/// as `orbit_create_*`.
-pub fn tool_list(can_create: bool) -> Vec<Value> {
+/// As ferramentas como o `tools/list` as anuncia para `caller`
+/// ([`Caller::lists`]).
+pub fn tool_list(caller: Caller) -> Vec<Value> {
+    // O shell do Terminal é o do dono: sem o shim do `$BROWSER`.
+    let shim = if caller == Caller::Terminal {
+        ""
+    } else {
+        " $BROWSER in your shell does the same on your most recent linked browser."
+    };
     let dir = string_prop("Absolute path of an existing folder where it runs.");
     let all = vec![
         json!({
@@ -472,8 +528,7 @@ pub fn tool_list(can_create: bool) -> Vec<Value> {
                 "Open a local page in a Browser node linked to you by a control link (one \
                  you created, or one the owner linked to you on the canvas); the owner sees \
                  it on the canvas. Only http/https on {}. file:// is refused: serve the \
-                 folder on localhost and open that. $BROWSER in your shell does the same \
-                 on your most recent linked browser. Returns the node_id.",
+                 folder on localhost and open that.{shim} Returns the node_id.",
                 super::service::LOCAL_HOSTS
             ),
             "inputSchema": {
@@ -704,18 +759,25 @@ pub fn tool_list(can_create: bool) -> Vec<Value> {
         }),
     ];
     all.into_iter()
-        .filter(|t| {
-            can_create || !super::orchestrator::is_create_tool(t["name"].as_str().unwrap_or(""))
-        })
+        .filter(|t| caller.lists(t["name"].as_str().unwrap_or("")))
         .collect()
 }
 
-/// Os argumentos do servidor: [`MODE`] e, no agente criado, [`NO_CREATE_ARG`].
-fn server_args(can_create: bool) -> Vec<&'static str> {
+/// Os argumentos do servidor: [`MODE`] e, no agente criado, [`NO_CREATE_ARG`];
+/// no Terminal, [`TERMINAL_ARG`].
+fn server_args(caller: Caller) -> Vec<&'static str> {
+    match caller {
+        Caller::Node => vec![MODE],
+        Caller::Created => vec![MODE, NO_CREATE_ARG],
+        Caller::Terminal => vec![MODE, TERMINAL_ARG],
+    }
+}
+
+fn caller_of(can_create: bool) -> Caller {
     if can_create {
-        vec![MODE]
+        Caller::Node
     } else {
-        vec![MODE, NO_CREATE_ARG]
+        Caller::Created
     }
 }
 
@@ -723,12 +785,21 @@ fn server_args(can_create: bool) -> Vec<&'static str> {
 /// [`MODE`], com o socket da sessão no env (o CLI não repassa o env inteiro
 /// ao servidor stdio).
 pub fn claude_config(exe: &Path, socket: &Path, can_create: bool) -> Value {
+    config_for(exe, socket, caller_of(can_create))
+}
+
+/// [`claude_config`] do `claude` digitado no nó Terminal ([`Caller::Terminal`]).
+pub fn terminal_claude_config(exe: &Path, socket: &Path) -> Value {
+    config_for(exe, socket, Caller::Terminal)
+}
+
+fn config_for(exe: &Path, socket: &Path, caller: Caller) -> Value {
     json!({
         "mcpServers": {
             SERVER_NAME: {
                 "type": "stdio",
                 "command": exe.to_string_lossy(),
-                "args": server_args(can_create),
+                "args": server_args(caller),
                 "env": {"TYBA_HOOK_SOCKET": socket.to_string_lossy()},
             }
         }
@@ -754,15 +825,49 @@ pub fn agent_args(
     claude_config_path: &Path,
     can_create: bool,
 ) -> Vec<String> {
+    let caller = caller_of(can_create);
+    args_for(
+        runner,
+        exe,
+        socket,
+        claude_config_path,
+        caller,
+        &agent_prompt(can_create),
+    )
+}
+
+/// [`agent_args`] do `claude`/`codex` digitado no nó Terminal: o servidor com
+/// [`TERMINAL_ARG`] e o [`terminal_prompt`].
+pub fn terminal_agent_args(
+    runner: &crate::session::AgentRunnerKind,
+    exe: &Path,
+    socket: &Path,
+    claude_config_path: &Path,
+) -> Vec<String> {
+    let prompt = terminal_prompt();
+    args_for(
+        runner,
+        exe,
+        socket,
+        claude_config_path,
+        Caller::Terminal,
+        &prompt,
+    )
+}
+
+fn args_for(
+    runner: &crate::session::AgentRunnerKind,
+    exe: &Path,
+    socket: &Path,
+    claude_config_path: &Path,
+    caller: Caller,
+    prompt: &str,
+) -> Vec<String> {
     use crate::agent::codex_hooks::toml_string;
-    let prompt = agent_prompt(can_create);
     match runner {
         crate::session::AgentRunnerKind::Codex => {
             let key = format!("mcp_servers.{SERVER_NAME}");
-            let args: Vec<String> = server_args(can_create)
-                .into_iter()
-                .map(toml_string)
-                .collect();
+            let args: Vec<String> = server_args(caller).into_iter().map(toml_string).collect();
             vec![
                 "--config".into(),
                 format!("{key}.command={}", toml_string(&exe.to_string_lossy())),
@@ -774,7 +879,7 @@ pub fn agent_args(
                     toml_string(&socket.to_string_lossy())
                 ),
                 "--config".into(),
-                format!("developer_instructions={}", toml_string(&prompt)),
+                format!("developer_instructions={}", toml_string(prompt)),
             ]
         }
         _ => vec![
@@ -795,6 +900,31 @@ pub fn agent_prompt(can_create: bool) -> String {
         NO_CREATE_PROMPT
     };
     format!("{AGENT_PROMPT} {part}")
+}
+
+/// O trecho do [`AGENT_PROMPT`] sobre o `$BROWSER`, que o shell do Terminal
+/// (o do dono) não tem.
+const BROWSER_SHIM_PROMPT: &str =
+    "(o $BROWSER do seu shell abre no ligado mais recente; arquivo local, sirva por localhost)";
+/// O fim do [`AGENT_PROMPT`] sobre `orbit_finish`, que o core recusa no Terminal.
+const FINISH_PROMPT: &str = "Quando o dono disser que acabou, ou o trabalho estiver feito e \
+nada mais rodando, você pode chamar orbit_finish: ela fecha a sua sessão (só a sua) quando o \
+turno terminar.";
+
+/// O [`agent_prompt`] do `claude`/`codex` digitado no shell de um nó
+/// Terminal: sem o `$BROWSER` (o shell é o do dono, sem o shim) e sem
+/// `orbit_finish` (a sessão é do dono; o core recusa).
+pub fn terminal_prompt() -> String {
+    let base = AGENT_PROMPT
+        .replace(
+            BROWSER_SHIM_PROMPT,
+            "(arquivo local, sirva por localhost; sem navegador ligado, crie um com orbit_create_browser)",
+        )
+        .replace(
+            FINISH_PROMPT,
+            "Você roda no shell de um nó Terminal: a sessão é do dono, e quem sai de você é ele.",
+        );
+    format!("{base} {CREATE_PROMPT}")
 }
 
 /// O que vale para todo agente do Orbit: plano sempre escrito e marcado, o
@@ -860,7 +990,7 @@ mod tests {
     }
 
     fn one(line: &str) -> Option<Value> {
-        handle_line(line, true, &mut no_call)
+        handle_line(line, Caller::Node, &mut no_call)
     }
 
     #[test]
@@ -940,7 +1070,7 @@ mod tests {
     fn created_agent_lists_and_calls_no_create_tool() {
         let list = handle_line(
             r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#,
-            false,
+            Caller::Created,
             &mut no_call,
         )
         .unwrap();
@@ -972,7 +1102,7 @@ mod tests {
         );
         let r = handle_line(
             r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"orbit_create_agent","arguments":{}}}"#,
-            false,
+            Caller::Created,
             &mut no_call,
         )
         .unwrap();
@@ -980,7 +1110,7 @@ mod tests {
         let mut seen = Vec::new();
         handle_line(
             r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"orbit_plan","arguments":{"steps":[]}}}"#,
-            false,
+            Caller::Created,
             &mut |tool: &str, _: &Value| {
                 seen.push(tool.to_string());
                 Ok(json!({}))
@@ -994,7 +1124,7 @@ mod tests {
         let mut call = |_: &str, _: &Value| Ok(Value::String("[página x]\n- text: oi".into()));
         let r = handle_line(
             r#"{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"orbit_browser_snapshot","arguments":{}}}"#,
-            true,
+            Caller::Node,
             &mut call,
         )
         .unwrap();
@@ -1018,7 +1148,7 @@ mod tests {
         };
         let r = handle_line(
             r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"orbit_create_process","arguments":{"title":"api","command":"bun run dev","dir":"/tmp"}}}"#,
-            true,
+            Caller::Node,
             &mut call,
         )
         .unwrap();
@@ -1033,7 +1163,7 @@ mod tests {
         // Erro da ferramenta é resultado com isError, não erro de protocolo.
         let r = handle_line(
             r#"{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"orbit_stop_node","arguments":{"node_id":"x"}}}"#,
-            true,
+            Caller::Node,
             &mut call,
         )
         .unwrap();
@@ -1043,7 +1173,7 @@ mod tests {
         // Sem arguments vira objeto vazio (o core recusa o que faltar).
         handle_line(
             r#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"orbit_node_status"}}"#,
-            true,
+            Caller::Node,
             &mut call,
         );
         assert_eq!(seen.len(), 3);
@@ -1227,7 +1357,7 @@ mod tests {
             "\n",
         );
         let mut out = Vec::new();
-        serve(input.as_bytes(), &mut out, true, no_call);
+        serve(input.as_bytes(), &mut out, Caller::Node, no_call);
         let text = String::from_utf8(out).unwrap();
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines.len(), 2, "{text}");
@@ -1372,5 +1502,60 @@ mod tests {
             parsed["env"]["TYBA_HOOK_SOCKET"].as_str(),
             Some("/tmp/tyba-abc/hook.sock")
         );
+    }
+
+    /// O agente digitado no nó Terminal (`--terminal`): o `tools/list` não
+    /// anuncia `orbit_finish` (o core recusa) e nada fala do `$BROWSER`, que
+    /// o shell do dono não tem; cria nós como o do grafo.
+    #[test]
+    fn terminal_caller_does_not_get_finish_nor_browser_shim() {
+        assert_eq!(Caller::from_arg(Some(TERMINAL_ARG)), Caller::Terminal);
+        assert_eq!(Caller::from_arg(Some(NO_CREATE_ARG)), Caller::Created);
+        assert_eq!(Caller::from_arg(None), Caller::Node);
+        let list = handle_line(
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#,
+            Caller::Terminal,
+            &mut no_call,
+        )
+        .unwrap();
+        let tools = list["result"]["tools"].as_array().unwrap();
+        let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
+        assert_eq!(names, TOOLS[..TOOLS.len() - 1]);
+        assert!(!list.to_string().contains("$BROWSER"), "{list}");
+        let init = handle_line(
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#,
+            Caller::Terminal,
+            &mut no_call,
+        )
+        .unwrap();
+        let instructions = init["result"]["instructions"].as_str().unwrap();
+        assert!(!instructions.contains("orbit_finish"), "{instructions}");
+        assert!(
+            instructions.contains("orbit_create_browser"),
+            "{instructions}"
+        );
+
+        let prompt = terminal_prompt();
+        assert!(!prompt.contains("orbit_finish"), "{prompt}");
+        assert!(!prompt.contains("$BROWSER"), "{prompt}");
+        assert!(prompt.contains("orbit_create_browser") && prompt.contains("orbit_browser_open"));
+        assert!(prompt.contains("orbit_plan") && prompt.contains(CREATE_PROMPT));
+        // Os trechos tirados existem no prompt dos nós (senão o replace não tirava nada).
+        assert!(AGENT_PROMPT.contains(BROWSER_SHIM_PROMPT));
+        assert!(AGENT_PROMPT.contains(FINISH_PROMPT));
+
+        let exe = Path::new("/x/tyba");
+        let socket = Path::new("/tmp/s.sock");
+        assert_eq!(
+            terminal_claude_config(exe, socket)["mcpServers"]["orbit"]["args"],
+            json!([MODE, TERMINAL_ARG])
+        );
+        let claude = terminal_agent_args(
+            &crate::session::AgentRunnerKind::ClaudeCode,
+            exe,
+            socket,
+            Path::new("/tmp/orbit-mcp.json"),
+        );
+        assert_eq!(claude[1], format!("--append-system-prompt={prompt}"));
     }
 }

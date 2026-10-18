@@ -957,6 +957,23 @@ fn terminal_graph(graph: &Graph, node: &Node) -> Graph {
     }
 }
 
+/// O grafo que o ▶ agenda: o salvo sem os nós Terminal (nem as arestas
+/// deles). O Terminal só abre pelo Abrir, numa sessão ao vivo
+/// ([`Runs::open_terminal`]); no ▶ ele não roda.
+fn without_terminals(mut graph: Graph) -> Graph {
+    let terminals: HashSet<String> = graph
+        .nodes
+        .iter()
+        .filter(|n| matches!(n.kind, NodeKind::Terminal { .. }))
+        .map(|n| n.id.clone())
+        .collect();
+    graph.nodes.retain(|n| !terminals.contains(&n.id));
+    graph
+        .edges
+        .retain(|e| !terminals.contains(&e.from) && !terminals.contains(&e.to));
+    graph
+}
+
 /// O nó numa mensagem de erro: o título entre aspas (o id quando não há).
 pub(super) fn node_label(node: &Node) -> String {
     let title = node.title.trim();
@@ -1397,6 +1414,10 @@ pub struct Runs<H: RunHost> {
     /// aqui que o `claude` digitado nele ganha as ferramentas
     /// ([`Runs::terminal_tools`]). Lock sempre depois de `active`.
     terminals: Mutex<HashMap<String, (String, String, u32)>>,
+    /// Grafos com um ▶ (`false`) ou um Abrir do Terminal (`true`) entre a
+    /// checagem e a entrada em `active` ([`Runs::reserve`]). Lock sempre
+    /// depois de `active`.
+    starting: Mutex<Vec<(String, bool)>>,
     /// Quanto tempo de tudo quieto assenta o run ([`SETTLE_MS`]; o teste
     /// encurta).
     settle_ms: std::sync::atomic::AtomicU64,
@@ -1421,6 +1442,25 @@ fn refresh_settled(a: &mut Active, live: &[String], now: u64, after: u64) -> boo
             !needs_idle || a.talk.idle_for(id, now).is_some_and(|t| t >= after)
         });
     a.sched.set_settled(quiet, now)
+}
+
+/// A reserva de [`Runs::reserve`]: sai de `starting` ao cair.
+struct Reserved<'a, H: RunHost> {
+    runs: &'a Runs<H>,
+    graph_id: String,
+    terminal: bool,
+}
+
+impl<H: RunHost> Drop for Reserved<'_, H> {
+    fn drop(&mut self) {
+        let mut starting = self.runs.starting.lock();
+        if let Some(i) = starting
+            .iter()
+            .position(|(g, t)| *g == self.graph_id && *t == self.terminal)
+        {
+            starting.remove(i);
+        }
+    }
 }
 
 /// A thread que sobe os nós de um run que acabou de começar.
@@ -1466,6 +1506,7 @@ impl<H: RunHost> Runs<H> {
             agents: Mutex::new(HashMap::new()),
             stopped: Mutex::new(HashSet::new()),
             terminals: Mutex::new(HashMap::new()),
+            starting: Mutex::new(Vec::new()),
             settle_ms: std::sync::atomic::AtomicU64::new(SETTLE_MS),
             me: me.clone(),
         })
@@ -1489,11 +1530,12 @@ impl<H: RunHost> Runs<H> {
     ) -> Result<(Run, Launching), String> {
         // O ▶ mata os runs de antes do grafo; matar o shell do dono por um
         // clique no ▶ seria pior que recusar.
-        if let Some(label) = self.live_terminal(&graph.id) {
-            return Err(format!(
+        let _reserved = self.reserve(&graph.id, false).map_err(|open| match open {
+            Some(label) => format!(
                 "{label} está aberto: feche o Terminal ou ■ Pare a sessão ao vivo antes do ▶"
-            ));
-        }
+            ),
+            None => "o Terminal deste grafo está abrindo: espere ou feche-o antes do ▶".into(),
+        })?;
         let previous: Vec<String> = self
             .agents
             .lock()
@@ -1505,15 +1547,36 @@ impl<H: RunHost> Runs<H> {
             // Erro aqui é só "já não havia o que parar".
             let _ = self.stop(&run_id);
         }
-        self.begin(graph, integrations, None, None)
+        self.begin(without_terminals(graph), integrations, None, None)
     }
 
-    /// O nó Terminal aberto do grafo (a sessão ao vivo dele), para as
-    /// mensagens: o título entre aspas.
-    fn live_terminal(&self, graph_id: &str) -> Option<String> {
-        self.active.lock().values().find_map(|a| {
-            let terminal = a.sched.run.terminal.as_deref()?;
-            (a.graph.id == graph_id).then(|| active_label(a, terminal))
+    /// Checa e reserva, sob o lock de `active`, a entrada de um run no grafo
+    /// até o [`Reserved`] cair (depois do `begin`): dois cliques ao mesmo
+    /// tempo não passam os dois pela checagem. `terminal`: é o Abrir de um
+    /// Terminal, que recusa qualquer outro começo em andamento; o ▶ recusa
+    /// só o de um Terminal. `Err(Some(título))`: o Terminal aberto do grafo;
+    /// `Err(None)`: outro começo que recusa este está em andamento.
+    fn reserve(&self, graph_id: &str, terminal: bool) -> Result<Reserved<'_, H>, Option<String>> {
+        let active = self.active.lock();
+        let open = active.values().find_map(|a| {
+            let node = a.sched.run.terminal.as_deref()?;
+            (a.graph.id == graph_id).then(|| active_label(a, node))
+        });
+        if let Some(label) = open {
+            return Err(Some(label));
+        }
+        let mut starting = self.starting.lock();
+        if starting
+            .iter()
+            .any(|(g, t)| g == graph_id && (terminal || *t))
+        {
+            return Err(None);
+        }
+        starting.push((graph_id.to_string(), terminal));
+        Ok(Reserved {
+            runs: self,
+            graph_id: graph_id.to_string(),
+            terminal,
         })
     }
 
@@ -1546,12 +1609,16 @@ impl<H: RunHost> Runs<H> {
                 node_label(node)
             ));
         }
-        if let Some(open) = self.live_terminal(&graph.id) {
-            return Err(format!(
+        let _reserved = self.reserve(&graph.id, true).map_err(|open| match open {
+            Some(open) => format!(
                 "{open} já está aberto neste grafo: um Terminal por grafo — feche-o antes de abrir {}",
                 node_label(node)
-            ));
-        }
+            ),
+            None => format!(
+                "outro ▶ ou Terminal deste grafo está começando: um Terminal por grafo — tente abrir {} de novo",
+                node_label(node)
+            ),
+        })?;
         let single = terminal_graph(&graph, node);
         self.begin(single, Vec::new(), None, Some(node_id.to_string()))
     }
@@ -2070,7 +2137,13 @@ impl<H: RunHost> Runs<H> {
             } => self.launch_script(run_id, &start, command, *output, true),
             NodeKind::Browser { url } => Launched::Finished(browser_outcome(&start, url)),
             NodeKind::Service { source } => self.launch_service(run_id, &start, source.clone()),
-            NodeKind::Terminal { .. } => self.launch_terminal(run_id, &start),
+            // Só na sessão ao vivo do Abrir: num ▶ o shell ficava escondido.
+            NodeKind::Terminal { .. } if self.is_terminal(run_id, &start.node.id) => {
+                self.launch_terminal(run_id, &start)
+            }
+            NodeKind::Terminal { .. } => Launched::Finished(Outcome::failed(
+                "o Terminal não roda no ▶: abra-o pelo Abrir",
+            )),
         }
     }
 
@@ -2481,7 +2554,7 @@ impl<H: RunHost> Runs<H> {
             }
             ToolCall::Peers => self.peers(run_id, orchestrator),
             ToolCall::Finish if self.is_terminal(run_id, orchestrator) => Err(
-                "orbit_finish não vale no Terminal: saia do claude com /exit (o shell segue aberto)"
+                "orbit_finish não vale no Terminal: saia do agente (/exit no claude, /quit no codex); o shell segue aberto"
                     .into(),
             ),
             ToolCall::Finish => self.finish_agent(run_id, orchestrator),
@@ -9177,6 +9250,85 @@ mod tests {
         runs.stop(&run.id).unwrap();
     }
 
+    /// ▶ num grafo com um Terminal fechado: o Terminal fica fora do run
+    /// (nem shell escondido, nem ferramentas), o resto roda e o run fecha.
+    /// O Abrir depois segue valendo.
+    #[cfg(unix)]
+    #[test]
+    fn play_leaves_a_closed_terminal_out_and_open_still_works() {
+        let dir = tempfile::tempdir().unwrap();
+        let (runs, host, _app) = pty_runs(dir.path().join("runs"));
+        let g = graph(
+            vec![terminal("t", dir.path()), process("p", "true")],
+            vec![edge("e", "p", "t", EdgeKind::Control)],
+        );
+        let run = runs.start_now(g.clone(), vec![]).unwrap();
+        assert_eq!(run.nodes.keys().collect::<Vec<_>>(), ["p"]);
+        assert_eq!(run.terminal, None);
+        let r = wait_finished(&runs, &run.id);
+        assert_eq!(r.status, RunStatus::Done, "{r:?}");
+        assert_eq!(r.nodes["p"].status, NodeStatus::Done);
+        assert!(host.shells.lock().is_empty(), "o ▶ não abre shell");
+        assert!(runs.terminals.lock().is_empty());
+
+        let open = runs.open_terminal_now(g, "t").unwrap();
+        terminal_session(&runs, &open.id, "t");
+        assert_eq!(host.shells.lock().len(), 1);
+        runs.close_terminal("g-1", "t").unwrap();
+    }
+
+    /// Defesa em profundidade: um Terminal que chegue a um run que não é a
+    /// sessão ao vivo dele falha em vez de abrir o shell.
+    #[test]
+    fn terminal_outside_its_live_run_fails_without_a_shell() {
+        let dir = tempfile::tempdir().unwrap();
+        let (runs, host, _app) = pty_runs(dir.path().join("runs"));
+        let g = graph(vec![terminal("t", dir.path())], vec![]);
+        let (run, launching) = runs.begin(g, vec![], None, None).unwrap();
+        launching.join().unwrap();
+        let r = wait_finished(&runs, &run.id);
+        assert_eq!(r.nodes["t"].status, NodeStatus::Failed, "{r:?}");
+        assert!(r.nodes["t"]
+            .reason
+            .as_deref()
+            .unwrap_or("")
+            .contains("não roda no ▶"));
+        assert!(host.shells.lock().is_empty());
+        assert!(runs.terminals.lock().is_empty());
+    }
+
+    /// Checar e reservar é um passo só: com um Abrir em andamento, outro
+    /// Abrir e o ▶ do mesmo grafo recusam; com um ▶ em andamento, o Abrir
+    /// recusa (outro ▶ não). Caída a reserva, abre.
+    #[test]
+    fn a_pending_start_refuses_a_concurrent_open_or_play() {
+        let dir = tempfile::tempdir().unwrap();
+        let (runs, host, _app) = pty_runs(dir.path().join("runs"));
+        let g = graph(
+            vec![terminal("t", dir.path()), terminal("t2", dir.path())],
+            vec![],
+        );
+        let opening = runs.reserve("g-1", true).ok().unwrap();
+        let err = runs.open_terminal_now(g.clone(), "t2").unwrap_err();
+        assert!(err.contains("um Terminal por grafo"), "{err}");
+        let err = runs.start_now(g.clone(), vec![]).unwrap_err();
+        assert!(err.contains("antes do ▶"), "{err}");
+        assert!(runs.reserve("g-2", true).is_ok(), "outro grafo não espera");
+        drop(opening);
+
+        let playing = runs.reserve("g-1", false).ok().unwrap();
+        let err = runs.open_terminal_now(g.clone(), "t").unwrap_err();
+        assert!(err.contains("um Terminal por grafo"), "{err}");
+        assert!(runs.reserve("g-1", false).is_ok(), "▶ com ▶ segue como era");
+        drop(playing);
+        assert!(runs.starting.lock().is_empty());
+        assert!(host.shells.lock().is_empty());
+
+        let open = runs.open_terminal_now(g, "t").unwrap();
+        terminal_session(&runs, &open.id, "t");
+        runs.close_terminal("g-1", "t").unwrap();
+    }
+
     /// Pasta que não existe: recusa citando o nó, sem abrir shell.
     #[test]
     fn terminal_in_a_missing_folder_is_refused() {
@@ -9221,6 +9373,7 @@ mod tests {
         assert_eq!(r.status, RunStatus::Running, "{r:?}");
         let err = tools.call("orbit_finish", &json!({})).unwrap_err();
         assert!(err.contains("orbit_finish não vale no Terminal"), "{err}");
+        assert!(err.contains("/exit no claude, /quit no codex"), "{err}");
 
         runs.close_terminal("g-1", "t").unwrap();
         let r = runs.get(&run.id).unwrap();

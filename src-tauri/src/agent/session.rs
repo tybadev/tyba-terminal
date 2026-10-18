@@ -1531,20 +1531,19 @@ fn hosted_orbit_args(
     tools: Option<&crate::orbit::orchestrator::ToolHandler>,
 ) -> Result<Vec<String>, String> {
     use crate::orbit::mcp;
-    let Some(tools) = tools else {
+    if tools.is_none() {
         return Ok(Vec::new());
-    };
-    let config = mcp::claude_config(exe, socket_path, tools.can_create);
+    }
+    let config = mcp::terminal_claude_config(exe, socket_path);
     let body = serde_json::to_string_pretty(&config)
         .map_err(|e| format!("config do MCP do Orbit: {e}"))?;
     crate::session::write_private(runtime, mcp::CLAUDE_CONFIG_FILE, &body)
         .map_err(|e| format!("escrita da config do MCP do Orbit: {e}"))?;
-    Ok(mcp::agent_args(
+    Ok(mcp::terminal_agent_args(
         &AgentRunnerKind::ClaudeCode,
         exe,
         socket_path,
         &runtime.join(mcp::CLAUDE_CONFIG_FILE),
-        tools.can_create,
     ))
 }
 
@@ -1553,18 +1552,8 @@ fn hosted_orbit_args(
 /// [`crate::orbit::mcp::agent_args`] apontando o `tyba _orbit-mcp` para o
 /// socket desta sessão. Sem arquivo: o Codex lê tudo do argv.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-fn hosted_codex_orbit_args(
-    exe: &Path,
-    socket_path: &Path,
-    tools: &crate::orbit::orchestrator::ToolHandler,
-) -> Vec<String> {
-    crate::orbit::mcp::agent_args(
-        &AgentRunnerKind::Codex,
-        exe,
-        socket_path,
-        Path::new(""),
-        tools.can_create,
-    )
+fn hosted_codex_orbit_args(exe: &Path, socket_path: &Path) -> Vec<String> {
+    crate::orbit::mcp::terminal_agent_args(&AgentRunnerKind::Codex, exe, socket_path, Path::new(""))
 }
 
 /// O argv/env do `codex` digitado no nó Terminal: `codex`, o MCP do Orbit e
@@ -1666,12 +1655,12 @@ pub fn prepare_hosted_agent(
     let exe = std::env::current_exe().map_err(|e| format!("exe do Tyba: {e}"))?;
     let user_env: HashMap<String, String> = std::env::vars().collect();
     let HostedCommand { cmd, worktree_root } = match (&runner, orbit_tools.as_ref()) {
-        (AgentRunnerKind::Codex, Some(tools)) => build_hosted_codex_command(
+        (AgentRunnerKind::Codex, Some(_)) => build_hosted_codex_command(
             &cwd,
             &socket_path,
             &runtime,
             &exe,
-            &hosted_codex_orbit_args(&exe, &socket_path, tools),
+            &hosted_codex_orbit_args(&exe, &socket_path),
             args,
         )?,
         (AgentRunnerKind::Codex, None) => {
@@ -3035,6 +3024,9 @@ mod build_hosted_command_tests {
             "{:?}",
             plan.argv
         );
+        // O prompt do Terminal: sem orbit_finish nem $BROWSER.
+        assert!(!plan.argv[prompt_at].contains("orbit_finish"));
+        assert!(!plan.argv[prompt_at].contains("$BROWSER"));
         let user_at = at("-c").unwrap();
         assert!(mcp_at < user_at && prompt_at < user_at, "{:?}", plan.argv);
         assert_eq!(
@@ -3045,6 +3037,10 @@ mod build_hosted_command_tests {
         let body: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&config).unwrap()).unwrap();
         let server = &body["mcpServers"][crate::orbit::mcp::SERVER_NAME];
+        assert_eq!(
+            server["args"],
+            serde_json::json!([crate::orbit::mcp::MODE, crate::orbit::mcp::TERMINAL_ARG])
+        );
         assert_eq!(
             server["env"]["TYBA_HOOK_SOCKET"],
             socket.to_string_lossy().as_ref()
@@ -3104,11 +3100,7 @@ mod build_hosted_command_tests {
         let runtime = tempfile::tempdir().unwrap();
         let exe = std::env::current_exe().unwrap();
         let socket = runtime.path().join(HOOK_SOCKET_FILE);
-        let tools = crate::orbit::orchestrator::ToolHandler {
-            call: Arc::new(|_, _| Ok(serde_json::json!({}))),
-            can_create: true,
-        };
-        let orbit = hosted_codex_orbit_args(&exe, &socket, &tools);
+        let orbit = hosted_codex_orbit_args(&exe, &socket);
         let user = vec![
             "--sandbox".to_string(),
             "read-only".to_string(),
@@ -3137,6 +3129,16 @@ mod build_hosted_command_tests {
         );
         let prompt_at = at("developer_instructions=");
         assert!(plan.argv[prompt_at].contains("orbit_create_"));
+        // O prompt do Terminal: sem orbit_finish (o core recusa) nem $BROWSER
+        // (o shell do dono não tem o shim); o servidor com --terminal.
+        assert!(!plan.argv[prompt_at].contains("orbit_finish"));
+        assert!(!plan.argv[prompt_at].contains("$BROWSER"));
+        let args_at = at(&format!("{key}.args="));
+        assert!(
+            plan.argv[args_at].contains(crate::orbit::mcp::TERMINAL_ARG),
+            "{:?}",
+            plan.argv
+        );
         assert_eq!(plan.argv[command_at - 1], "--config");
         // As do Orbit antes das do dono, que chegam intactas e por último.
         let user_at = plan.argv.len() - user.len();
