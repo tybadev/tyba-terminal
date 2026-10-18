@@ -800,6 +800,10 @@ impl<R: Runtime> ActionSink<R> {
                 capture::Action::Record(record) => {
                     if self.persist {
                         persist(Persist::History(record));
+                    } else {
+                        // Sessão efêmera: o ↑ e o cinza da linha do TYBA leem
+                        // este, só em memória e já redigido.
+                        crate::history::LIVE.remember(record);
                     }
                 }
                 capture::Action::ShellPath(path) => {
@@ -915,8 +919,13 @@ impl PtyPool {
     /// checkpoint; o bloco só sai como evento para a tela viva —, e o kill
     /// derruba todo process group da sessão POSIX do líder, não só o dele
     /// (princípios #9 e #10). Consumido pelo spawn, que falhe ou não.
+    ///
+    /// No lugar do banco, a memória: blocos e histórico desta sessão ficam em
+    /// `blocks::LIVE` e `history::LIVE`, abertos aqui e fechados no `dispose`.
     pub fn set_ephemeral(&self, id: PtyId) {
         self.ephemeral.lock().insert(id);
+        crate::blocks::LIVE.open(&id.to_string());
+        crate::history::LIVE.open(&id.to_string());
     }
 
     /// Acorda a thread emissora para reavaliar a tela desta sessão.
@@ -3672,6 +3681,32 @@ mod ephemeral_tests {
         // Princípio #10 e a promessa do nó Terminal: o checkpoint são bytes
         // CRUS do PTY e o dreno do boot os vira bloco sem redação.
         assert_eq!(store_writes(false), Vec::<&str>::new());
+    }
+
+    /// O `set_ephemeral` abre a memória da sessão (blocos e histórico), e o
+    /// comando que acaba na sessão efêmera vai ao histórico EM MEMÓRIA dela,
+    /// redigido — é o que o ↑ da linha do TYBA lê no nó Terminal.
+    #[test]
+    fn a_sessao_efemera_guarda_o_historico_em_memoria() {
+        let app = tauri::test::mock_app();
+        let sink = sink(app.handle(), false);
+        let id = sink.session_id.to_string();
+        PtyPool::new().set_ephemeral(sink.session_id);
+        assert_eq!(crate::blocks::LIVE.list(&id).map(|l| l.len()), Some(0));
+        let b64 = |s: &str| base64::engine::general_purpose::STANDARD.encode(s);
+        let chunk = format!(
+            "\x1b]633;P;tyba-prompt=1\x07\
+             \x1b]633;E;{}\x07\x1b]133;C\x07ok\r\n\x1b]133;D;0\x07\x1b]133;A\x07",
+            b64("echo sk-abcdef1234567890ABCDEFghijkl"),
+        );
+        let mut machine = capture::CaptureMachine::new(id.clone());
+        let actions = machine.on_chunk(chunk.as_bytes(), 2_000, false);
+        sink.run(actions, 80, 24);
+        let got = crate::history::LIVE.list(&id).expect("sessão aberta");
+        assert_eq!(got.len(), 1, "{got:?}");
+        assert_eq!(got[0].command, "echo [REDACTED]");
+        crate::history::LIVE.close(&id);
+        crate::blocks::LIVE.close(&id);
     }
 
     #[cfg(unix)]

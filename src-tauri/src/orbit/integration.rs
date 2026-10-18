@@ -172,6 +172,7 @@ mod tests {
             attempt: 0,
             stale: false,
             stale_reason: None,
+            hosted_agent: None,
         };
         if started {
             n.status = NodeStatus::Done;

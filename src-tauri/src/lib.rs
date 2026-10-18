@@ -402,6 +402,19 @@ fn poll_agent_probers(app: &AppHandle) {
         agent::process_probe::snapshot()
     };
     let changes = state.agent_prober.reconcile(&shells, &rows);
+    // O agente hospedado num nó Terminal saiu (o shell segue): o nó deixa de
+    // dizer `hostedAgent`.
+    if let Some(runs) = app.try_state::<orbit::run::SharedRuns>() {
+        let prober = &state.agent_prober;
+        runs.hosted_agent_tick(
+            &|session| {
+                SessionId::parse_str(session)
+                    .ok()
+                    .is_some_and(|id| prober.detected(id).is_some())
+            },
+            approvals::now_ms(),
+        );
+    }
     let leader_by_session: std::collections::HashMap<SessionId, u32> =
         shells.iter().copied().collect();
     let changed: std::collections::HashSet<SessionId> = changes.iter().map(|(id, _)| *id).collect();
@@ -7966,14 +7979,53 @@ fn history_hits_filtered(
     limit: usize,
     ordem: history::Ordem,
 ) -> Result<Vec<HistoryHit>, String> {
+    let candidates = state
+        .store
+        .history_candidates_filtered(Some(query.trim()), cwd, repo_root, session_id, filter)
+        .map_err(|e| e.to_string())?;
+    let grid = rank_history(candidates, query, limit, ordem);
+    let Some(mut own) = own_history_hits(session_id, query, cwd, repo_root, filter, limit, ordem)
+    else {
+        return Ok(grid);
+    };
+    // Sessão efêmera: o histórico dela primeiro; o da grade, que é do mesmo
+    // dono, depois — sem repetir o que ela já mostra.
+    for hit in grid {
+        if !own.iter().any(|mine| mine.command == hit.command) {
+            own.push(hit);
+        }
+    }
+    own.truncate(limit.min(500));
+    Ok(own)
+}
+
+/// O histórico da própria sessão efêmera (`history::LIVE`), ranqueado como o
+/// do banco. `None` quando a sessão não é efêmera (então só o banco responde).
+fn own_history_hits(
+    session_id: Option<&str>,
+    query: &str,
+    cwd: Option<&str>,
+    repo_root: Option<&str>,
+    filter: &history::HistoryFilter,
+    limit: usize,
+    ordem: history::Ordem,
+) -> Option<Vec<HistoryHit>> {
+    let records = history::LIVE.list(session_id?)?;
+    let candidates = history::live_candidates(&records, cwd, repo_root, filter);
+    Some(rank_history(candidates, query, limit, ordem))
+}
+
+/// Fuzzy filtra, a `ordem` ordena, o teto corta.
+fn rank_history(
+    candidates: Vec<history::HistoryCandidate>,
+    query: &str,
+    limit: usize,
+    ordem: history::Ordem,
+) -> Vec<HistoryHit> {
     use fuzzy_matcher::skim::SkimMatcherV2;
     use fuzzy_matcher::FuzzyMatcher;
 
     let query = query.trim();
-    let candidates = state
-        .store
-        .history_candidates_filtered(Some(query), cwd, repo_root, session_id, filter)
-        .map_err(|e| e.to_string())?;
     let matcher = SkimMatcherV2::default();
     let now = approvals::now_ms() as i64;
     // O fuzzy FILTRA — decide quem aparece. Quem ordena é a `ordem`, e ela
@@ -8012,11 +8064,11 @@ fn history_hits_filtered(
         })
         .collect();
     scored.sort_by(|a, b| b.0.total_cmp(&a.0));
-    Ok(scored
+    scored
         .into_iter()
         .take(limit.min(500))
         .map(|(_, hit)| hit)
-        .collect())
+        .collect()
 }
 
 #[derive(serde::Serialize)]
@@ -8043,7 +8095,7 @@ async fn suggest_commands(
     cwd: Option<String>,
     repo_root: Option<String>,
 ) -> Result<Vec<CommandSuggestion>, String> {
-    command_suggestions(&state, &query, cwd.as_deref(), repo_root.as_deref())
+    command_suggestions(&state, &query, cwd.as_deref(), repo_root.as_deref(), None)
 }
 
 /// A lista responde "o que eu rodei?", e a resposta é cronológica.
@@ -8057,11 +8109,17 @@ async fn suggest_commands(
 /// Snippet vem DEPOIS do histórico: antes ele vinha primeiro, e com a lista
 /// abrindo acima da caixa isso o punha no lugar do último comando executado —
 /// justamente o item que o ↑ escolhe.
+///
+/// Sessão efêmera (nó Terminal do Orbit): a lista é SÓ o histórico dela. O ↑
+/// já escolhe o primeiro item, e ↑ e Enter rodando um comando da grade, nunca
+/// digitado no nó, é o defeito que isto fecha. A grade ainda entra no cinza
+/// ([`ghost_command`]), que é previsão e só o `→` aceita.
 fn command_suggestions(
     state: &AppState,
     query: &str,
     cwd: Option<&str>,
     repo_root: Option<&str>,
+    session_id: Option<&str>,
 ) -> Result<Vec<CommandSuggestion>, String> {
     use fuzzy_matcher::skim::SkimMatcherV2;
     use fuzzy_matcher::FuzzyMatcher;
@@ -8087,14 +8145,26 @@ fn command_suggestions(
         }
     }
 
-    let history = history_hits(
-        state,
+    let own = own_history_hits(
+        session_id,
         query,
         cwd,
         repo_root,
+        &history::HistoryFilter::default(),
         SUGGEST_LIMIT,
         history::Ordem::Recencia,
-    )?
+    );
+    let history = match own {
+        Some(own) => own,
+        None => history_hits(
+            state,
+            query,
+            cwd,
+            repo_root,
+            SUGGEST_LIMIT,
+            history::Ordem::Recencia,
+        )?,
+    }
     .into_iter()
     .map(|hit| CommandSuggestion {
         command: hit.command,
@@ -8130,20 +8200,26 @@ fn history_then_snippets(
 /// uma vez — trocar por recência faria o cinza sugerir o último comando em vez
 /// do provável. Só serve comando que começa EXATAMENTE com o que está escrito
 /// (sem `trim`): ghost que não é prefixo mentiria sobre o que o `→` completa.
+///
+/// Sessão efêmera: o histórico dela primeiro, a grade depois
+/// ([`history_hits_filtered`]).
 fn ghost_command(
     state: &AppState,
     raw_query: &str,
     cwd: Option<&str>,
     repo_root: Option<&str>,
+    session_id: Option<&str>,
 ) -> Option<String> {
     if raw_query.trim().is_empty() {
         return None;
     }
-    history_hits(
+    history_hits_filtered(
         state,
         raw_query,
         cwd,
         repo_root,
+        session_id,
+        &history::HistoryFilter::default(),
         SUGGEST_LIMIT,
         history::Ordem::Frecencia,
     )
@@ -8302,8 +8378,20 @@ async fn suggest_line(
         }
         _ => Vec::new(),
     };
-    let commands = command_suggestions(&state, &query, cwd.as_deref(), repo_root.as_deref())?;
-    let ghost = ghost_command(&state, &query, cwd.as_deref(), repo_root.as_deref());
+    let commands = command_suggestions(
+        &state,
+        &query,
+        cwd.as_deref(),
+        repo_root.as_deref(),
+        session_id.as_deref(),
+    )?;
+    let ghost = ghost_command(
+        &state,
+        &query,
+        cwd.as_deref(),
+        repo_root.as_deref(),
+        session_id.as_deref(),
+    );
     let binaries = binary_suggestions(&state, session_id.as_deref(), command_prefix.as_deref());
     Ok(LineSuggestions {
         commands,
@@ -9887,7 +9975,22 @@ pub fn run() {
                             runs.as_ref()
                                 .and_then(|r| r.terminal_tools(&id.to_string()))
                         };
-                        agent::channel_host::handle(&ctx, peer_pid, request, &orbit_tools)
+                        let on_hosted = |id: SessionId, agent: &'static str| {
+                            if let Some(runs) = runs.as_ref() {
+                                runs.hosted_agent_started(
+                                    &id.to_string(),
+                                    agent,
+                                    approvals::now_ms(),
+                                );
+                            }
+                        };
+                        agent::channel_host::handle(
+                            &ctx,
+                            peer_pid,
+                            request,
+                            &orbit_tools,
+                            &on_hosted,
+                        )
                     });
                 let channel_socket_path = hook_ipc::channel::resolve_channel_socket_path();
                 match hook_ipc::channel::ChannelServer::bind(&channel_socket_path, channel_handler)
@@ -10401,6 +10504,66 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Nó Terminal (sessão efêmera): o histórico dele responde, o mais
+    /// recente primeiro — o item que o ↑ escolhe. Sessão que não é efêmera:
+    /// `None`, e quem responde é só o banco.
+    #[test]
+    fn own_history_hits_answer_for_the_ephemeral_session_most_recent_first() {
+        let id = uuid::Uuid::new_v4().to_string();
+        assert!(own_history_hits(
+            Some(&id),
+            "",
+            None,
+            None,
+            &history::HistoryFilter::default(),
+            8,
+            history::Ordem::Recencia,
+        )
+        .is_none());
+        assert!(own_history_hits(
+            None,
+            "",
+            None,
+            None,
+            &history::HistoryFilter::default(),
+            8,
+            history::Ordem::Recencia,
+        )
+        .is_none());
+
+        history::LIVE.open(&id);
+        let own = |query: &str| {
+            own_history_hits(
+                Some(&id),
+                query,
+                None,
+                None,
+                &history::HistoryFilter::default(),
+                8,
+                history::Ordem::Recencia,
+            )
+            .unwrap()
+            .into_iter()
+            .map(|hit| hit.command)
+            .collect::<Vec<_>>()
+        };
+        assert!(own("").is_empty(), "nó sem comando: nada a escolher");
+        for (at, command) in [(1, "cargo build"), (2, "ls"), (3, "cargo test")] {
+            history::LIVE.remember(history::CommandRecord {
+                session_id: id.clone(),
+                cwd: None,
+                command: command.into(),
+                exit_code: Some(0),
+                started_at_ms: at,
+                duration_ms: Some(1),
+                host_id: None,
+            });
+        }
+        assert_eq!(own(""), ["cargo test", "ls", "cargo build"]);
+        assert_eq!(own("cargo"), ["cargo test", "cargo build"]);
+        history::LIVE.close(&id);
+    }
 
     fn host_form(alias: &str) -> crate::ssh::HostInput {
         crate::ssh::HostInput {

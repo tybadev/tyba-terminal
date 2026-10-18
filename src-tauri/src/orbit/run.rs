@@ -137,6 +137,7 @@ impl Run {
                 }
                 n.session_id = None;
                 n.orchestrating = false;
+                n.hosted_agent = None;
             }
             self.status = closed_status(&self.nodes);
             self.settled = false;
@@ -156,6 +157,7 @@ impl Run {
             }
             n.session_id = None;
             n.orchestrating = false;
+            n.hosted_agent = None;
         }
         self.status = RunStatus::Stopped;
         self.finished_at = Some(now);
@@ -223,6 +225,13 @@ pub struct NodeRun {
     /// explicar a causa certa.
     #[serde(default)]
     pub stale_reason: Option<StaleReason>,
+    /// Terminal: o agente digitado no shell do nó que roda AGORA com as
+    /// ferramentas do Orbit (`"claude"` ou `"codex"`), posto quando o core o
+    /// hospeda ([`Runs::hosted_agent_started`]) e tirado quando o processo
+    /// dele some da árvore do shell ([`Runs::hosted_agent_tick`]). O shell
+    /// segue rodando; `None` sempre fora do Terminal.
+    #[serde(default)]
+    pub hosted_agent: Option<String>,
 }
 
 /// O motivo do "↻ para aplicar".
@@ -301,6 +310,7 @@ impl NodeRun {
             attempt: 0,
             stale: false,
             stale_reason: None,
+            hosted_agent: None,
         }
     }
 }
@@ -412,6 +422,12 @@ impl Scheduler {
     /// Retrato para publicar, com versão nova. Tirado com o lock na mão, a
     /// ordem das versões é a ordem dos estados.
     pub fn snapshot(&mut self) -> Run {
+        // Shell que parou (fechar, ■ Parar, `exit`) leva o agente junto.
+        for n in self.run.nodes.values_mut() {
+            if n.status != NodeStatus::Running {
+                n.hosted_agent = None;
+            }
+        }
         self.run.version += 1;
         self.run.clone()
     }
@@ -1414,6 +1430,10 @@ pub struct Runs<H: RunHost> {
     /// aqui que o `claude` digitado nele ganha as ferramentas
     /// ([`Runs::terminal_tools`]). Lock sempre depois de `active`.
     terminals: Mutex<HashMap<String, (String, String, u32)>>,
+    /// Agente hospedado com as ferramentas em cada shell de Terminal:
+    /// sessão → marca ([`Runs::hosted_agent_tick`]). Lock sempre depois de
+    /// `active`.
+    hosted: Mutex<HashMap<String, HostedMark>>,
     /// Grafos com um ▶ (`false`) ou um Abrir do Terminal (`true`) entre a
     /// checagem e a entrada em `active` ([`Runs::reserve`]). Lock sempre
     /// depois de `active`.
@@ -1423,6 +1443,21 @@ pub struct Runs<H: RunHost> {
     settle_ms: std::sync::atomic::AtomicU64,
     me: Weak<Runs<H>>,
 }
+
+/// Um agente hospedado num shell de Terminal, do ponto de vista do poll de
+/// processos.
+#[derive(Debug, Clone, Copy)]
+struct HostedMark {
+    since: u64,
+    /// O poll já viu o processo do agente na árvore do shell.
+    seen: bool,
+}
+
+/// Quanto o agente hospedado tem para aparecer no poll de processos
+/// (`POLL_INTERVAL` de 2 s) antes de a marca cair sem nunca tê-lo visto: o
+/// agente que saiu antes do primeiro poll (binário quebrado, `--version`)
+/// não deixa o nó dizendo "claude" para sempre.
+pub const HOSTED_GRACE_MS: u64 = 10_000;
 
 /// Quanto todo agente fica com o turno fechado, sem mais nada acontecendo,
 /// para o run assentar ([`Run::settled`]).
@@ -1506,6 +1541,7 @@ impl<H: RunHost> Runs<H> {
             agents: Mutex::new(HashMap::new()),
             stopped: Mutex::new(HashSet::new()),
             terminals: Mutex::new(HashMap::new()),
+            hosted: Mutex::new(HashMap::new()),
             starting: Mutex::new(Vec::new()),
             settle_ms: std::sync::atomic::AtomicU64::new(SETTLE_MS),
             me: me.clone(),
@@ -1641,9 +1677,17 @@ impl<H: RunHost> Runs<H> {
     /// sessão ao vivo fecha. A saída de uma tentativa velha (reiniciada) não
     /// fecha a nova.
     fn terminal_exited(&self, run_id: &str, node_id: &str, attempt: u32) {
-        self.terminals
+        let mut gone = Vec::new();
+        self.terminals.lock().retain(|session, t| {
+            let this = t.0 == run_id && t.1 == node_id && t.2 == attempt;
+            if this {
+                gone.push(session.clone());
+            }
+            !this
+        });
+        self.hosted
             .lock()
-            .retain(|_, t| !(t.0 == run_id && t.1 == node_id && t.2 == attempt));
+            .retain(|session, _| !gone.contains(session));
         let current = self
             .active
             .lock()
@@ -1674,6 +1718,83 @@ impl<H: RunHost> Runs<H> {
                 })
         });
         open.then(|| self.tool_handler(&run_id, &node_id, true))
+    }
+
+    /// O core acabou de hospedar `agent` (`"claude"`/`"codex"`) COM as
+    /// ferramentas no shell `session` ([`Runs::terminal_tools`] deu `Some`):
+    /// o nó Terminal dono passa a dizer `hosted_agent`. Sessão que não é o
+    /// shell de um Terminal aberto: nada.
+    pub fn hosted_agent_started(&self, session: &str, agent: &str, now: u64) {
+        let Some((run_id, node_id, attempt)) = self.terminals.lock().get(session).cloned() else {
+            return;
+        };
+        {
+            let mut active = self.active.lock();
+            let Some(a) = active.get_mut(&run_id) else {
+                return;
+            };
+            if a.sched.attempt(&node_id) != Some(attempt) {
+                return;
+            }
+            let Some(n) = a.sched.run.nodes.get_mut(&node_id) else {
+                return;
+            };
+            if n.status != NodeStatus::Running || n.session_id.as_deref() != Some(session) {
+                return;
+            }
+            n.hosted_agent = Some(agent.to_string());
+            self.hosted.lock().insert(
+                session.to_string(),
+                HostedMark {
+                    since: now,
+                    seen: false,
+                },
+            );
+        }
+        self.publish_current(&run_id);
+    }
+
+    /// Um tick do poll de processos (`poll_agent_probers`): `running(sessão)`
+    /// diz se a árvore do shell tem um agente agora. A marca cai quando o
+    /// agente que já foi visto some, ou quando ele nunca apareceu em
+    /// [`HOSTED_GRACE_MS`]; o nó volta a `hosted_agent: None` e o front ouve
+    /// pelo evento do run. O shell continua.
+    pub fn hosted_agent_tick(&self, running: &dyn Fn(&str) -> bool, now: u64) {
+        let ended: Vec<String> = {
+            let mut hosted = self.hosted.lock();
+            let mut ended = Vec::new();
+            hosted.retain(|session, mark| {
+                if running(session) {
+                    mark.seen = true;
+                    return true;
+                }
+                let gone = mark.seen || now.saturating_sub(mark.since) >= HOSTED_GRACE_MS;
+                if gone {
+                    ended.push(session.clone());
+                }
+                !gone
+            });
+            ended
+        };
+        for session in ended {
+            self.hosted_agent_ended(&session);
+        }
+    }
+
+    fn hosted_agent_ended(&self, session: &str) {
+        let Some((run_id, node_id, _)) = self.terminals.lock().get(session).cloned() else {
+            return;
+        };
+        let changed = self
+            .active
+            .lock()
+            .get_mut(&run_id)
+            .and_then(|a| a.sched.run.nodes.get_mut(&node_id))
+            .filter(|n| n.session_id.as_deref() == Some(session))
+            .is_some_and(|n| n.hosted_agent.take().is_some());
+        if changed {
+            self.publish_current(&run_id);
+        }
     }
 
     /// "Testar com a última entrada": roda só o script da integração no lugar
@@ -9437,6 +9558,81 @@ mod tests {
         assert_eq!(r.nodes[&id].status, NodeStatus::Stopped);
         assert!(host.killed.lock().contains(&process));
         assert!(runs.terminal_tools(&shell).is_none());
+    }
+
+    /// O `claude` digitado no shell do Terminal e hospedado COM as
+    /// ferramentas acende `hostedAgent` (avisado pelo evento do run); o poll
+    /// de processos o apaga quando o agente visto some, e o shell segue. O
+    /// que nunca apareceu cai depois de [`HOSTED_GRACE_MS`].
+    #[test]
+    fn hosted_agent_lights_up_the_terminal_and_goes_out_when_it_ends() {
+        let dir = tempfile::tempdir().unwrap();
+        let (runs, host, _app) = pty_runs(dir.path().join("runs"));
+        let g = graph(vec![terminal("t", dir.path())], vec![]);
+        let run = runs.open_terminal_now(g, "t").unwrap();
+        let shell = terminal_session(&runs, &run.id, "t");
+        let hosted =
+            |runs: &Runs<Arc<PtyHost>>| runs.get(&run.id).unwrap().nodes["t"].hosted_agent.clone();
+        assert_eq!(hosted(&runs), None);
+
+        runs.hosted_agent_started(&shell, "claude", 1_000);
+        assert_eq!(hosted(&runs).as_deref(), Some("claude"));
+        let emitted = host.runs.lock().last().cloned().unwrap();
+        assert_eq!(emitted.nodes["t"].hosted_agent.as_deref(), Some("claude"));
+        let wire = serde_json::to_value(&emitted.nodes["t"]).unwrap();
+        assert_eq!(wire["hostedAgent"], "claude");
+
+        // Ainda subindo (o poll não o viu), dentro da folga: fica.
+        runs.hosted_agent_tick(&|_| false, 5_000);
+        assert_eq!(hosted(&runs).as_deref(), Some("claude"));
+        runs.hosted_agent_tick(&|s| s == shell, 6_000);
+        runs.hosted_agent_tick(&|s| s == shell, 60_000);
+        assert_eq!(hosted(&runs).as_deref(), Some("claude"));
+        // Saiu: apaga e avisa; o shell e o run seguem.
+        runs.hosted_agent_tick(&|_| false, 62_000);
+        assert_eq!(hosted(&runs), None);
+        let emitted = host.runs.lock().last().cloned().unwrap();
+        assert_eq!(emitted.nodes["t"].hosted_agent, None);
+        let r = runs.get(&run.id).unwrap();
+        assert_eq!(r.status, RunStatus::Running);
+        assert_eq!(r.nodes["t"].session_id.as_deref(), Some(shell.as_str()));
+
+        // O codex que morre antes do primeiro poll: cai depois da folga.
+        runs.hosted_agent_started(&shell, "codex", 100_000);
+        assert_eq!(hosted(&runs).as_deref(), Some("codex"));
+        runs.hosted_agent_tick(&|_| false, 100_000 + HOSTED_GRACE_MS - 1);
+        assert_eq!(hosted(&runs).as_deref(), Some("codex"));
+        runs.hosted_agent_tick(&|_| false, 100_000 + HOSTED_GRACE_MS);
+        assert_eq!(hosted(&runs), None);
+
+        // Fechar com o agente aceso: o retrato fechado não diz mais nada.
+        runs.hosted_agent_started(&shell, "claude", 200_000);
+        runs.close_terminal("g-1", "t").unwrap();
+        assert_eq!(runs.get(&run.id).unwrap().nodes["t"].hosted_agent, None);
+        // A marca do shell morto também não fica.
+        runs.hosted_agent_tick(&|_| false, 200_000 + HOSTED_GRACE_MS);
+        assert!(runs.hosted.lock().is_empty());
+    }
+
+    /// Só o shell de um Terminal aberto acende: shell da grade (qualquer
+    /// outra sessão) e Terminal já fechado não mudam nada.
+    #[test]
+    fn hosted_agent_never_lights_up_outside_an_open_terminal() {
+        let dir = tempfile::tempdir().unwrap();
+        let (runs, host, _app) = pty_runs(dir.path().join("runs"));
+        let g = graph(vec![terminal("t", dir.path())], vec![]);
+        let run = runs.open_terminal_now(g, "t").unwrap();
+        let shell = terminal_session(&runs, &run.id, "t");
+        let before = host.runs.lock().len();
+        runs.hosted_agent_started("shell-da-grade", "claude", 1_000);
+        assert_eq!(host.runs.lock().len(), before, "nada publicado");
+        assert!(runs.hosted.lock().is_empty());
+        assert_eq!(runs.get(&run.id).unwrap().nodes["t"].hosted_agent, None);
+
+        runs.close_terminal("g-1", "t").unwrap();
+        runs.hosted_agent_started(&shell, "claude", 2_000);
+        assert!(runs.hosted.lock().is_empty());
+        assert_eq!(runs.get(&run.id).unwrap().nodes["t"].hosted_agent, None);
     }
 
     /// ■ Parar na sessão ao vivo: o shell morre junto e o run fica parado.

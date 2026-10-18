@@ -5072,6 +5072,7 @@ mod tests {
             attempt: 0,
             stale: false,
             stale_reason: None,
+            hosted_agent: None,
         };
         let path = dir.path().join("tyba.db");
         let graph = Graph {

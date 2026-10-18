@@ -904,7 +904,7 @@ impl SessionManager {
         // O tipo vai junto porque o palpite de tela depende dele: sessão de
         // agente do TYBA não recebe nenhum, e a sessão só entra no mapa DEPOIS
         // do spawn — quem resolve isso lá dentro não teria onde perguntar.
-        pty_pool.spawn(
+        let spawned = pty_pool.spawn(
             app.clone(),
             id,
             cmd,
@@ -914,7 +914,14 @@ impl SessionManager {
             rows,
             &kind,
             Box::new(move || on_exit(id)),
-        )?;
+        );
+        if let Err(e) = spawned {
+            // Sem sessão não há `dispose`: a memória aberta no `set_ephemeral`
+            // fecha aqui.
+            crate::blocks::LIVE.close(&id.to_string());
+            crate::history::LIVE.close(&id.to_string());
+            return Err(e);
+        }
 
         Ok(self.register_spawned(
             &app,
@@ -1493,7 +1500,6 @@ impl SessionManager {
         self.canos.lock().remove(&id);
         self.pane_tokens.lock().remove(&id);
         crate::history::forget_session_host(&id.to_string());
-        crate::blocks::LIVE.forget(&id.to_string());
         // O canal por Host sobrevive à sessão (ele é do Host), então o que é
         // por sessão sai daqui — senão cada SSH Session que já existiu deixa um
         // teto pendurado pela vida do app.
@@ -1501,6 +1507,10 @@ impl SessionManager {
             queries.forget_session(id);
         }
         let _ = pty_pool.kill(id);
+        // Depois do kill: o EOF que ele provoca finaliza o bloco em voo. O
+        // `close` também barra o que o finalizador entregar mais tarde.
+        crate::blocks::LIVE.close(&id.to_string());
+        crate::history::LIVE.close(&id.to_string());
         let _ = self.store.remove_session(id);
     }
 

@@ -85,6 +85,140 @@ pub fn record(record: CommandRecord) {
     let _ = recorder.tx.try_send(record);
 }
 
+/// Quantos comandos a sessão efêmera guarda em memória.
+pub const LIVE_LIMIT: usize = 500;
+
+/// O histórico de cada sessão efêmera (shell do nó Terminal do Orbit), só em
+/// memória — o par de `blocks::LIVE`.
+///
+/// A sessão efêmera não grava `command_history` (nada dela vai ao disco), e
+/// sem isto o ↑, o cinza e a lista da linha do TYBA respondiam com o
+/// histórico da GRADE: ↑ e Enter rodavam um comando que nunca foi digitado no
+/// nó. Mesma redação do banco (`insert_command`), mesmo descarte de repetição
+/// seguida, e mesma porta: só guarda sessão aberta (`PtyPool::set_ephemeral`),
+/// e o `dispose` a fecha.
+#[derive(Default)]
+pub struct LiveHistory {
+    /// Presença da chave = sessão aberta. Do mais antigo ao mais novo.
+    by_session: parking_lot::Mutex<HashMap<String, std::collections::VecDeque<CommandRecord>>>,
+}
+
+impl LiveHistory {
+    pub fn open(&self, session: &str) {
+        self.by_session
+            .lock()
+            .entry(session.to_string())
+            .or_default();
+    }
+
+    /// Respeita a preferência de histórico desligado, como o [`record`].
+    pub fn remember(&self, mut record: CommandRecord) {
+        if RECORDER
+            .get()
+            .is_some_and(|r| !r.enabled.load(Ordering::Relaxed))
+        {
+            return;
+        }
+        record.command = crate::session::redact::redact(&record.command).into_owned();
+        record.cwd = record
+            .cwd
+            .map(|cwd| crate::session::redact::redact(&cwd).into_owned());
+        let mut map = self.by_session.lock();
+        let Some(list) = map.get_mut(&record.session_id) else {
+            return;
+        };
+        if list
+            .back()
+            .is_some_and(|last| last.command == record.command)
+        {
+            return;
+        }
+        list.push_back(record);
+        while list.len() > LIVE_LIMIT {
+            list.pop_front();
+        }
+    }
+
+    /// Os comandos da sessão, do mais antigo ao mais novo. `None` quando ela
+    /// não é efêmera aberta.
+    pub fn list(&self, session: &str) -> Option<Vec<CommandRecord>> {
+        self.by_session
+            .lock()
+            .get(session)
+            .map(|list| list.iter().cloned().collect())
+    }
+
+    pub fn close(&self, session: &str) {
+        self.by_session.lock().remove(session);
+    }
+}
+
+pub static LIVE: std::sync::LazyLock<LiveHistory> = std::sync::LazyLock::new(LiveHistory::default);
+
+/// Os candidatos de uma sessão efêmera, agrupados por comando como os do
+/// banco, com o mesmo filtro (escopo, desfecho, duração, período). `records`
+/// do mais antigo ao mais novo, como [`LiveHistory::list`].
+pub fn live_candidates(
+    records: &[CommandRecord],
+    cwd: Option<&str>,
+    repo_root: Option<&str>,
+    filter: &HistoryFilter,
+) -> Vec<HistoryCandidate> {
+    let root = repo_root.map(|r| r.trim_end_matches('/'));
+    let in_repo = |at: Option<&str>| matches!((at, root), (Some(at), Some(root)) if at == root || at.starts_with(&format!("{root}/")));
+    let mut out: Vec<HistoryCandidate> = Vec::new();
+    for record in records {
+        let at = record.cwd.as_deref();
+        let in_cwd = cwd.is_some() && at == cwd;
+        let scoped = match filter.scope {
+            HistoryScope::Cwd => in_cwd,
+            HistoryScope::Repo => in_repo(at),
+            HistoryScope::Global | HistoryScope::Session => true,
+        };
+        let outcome = match filter.outcome {
+            Some(HistoryOutcome::Failed) => record.exit_code.is_some_and(|c| c != 0),
+            Some(HistoryOutcome::Succeeded) => record.exit_code == Some(0),
+            None => true,
+        };
+        let long = filter
+            .min_duration_ms
+            .is_none_or(|min| record.duration_ms.is_some_and(|d| d >= min));
+        let recent = filter
+            .since_ms
+            .is_none_or(|since| record.started_at_ms >= since);
+        if !(scoped && outcome && long && recent) {
+            continue;
+        }
+        let candidate = match out.iter_mut().find(|c| c.command == record.command) {
+            Some(found) => found,
+            None => {
+                out.push(HistoryCandidate {
+                    command: record.command.clone(),
+                    cwd: None,
+                    last_used_at_ms: record.started_at_ms,
+                    uses: 0,
+                    successes: 0,
+                    known_exit_codes: 0,
+                    in_cwd: false,
+                    in_repo: false,
+                    in_host: false,
+                });
+                out.last_mut().expect("acabou de entrar")
+            }
+        };
+        candidate.uses += 1;
+        candidate.successes += u32::from(record.exit_code == Some(0));
+        candidate.known_exit_codes += u32::from(record.exit_code.is_some());
+        candidate.in_cwd |= in_cwd;
+        candidate.in_repo |= in_repo(at);
+        if record.started_at_ms >= candidate.last_used_at_ms {
+            candidate.last_used_at_ms = record.started_at_ms;
+        }
+        candidate.cwd = record.cwd.clone();
+    }
+    out
+}
+
 /// De qual Host é cada sessão SSH integrada.
 ///
 /// Registro à parte, e não um campo a mais no [`Tracker`], porque quem constrói
@@ -349,6 +483,100 @@ mod tests {
             in_repo: false,
             in_host: false,
         }
+    }
+
+    fn live_record(session: &str, command: &str, at: i64, exit: Option<i32>) -> CommandRecord {
+        CommandRecord {
+            session_id: session.into(),
+            cwd: Some("/repo/app".into()),
+            command: command.into(),
+            exit_code: exit,
+            started_at_ms: at,
+            duration_ms: Some(5),
+            host_id: None,
+        }
+    }
+
+    /// O histórico da sessão efêmera: só de sessão aberta, redigido como o do
+    /// banco, sem repetição seguida, com teto, e some no `close` — o que
+    /// chegar depois (o EOF do kill) é descartado.
+    #[test]
+    fn live_history_is_gated_redacted_bounded_and_closed() {
+        let live = LiveHistory::default();
+        live.remember(live_record("grade", "ls", 1, Some(0)));
+        assert!(live.list("grade").is_none(), "sessão não aberta não guarda");
+
+        live.open("no");
+        live.remember(live_record(
+            "no",
+            "export K=sk-abcdef1234567890ABCDEFghijkl",
+            1,
+            Some(0),
+        ));
+        live.remember(live_record("no", "ls", 2, Some(0)));
+        live.remember(live_record("no", "ls", 3, Some(0)));
+        let got = live.list("no").unwrap();
+        assert_eq!(got.len(), 2, "{got:?}");
+        assert!(!got[0].command.contains("sk-abcdef"), "{got:?}");
+        assert!(got[0].command.contains("[REDACTED]"), "{got:?}");
+
+        for at in 0..(LIVE_LIMIT as i64 + 10) {
+            live.remember(live_record("no", &format!("echo {at}"), 10 + at, Some(0)));
+        }
+        let got = live.list("no").unwrap();
+        assert_eq!(got.len(), LIVE_LIMIT);
+        assert_eq!(
+            got.last().map(|r| r.command.as_str()),
+            Some(format!("echo {}", LIVE_LIMIT + 9).as_str())
+        );
+
+        live.close("no");
+        live.remember(live_record("no", "make", 9_999, Some(0)));
+        assert!(live.list("no").is_none());
+    }
+
+    /// Agrupa por comando como o banco, com o filtro, e a `Recencia` põe o
+    /// último executado primeiro — o item que o ↑ escolhe.
+    #[test]
+    fn live_candidates_group_filter_and_order_most_recent_first() {
+        let records = vec![
+            live_record("no", "cargo test", 1, Some(1)),
+            live_record("no", "ls", 2, Some(0)),
+            live_record("no", "cargo test", 3, Some(0)),
+            live_record("no", "make", 4, None),
+        ];
+        let mut all = live_candidates(
+            &records,
+            Some("/repo/app"),
+            Some("/repo"),
+            &HistoryFilter::default(),
+        );
+        ordenar(&mut all, Ordem::Recencia, 10);
+        let order: Vec<&str> = all.iter().map(|c| c.command.as_str()).collect();
+        assert_eq!(order, ["make", "cargo test", "ls"]);
+        let cargo = &all[1];
+        assert_eq!(
+            (cargo.uses, cargo.successes, cargo.known_exit_codes),
+            (2, 1, 2)
+        );
+        assert!(cargo.in_cwd && cargo.in_repo);
+        assert_eq!(cargo.last_used_at_ms, 3);
+
+        let failed = HistoryFilter {
+            outcome: Some(HistoryOutcome::Failed),
+            ..Default::default()
+        };
+        let only: Vec<String> = live_candidates(&records, None, None, &failed)
+            .into_iter()
+            .map(|c| c.command)
+            .collect();
+        assert_eq!(only, ["cargo test"]);
+
+        let elsewhere = HistoryFilter {
+            scope: HistoryScope::Cwd,
+            ..Default::default()
+        };
+        assert!(live_candidates(&records, Some("/outro"), None, &elsewhere).is_empty());
     }
 
     #[test]

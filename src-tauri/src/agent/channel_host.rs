@@ -175,11 +175,16 @@ pub fn resolve_host_request(
 /// `orbit_tools`: as ferramentas do Orbit para a sessão dona, quando ela é o
 /// shell de um nó Terminal aberto. A sessão vem da árvore de processos
 /// (`find_owning_session` + recheque do starttime), nunca do pedido.
+///
+/// `on_hosted`: roda quando o agente foi hospedado COM as ferramentas, com
+/// a sessão e o nome dele ([`hosted_agent_name`]) — é o que acende o
+/// `hostedAgent` do nó Terminal.
 pub fn handle(
     ctx: &super::session::AgentSessionCtx,
     peer_pid: u32,
     request: ChannelRequest,
     orbit_tools: &dyn Fn(SessionId) -> Option<crate::orbit::orchestrator::ToolHandler>,
+    on_hosted: &dyn Fn(SessionId, &'static str),
 ) -> ChannelResponse {
     let shells: Vec<(SessionId, u32)> = ctx
         .sessions
@@ -205,6 +210,8 @@ pub fn handle(
                     reason: RefusedReason::NoSession,
                 };
             };
+            let with_tools = tools.is_some();
+            let name = hosted_agent_name(&runner);
             match super::session::prepare_hosted_agent(
                 ctx,
                 resolved.session_id,
@@ -214,10 +221,15 @@ pub fn handle(
                 tools,
             ) {
                 // Agente livre: nunca jaulado.
-                Ok(plan_path) => ChannelResponse::Host {
-                    plan_path: plan_path.to_string_lossy().into_owned(),
-                    jailed: false,
-                },
+                Ok(plan_path) => {
+                    if with_tools {
+                        on_hosted(resolved.session_id, name);
+                    }
+                    ChannelResponse::Host {
+                        plan_path: plan_path.to_string_lossy().into_owned(),
+                        jailed: false,
+                    }
+                }
                 // Falhou preparar (binário ausente, fs quebrado, git indisponível
                 // no repo alvo): degrada para a MESMA resposta de "não posso
                 // ajudar agora" que o cliente já trata — sem 5º motivo de recusa
@@ -241,6 +253,14 @@ fn hosted_runner(agent: &str, with_orbit_tools: bool) -> Option<crate::session::
         HOST_AGENT_AGENT => Some(AgentRunnerKind::ClaudeCode),
         HOST_AGENT_CODEX if with_orbit_tools => Some(AgentRunnerKind::Codex),
         _ => None,
+    }
+}
+
+/// O nome que o `hostedAgent` do nó Terminal leva: `"codex"` ou `"claude"`.
+pub(crate) fn hosted_agent_name(runner: &crate::session::AgentRunnerKind) -> &'static str {
+    match runner {
+        crate::session::AgentRunnerKind::Codex => HOST_AGENT_CODEX,
+        _ => HOST_AGENT_AGENT,
     }
 }
 
@@ -283,6 +303,14 @@ mod resolve_tests {
             tool: None,
             summary: None,
         }
+    }
+
+    /// O nome que vai no `hostedAgent` do nó Terminal.
+    #[test]
+    fn hosted_agent_name_is_claude_or_codex() {
+        use crate::session::AgentRunnerKind;
+        assert_eq!(hosted_agent_name(&AgentRunnerKind::ClaudeCode), "claude");
+        assert_eq!(hosted_agent_name(&AgentRunnerKind::Codex), "codex");
     }
 
     fn row(pid: u32, ppid: u32) -> ProcRow {
