@@ -11,6 +11,9 @@ use crate::hook_ipc::channel::{ChannelRequest, ChannelResponse, RefusedReason};
 use crate::session::SessionId;
 
 const HOST_AGENT_AGENT: &str = "claude";
+/// O `codex` digitado no shell de um nó Terminal do Orbit (fatia 4, pelo
+/// `tyba _jail-codex`). Só esse shell o hospeda; ver [`hosted_runner`].
+const HOST_AGENT_CODEX: &str = "codex";
 
 /// O que a resolução decidiu, antes de `prepare_hosted_agent` (Track B, em
 /// `agent::session`) montar o `argv`/`env` de verdade: qual sessão hospeda e
@@ -122,14 +125,19 @@ pub fn resolve_host_request(
     request: &ChannelRequest,
     deps: &ResolveDeps,
 ) -> Result<ResolvedHost, RefusedReason> {
-    if request.agent != HOST_AGENT_AGENT {
-        return Err(RefusedReason::UnknownAgent);
-    }
     // M6-A: o core refaz a classificação do cliente sobre os args que
     // chegaram. Só sessão de agente é hospedada; flag que tiraria os hooks do
     // TYBA (ou qualquer coisa que o cliente não devia ter mandado) é recusada.
-    if crate::agent::claude_cli::route(&request.args) != crate::agent::claude_cli::ClaudeRoute::Host
-    {
+    // O cliente do `codex` roda o de verdade em qualquer recusa.
+    let hostable = match request.agent.as_str() {
+        HOST_AGENT_AGENT => {
+            crate::agent::claude_cli::route(&request.args)
+                == crate::agent::claude_cli::ClaudeRoute::Host
+        }
+        HOST_AGENT_CODEX => crate::agent::codex_cli::hosts(&request.args),
+        _ => return Err(RefusedReason::UnknownAgent),
+    };
+    if !hostable {
         return Err(RefusedReason::ForbiddenArgs);
     }
     let starttime_before = (deps.starttime)(peer_pid).ok_or(RefusedReason::PeerUnresolved)?;
@@ -189,12 +197,21 @@ pub fn handle(
     match resolve_host_request(peer_pid, &request, &deps) {
         Err(reason) => ChannelResponse::Refused { reason },
         Ok(resolved) => {
+            let tools = orbit_tools(resolved.session_id);
+            let Some(runner) = hosted_runner(&request.agent, tools.is_some()) else {
+                // `codex` fora de um nó Terminal aberto: nada é montado e o
+                // cliente roda o `codex` de verdade, como sempre.
+                return ChannelResponse::Refused {
+                    reason: RefusedReason::NoSession,
+                };
+            };
             match super::session::prepare_hosted_agent(
                 ctx,
                 resolved.session_id,
                 resolved.cwd,
                 &resolved.args,
-                orbit_tools(resolved.session_id),
+                runner,
+                tools,
             ) {
                 // Agente livre: nunca jaulado.
                 Ok(plan_path) => ChannelResponse::Host {
@@ -211,6 +228,19 @@ pub fn handle(
                 },
             }
         }
+    }
+}
+
+/// Quem o core hospeda para o pedido de `agent`, já resolvida a sessão dona:
+/// o `claude` em qualquer shell (como sempre); o `codex` só quando a sessão é
+/// o shell de um nó Terminal aberto do Orbit (`with_orbit_tools`) — em todo
+/// outro shell ele segue sendo o `codex` de sempre, sem o core no meio.
+fn hosted_runner(agent: &str, with_orbit_tools: bool) -> Option<crate::session::AgentRunnerKind> {
+    use crate::session::AgentRunnerKind;
+    match agent {
+        HOST_AGENT_AGENT => Some(AgentRunnerKind::ClaudeCode),
+        HOST_AGENT_CODEX if with_orbit_tools => Some(AgentRunnerKind::Codex),
+        _ => None,
     }
 }
 
@@ -465,6 +495,55 @@ mod resolve_tests {
         ];
         let resolved = resolve_host_request(200, &request, &deps).expect("hospeda");
         assert_eq!(resolved.args, request.args);
+    }
+
+    /// Fatia 4 do Orbit: o `codex` digitado resolve a sessão dona pela
+    /// mesma árvore de processos; sessão de agente passa com os args
+    /// intactos, versão/ajuda/conta são recusadas (o cliente roda o `codex`
+    /// de verdade).
+    #[test]
+    fn a_typed_codex_resolves_its_owning_shell_like_claude() {
+        let f = fixture();
+        let deps = deps_from(&f);
+        let mut request = req();
+        request.agent = "codex".into();
+        request.args = vec!["resume".into(), "--last".into()];
+        let resolved = resolve_host_request(200, &request, &deps).expect("hospeda");
+        assert_eq!(resolved.session_id, f.session);
+        assert_eq!(resolved.args, request.args);
+        for args in [vec!["--version"], vec!["login"]] {
+            request.args = args.iter().map(|a| a.to_string()).collect();
+            assert_eq!(
+                resolve_host_request(200, &request, &deps),
+                Err(RefusedReason::ForbiddenArgs),
+                "{args:?}"
+            );
+        }
+        // Um `codex` de outra janela não vira dono de sessão nenhuma.
+        request.args = Vec::new();
+        assert_eq!(
+            resolve_host_request(777, &request, &deps),
+            Err(RefusedReason::NoSession)
+        );
+    }
+
+    /// O `codex` só é hospedado no shell de um nó Terminal aberto (com as
+    /// ferramentas do Orbit); em qualquer outro shell o core não monta nada
+    /// e o cliente roda o `codex` de sempre. O `claude` não muda.
+    #[test]
+    fn only_the_codex_of_an_orbit_terminal_is_hosted() {
+        use crate::session::AgentRunnerKind;
+        assert_eq!(hosted_runner("codex", true), Some(AgentRunnerKind::Codex));
+        assert_eq!(hosted_runner("codex", false), None);
+        assert_eq!(
+            hosted_runner("claude", false),
+            Some(AgentRunnerKind::ClaudeCode)
+        );
+        assert_eq!(
+            hosted_runner("claude", true),
+            Some(AgentRunnerKind::ClaudeCode)
+        );
+        assert_eq!(hosted_runner("vim", true), None);
     }
 }
 

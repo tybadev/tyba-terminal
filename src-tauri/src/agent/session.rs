@@ -1548,6 +1548,61 @@ fn hosted_orbit_args(
     ))
 }
 
+/// O `codex` digitado no shell de um nó Terminal aberto do Orbit (fatia 4):
+/// as `--config mcp_servers.orbit.*` e `developer_instructions` de
+/// [`crate::orbit::mcp::agent_args`] apontando o `tyba _orbit-mcp` para o
+/// socket desta sessão. Sem arquivo: o Codex lê tudo do argv.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn hosted_codex_orbit_args(
+    exe: &Path,
+    socket_path: &Path,
+    tools: &crate::orbit::orchestrator::ToolHandler,
+) -> Vec<String> {
+    crate::orbit::mcp::agent_args(
+        &AgentRunnerKind::Codex,
+        exe,
+        socket_path,
+        Path::new(""),
+        tools.can_create,
+    )
+}
+
+/// O argv/env do `codex` digitado no nó Terminal: `codex`, o MCP do Orbit e
+/// os args do dono, nessa ordem (as `--config` da raiz valem também antes de
+/// `resume`/`exec`). Nada do [`crate::agent::CodexRunner::build_command`]:
+/// ele força `--sandbox`/`--ask-for-approval` (o dono digitou o dele, ou usa
+/// o do `config.toml`; o clap recusa `--sandbox` repetido) e troca os
+/// `hooks.*` do dono pelos do TYBA. O Codex digitado segue com o sandbox, a
+/// aprovação e os hooks dele; o que o TYBA acrescenta são as ferramentas.
+/// `TYBA_HOSTED=1` faz um `claude`/`codex` aberto de dentro dele não pedir
+/// outro hosting nesta sessão (que derrubaria o socket das ferramentas).
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn build_hosted_codex_command(
+    cwd: &Path,
+    socket_path: &Path,
+    runtime: &Path,
+    exe: &Path,
+    orbit_args: &[String],
+    args: &[String],
+) -> Result<HostedCommand, String> {
+    use crate::sandbox::Sandbox;
+
+    let worktree_root = crate::repo::toplevel(cwd)
+        .map(|top| crate::repo::canonicalize_or(&top))
+        .unwrap_or_else(|| cwd.to_path_buf());
+    let mut cmd = portable_pty::CommandBuilder::new("codex");
+    cmd.cwd(cwd);
+    cmd.env_clear();
+    cmd.args(orbit_args);
+    cmd.args(args);
+    cmd.env("TYBA_HOOK_SOCKET", socket_path);
+    cmd.env("TYBA_HOSTED", "1");
+    cmd.env("TYBA_JAILED", "0");
+    let spec = passthrough_spec(cwd, runtime, socket_path, exe);
+    let cmd = crate::sandbox::passthrough::PassthroughSandbox.wrap(cmd, &spec)?;
+    Ok(HostedCommand { cmd, worktree_root })
+}
+
 /// `argv`/`env`/`cwd` já resolvidos, na forma que `HostedPlan` serializa —
 /// só o mapeamento, sem decisão nenhuma: `get_argv()` inclui o programa em
 /// `[0]`, `iter_extra_env_as_str()` devolve só o que o TYBA setou (nunca o
@@ -1589,6 +1644,9 @@ fn hosted_plan_from(
 /// ([`crate::orbit::run::Runs::terminal_tools`]); o claude ganha o MCP do
 /// Orbit ([`hosted_orbit_args`]). `None` em todo outro shell.
 ///
+/// `runner`: `Codex` só chega aqui com `orbit_tools` (o `codex` digitado no
+/// nó Terminal, [`build_hosted_codex_command`]); o resto é o `claude`.
+///
 /// Devolve o caminho do plano escrito (0600 via [`crate::session::write_private_bytes`]).
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub fn prepare_hosted_agent(
@@ -1596,6 +1654,7 @@ pub fn prepare_hosted_agent(
     id: SessionId,
     cwd: PathBuf,
     args: &[String],
+    runner: AgentRunnerKind,
     orbit_tools: Option<crate::orbit::orchestrator::ToolHandler>,
 ) -> Result<PathBuf, String> {
     let runtime = runtime_dir(id)?;
@@ -1604,34 +1663,53 @@ pub fn prepare_hosted_agent(
         return Err("path do socket de hooks excede o limite do sistema".into());
     }
 
-    let runner = build_runner(&AgentRunnerKind::ClaudeCode)?;
     let exe = std::env::current_exe().map_err(|e| format!("exe do Tyba: {e}"))?;
-    let hook_cmd = observer_hook_command(&exe);
     let user_env: HashMap<String, String> = std::env::vars().collect();
-    let settings = observer_session_settings(
-        &hook_cmd,
-        session_statusline(&exe, &user_env, &[&cwd, &main_repo_root(&cwd)]),
-    );
-    let settings_body =
-        serde_json::to_string_pretty(&settings).map_err(|e| format!("settings de hooks: {e}"))?;
-    crate::session::write_private(&runtime, HOOK_SETTINGS_FILE, &settings_body)
-        .map_err(|e| format!("escrita dos settings de hooks: {e}"))?;
-    let hook_setup = HookSetup {
-        settings_path: runtime.join(HOOK_SETTINGS_FILE),
-        hook_command: hook_cmd,
-    };
+    let HostedCommand { cmd, worktree_root } = match (&runner, orbit_tools.as_ref()) {
+        (AgentRunnerKind::Codex, Some(tools)) => build_hosted_codex_command(
+            &cwd,
+            &socket_path,
+            &runtime,
+            &exe,
+            &hosted_codex_orbit_args(&exe, &socket_path, tools),
+            args,
+        )?,
+        (AgentRunnerKind::Codex, None) => {
+            return Err("o codex só é hospedado no nó Terminal do Orbit".into())
+        }
+        _ => {
+            let claude = build_runner(&AgentRunnerKind::ClaudeCode)?;
+            let hook_cmd = observer_hook_command(&exe);
+            let settings = observer_session_settings(
+                &hook_cmd,
+                session_statusline(&exe, &user_env, &[&cwd, &main_repo_root(&cwd)]),
+            );
+            let settings_body = serde_json::to_string_pretty(&settings)
+                .map_err(|e| format!("settings de hooks: {e}"))?;
+            crate::session::write_private(&runtime, HOOK_SETTINGS_FILE, &settings_body)
+                .map_err(|e| format!("escrita dos settings de hooks: {e}"))?;
+            let hook_setup = HookSetup {
+                settings_path: runtime.join(HOOK_SETTINGS_FILE),
+                hook_command: hook_cmd,
+            };
 
-    let orbit_args = hosted_orbit_args(&runtime, &exe, &socket_path, orbit_tools.as_ref())?;
-    let HostedCommand { cmd, worktree_root } = build_hosted_command(
-        runner.as_ref(),
-        &cwd,
-        &hook_setup,
-        &socket_path,
-        &runtime,
-        &exe,
-        &orbit_args,
-        args,
-    )?;
+            let orbit_args = hosted_orbit_args(&runtime, &exe, &socket_path, orbit_tools.as_ref())?;
+            build_hosted_command(
+                claude.as_ref(),
+                &cwd,
+                &hook_setup,
+                &socket_path,
+                &runtime,
+                &exe,
+                &orbit_args,
+                args,
+            )?
+        }
+    };
+    let runner_kind = match runner {
+        AgentRunnerKind::Codex => AgentRunnerKind::Codex,
+        _ => AgentRunnerKind::ClaudeCode,
+    };
 
     ctx.subagents.register_session(id);
     let handler_ctx = HandlerCtx {
@@ -1641,7 +1719,7 @@ pub fn prepare_hosted_agent(
         store: ctx.store.clone(),
         subagents: ctx.subagents.clone(),
         session_id: id,
-        runner_kind: AgentRunnerKind::ClaudeCode,
+        runner_kind,
         repo_root: main_repo_root(&worktree_root),
         agent_home: agent_home(&user_env),
         worktree_root,
@@ -3013,6 +3091,75 @@ mod build_hosted_command_tests {
             .path()
             .join(crate::orbit::mcp::CLAUDE_CONFIG_FILE)
             .exists());
+    }
+
+    /// Fatia 4: o `codex` digitado no shell de um nó Terminal aberto. O argv
+    /// é `codex`, as `--config mcp_servers.orbit.*` + `developer_instructions`
+    /// apontando para o socket desta sessão, e os args do dono por último —
+    /// sem o `--sandbox`/`--ask-for-approval` nem os `hooks.*` do runner do
+    /// nó de agente (o Codex do dono segue com os dele).
+    #[test]
+    fn the_typed_codex_in_an_orbit_terminal_gets_the_orbit_mcp() {
+        let cwd = tempfile::tempdir().unwrap();
+        let runtime = tempfile::tempdir().unwrap();
+        let exe = std::env::current_exe().unwrap();
+        let socket = runtime.path().join(HOOK_SOCKET_FILE);
+        let tools = crate::orbit::orchestrator::ToolHandler {
+            call: Arc::new(|_, _| Ok(serde_json::json!({}))),
+            can_create: true,
+        };
+        let orbit = hosted_codex_orbit_args(&exe, &socket, &tools);
+        let user = vec![
+            "--sandbox".to_string(),
+            "read-only".to_string(),
+            "conserte o teste".to_string(),
+        ];
+        let hosted =
+            build_hosted_codex_command(cwd.path(), &socket, runtime.path(), &exe, &orbit, &user)
+                .unwrap();
+        let plan = hosted_plan_from(&hosted.cmd, cwd.path());
+
+        assert_eq!(plan.argv.first().map(String::as_str), Some("codex"));
+        let key = format!("mcp_servers.{}", crate::orbit::mcp::SERVER_NAME);
+        let at = |prefix: &str| {
+            plan.argv
+                .iter()
+                .position(|a| a.starts_with(prefix))
+                .unwrap_or_else(|| panic!("sem {prefix}: {:?}", plan.argv))
+        };
+        let command_at = at(&format!("{key}.command="));
+        assert!(plan.argv[command_at].contains(&*exe.to_string_lossy()));
+        let env_at = at(&format!("{key}.env="));
+        assert!(
+            plan.argv[env_at].contains(&*socket.to_string_lossy()),
+            "{:?}",
+            plan.argv
+        );
+        let prompt_at = at("developer_instructions=");
+        assert!(plan.argv[prompt_at].contains("orbit_create_"));
+        assert_eq!(plan.argv[command_at - 1], "--config");
+        // As do Orbit antes das do dono, que chegam intactas e por último.
+        let user_at = plan.argv.len() - user.len();
+        assert_eq!(plan.argv[user_at..], user[..]);
+        assert!(command_at < user_at && env_at < user_at && prompt_at < user_at);
+        // Um só `--sandbox` (o do dono): o clap recusa repetido.
+        assert_eq!(
+            plan.argv.iter().filter(|a| *a == "--sandbox").count(),
+            1,
+            "{:?}",
+            plan.argv
+        );
+        assert!(
+            !plan.argv.iter().any(|a| a.starts_with("hooks.")
+                || a == "--ask-for-approval"
+                || a.starts_with("--settings")),
+            "{:?}",
+            plan.argv
+        );
+        assert_eq!(plan.cwd, cwd.path().to_string_lossy());
+        let mut keys: Vec<&str> = plan.env.iter().map(|(k, _)| k.as_str()).collect();
+        keys.sort_unstable();
+        assert_eq!(keys, ["TYBA_HOOK_SOCKET", "TYBA_HOSTED", "TYBA_JAILED"]);
     }
 }
 

@@ -43,6 +43,10 @@ pub enum SessionKind {
     },
 }
 
+/// Marca o shell de um nó Terminal do Orbit para o rc instalar a função
+/// `codex` (fatia 4). Ver `create_shell_session_as`.
+pub const ORBIT_TERMINAL_ENV: &str = "TYBA_ORBIT_TERMINAL";
+
 /// De quem é a sessão. A da grade vai ao banco e volta no boot; a de um nó
 /// do Orbit é do run: nunca vai ao banco, então nunca volta como shell ou
 /// agente morto na grade depois de o app fechar com ela viva.
@@ -579,6 +583,14 @@ impl SessionManager {
             for (key, value) in PROMPT_FRAMEWORK_SYNC {
                 cmd.env(key, value);
             }
+        }
+
+        // Fatia 4 do Orbit: o shell do nó Terminal ganha a função `codex` do
+        // rc (só ele: na aba Terminal o `codex` segue intocado). É só a dica
+        // para instalar a função — quem decide se esse `codex` ganha as
+        // ferramentas é o core, pela árvore de processos.
+        if owner == SessionOwner::Orbit {
+            cmd.env(ORBIT_TERMINAL_ENV, "1");
         }
 
         let title = opts
@@ -3069,6 +3081,94 @@ claude mcp list
                 texto.contains("STUB-RODOU -p a; echo PWNED $(id)"),
                 "{shell}: {texto:?}"
             );
+        }
+    }
+
+    /// Fatia 4 do Orbit: a função `codex` só existe no shell de um nó
+    /// Terminal (`TYBA_ORBIT_TERMINAL=1`), e leva os args um por um ao
+    /// `$TYBA_BIN _jail-codex --`. Sem a marca (a aba Terminal), `codex` é o
+    /// binário de sempre, sem função e sem o TYBA no meio. Nos dois shells.
+    #[test]
+    #[cfg(unix)]
+    fn codex_goes_through_the_core_only_in_an_orbit_terminal() {
+        use std::os::unix::fs::PermissionsExt;
+        for (shell, rc_body) in [("bash", TYBA_BASH_RC), ("zsh", TYBA_ZSH_RC)] {
+            if std::process::Command::new(shell)
+                .arg("--version")
+                .output()
+                .is_err()
+            {
+                continue;
+            }
+            let dir = tempfile::tempdir().unwrap();
+            let codex = dir.path().join("codex");
+            std::fs::write(&codex, "#!/bin/sh\necho CODEX-RODOU \"$@\"\n").unwrap();
+            std::fs::set_permissions(&codex, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let tyba = dir.path().join("tyba");
+            std::fs::write(
+                &tyba,
+                "#!/bin/sh\n\
+                 [ \"$1\" = \"_jail-codex\" ] || exit 1\n\
+                 echo \"TYBA-BIN-CALLED $*\" >> \"$TYBA_BIN_LOG\"\n\
+                 shift\n\
+                 [ \"$1\" = \"--\" ] && shift\n\
+                 exec \"${0%/*}/codex\" \"$@\"\n",
+            )
+            .unwrap();
+            std::fs::set_permissions(&tyba, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let rc = dir.path().join("rc.sh");
+            std::fs::write(&rc, rc_body).unwrap();
+            let bin_log = dir.path().join("tyba-bin.log");
+            let script = format!(
+                "source {}\ntype codex | head -1\ncodex\ncodex resume --last\ncodex -m x 'a; echo PWNED $(id)'\n",
+                rc.display()
+            );
+
+            for terminal in [true, false] {
+                let _ = std::fs::remove_file(&bin_log);
+                let mut envs = vec![
+                    ("TYBA_BIN", tyba.to_str().unwrap()),
+                    ("TYBA_BIN_LOG", bin_log.to_str().unwrap()),
+                    ("LC_ALL", "C"),
+                ];
+                if terminal {
+                    envs.push(("TYBA_ORBIT_TERMINAL", "1"));
+                }
+                let Some(texto) = run_interactive_shell(shell, dir.path(), &script, &envs) else {
+                    continue;
+                };
+                let log = std::fs::read_to_string(&bin_log).unwrap_or_default();
+                assert!(
+                    texto.contains("CODEX-RODOU resume --last")
+                        && texto.contains("CODEX-RODOU -m x a; echo PWNED $(id)")
+                        && !texto.contains("PWNED uid"),
+                    "{shell} terminal={terminal}: {texto:?}"
+                );
+                if terminal {
+                    // bash: "codex is a function"; zsh: "codex is a shell function".
+                    assert!(
+                        texto.contains("codex is a function")
+                            || texto.contains("codex is a shell function"),
+                        "{shell}: {texto:?}"
+                    );
+                    for expected in [
+                        "TYBA-BIN-CALLED _jail-codex --\n",
+                        "TYBA-BIN-CALLED _jail-codex -- resume --last\n",
+                        "TYBA-BIN-CALLED _jail-codex -- -m x a; echo PWNED $(id)\n",
+                    ] {
+                        assert!(
+                            log.contains(expected),
+                            "{shell}: faltou {expected:?} em {log:?}"
+                        );
+                    }
+                } else {
+                    assert!(
+                        texto.contains(&format!("codex is {}", codex.display())),
+                        "{shell}: {texto:?}"
+                    );
+                    assert!(log.is_empty(), "{shell}: o TYBA entrou no meio: {log:?}");
+                }
+            }
         }
     }
 

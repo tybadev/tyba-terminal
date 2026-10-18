@@ -11,6 +11,7 @@ pub mod claude_plugin;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod channel_host;
 pub mod claude_settings;
+pub mod codex_cli;
 pub mod codex_hooks;
 pub mod conversation;
 pub mod credentials;

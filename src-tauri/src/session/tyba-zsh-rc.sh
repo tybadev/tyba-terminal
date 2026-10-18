@@ -258,6 +258,22 @@ if [ -n "${TYBA_BIN:-}" ] && [ "${TYBA_AGENT_SHIM:-1}" = "1" ]; then
     fi
   }
 
+  # `codex` so no shell de um no Terminal do Orbit (fatia 4): o core da a ele
+  # as ferramentas do Orbit. Em qualquer outro shell a funcao nem existe e o
+  # `codex` e o de sempre. A marca e so a dica para instalar: quem decide e o
+  # core, pela arvore de processos; recusado ou sem core, `_jail-codex` roda
+  # o codex de verdade, intacto. Sem wrapper no PATH: so o que se digita.
+  if [ "${TYBA_ORBIT_TERMINAL:-}" = "1" ]; then
+    codex() {
+      __tyba_shim_record "codex"
+      if [ -x "$TYBA_BIN" ]; then
+        "$TYBA_BIN" _jail-codex -- "$@"
+      else
+        command codex "$@"
+      fi
+    }
+  fi
+
   if [ -n "${TYBA_WRAPPER_DIR:-}" ] && [ -x "$TYBA_WRAPPER_DIR/claude" ]; then
     case ":$PATH:" in
       *":$TYBA_WRAPPER_DIR:"*) ;;
