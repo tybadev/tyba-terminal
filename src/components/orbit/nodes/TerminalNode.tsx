@@ -1,13 +1,15 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Terminal, X } from "@phosphor-icons/react";
-import type { NodeProps } from "@xyflow/react";
+import { Handle, Position, type NodeProps } from "@xyflow/react";
 
-import { nodeDir, nodeSession, shortDir, terminalLive, type NodeKind } from "@/lib/orbit";
+import { ORCHESTRATOR_HANDLE, nodeDir, shownSession, shortDir, terminalRun, type NodeKind } from "@/lib/orbit";
 import { NodeDir, NodeFrame, detailBtn, useOrbit, type OrbitFlowNode } from "./NodeFrame";
 import { NodeTerminal } from "./NodeTerminal";
 
 type TerminalKind = Extract<NodeKind, { type: "terminal" }>;
+
+const hidden = { opacity: 0, width: 1, height: 1, minWidth: 0, minHeight: 0, border: 0 };
 
 /**
  * Nó Terminal (quadro OrbitTerminal 3): o shell do dono no canvas. Aberto,
@@ -16,11 +18,12 @@ type TerminalKind = Extract<NodeKind, { type: "terminal" }>;
  */
 export function TerminalNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
   const { t } = useTranslation();
-  const { run, live, graphDir, openTerminal, closeTerminal } = useOrbit();
+  const { run, runs, live, graphDir, openTerminal, closeTerminal } = useOrbit();
   const node = data.node;
   const kind = node.kind as TerminalKind;
-  const open = terminalLive(run, id);
-  const session = open ? nodeSession(kind, run, id, live) : null;
+  // Aberto pela sessão ao vivo que o segura, não pelo run à vista.
+  const open = terminalRun(runs, id) !== null;
+  const session = shownSession(kind, run, runs, id, live);
   const dir = nodeDir(kind, graphDir);
   // Trava o Abrir até o core responder: sem dois cliques abrindo dois shells.
   const [opening, setOpening] = useState(false);
@@ -65,6 +68,14 @@ export function TerminalNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
         )
       }
     >
+      {/* Saída invisível das ligações tracejadas até os nós que o claude/codex digitado criou. */}
+      <Handle
+        type="source"
+        id={ORCHESTRATOR_HANDLE}
+        position={Position.Right}
+        isConnectable={false}
+        style={{ ...hidden, top: 20, right: 14 }}
+      />
       {session ? (
         <NodeTerminal nodeId={id} sessionId={session} selected={selected} />
       ) : (

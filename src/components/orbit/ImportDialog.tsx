@@ -178,6 +178,25 @@ function ItemView({ item, dir }: { item: ImportItem; dir: ReactNode }) {
           <Code>{sourceDetail(item.source)}</Code>
         </div>
       );
+    case "terminal":
+      // O shell do dono: nada roda sozinho, mas a pasta entra no consentimento.
+      return (
+        <div className="flex flex-col gap-1.5">
+          {head(t("orbitKindTerminal"))}
+          {dir}
+        </div>
+      );
+    default: {
+      // Tipo novo sem caso aqui não compila; e, se chegar mesmo assim, o nó
+      // aparece (título e pasta) em vez de entrar sem ser mostrado.
+      const unknown: never = item;
+      return (
+        <div className="flex flex-col gap-1.5">
+          {head(String((unknown as { type: string }).type))}
+          {dir}
+        </div>
+      );
+    }
   }
 }
 

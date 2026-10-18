@@ -40,11 +40,12 @@ import {
   nodeControls,
   staleHintKey,
   nodeElapsed,
-  nodeSession,
+  isOrchestrator,
   nodeStatusLabel,
   pickConnection,
   produces,
   runCreated,
+  shownSession,
   shownStatus,
   nodeDir,
   rememberDir,
@@ -109,6 +110,8 @@ export interface CanvasActions {
 export interface CanvasState {
   graph: Pick<Graph, "nodes" | "edges">;
   run: Run | null;
+  /** Os runs do grafo na tela: o Terminal acha neles a sessão ao vivo dele. */
+  runs: readonly Run[];
   /** O run à vista é o mais novo: os terminais vivos são dele. */
   live: boolean;
   /** Subagentes do claude de cada nó com sessão viva (por id de nó). */
@@ -153,6 +156,7 @@ export const CanvasActionsContext = createContext<CanvasActions>({
 export const CanvasStateContext = createContext<CanvasState>({
   graph: { nodes: [], edges: [] },
   run: null,
+  runs: [],
   live: false,
   subagents: new Map(),
   openSubagent: null,
@@ -709,6 +713,7 @@ export function NodeFrame({
     restartNode,
     graph,
     run,
+    runs,
     live,
     createdIds,
     createdBy,
@@ -721,8 +726,8 @@ export function NodeFrame({
   const creator = createdBy.get(id);
   const created = creator !== undefined;
   const locked = createdIds.has(id);
-  const orchestrates = !created && node.kind.type === "agent";
-  const session = nodeSession(node.kind, run, id, live);
+  const orchestrates = !created && isOrchestrator(node.kind);
+  const session = shownSession(node.kind, run, runs, id, live);
   const controls = nodeControls(node.kind, run, id, live);
   const again = controls.restart || controls.rerun;
   const request = approvals.get(id) ?? null;

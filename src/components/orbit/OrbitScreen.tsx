@@ -89,6 +89,7 @@ import {
   stoppableRuns,
   terminalClose,
   terminalOpen,
+  terminalRun,
   terminalTitle,
   toFlow,
   type Graph,
@@ -243,6 +244,8 @@ function OrbitInner({
   edgesRef.current = edges;
   const [integrations, setIntegrations] = useState<Integration[]>([]);
   const [error, setError] = useState<string | null>(null);
+  // O erro que o salvar automático pôs (e só ele o apaga ao salvar de novo).
+  const saveError = useRef<string | null>(null);
   const [showVars, setShowVars] = useState(false);
   // Minimapa: `null` = sozinho (liga quando o grafo passa da tela, canvas-10).
   const [minimapPref, setMinimapPref] = useState<boolean | null>(null);
@@ -377,9 +380,15 @@ function OrbitInner({
       saveGraph(graph)
         .then(() => {
           lastSaved.current = snapshot;
-          setError(null);
+          // Só apaga o erro que ele mesmo pôs: a recusa de outra ação (o core
+          // recusou o Terminal) fica à vista até o dono agir.
+          setError((cur) => (cur === saveError.current ? null : cur));
+          saveError.current = null;
         })
-        .catch((e) => setError(t("orbitSaveError", { error: String(e) })));
+        .catch((e) => {
+          saveError.current = t("orbitSaveError", { error: String(e) });
+          setError(saveError.current);
+        });
     }, SAVE_DEBOUNCE_MS);
     return () => clearTimeout(timer);
   }, [snapshot, t]);
@@ -414,6 +423,13 @@ function OrbitInner({
   }, [runningIds]);
 
   const run = selectedRun(runView);
+  // Os runs do grafo na tela: o Terminal aberto vive no dele, à vista ou não.
+  const graphRuns = useMemo(
+    () => runView.runs.filter((r) => r.graphId === meta?.id),
+    [runView.runs, meta?.id],
+  );
+  const runsRef = useRef(graphRuns);
+  runsRef.current = graphRuns;
 
   // A nota de plano que o Orquestrador escreve (`orbit_plan`) vai para o
   // grafo salvo pelo core; a tela põe a nota e a ligação na cópia dela, senão
@@ -613,8 +629,17 @@ function OrbitInner({
       dispatchRun({ type: "update", run: await terminalOpen(meta.id, node.id) });
       setError(null);
     } catch (e) {
-      setNodes((ns) => ns.filter((n) => n.id !== node.id));
+      // O nó sai antes de o porquê aparecer, e o grafo sem ele já vai gravado
+      // aqui: o salvar automático não tem o que gravar depois.
+      const rest = nodesRef.current.filter((n) => n.id !== node.id);
+      setNodes(rest);
       setError(t("orbitTerminalError", { error: String(e) }));
+      const graph = fromFlow(meta, rest, edgesRef.current);
+      await saveGraph(graph)
+        .then(() => {
+          lastSaved.current = JSON.stringify(graph);
+        })
+        .catch(() => {});
     }
   };
 
@@ -642,7 +667,8 @@ function OrbitInner({
     (nodeId: string) => {
       const gid = graphIdRef.current;
       if (!gid) return;
-      const runId = runIdRef.current;
+      // O run que segura o Terminal, não o à vista (pode ser o de outro teste).
+      const runId = terminalRun(runsRef.current, nodeId)?.id ?? null;
       terminalClose(gid, nodeId)
         .then(() => (runId ? runGet(runId) : null))
         .then((run) => {
@@ -968,6 +994,7 @@ function OrbitInner({
     () => ({
       graph: viewGraph,
       run,
+      runs: graphRuns,
       live,
       subagents,
       openSubagent: opened ? openSub : null,
@@ -982,6 +1009,7 @@ function OrbitInner({
     [
       viewGraph,
       run,
+      graphRuns,
       live,
       subagents,
       opened,

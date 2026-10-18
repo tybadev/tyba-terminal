@@ -492,6 +492,10 @@ export const OUT_HANDLE = "out";
 /** Saída invisível do orquestrador: a ligação tracejada até o que ele criou (só desenho). */
 export const ORCHESTRATOR_HANDLE = "orchestrator";
 
+/** Nó que cria outros (e tem a porta {@link ORCHESTRATOR_HANDLE}): agente ou Terminal. */
+export const isOrchestrator = (kind: Pick<NodeKind, "type"> | undefined): boolean =>
+  kind?.type === "agent" || kind?.type === "terminal";
+
 /** A entrada do nó: todas as ligações chegam nela; o nó inteiro é alvo. */
 export const NEW_IN_HANDLE = "in";
 
@@ -831,15 +835,16 @@ export interface CreatedFlow {
 }
 
 /**
- * Nós e ligações dos criados. A tracejada só sai de um agente do grafo (é
- * ele que tem a porta {@link ORCHESTRATOR_HANDLE}) e só chega num nó que
- * está desenhado — efêmero ou já mantido no grafo.
+ * Nós e ligações dos criados. A tracejada só sai de um orquestrador do
+ * grafo — agente ou Terminal, os que têm a porta {@link ORCHESTRATOR_HANDLE}
+ * (o claude/codex digitado no Terminal cria em nome dele) — e só chega num
+ * nó que está desenhado — efêmero ou já mantido no grafo.
  */
 export function createdFlow(run: Run | null, graphNodes: readonly OrbitNode[]): CreatedFlow {
   const ephemeral = ephemeralCreated(run);
   const inGraph = new Map(graphNodes.map((n) => [n.id, n]));
   const drawn = new Set([...inGraph.keys(), ...ephemeral.map((c) => c.node.id)]);
-  const orchestrates = (id: string) => inGraph.get(id)?.kind.type === "agent";
+  const orchestrates = (id: string) => isOrchestrator(inGraph.get(id)?.kind);
   const byEdges: CreatedFlow["byEdges"] = [];
   for (const c of run?.created ?? []) {
     if (!drawn.has(c.node.id) || !orchestrates(c.createdBy)) continue;
@@ -1080,6 +1085,32 @@ export const terminalLive = (
   run: Pick<Run, "terminal" | "status" | "nodes"> | null,
   nodeId: string,
 ): boolean => isLiveRun(run) && run?.terminal === nodeId && run.nodes[nodeId]?.status === "running";
+
+/**
+ * A sessão ao vivo que segura o Terminal `nodeId`, entre os runs da tela —
+ * qualquer que seja o run à vista (testar uma integração abre run novo e ele
+ * vai para a vista, mas o Terminal continua aberto no dele).
+ */
+export const terminalRun = <R extends Pick<Run, "terminal" | "status" | "nodes">>(
+  runs: readonly R[],
+  nodeId: string,
+): R | null => runs.find((r) => terminalLive(r, nodeId)) ?? null;
+
+/**
+ * A sessão que o corpo do nó mostra: o Terminal, a do run ao vivo que o
+ * segura ({@link terminalRun}); os demais, a do run à vista.
+ */
+export function shownSession(
+  kind: NodeKind,
+  run: Run | null,
+  runs: readonly Run[],
+  nodeId: string,
+  live: boolean,
+): string | null {
+  if (kind.type !== "terminal") return nodeSession(kind, run, nodeId, live);
+  const held = terminalRun(runs, nodeId);
+  return held ? nodeSession(kind, held, nodeId, true) : null;
+}
 
 /** Os nós da sessão ao vivo na faixa de baixo: o Terminal e, depois, os que ela criou. */
 export function liveRunNodes(

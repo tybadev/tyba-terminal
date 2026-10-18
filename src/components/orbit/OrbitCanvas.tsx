@@ -89,7 +89,7 @@ import {
   lastDir,
   newNode,
   pickConnection,
-  nodeSession,
+  shownSession,
   nodeUnderPointer,
   produces,
   rememberDir,
@@ -445,7 +445,7 @@ export function OrbitCanvas({
   const { screenToFlowPosition, zoomTo, fitView, setCenter } = useReactFlow();
   const wrapper = useRef<HTMLDivElement>(null);
   const byId = useMemo(() => new Map(integrations.map((i) => [i.id, i])), [integrations]);
-  const { subagents, focusNode, setFocusNode, run, live, approvals, createdIds } = useOrbit();
+  const { subagents, focusNode, setFocusNode, run, runs, live, approvals, createdIds } = useOrbit();
 
   // Nó no modo foco: só enquanto tem sessão viva. Sem ela (o processo acabou,
   // o nó sumiu, trocou o grafo) o foco fecha, para não reabrir sozinho depois.
@@ -457,9 +457,9 @@ export function OrbitCanvas({
           .find((n) => n.id === focusNode))
       : undefined;
     if (!flow) return null;
-    const session = nodeSession(flow.data.node.kind, run, flow.id, live);
+    const session = shownSession(flow.data.node.kind, run, runs, flow.id, live);
     return session ? { node: flow.data.node, session } : null;
-  }, [focusNode, nodes, run, live]);
+  }, [focusNode, nodes, run, runs, live]);
   useEffect(() => {
     if (focusNode && !focused) setFocusNode(null);
   }, [focusNode, focused, setFocusNode]);
@@ -1016,7 +1016,7 @@ export function OrbitCanvas({
         (id) => {
           const node = (shownNodes.find((n) => n.id === id)?.data as { node?: OrbitNode })
             ?.node;
-          return node ? nodeSession(node.kind, run, id, live) : null;
+          return node ? shownSession(node.kind, run, runs, id, live) : null;
         },
       );
       if (!enterSession) return;

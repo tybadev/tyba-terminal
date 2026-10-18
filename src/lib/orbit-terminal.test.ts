@@ -1,13 +1,19 @@
 import { describe, expect, test } from "bun:test";
 
 import {
+  createdFlow,
+  importItems,
   isLiveRun,
+  isOrchestrator,
   liveRunNodes,
   newNode,
   nodeControls,
   nodeSession,
+  shownSession,
   terminalLive,
+  terminalRun,
   terminalTitle,
+  type Graph,
   type NodeRun,
   type Run,
 } from "./orbit";
@@ -100,5 +106,64 @@ describe("terminalTitle", () => {
   });
   test("sem pasta, só Terminal", () => {
     expect(terminalTitle("")).toBe("Terminal");
+  });
+});
+
+describe("Terminal aberto com outro run à vista", () => {
+  const held = run({ t: nodeRun({ status: "running", sessionId: "shell-1" }) }, { id: "live", terminal: "t" });
+  // Testar uma integração abre run novo e ele vai para a vista.
+  const tested = run(
+    { i: nodeRun({ status: "running", sessionId: "s-i" }) },
+    { id: "test", terminal: null },
+  );
+  const runs = [tested, held];
+
+  test("a sessão ao vivo vem do run que segura o Terminal, não do à vista", () => {
+    expect(terminalRun(runs, "t")?.id).toBe("live");
+    expect(shownSession(termKind, tested, runs, "t", true)).toBe("shell-1");
+    // Mesmo com o run à vista sendo o velho (live = false).
+    expect(shownSession(termKind, tested, runs, "t", false)).toBe("shell-1");
+  });
+
+  test("sem sessão ao vivo que o segure, fechado", () => {
+    const closed = { ...held, status: "done" as const };
+    expect(terminalRun([tested, closed], "t")).toBeNull();
+    expect(shownSession(termKind, held, [tested, closed], "t", true)).toBeNull();
+    expect(terminalRun(runs, "i")).toBeNull();
+  });
+
+  test("os outros nós seguem o run à vista", () => {
+    const proc = { type: "process", command: "ls", output: "log", file: null, dir: "" } as const;
+    expect(shownSession(proc, tested, runs, "i", true)).toBe("s-i");
+    expect(shownSession(proc, held, runs, "i", true)).toBeNull();
+  });
+});
+
+describe("Terminal como orquestrador", () => {
+  test("agente e Terminal criam; os outros não", () => {
+    expect(isOrchestrator(termKind)).toBe(true);
+    expect(isOrchestrator({ type: "agent" })).toBe(true);
+    expect(isOrchestrator({ type: "process" })).toBe(false);
+    expect(isOrchestrator(undefined)).toBe(false);
+  });
+
+  test("o criado pelo claude digitado no Terminal ganha a tracejada saindo do Terminal", () => {
+    const term = newNode("t", "Terminal · api", termKind, { x: 0, y: 0 });
+    const child = newNode("n1", "web", { type: "browser", url: "" }, { x: 0, y: 0 });
+    const r = run({}, {
+      terminal: "t",
+      created: [{ node: child, createdBy: "t", createdAt: 1, edges: [], kept: false }],
+    });
+    expect(createdFlow(r, [term]).byEdges.map((e) => [e.source, e.target, e.sourceHandle])).toEqual([
+      ["t", "n1", "orchestrator"],
+    ]);
+  });
+});
+
+describe("importação com Terminal", () => {
+  test("o Terminal entra na prévia com a pasta dele", () => {
+    const node = newNode("t", "Terminal · api", termKind, { x: 0, y: 0 });
+    const graph: Graph = { id: "g", name: "g", dir: "/tmp", variables: {}, edges: [], nodes: [node] };
+    expect(importItems({ graph, integrations: [] })).toEqual([{ type: "terminal", node, dir: "/srv/api" }]);
   });
 });
