@@ -77,7 +77,7 @@ export function TerminalNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
         style={{ ...hidden, top: 20, right: 14 }}
       />
       {session ? (
-        <NodeTerminal nodeId={id} sessionId={session} selected={selected} />
+        <NodeTerminal nodeId={id} sessionId={session} selected={selected} tyba />
       ) : (
         <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 bg-tyba-sunken">
           <button

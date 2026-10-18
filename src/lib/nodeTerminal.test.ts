@@ -4,6 +4,7 @@ import {
   canvasWheel,
   nodeFontSize,
   nodeGrid,
+  nodeLiveClip,
   nodeTerminalClass,
   nodeZoomStyle,
   type Cell,
@@ -103,4 +104,12 @@ test("sem o nó selecionado a roda vai ao canvas, inteira (pan, pinça, ⌘ + ro
   expect(canvasWheel(wheel, true)).toBeNull();
   // Não selecionado: a cópia sobe até o canvas com tudo que o pan/zoom lê.
   expect(canvasWheel(wheel, false)).toEqual({ ...wheel, bubbles: true, cancelable: true });
+});
+
+test("faixa ao vivo no nó: desce e corta pela fração escondida, sem mudar o tamanho", () => {
+  expect(nodeLiveClip(0)).toEqual({});
+  expect(nodeLiveClip(-0.2)).toEqual({});
+  expect(nodeLiveClip(0.25)).toEqual({ top: "25%", clipPath: "inset(0 0 25% 0)" });
+  const clip = nodeLiveClip(0.5);
+  expect("height" in clip || "width" in clip).toBe(false);
 });

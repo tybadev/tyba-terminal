@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { useStore } from "@xyflow/react";
 
+import { HostedTerminalPane, useTerminalPane } from "@/components/TerminalPaneHost";
 import { TerminalView } from "@/components/TerminalView";
 import { sessionScreenLines } from "@/lib/ipc";
 import { nodeRect, onScreen } from "@/lib/graphLayout";
@@ -31,17 +32,23 @@ const PREVIEW_POLL_MS = 400;
  *
  * Com o nó aberto no modo foco (`NodeFocus`) vai a prévia em texto: a sessão
  * só monta o xterm em UM lugar. Fora da tela também vai a prévia. O "Abrir" do ⋯ do nó abre o foco.
+ *
+ * `tyba` (nó Terminal): o corpo é o painel da aba Terminal — blocos, a linha
+ * do TYBA e a caixa de agente —, o mesmo da grade (`TerminalPaneHost`).
  */
 export function NodeTerminal({
   nodeId,
   sessionId,
   selected,
+  tyba = false,
 }: {
   nodeId: string;
   sessionId: string;
   selected: boolean;
+  tyba?: boolean;
 }) {
   const { focusNode } = useOrbit();
+  const paneHost = useTerminalPane();
   const zoom = useStore((s) => s.transform[2]);
   const inFocus = focusNode === nodeId;
   // Fora da tela, a prévia: o canvas cheio de nós não mantém um xterm (e um
@@ -85,6 +92,8 @@ export function NodeTerminal({
     >
       {inFocus || !visible ? (
         <TerminalPreview sessionId={sessionId} />
+      ) : tyba && paneHost ? (
+        <HostedTerminalPane sessionId={sessionId} zoom={zoom} />
       ) : (
         // A margem fica do lado de fora do invólucro de zoom: escala junto
         // com o nó, como o resto do cartão.

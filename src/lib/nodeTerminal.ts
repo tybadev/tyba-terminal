@@ -52,6 +52,19 @@ export function nodeZoomStyle(zoom: number) {
   };
 }
 
+/**
+ * O recorte da faixa ao vivo no nó (a mesma conta do painel da grade, ver
+ * `liveClip` no `TerminalView`): desce o invólucro do xterm pela fração
+ * escondida e corta embaixo o mesmo tanto. Sem padding aqui — a margem do nó
+ * fica no pai, que é a caixa onde as linhas cabem. Nada muda o TAMANHO do
+ * invólucro, então o PTY não é redimensionado.
+ */
+export function nodeLiveClip(hidden: number): { top?: string; clipPath?: string } {
+  if (hidden <= 0) return {};
+  const pct = `${hidden * 100}%`;
+  return { top: pct, clipPath: `inset(0 0 ${pct} 0)` };
+}
+
 /** Passos de recuo da fonte quando a grade não cabe; cada um tira 2%. */
 const FONT_STEPS = 12;
 const FONT_STEP = 0.98;

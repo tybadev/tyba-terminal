@@ -118,6 +118,7 @@ import { NodePalette, PALETTE_H, PALETTE_W } from "./NodePalette";
 import { NoteNode } from "./nodes/NoteNode";
 import { ProcessNode } from "./nodes/ProcessNode";
 import { ServiceNode } from "./nodes/ServiceNode";
+import { useTerminalPane } from "@/components/TerminalPaneHost";
 import { TerminalNode } from "./nodes/TerminalNode";
 import {
   SubagentNode,
@@ -441,6 +442,7 @@ export function OrbitCanvas({
   /** Terminal da paleta: a tela pergunta a pasta e cria o nó ali, já aberto. */
   onAddTerminal: (position: { x: number; y: number }) => void;
 }) {
+  const paneHost = useTerminalPane();
   const { t } = useTranslation();
   const { screenToFlowPosition, zoomTo, fitView, setCenter } = useReactFlow();
   const wrapper = useRef<HTMLDivElement>(null);
@@ -1053,7 +1055,11 @@ export function OrbitCanvas({
         openPalette(pointer.current, null, true);
         return;
       case "focusTerminal":
-        if (enterSession) getTerm(enterSession)?.term.focus();
+        // A linha do TYBA quando ela é dona do teclado (nó Terminal), senão o xterm.
+        if (enterSession) {
+          if (paneHost) paneHost.focusInput(enterSession);
+          else getTerm(enterSession)?.term.focus();
+        }
         return;
     }
   };

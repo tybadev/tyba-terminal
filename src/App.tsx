@@ -309,6 +309,7 @@ import {
   type Loaded,
   type RepoSnapshot,
   type ServicesSection,
+  type PaneId,
   type Session,
   type Tab,
   type SessionCommand,
@@ -464,6 +465,19 @@ const MAIN_MIN_PX = 320;
  * (`sameRect`), e o fit só roda quando o invólucro muda de tamanho de verdade.
  */
 const PANE_BOX = { left: 0, top: 0, width: 100, height: 100 } as const;
+/** O nó do Orbit não está no layout do core: não há painel para focar. */
+const noFocusPane = async (_pane: PaneId) => {};
+/**
+ * No canvas o xterm desfaz o zoom dentro de um invólucro com a margem do
+ * nó (a mesma do padding do terminal na grade). Sem zoom, o terminal vai
+ * como na grade.
+ */
+const wrapNodeTerminal = (zoom: number | undefined, el: React.ReactNode) =>
+  zoom === undefined ? (
+    el
+  ) : (
+    <div className="absolute top-2 right-2.5 bottom-3 left-2.5">{el}</div>
+  );
 import { handlerCache, withEntry } from "./lib/perSession";
 import { useStableCallback } from "./lib/stableProps";
 import { mergeBlockHistory } from "./lib/blockHistory";
@@ -477,6 +491,10 @@ import {
 } from "./lib/blockSelection";
 import { CommandLine } from "./components/CommandLine";
 import { RichInput } from "./components/RichInput";
+import {
+  TerminalPaneContext,
+  type TerminalPaneHost,
+} from "./components/TerminalPaneHost";
 import {
   DEFAULT_RICH_INPUT,
   RICH_INPUT_PREF_KEY,
@@ -4182,9 +4200,12 @@ export default function App() {
   // framework e plugins. Até lá a linha aparece desabilitada em vez de a tela
   // ficar em branco sem lugar nenhum para digitar. A preferência só adianta a
   // linha onde o hook pode chegar (ver `lineVisible`).
+  // Sessões fora da grade que mostram o painel da aba Terminal: o nó
+  // Terminal do Orbit (ver `TerminalPaneHost`). Contador por montagem.
+  const [orbitPanes, setOrbitPanes] = useState<Record<string, number>>({});
   const paneLines = new Map<string, PaneLine>();
   for (const s of sessions) {
-    if (!pannedSessions.has(s.id)) continue;
+    if (!pannedSessions.has(s.id) && !orbitPanes[s.id]) continue;
     paneLines.set(
       s.id,
       paneLine({
@@ -4221,6 +4242,36 @@ export default function App() {
   const focusLine = useCallback((id: SessionId) => {
     setLineFocusNonces((prev) => ({ ...prev, [id]: (prev[id] ?? 0) + 1 }));
   }, []);
+  const attachOrbitPane = useCallback((id: SessionId) => {
+    setOrbitPanes((prev) => ({ ...prev, [id]: (prev[id] ?? 0) + 1 }));
+    return () =>
+      setOrbitPanes((prev) => {
+        const next = { ...prev };
+        if ((next[id] ?? 0) <= 1) delete next[id];
+        else next[id] -= 1;
+        return next;
+      });
+  }, []);
+  // A sessão do nó não entra pela grade: o estado do painel (comando, modo
+  // prompt, blocos…) sai das assinaturas por `sessions`, então ela entra na
+  // lista pela leitura do core. Uma pergunta por sessão — a que já morreu e
+  // saiu do core não vira laço.
+  const askedOrbitPanes = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    const missing = Object.keys(orbitPanes).filter(
+      (id) => !sessionById.has(id) && !askedOrbitPanes.current.has(id),
+    );
+    if (missing.length === 0) return;
+    for (const id of missing) askedOrbitPanes.current.add(id);
+    void refreshSessions();
+  }, [orbitPanes, sessionById, refreshSessions]);
+  const focusOrbitInput = useCallback(
+    (id: SessionId) => {
+      if (ownsLineRef.current[id]) focusLine(id);
+      else getTerm(id)?.term.focus();
+    },
+    [focusLine],
+  );
   // Com a tela de Git aberta o teclado é dela (Esc, campos): nada de puxar o
   // foco de volta por baixo. Quando ela desmonta, o effect roda de novo e o
   // foco volta ao terminal.
@@ -5319,15 +5370,23 @@ export default function App() {
    * O painel de uma sessão da grade: terminal, blocos e a linha do TYBA.
    * Fora do `map` do render para o nó Terminal do Orbit desenhar o mesmo
    * painel (ver `TerminalPaneHost`).
+   *
+   * `orbit` é o painel dentro do nó: sem `paneRect` (o nó não está no
+   * layout do core), sempre visível, e nada do que é da grade — foco de
+   * painel do core, split, busca, avisos e convites (que abrem ou mexem em
+   * sessões da grade). `zoom` é o do canvas; ausente no modo foco.
    */
   const renderPane = (
     s: Session,
     paneRect: NonNullable<typeof paneLayout>["panes"][number] | null,
+    orbit: { zoom?: number } | null = null,
   ) => {
+    const bare = orbit !== null;
+    const nodeZoom = orbit?.zoom;
     // O terminal e os blocos medem em % da ÁREA DE CONTEÚDO do
     // painel — o painel menos a linha do TYBA, que mora no
     // rodapé dele. Ver o invólucro abaixo.
-    const pane = paneRect ? PANE_BOX : null;
+    const pane = paneRect || bare ? PANE_BOX : null;
     const line = paneLines.get(s.id);
     // Em modo prompt o terminal ocupa uma faixa FIXA embaixo: a
     // lista de blocos a cobre quando ocioso e a revela quando um
@@ -5388,9 +5447,11 @@ export default function App() {
       // de altura, nunca por comando.
       <div
         key={`pane-${s.id}`}
-        className="flex flex-col"
+        className={bare ? "absolute inset-0 flex flex-col" : "flex flex-col"}
         style={
-          paneRect
+          bare
+            ? undefined
+            : paneRect
             ? {
                 position: "absolute",
                 left: `${paneRect.x}%`,
@@ -5405,12 +5466,12 @@ export default function App() {
           <ContainerShellBanner containerId={s.kind.container_id} />
         )}
         <div className="relative min-h-0 flex-1">
-          <TerminalView
+          {wrapNodeTerminal(nodeZoom, <TerminalView
             key={`${s.id}:${paneEpochs.get(s.id) ?? 0}`}
             sessionId={s.id}
             transport={transports[s.id] ?? INITIAL_TRANSPORT}
             agentNotice={
-              notice && detected
+              !bare && notice && detected
                 ? { binary: agentBinaryName(detected.kind) }
                 : null
             }
@@ -5419,7 +5480,7 @@ export default function App() {
             }
             onDismissNotice={() => dismissShellAgentNotice(s.id)}
             ungatedNotice={
-              ungated && detected
+              !bare && ungated && detected
                 ? {
                     binary: agentBinaryName(detected.kind),
                     reason: ungated,
@@ -5427,16 +5488,16 @@ export default function App() {
                 : null
             }
             unjailedNotice={
-              unjailedNotice && detected
+              !bare && unjailedNotice && detected
                 ? {
                     binary: agentBinaryName(detected.kind),
                     reason: detected.noJail,
                   }
                 : null
             }
-            remoteNotice={remoteNotice}
+            remoteNotice={bare ? null : remoteNotice}
             resumeNotice={
-              resumeInvite && s.kind.type === "agent"
+              !bare && resumeInvite && s.kind.type === "agent"
                 ? { binary: agentBinaryName(s.kind.runner) }
                 : null
             }
@@ -5445,6 +5506,7 @@ export default function App() {
             }
             onDismissResume={() => dismissResumeInvite(s.id)}
             shellResumeNotice={
+              !bare &&
               s.kind.type === "shell" &&
               Boolean(s.shell_resume_offer)
             }
@@ -5453,16 +5515,16 @@ export default function App() {
               void dismissShellResumeOffer(s.id).catch(() => {})
             }
             authAlert={
-              runtimeAuthAlerts.has(s.id)
+              !bare && runtimeAuthAlerts.has(s.id)
                 ? { kind: runtimeAuthAlerts.get(s.id)! }
                 : null
             }
             onDismissAuthAlert={() =>
               dismissRuntimeAuthAlert(s.id)
             }
-            approvalRequest={panelRequests.get(s.id) ?? null}
+            approvalRequest={bare ? null : (panelRequests.get(s.id) ?? null)}
             onPaste={deliverPaste}
-            onSearch={() => setSearchOpen(true)}
+            onSearch={bare ? undefined : () => setSearchOpen(true)}
             readOnly={line?.owns ?? false}
             onReclaimFocus={() => focusLine(s.id)}
             onAltScreen={(alt) =>
@@ -5472,9 +5534,11 @@ export default function App() {
                   : { ...prev, [s.id]: alt },
               )
             }
-            onSplit={(kind) => void splitActive(kind)}
-            visible={paneRect !== null}
-            focused={s.id === activeId}
+            onSplit={bare ? undefined : (kind) => void splitActive(kind)}
+            visible={bare || paneRect !== null}
+            // No nó, selecionar não foca o terminal (ver `NodeTerminal`);
+            // no modo foco ele já nasce com o teclado.
+            focused={bare ? nodeZoom === undefined : s.id === activeId}
             reattaches={!ptyExitEndsSession(s.kind)}
             connection={
               s.kind.type === "ssh" ? s.connection : undefined
@@ -5506,7 +5570,9 @@ export default function App() {
             }
             exited={isFinishedStatus(s.status)}
             rect={terminalBox}
-            fullBleed={altScreens[s.id] ?? false}
+            zoom={nodeZoom}
+            // No canvas a margem é do invólucro (`wrapNodeTerminal`).
+            fullBleed={nodeZoom !== undefined || (altScreens[s.id] ?? false)}
             // Só com a faixa ABERTA. `liveUsed` guarda a última
             // medida e não se apaga quando o comando termina: sem
             // esta guarda o recorte fica valendo para sempre, e o
@@ -5535,23 +5601,25 @@ export default function App() {
                 : undefined
             }
             onFocus={
-              paneRect
+              bare
+                ? () => getTerm(s.id)?.term.focus()
+                : paneRect
                 ? () => void focusPane(paneRect.pane)
                 : undefined
             }
             onExit={() => void refreshSessions()}
-          />
+          />)}
           {/* Nada de objeto ou arrow montados aqui
               dentro: o corpo do painel é `memo`, e prop com
               identidade nova a cada quadro faz a comparação
               rasa falhar sempre. Ver `SessionBlocks`. */}
-          {blocked && paneRect && (
+          {blocked && (paneRect || bare) && (
             <SessionBlocks
               key={`blocks-${s.id}`}
               {...sessionBlocksData({
                 session: s,
                 pane: {
-                  pane: paneRect.pane,
+                  pane: paneRect?.pane ?? s.id,
                   x: PANE_BOX.left,
                   y: PANE_BOX.top,
                   w: PANE_BOX.width,
@@ -5575,7 +5643,8 @@ export default function App() {
                 cellWidthPx:
                   termCellWidth[s.id] ?? fallbackCellWidth,
                 cwd: sessionCwds[s.id],
-                active: s.id === activeId,
+                // O nó é o próprio painel: "Rodar de novo" vai à linha dele.
+                active: bare || s.id === activeId,
                 command: sessionCommands[s.id]?.command,
                 commandStartedAtMs:
                   sessionCommands[s.id]?.started_at_ms,
@@ -5586,14 +5655,14 @@ export default function App() {
                 copyCombo: formatCombo(bindings.copy),
               })}
               onInject={injectInto}
-              onFocusPane={focusPane}
+              onFocusPane={bare ? noFocusPane : focusPane}
               onPick={pickerFor(s.id)}
               onClearPick={clearPick}
               onHeaderPx={reportHeaderPx}
             />
           )}
         </div>
-        {paneRect && line?.visible && (
+        {(paneRect || bare) && line?.visible && (
           // Clicar (ou focar) a linha de outro painel passa o
           // foco do CORE para ele antes de qualquer tecla: é o
           // core que decide o painel ativo, e o atalho, a
@@ -5601,12 +5670,12 @@ export default function App() {
           <div
             className="shrink-0"
             onPointerDownCapture={() => {
-              if (s.id !== activeId) {
+              if (paneRect && s.id !== activeId) {
                 void focusPane(paneRect.pane).catch(() => {});
               }
             }}
             onFocusCapture={() => {
-              if (s.id !== activeId) {
+              if (paneRect && s.id !== activeId) {
                 void focusPane(paneRect.pane).catch(() => {});
               }
             }}
@@ -5644,7 +5713,7 @@ export default function App() {
                 cwd: cwdKeyOf(s.id),
                 repoRoot: s.repo_root ?? null,
               }}
-              focusOnMount={s.id === activeId && line.owns}
+              focusOnMount={!bare && s.id === activeId && line.owns}
               focusNonce={lineFocusNonces[s.id] ?? 0}
               state={line.state}
               boot={shellBoots[s.id] ?? null}
@@ -5674,8 +5743,51 @@ export default function App() {
             />
           </div>
         )}
+        {bare && !line?.owns && orbitRichInput(s)}
       </div>
     );
+  };
+
+  /**
+   * A caixa de agente do nó: a mesma regra da grade (`richInputVisibility`),
+   * só que por sessão do nó e flutuando sobre o rodapé dele.
+   */
+  const orbitRichInput = (s: Session) => {
+    const shown = richInputVisibility({
+      kind: s.kind,
+      command: sessionCommands[s.id],
+      pref: richInputPref,
+      opened: richInputOpened.has(s.id),
+      dismissed: richInputDismissed.has(s.id),
+    });
+    if (!shown) return null;
+    return (
+      <div className="absolute inset-x-0 bottom-0 z-40 px-4 pb-4">
+        <RichInput
+          key={s.id}
+          sessionId={s.id}
+          pref={richInputPref}
+          focusNonce={richInputFocusNonce}
+          openedExplicitly={richInputOpened.has(s.id)}
+          prefill={launchPrefills[s.id] ?? null}
+          onFocusChange={(focused) => {
+            richInputFocused.current = focused;
+          }}
+          onClose={() => closeRichInput(s.id)}
+        />
+      </div>
+    );
+  };
+
+  // Novo a cada render de propósito: o nó re-renderiza junto com o estado
+  // do painel, como os painéis da grade.
+  const terminalPaneHost: TerminalPaneHost = {
+    render: (id, zoom) => {
+      const s = sessionById.get(id);
+      return s ? renderPane(s, null, { zoom }) : null;
+    },
+    attach: attachOrbitPane,
+    focusInput: focusOrbitInput,
   };
 
   return (
@@ -6103,13 +6215,15 @@ export default function App() {
           {orbitOpen && (
             <div className="absolute inset-0 z-40 flex">
               <ErrorBoundary region="orbit">
-                <OrbitScreen
-                  focusSession={orbitFocus}
-                  approvals={approvals}
-                  onCardApprovals={setNodeCardIds}
-                  covered={machineScreen !== null}
-                  sessions={sessions}
-                />
+                <TerminalPaneContext.Provider value={terminalPaneHost}>
+                  <OrbitScreen
+                    focusSession={orbitFocus}
+                    approvals={approvals}
+                    onCardApprovals={setNodeCardIds}
+                    covered={machineScreen !== null}
+                    sessions={sessions}
+                  />
+                </TerminalPaneContext.Provider>
               </ErrorBoundary>
               {machineScreen && (
                 <ServicesScreen

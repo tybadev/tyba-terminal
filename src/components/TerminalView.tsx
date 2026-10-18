@@ -87,7 +87,7 @@ import {
   type Bindings,
 } from "../lib/keys";
 import { getTerminalTheme, onTerminalThemeChange } from "../theme";
-import { nodeFontSize, nodeGrid, nodeZoomStyle, type Cell } from "../lib/nodeTerminal";
+import { nodeFontSize, nodeGrid, nodeLiveClip, nodeZoomStyle, type Cell } from "../lib/nodeTerminal";
 
 export const RELAYOUT_EVENT = "tyba:relayout";
 
@@ -987,7 +987,10 @@ export function TerminalView({
       const screen = term.element?.querySelector(".xterm-screen");
       if (!screen || term.rows <= 0) return;
       const box = screen.getBoundingClientRect();
-      const h = box.height / term.rows;
+      // No nó do grafo a caixa vem na escala da tela (fonte `base × zoom`); os
+      // blocos ao lado dela medem em px de layout, sob a escala do canvas.
+      const z = zoomRef.current ?? 1;
+      const h = box.height / term.rows / z;
       if (h > 0 && Math.abs(h - lastLineH) >= 0.05) {
         lastLineH = h;
         onLineHeightRef.current?.(h);
@@ -996,7 +999,7 @@ export function TerminalView({
       // bloco depende de quantos caracteres cabem na linha, e o corpo do cartão
       // usa esta fonte.
       if (term.cols <= 0) return;
-      const w = box.width / term.cols;
+      const w = box.width / term.cols / z;
       if (w <= 0 || Math.abs(w - lastCellW) < 0.05) return;
       lastCellW = w;
       onCellWidthRef.current?.(w);
@@ -1555,7 +1558,7 @@ export function TerminalView({
           className={`overflow-hidden bg-tyba-sunken ${fullBleed ? "" : "rounded-[4px] px-2.5"}`}
           style={
             visible && zoom !== undefined
-              ? nodeZoomStyle(zoom)
+              ? { ...nodeZoomStyle(zoom), ...nodeLiveClip(hidden) }
               : visible && rect
               ? {
                   paddingTop: fullBleed ? 0 : LIVE_PAD_TOP_PX,

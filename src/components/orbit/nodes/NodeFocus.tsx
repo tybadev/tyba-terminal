@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { ArrowsIn, FolderSimple } from "@phosphor-icons/react";
 
+import { HostedTerminalPane, useTerminalPane } from "@/components/TerminalPaneHost";
 import { TerminalView } from "@/components/TerminalView";
 import { nodeDir, shortDir, type OrbitNode } from "@/lib/orbit";
 import { isFocusCloseKey } from "@/lib/orbitFocus";
@@ -22,6 +23,9 @@ import { FULL } from "./NodeTerminal";
 export function NodeFocus({ node, sessionId }: { node: OrbitNode; sessionId: string }) {
   const { t } = useTranslation();
   const { run, graphDir, setFocusNode } = useOrbit();
+  // O nó Terminal mostra o painel da aba Terminal também em tamanho real.
+  const paneHost = useTerminalPane();
+  const tyba = node.kind.type === "terminal" && paneHost !== null;
   const nodeRun = run?.nodes[node.id];
   const dir = nodeDir(node.kind, graphDir);
 
@@ -72,7 +76,11 @@ export function NodeFocus({ node, sessionId }: { node: OrbitNode; sessionId: str
         </button>
       </div>
       <div className="relative min-h-0 flex-1 bg-tyba-sunken">
-        <TerminalView sessionId={sessionId} visible focused rect={FULL} />
+        {tyba ? (
+          <HostedTerminalPane sessionId={sessionId} />
+        ) : (
+          <TerminalView sessionId={sessionId} visible focused rect={FULL} />
+        )}
       </div>
     </div>
   );
