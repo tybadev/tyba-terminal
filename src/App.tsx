@@ -5315,6 +5315,369 @@ export default function App() {
     );
   };
 
+  /**
+   * O painel de uma sessão da grade: terminal, blocos e a linha do TYBA.
+   * Fora do `map` do render para o nó Terminal do Orbit desenhar o mesmo
+   * painel (ver `TerminalPaneHost`).
+   */
+  const renderPane = (
+    s: Session,
+    paneRect: NonNullable<typeof paneLayout>["panes"][number] | null,
+  ) => {
+    // O terminal e os blocos medem em % da ÁREA DE CONTEÚDO do
+    // painel — o painel menos a linha do TYBA, que mora no
+    // rodapé dele. Ver o invólucro abaixo.
+    const pane = paneRect ? PANE_BOX : null;
+    const line = paneLines.get(s.id);
+    // Em modo prompt o terminal ocupa uma faixa FIXA embaixo: a
+    // lista de blocos a cobre quando ocioso e a revela quando um
+    // comando roda, sem nunca redimensionar o PTY. Alt-screen é
+    // a exceção — `vim` precisa do painel inteiro.
+    const blocked =
+      (promptModes[s.id] ?? false) &&
+      !(altScreens[s.id] ?? false);
+    const terminalBox =
+      pane && blocked ? termRect(pane) : pane;
+    const detected = detectedBySession.get(s.id) ?? null;
+    const sshHostId =
+      s.kind.type === "ssh" ? s.kind.host_id : null;
+    const hosting = detected?.hosting ?? false;
+    const jailed = detected?.jailed ?? false;
+    const shim = detected?.shim ?? null;
+    const notice = showShellAgentNotice(
+      s.kind,
+      detected,
+      hosting,
+      dismissedShellNotices.get(s.id),
+      shim,
+    );
+    const ungated = ungatedReason(
+      s.kind,
+      detected,
+      hosting,
+      shim,
+    );
+    const unjailedNotice = showUnjailedNotice(
+      s.kind,
+      detected,
+      hosting,
+      jailed,
+    );
+    const resumeInvite = showAgentResumeInvite(
+      s,
+      resumableAgents.get(s.id),
+      dismissedResumeInvites.has(s.id),
+    );
+    // A faixa da sessão remota: a linha que explica por que ela
+    // é comum, ou o agente rodando no servidor sem jaula. Uma
+    // só — as duas ocupam o mesmo lugar do pane.
+    const remoteNotice = sshHostId
+      ? paneNotice({
+          integration: integrations[s.id],
+          agent: remoteAgentNotice({
+            command: sessionCommands[s.id],
+            confirmed: remoteAgents[s.id],
+          }),
+        })
+      : null;
+    return (
+      // O painel é uma coluna: a área de conteúdo (terminal e
+      // blocos) em cima, a linha do TYBA embaixo. A altura da
+      // linha sai da área de conteúdo DESTE painel e de nenhum
+      // outro — um resize por painel, e só quando a linha muda
+      // de altura, nunca por comando.
+      <div
+        key={`pane-${s.id}`}
+        className="flex flex-col"
+        style={
+          paneRect
+            ? {
+                position: "absolute",
+                left: `${paneRect.x}%`,
+                top: `${paneRect.y}%`,
+                width: `${paneRect.w}%`,
+                height: `${paneRect.h}%`,
+              }
+            : { display: "none" }
+        }
+      >
+        {s.kind.type === "container" && (
+          <ContainerShellBanner containerId={s.kind.container_id} />
+        )}
+        <div className="relative min-h-0 flex-1">
+          <TerminalView
+            key={`${s.id}:${paneEpochs.get(s.id) ?? 0}`}
+            sessionId={s.id}
+            transport={transports[s.id] ?? INITIAL_TRANSPORT}
+            agentNotice={
+              notice && detected
+                ? { binary: agentBinaryName(detected.kind) }
+                : null
+            }
+            onReopenManaged={() =>
+              void reopenShellAgentManaged(s.id)
+            }
+            onDismissNotice={() => dismissShellAgentNotice(s.id)}
+            ungatedNotice={
+              ungated && detected
+                ? {
+                    binary: agentBinaryName(detected.kind),
+                    reason: ungated,
+                  }
+                : null
+            }
+            unjailedNotice={
+              unjailedNotice && detected
+                ? {
+                    binary: agentBinaryName(detected.kind),
+                    reason: detected.noJail,
+                  }
+                : null
+            }
+            remoteNotice={remoteNotice}
+            resumeNotice={
+              resumeInvite && s.kind.type === "agent"
+                ? { binary: agentBinaryName(s.kind.runner) }
+                : null
+            }
+            onResumeAgent={() =>
+              void resumeAgentConversation(s.id)
+            }
+            onDismissResume={() => dismissResumeInvite(s.id)}
+            shellResumeNotice={
+              s.kind.type === "shell" &&
+              Boolean(s.shell_resume_offer)
+            }
+            onResumeShell={() => void resumeShellClaude(s.id)}
+            onDismissShellResume={() =>
+              void dismissShellResumeOffer(s.id).catch(() => {})
+            }
+            authAlert={
+              runtimeAuthAlerts.has(s.id)
+                ? { kind: runtimeAuthAlerts.get(s.id)! }
+                : null
+            }
+            onDismissAuthAlert={() =>
+              dismissRuntimeAuthAlert(s.id)
+            }
+            approvalRequest={panelRequests.get(s.id) ?? null}
+            onPaste={deliverPaste}
+            onSearch={() => setSearchOpen(true)}
+            readOnly={line?.owns ?? false}
+            onReclaimFocus={() => focusLine(s.id)}
+            onAltScreen={(alt) =>
+              setAltScreens((prev) =>
+                prev[s.id] === alt
+                  ? prev
+                  : { ...prev, [s.id]: alt },
+              )
+            }
+            onSplit={(kind) => void splitActive(kind)}
+            visible={paneRect !== null}
+            focused={s.id === activeId}
+            reattaches={!ptyExitEndsSession(s.kind)}
+            connection={
+              s.kind.type === "ssh" ? s.connection : undefined
+            }
+            connectionFailure={
+              s.kind.type === "ssh" ? s.connection_failure : null
+            }
+            knownHostsCommand={
+              sshHostId ? knownHostsCommandFor(sshHostId) : null
+            }
+            onReconnect={
+              s.kind.type === "ssh"
+                ? () =>
+                    void reconnectSsh(s.id).catch((e) =>
+                      toastError(
+                        t("connectionsActionFailed"),
+                        translateError(e, t),
+                      ),
+                    )
+                : undefined
+            }
+            onEditHost={
+              sshHostId ? () => editSshHost(sshHostId) : undefined
+            }
+            onBroadcastInput={
+              broadcastOn && s.kind.type === "ssh"
+                ? handleBroadcastInput
+                : undefined
+            }
+            exited={isFinishedStatus(s.status)}
+            rect={terminalBox}
+            fullBleed={altScreens[s.id] ?? false}
+            // Só com a faixa ABERTA. `liveUsed` guarda a última
+            // medida e não se apaga quando o comando termina: sem
+            // esta guarda o recorte fica valendo para sempre, e o
+            // terminal vira uma tira no rodapé assim que a lista
+            // deixa de cobri-lo — num split, o painel sem blocos.
+            liveUsed={
+              blocked && liveOf(s.id) ? liveUsed[s.id] : undefined
+            }
+            swallowArrows={swallowsArrow({
+              running: Boolean(sessionCommands[s.id]?.running),
+              lineEcho: lineEcho[s.id] ?? false,
+              altScreen: altScreens[s.id] ?? false,
+            })}
+            bindings={bindings}
+            // Quem lê o teclado neste painel é um composer de
+            // agente: a sessão gerenciada, ou o `claude` cru que
+            // o probe achou rodando no shell. É o que libera
+            // Shift/Ctrl/Option+Enter como quebra de linha.
+            agentTui={s.kind.type === "agent" || detected !== null}
+            onLineHeight={(px) => reportLineHeight(s.id, px)}
+            onCellWidth={(px) => reportCellWidth(s.id, px)}
+            onLiveRows={
+              blocked
+                ? (used, total, scrolled) =>
+                    reportLiveRows(s.id, used, total, scrolled)
+                : undefined
+            }
+            onFocus={
+              paneRect
+                ? () => void focusPane(paneRect.pane)
+                : undefined
+            }
+            onExit={() => void refreshSessions()}
+          />
+          {/* Nada de objeto ou arrow montados aqui
+              dentro: o corpo do painel é `memo`, e prop com
+              identidade nova a cada quadro faz a comparação
+              rasa falhar sempre. Ver `SessionBlocks`. */}
+          {blocked && paneRect && (
+            <SessionBlocks
+              key={`blocks-${s.id}`}
+              {...sessionBlocksData({
+                session: s,
+                pane: {
+                  pane: paneRect.pane,
+                  x: PANE_BOX.left,
+                  y: PANE_BOX.top,
+                  w: PANE_BOX.width,
+                  h: PANE_BOX.height,
+                },
+                blocks: blocks[s.id],
+                // `clear` não abre a faixa: ele não tem saída para
+                // mostrar, e meio painel preto que aparece para logo
+                // esvaziar tudo é um solavanco em cima de um comando
+                // cujo ponto é sumir com as coisas.
+                live: liveOf(s.id),
+                // A lista cede à faixa só a altura que a saída usa de
+                // fato. Sem isto ela larga metade do painel para um
+                // terminal que costuma estar em boa parte vazio, e o
+                // cartão nasce longe de onde a saída estava.
+                used: liveUsed[s.id],
+                headerPx: activeHeaderPx[s.id],
+                fontSizePx: termFontSize,
+                lineHeightPx:
+                  termLineHeight[s.id] ?? fallbackLineHeight,
+                cellWidthPx:
+                  termCellWidth[s.id] ?? fallbackCellWidth,
+                cwd: sessionCwds[s.id],
+                active: s.id === activeId,
+                command: sessionCommands[s.id]?.command,
+                commandStartedAtMs:
+                  sessionCommands[s.id]?.started_at_ms,
+                marked:
+                  blockPick?.session === s.id
+                    ? markedBlocks
+                    : null,
+                copyCombo: formatCombo(bindings.copy),
+              })}
+              onInject={injectInto}
+              onFocusPane={focusPane}
+              onPick={pickerFor(s.id)}
+              onClearPick={clearPick}
+              onHeaderPx={reportHeaderPx}
+            />
+          )}
+        </div>
+        {paneRect && line?.visible && (
+          // Clicar (ou focar) a linha de outro painel passa o
+          // foco do CORE para ele antes de qualquer tecla: é o
+          // core que decide o painel ativo, e o atalho, a
+          // paleta e a caixa de agente seguem essa resposta.
+          <div
+            className="shrink-0"
+            onPointerDownCapture={() => {
+              if (s.id !== activeId) {
+                void focusPane(paneRect.pane).catch(() => {});
+              }
+            }}
+            onFocusCapture={() => {
+              if (s.id !== activeId) {
+                void focusPane(paneRect.pane).catch(() => {});
+              }
+            }}
+          >
+            {/* `key` só pela sessão: trocar o foco NÃO remonta
+                a linha. Texto, caret, linhas pendentes e menu
+                de cada painel ficam onde estavam. */}
+            <CommandLine
+              key={`${s.id}:line`}
+              sessionId={s.id}
+              cwd={cwdKeyOf(s.id)}
+              program={programName(
+                sessionCommands[s.id]?.command,
+              )}
+              // A branch DESTA sessão, pela mesma regra do
+              // chip da barra (sem emprestar de outro repo).
+              // SSH fica sem: o snapshot é local.
+              branch={(() => {
+                if (s.kind.type === "ssh") return null;
+                const chip = toolbarBranchChip({
+                  session: {
+                    id: s.id,
+                    worktree: s.worktree?.path ?? null,
+                    alive: !isFinishedStatus(s.status),
+                    cwd: sessionCwds[s.id]?.canonical ?? null,
+                  },
+                  workspaceDir: null,
+                  snapshots: repoSnapshots,
+                });
+                return chip?.state === "known"
+                  ? chip.label
+                  : null;
+              })()}
+              scope={{
+                cwd: cwdKeyOf(s.id),
+                repoRoot: s.repo_root ?? null,
+              }}
+              focusOnMount={s.id === activeId && line.owns}
+              focusNonce={lineFocusNonces[s.id] ?? 0}
+              state={line.state}
+              boot={shellBoots[s.id] ?? null}
+              booting={
+                promptModes[s.id] !== true &&
+                !isFinishedStatus(s.status)
+              }
+              broadcasting={
+                broadcastOn &&
+                s.kind.type === "ssh" &&
+                broadcastSet.includes(s.id)
+              }
+              bootHost={
+                s.kind.type === "ssh"
+                  ? (sshHosts.find(
+                      (h) =>
+                        s.kind.type === "ssh" &&
+                        h.id === s.kind.host_id,
+                    )?.alias ?? null)
+                  : null
+              }
+              inject={injected[s.id] ?? null}
+              draft={drafts.current[s.id] ?? ""}
+              onDraftChange={rememberDraft}
+              pending={pendings.current[s.id]}
+              onPendingChange={rememberPending}
+            />
+          </div>
+        )}
+      </div>
+    );
+  };
+
   return (
     <TooltipProvider delayDuration={400}>
       <ErrorBoundary region="notificações">
@@ -6447,358 +6810,7 @@ export default function App() {
                     const paneRect =
                       paneLayout?.panes.find((p) => p.session === s.id) ??
                       null;
-                    // O terminal e os blocos medem em % da ÁREA DE CONTEÚDO do
-                    // painel — o painel menos a linha do TYBA, que mora no
-                    // rodapé dele. Ver o invólucro abaixo.
-                    const pane = paneRect ? PANE_BOX : null;
-                    const line = paneLines.get(s.id);
-                    // Em modo prompt o terminal ocupa uma faixa FIXA embaixo: a
-                    // lista de blocos a cobre quando ocioso e a revela quando um
-                    // comando roda, sem nunca redimensionar o PTY. Alt-screen é
-                    // a exceção — `vim` precisa do painel inteiro.
-                    const blocked =
-                      (promptModes[s.id] ?? false) &&
-                      !(altScreens[s.id] ?? false);
-                    const terminalBox =
-                      pane && blocked ? termRect(pane) : pane;
-                    const detected = detectedBySession.get(s.id) ?? null;
-                    const sshHostId =
-                      s.kind.type === "ssh" ? s.kind.host_id : null;
-                    const hosting = detected?.hosting ?? false;
-                    const jailed = detected?.jailed ?? false;
-                    const shim = detected?.shim ?? null;
-                    const notice = showShellAgentNotice(
-                      s.kind,
-                      detected,
-                      hosting,
-                      dismissedShellNotices.get(s.id),
-                      shim,
-                    );
-                    const ungated = ungatedReason(
-                      s.kind,
-                      detected,
-                      hosting,
-                      shim,
-                    );
-                    const unjailedNotice = showUnjailedNotice(
-                      s.kind,
-                      detected,
-                      hosting,
-                      jailed,
-                    );
-                    const resumeInvite = showAgentResumeInvite(
-                      s,
-                      resumableAgents.get(s.id),
-                      dismissedResumeInvites.has(s.id),
-                    );
-                    // A faixa da sessão remota: a linha que explica por que ela
-                    // é comum, ou o agente rodando no servidor sem jaula. Uma
-                    // só — as duas ocupam o mesmo lugar do pane.
-                    const remoteNotice = sshHostId
-                      ? paneNotice({
-                          integration: integrations[s.id],
-                          agent: remoteAgentNotice({
-                            command: sessionCommands[s.id],
-                            confirmed: remoteAgents[s.id],
-                          }),
-                        })
-                      : null;
-                    return (
-                      // O painel é uma coluna: a área de conteúdo (terminal e
-                      // blocos) em cima, a linha do TYBA embaixo. A altura da
-                      // linha sai da área de conteúdo DESTE painel e de nenhum
-                      // outro — um resize por painel, e só quando a linha muda
-                      // de altura, nunca por comando.
-                      <div
-                        key={`pane-${s.id}`}
-                        className="flex flex-col"
-                        style={
-                          paneRect
-                            ? {
-                                position: "absolute",
-                                left: `${paneRect.x}%`,
-                                top: `${paneRect.y}%`,
-                                width: `${paneRect.w}%`,
-                                height: `${paneRect.h}%`,
-                              }
-                            : { display: "none" }
-                        }
-                      >
-                        {s.kind.type === "container" && (
-                          <ContainerShellBanner containerId={s.kind.container_id} />
-                        )}
-                        <div className="relative min-h-0 flex-1">
-                          <TerminalView
-                            key={`${s.id}:${paneEpochs.get(s.id) ?? 0}`}
-                            sessionId={s.id}
-                            transport={transports[s.id] ?? INITIAL_TRANSPORT}
-                            agentNotice={
-                              notice && detected
-                                ? { binary: agentBinaryName(detected.kind) }
-                                : null
-                            }
-                            onReopenManaged={() =>
-                              void reopenShellAgentManaged(s.id)
-                            }
-                            onDismissNotice={() => dismissShellAgentNotice(s.id)}
-                            ungatedNotice={
-                              ungated && detected
-                                ? {
-                                    binary: agentBinaryName(detected.kind),
-                                    reason: ungated,
-                                  }
-                                : null
-                            }
-                            unjailedNotice={
-                              unjailedNotice && detected
-                                ? {
-                                    binary: agentBinaryName(detected.kind),
-                                    reason: detected.noJail,
-                                  }
-                                : null
-                            }
-                            remoteNotice={remoteNotice}
-                            resumeNotice={
-                              resumeInvite && s.kind.type === "agent"
-                                ? { binary: agentBinaryName(s.kind.runner) }
-                                : null
-                            }
-                            onResumeAgent={() =>
-                              void resumeAgentConversation(s.id)
-                            }
-                            onDismissResume={() => dismissResumeInvite(s.id)}
-                            shellResumeNotice={
-                              s.kind.type === "shell" &&
-                              Boolean(s.shell_resume_offer)
-                            }
-                            onResumeShell={() => void resumeShellClaude(s.id)}
-                            onDismissShellResume={() =>
-                              void dismissShellResumeOffer(s.id).catch(() => {})
-                            }
-                            authAlert={
-                              runtimeAuthAlerts.has(s.id)
-                                ? { kind: runtimeAuthAlerts.get(s.id)! }
-                                : null
-                            }
-                            onDismissAuthAlert={() =>
-                              dismissRuntimeAuthAlert(s.id)
-                            }
-                            approvalRequest={panelRequests.get(s.id) ?? null}
-                            onPaste={deliverPaste}
-                            onSearch={() => setSearchOpen(true)}
-                            readOnly={line?.owns ?? false}
-                            onReclaimFocus={() => focusLine(s.id)}
-                            onAltScreen={(alt) =>
-                              setAltScreens((prev) =>
-                                prev[s.id] === alt
-                                  ? prev
-                                  : { ...prev, [s.id]: alt },
-                              )
-                            }
-                            onSplit={(kind) => void splitActive(kind)}
-                            visible={paneRect !== null}
-                            focused={s.id === activeId}
-                            reattaches={!ptyExitEndsSession(s.kind)}
-                            connection={
-                              s.kind.type === "ssh" ? s.connection : undefined
-                            }
-                            connectionFailure={
-                              s.kind.type === "ssh" ? s.connection_failure : null
-                            }
-                            knownHostsCommand={
-                              sshHostId ? knownHostsCommandFor(sshHostId) : null
-                            }
-                            onReconnect={
-                              s.kind.type === "ssh"
-                                ? () =>
-                                    void reconnectSsh(s.id).catch((e) =>
-                                      toastError(
-                                        t("connectionsActionFailed"),
-                                        translateError(e, t),
-                                      ),
-                                    )
-                                : undefined
-                            }
-                            onEditHost={
-                              sshHostId ? () => editSshHost(sshHostId) : undefined
-                            }
-                            onBroadcastInput={
-                              broadcastOn && s.kind.type === "ssh"
-                                ? handleBroadcastInput
-                                : undefined
-                            }
-                            exited={isFinishedStatus(s.status)}
-                            rect={terminalBox}
-                            fullBleed={altScreens[s.id] ?? false}
-                            // Só com a faixa ABERTA. `liveUsed` guarda a última
-                            // medida e não se apaga quando o comando termina: sem
-                            // esta guarda o recorte fica valendo para sempre, e o
-                            // terminal vira uma tira no rodapé assim que a lista
-                            // deixa de cobri-lo — num split, o painel sem blocos.
-                            liveUsed={
-                              blocked && liveOf(s.id) ? liveUsed[s.id] : undefined
-                            }
-                            swallowArrows={swallowsArrow({
-                              running: Boolean(sessionCommands[s.id]?.running),
-                              lineEcho: lineEcho[s.id] ?? false,
-                              altScreen: altScreens[s.id] ?? false,
-                            })}
-                            bindings={bindings}
-                            // Quem lê o teclado neste painel é um composer de
-                            // agente: a sessão gerenciada, ou o `claude` cru que
-                            // o probe achou rodando no shell. É o que libera
-                            // Shift/Ctrl/Option+Enter como quebra de linha.
-                            agentTui={s.kind.type === "agent" || detected !== null}
-                            onLineHeight={(px) => reportLineHeight(s.id, px)}
-                            onCellWidth={(px) => reportCellWidth(s.id, px)}
-                            onLiveRows={
-                              blocked
-                                ? (used, total, scrolled) =>
-                                    reportLiveRows(s.id, used, total, scrolled)
-                                : undefined
-                            }
-                            onFocus={
-                              paneRect
-                                ? () => void focusPane(paneRect.pane)
-                                : undefined
-                            }
-                            onExit={() => void refreshSessions()}
-                          />
-                          {/* Nada de objeto ou arrow montados aqui
-                              dentro: o corpo do painel é `memo`, e prop com
-                              identidade nova a cada quadro faz a comparação
-                              rasa falhar sempre. Ver `SessionBlocks`. */}
-                          {blocked && paneRect && (
-                            <SessionBlocks
-                              key={`blocks-${s.id}`}
-                              {...sessionBlocksData({
-                                session: s,
-                                pane: {
-                                  pane: paneRect.pane,
-                                  x: PANE_BOX.left,
-                                  y: PANE_BOX.top,
-                                  w: PANE_BOX.width,
-                                  h: PANE_BOX.height,
-                                },
-                                blocks: blocks[s.id],
-                                // `clear` não abre a faixa: ele não tem saída para
-                                // mostrar, e meio painel preto que aparece para logo
-                                // esvaziar tudo é um solavanco em cima de um comando
-                                // cujo ponto é sumir com as coisas.
-                                live: liveOf(s.id),
-                                // A lista cede à faixa só a altura que a saída usa de
-                                // fato. Sem isto ela larga metade do painel para um
-                                // terminal que costuma estar em boa parte vazio, e o
-                                // cartão nasce longe de onde a saída estava.
-                                used: liveUsed[s.id],
-                                headerPx: activeHeaderPx[s.id],
-                                fontSizePx: termFontSize,
-                                lineHeightPx:
-                                  termLineHeight[s.id] ?? fallbackLineHeight,
-                                cellWidthPx:
-                                  termCellWidth[s.id] ?? fallbackCellWidth,
-                                cwd: sessionCwds[s.id],
-                                active: s.id === activeId,
-                                command: sessionCommands[s.id]?.command,
-                                commandStartedAtMs:
-                                  sessionCommands[s.id]?.started_at_ms,
-                                marked:
-                                  blockPick?.session === s.id
-                                    ? markedBlocks
-                                    : null,
-                                copyCombo: formatCombo(bindings.copy),
-                              })}
-                              onInject={injectInto}
-                              onFocusPane={focusPane}
-                              onPick={pickerFor(s.id)}
-                              onClearPick={clearPick}
-                              onHeaderPx={reportHeaderPx}
-                            />
-                          )}
-                        </div>
-                        {paneRect && line?.visible && (
-                          // Clicar (ou focar) a linha de outro painel passa o
-                          // foco do CORE para ele antes de qualquer tecla: é o
-                          // core que decide o painel ativo, e o atalho, a
-                          // paleta e a caixa de agente seguem essa resposta.
-                          <div
-                            className="shrink-0"
-                            onPointerDownCapture={() => {
-                              if (s.id !== activeId) {
-                                void focusPane(paneRect.pane).catch(() => {});
-                              }
-                            }}
-                            onFocusCapture={() => {
-                              if (s.id !== activeId) {
-                                void focusPane(paneRect.pane).catch(() => {});
-                              }
-                            }}
-                          >
-                            {/* `key` só pela sessão: trocar o foco NÃO remonta
-                                a linha. Texto, caret, linhas pendentes e menu
-                                de cada painel ficam onde estavam. */}
-                            <CommandLine
-                              key={`${s.id}:line`}
-                              sessionId={s.id}
-                              cwd={cwdKeyOf(s.id)}
-                              program={programName(
-                                sessionCommands[s.id]?.command,
-                              )}
-                              // A branch DESTA sessão, pela mesma regra do
-                              // chip da barra (sem emprestar de outro repo).
-                              // SSH fica sem: o snapshot é local.
-                              branch={(() => {
-                                if (s.kind.type === "ssh") return null;
-                                const chip = toolbarBranchChip({
-                                  session: {
-                                    id: s.id,
-                                    worktree: s.worktree?.path ?? null,
-                                    alive: !isFinishedStatus(s.status),
-                                    cwd: sessionCwds[s.id]?.canonical ?? null,
-                                  },
-                                  workspaceDir: null,
-                                  snapshots: repoSnapshots,
-                                });
-                                return chip?.state === "known"
-                                  ? chip.label
-                                  : null;
-                              })()}
-                              scope={{
-                                cwd: cwdKeyOf(s.id),
-                                repoRoot: s.repo_root ?? null,
-                              }}
-                              focusOnMount={s.id === activeId && line.owns}
-                              focusNonce={lineFocusNonces[s.id] ?? 0}
-                              state={line.state}
-                              boot={shellBoots[s.id] ?? null}
-                              booting={
-                                promptModes[s.id] !== true &&
-                                !isFinishedStatus(s.status)
-                              }
-                              broadcasting={
-                                broadcastOn &&
-                                s.kind.type === "ssh" &&
-                                broadcastSet.includes(s.id)
-                              }
-                              bootHost={
-                                s.kind.type === "ssh"
-                                  ? (sshHosts.find(
-                                      (h) =>
-                                        s.kind.type === "ssh" &&
-                                        h.id === s.kind.host_id,
-                                    )?.alias ?? null)
-                                  : null
-                              }
-                              inject={injected[s.id] ?? null}
-                              draft={drafts.current[s.id] ?? ""}
-                              onDraftChange={rememberDraft}
-                              pending={pendings.current[s.id]}
-                              onPendingChange={rememberPending}
-                            />
-                          </div>
-                        )}
-                      </div>
-                    );
+                    return renderPane(s, paneRect);
                   })}
                   {/* Onde o foco está: o filamento de luz na aresta de cima
                       do painel ativo — a mesma linha viva (estática) da aba
