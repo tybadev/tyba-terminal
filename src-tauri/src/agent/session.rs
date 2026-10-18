@@ -1482,6 +1482,7 @@ fn passthrough_spec(cwd: &Path, runtime: &Path, socket_path: &Path, exe: &Path) 
 /// ([`crate::hook_ipc::channel::hosted_child_env`]); o plano só carrega o
 /// socket de hooks e os marcadores.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
+#[allow(clippy::too_many_arguments)]
 fn build_hosted_command(
     runner: &dyn AgentRunner,
     cwd: &Path,
@@ -1489,6 +1490,7 @@ fn build_hosted_command(
     socket_path: &Path,
     runtime: &Path,
     exe: &Path,
+    orbit_args: &[String],
     args: &[String],
 ) -> Result<HostedCommand, String> {
     use crate::sandbox::Sandbox;
@@ -1499,6 +1501,10 @@ fn build_hosted_command(
     // Agente digitado no shell: o modelo é o que o usuário passou nos args, não
     // o de uma launch config. Env vazio aqui: o resto vem do pane.
     let mut cmd = runner.build_command(cwd, &HashMap::new(), hook_setup, None, None);
+    // Nó Terminal do Orbit: o MCP e o prompt de orquestrador que o core põe
+    // ([`hosted_orbit_args`]), antes dos do usuário — a forma `--opção=valor`
+    // não come o prompt posicional que ele digitou.
+    cmd.args(orbit_args);
     // M6-A: os args que o usuário digitou (`-c`, `--resume <id>`, `-p ...`),
     // já reclassificados pelo `channel_host`, entram como argv depois do
     // `--settings` dos hooks — nunca por shell.
@@ -1510,6 +1516,36 @@ fn build_hosted_command(
     let spec = passthrough_spec(cwd, runtime, socket_path, exe);
     let cmd = crate::sandbox::passthrough::PassthroughSandbox.wrap(cmd, &spec)?;
     Ok(HostedCommand { cmd, worktree_root })
+}
+
+/// O `claude` digitado no shell de um nó Terminal aberto do Orbit ganha as
+/// ferramentas: o `orbit-mcp.json` (0600, no runtime dir 0700 da sessão)
+/// apontando o servidor `tyba _orbit-mcp` para o socket desta sessão, e os
+/// args `--mcp-config=<arquivo>` + `--append-system-prompt=<orquestrador>`.
+/// Sem `tools` (a aba Terminal, qualquer outro shell): nada, como sempre foi.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn hosted_orbit_args(
+    runtime: &Path,
+    exe: &Path,
+    socket_path: &Path,
+    tools: Option<&crate::orbit::orchestrator::ToolHandler>,
+) -> Result<Vec<String>, String> {
+    use crate::orbit::mcp;
+    let Some(tools) = tools else {
+        return Ok(Vec::new());
+    };
+    let config = mcp::claude_config(exe, socket_path, tools.can_create);
+    let body = serde_json::to_string_pretty(&config)
+        .map_err(|e| format!("config do MCP do Orbit: {e}"))?;
+    crate::session::write_private(runtime, mcp::CLAUDE_CONFIG_FILE, &body)
+        .map_err(|e| format!("escrita da config do MCP do Orbit: {e}"))?;
+    Ok(mcp::agent_args(
+        &AgentRunnerKind::ClaudeCode,
+        exe,
+        socket_path,
+        &runtime.join(mcp::CLAUDE_CONFIG_FILE),
+        tools.can_create,
+    ))
 }
 
 /// `argv`/`env`/`cwd` já resolvidos, na forma que `HostedPlan` serializa —
@@ -1549,6 +1585,10 @@ fn hosted_plan_from(
 /// novo — porque é o que faz o monitor (e todo o resto do hook) ficar
 /// atribuído à sessão que o usuário já está olhando.
 ///
+/// `orbit_tools`: o shell é o de um nó Terminal aberto do Orbit
+/// ([`crate::orbit::run::Runs::terminal_tools`]); o claude ganha o MCP do
+/// Orbit ([`hosted_orbit_args`]). `None` em todo outro shell.
+///
 /// Devolve o caminho do plano escrito (0600 via [`crate::session::write_private_bytes`]).
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub fn prepare_hosted_agent(
@@ -1556,6 +1596,7 @@ pub fn prepare_hosted_agent(
     id: SessionId,
     cwd: PathBuf,
     args: &[String],
+    orbit_tools: Option<crate::orbit::orchestrator::ToolHandler>,
 ) -> Result<PathBuf, String> {
     let runtime = runtime_dir(id)?;
     let socket_path = runtime.join(HOOK_SOCKET_FILE);
@@ -1580,6 +1621,7 @@ pub fn prepare_hosted_agent(
         hook_command: hook_cmd,
     };
 
+    let orbit_args = hosted_orbit_args(&runtime, &exe, &socket_path, orbit_tools.as_ref())?;
     let HostedCommand { cmd, worktree_root } = build_hosted_command(
         runner.as_ref(),
         &cwd,
@@ -1587,6 +1629,7 @@ pub fn prepare_hosted_agent(
         &socket_path,
         &runtime,
         &exe,
+        &orbit_args,
         args,
     )?;
 
@@ -1606,7 +1649,7 @@ pub fn prepare_hosted_agent(
         seen_transcript: Arc::new(Mutex::new(None)),
         observe_only: true,
         turn_tail: None,
-        orbit_tools: None,
+        orbit_tools,
     };
     // Review round 1, achado BLOQUEANTE: derruba o HookServer ANTIGO desta
     // sessão ANTES de religar em `socket_path` — nunca depois. `runtime_dir(id)`
@@ -2535,6 +2578,7 @@ mod build_hosted_command_tests {
             &runtime.join(HOOK_SOCKET_FILE),
             runtime,
             &std::env::current_exe().unwrap(),
+            &[],
             args,
         )
         .expect("o claude digitado sempre monta")
@@ -2869,6 +2913,106 @@ mod build_hosted_command_tests {
             &hook(serde_json::json!({"hook_event_name": "StopFailure"}), None),
         );
         assert!(tail.failure.is_some());
+    }
+
+    /// O `claude` digitado no shell de um nó Terminal aberto do Orbit: o core
+    /// escreve o `orbit-mcp.json` (0600) no runtime dir da sessão e põe o
+    /// `--mcp-config=` e o prompt de orquestrador no argv, antes dos args do
+    /// dono. As ferramentas são as que o `HandlerCtx` recebe.
+    #[test]
+    fn the_typed_claude_in_an_orbit_terminal_gets_the_orbit_mcp() {
+        let cwd = tempfile::tempdir().unwrap();
+        let runtime = tempfile::tempdir().unwrap();
+        let exe = std::env::current_exe().unwrap();
+        let socket = runtime.path().join(HOOK_SOCKET_FILE);
+        let tools = crate::orbit::orchestrator::ToolHandler {
+            call: Arc::new(|_, _| Ok(serde_json::json!({}))),
+            can_create: true,
+        };
+        let orbit = hosted_orbit_args(runtime.path(), &exe, &socket, Some(&tools)).unwrap();
+        let user = vec!["-c".to_string(), "conserte o teste".to_string()];
+        let hosted = build_hosted_command(
+            &ClaudeCodeRunner,
+            cwd.path(),
+            &hook_setup(runtime.path()),
+            &socket,
+            runtime.path(),
+            &exe,
+            &orbit,
+            &user,
+        )
+        .unwrap();
+        let plan = hosted_plan_from(&hosted.cmd, cwd.path());
+        let config = runtime.path().join(crate::orbit::mcp::CLAUDE_CONFIG_FILE);
+        let mcp = format!("--mcp-config={}", config.display());
+        let at = |want: &str| plan.argv.iter().position(|a| a == want);
+        let mcp_at = at(&mcp).unwrap_or_else(|| panic!("sem {mcp}: {:?}", plan.argv));
+        let prompt_at = plan
+            .argv
+            .iter()
+            .position(|a| a.starts_with("--append-system-prompt="))
+            .expect("sem o prompt de orquestrador");
+        assert!(
+            plan.argv[prompt_at].contains("orbit_create_"),
+            "{:?}",
+            plan.argv
+        );
+        let user_at = at("-c").unwrap();
+        assert!(mcp_at < user_at && prompt_at < user_at, "{:?}", plan.argv);
+        assert_eq!(
+            plan.argv.last().map(String::as_str),
+            Some("conserte o teste")
+        );
+
+        let body: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&config).unwrap()).unwrap();
+        let server = &body["mcpServers"][crate::orbit::mcp::SERVER_NAME];
+        assert_eq!(
+            server["env"]["TYBA_HOOK_SOCKET"],
+            socket.to_string_lossy().as_ref()
+        );
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&config).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+
+    /// Qualquer outro shell (a aba Terminal, uma sessão de outra janela): o
+    /// argv é o de sempre, sem MCP, e nada é escrito.
+    #[test]
+    fn the_typed_claude_anywhere_else_stays_without_orbit_tools() {
+        let cwd = tempfile::tempdir().unwrap();
+        let runtime = tempfile::tempdir().unwrap();
+        let exe = std::env::current_exe().unwrap();
+        let socket = runtime.path().join(HOOK_SOCKET_FILE);
+        let orbit = hosted_orbit_args(runtime.path(), &exe, &socket, None).unwrap();
+        assert!(orbit.is_empty());
+        let user = vec!["-c".to_string()];
+        let with = build_hosted_command(
+            &ClaudeCodeRunner,
+            cwd.path(),
+            &hook_setup(runtime.path()),
+            &socket,
+            runtime.path(),
+            &exe,
+            &orbit,
+            &user,
+        )
+        .unwrap();
+        let plan = hosted_plan_from(&with.cmd, cwd.path());
+        let before = hosted_plan_from(&build(cwd.path(), runtime.path(), &user).cmd, cwd.path());
+        assert_eq!(plan.argv, before.argv);
+        assert!(
+            !plan
+                .argv
+                .iter()
+                .any(|a| a.starts_with("--mcp-config") || a.starts_with("--append-system-prompt")),
+            "{:?}",
+            plan.argv
+        );
+        assert!(!runtime
+            .path()
+            .join(crate::orbit::mcp::CLAUDE_CONFIG_FILE)
+            .exists());
     }
 }
 

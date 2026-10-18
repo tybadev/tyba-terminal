@@ -163,10 +163,15 @@ pub fn resolve_host_request(
 /// `resolve_host_request`; em caso de acerto,
 /// chama `agent::session::prepare_hosted_agent` (Track B) para montar o
 /// `argv`/`env`/`hooks.json`/`HookServer` de verdade e escrever o plano.
+///
+/// `orbit_tools`: as ferramentas do Orbit para a sessão dona, quando ela é o
+/// shell de um nó Terminal aberto. A sessão vem da árvore de processos
+/// (`find_owning_session` + recheque do starttime), nunca do pedido.
 pub fn handle(
     ctx: &super::session::AgentSessionCtx,
     peer_pid: u32,
     request: ChannelRequest,
+    orbit_tools: &dyn Fn(SessionId) -> Option<crate::orbit::orchestrator::ToolHandler>,
 ) -> ChannelResponse {
     let shells: Vec<(SessionId, u32)> = ctx
         .sessions
@@ -189,6 +194,7 @@ pub fn handle(
                 resolved.session_id,
                 resolved.cwd,
                 &resolved.args,
+                orbit_tools(resolved.session_id),
             ) {
                 // Agente livre: nunca jaulado.
                 Ok(plan_path) => ChannelResponse::Host {

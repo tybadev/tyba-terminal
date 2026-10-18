@@ -9876,7 +9876,14 @@ pub fn run() {
                             servers: Arc::clone(&state.hook_servers),
                             subagents: Arc::clone(&state.subagents),
                         };
-                        agent::channel_host::handle(&ctx, peer_pid, request)
+                        // O `claude` digitado no shell de um nó Terminal
+                        // aberto do Orbit ganha as ferramentas dele.
+                        let runs = channel_app.try_state::<orbit::run::SharedRuns>();
+                        let orbit_tools = |id: SessionId| {
+                            runs.as_ref()
+                                .and_then(|r| r.terminal_tools(&id.to_string()))
+                        };
+                        agent::channel_host::handle(&ctx, peer_pid, request, &orbit_tools)
                     });
                 let channel_socket_path = hook_ipc::channel::resolve_channel_socket_path();
                 match hook_ipc::channel::ChannelServer::bind(&channel_socket_path, channel_handler)
