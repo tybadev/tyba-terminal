@@ -39,7 +39,7 @@ toml_edit = "0.20"
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "http2", "charset", "blocking"] }
 flate2 = "1"
 tar = "0.4"
-zip = { version = "2", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
