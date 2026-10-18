@@ -578,7 +578,7 @@ impl SessionManager {
 
         // O modo prompt do TYBA depende inteiramente do hook: sem integração o
         // `PS1` não sai da tela e a linha do app não pode assumir nada.
-        if integration && self.prompt_mode_enabled() {
+        if wants_prompt_mode(integration, self.prompt_mode_enabled(), owner) {
             cmd.env("TYBA_PROMPT_MODE", "1");
             for (key, value) in PROMPT_FRAMEWORK_SYNC {
                 cmd.env(key, value);
@@ -1632,6 +1632,13 @@ fn emit_status(app: &AppHandle, session: &Session) {
     let _ = app.emit(&format!("session://status/{}", session.id), session.clone());
 }
 
+/// O shell esconde o `PS1` (modo prompt) só onde a linha de digitar do TYBA o
+/// substitui: na grade. O nó Terminal do Orbit não tem essa linha — com o
+/// modo ligado ele abriria sem prompt nenhum.
+fn wants_prompt_mode(integration: bool, pref: bool, owner: SessionOwner) -> bool {
+    integration && pref && owner != SessionOwner::Orbit
+}
+
 /// Quem sabe se o shell que subiu fala o protocolo do TYBA é quem montou o
 /// comando — no shell local isso já acontecia, e na SSH Session integrada é
 /// aqui.
@@ -2182,6 +2189,19 @@ pub fn strip_verbatim_prefix(path: &Path) -> PathBuf {
 }
 
 pub type SharedSessionManager = Arc<SessionManager>;
+
+#[cfg(test)]
+mod prompt_mode_tests {
+    use super::{wants_prompt_mode, SessionOwner};
+
+    #[test]
+    fn the_orbit_terminal_keeps_the_shell_prompt() {
+        assert!(wants_prompt_mode(true, true, SessionOwner::Grid));
+        assert!(!wants_prompt_mode(true, true, SessionOwner::Orbit));
+        assert!(!wants_prompt_mode(false, true, SessionOwner::Grid));
+        assert!(!wants_prompt_mode(true, false, SessionOwner::Grid));
+    }
+}
 
 #[cfg(test)]
 mod hook_zsh_tests {
