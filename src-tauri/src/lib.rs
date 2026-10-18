@@ -7773,6 +7773,10 @@ async fn session_blocks(
     state: State<'_, AppState>,
     id: SessionId,
 ) -> Result<Vec<blocks::Block>, String> {
+    // Sessão efêmera (nó Terminal do Orbit): os blocos só existem em memória.
+    if let Some(live) = blocks::LIVE.list(&id.to_string()) {
+        return Ok(live);
+    }
     state
         .store
         .list_blocks(&id.to_string(), 200)

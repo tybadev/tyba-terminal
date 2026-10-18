@@ -883,7 +883,9 @@ pub fn install(app: tauri::AppHandle, store: std::sync::Arc<crate::session::stor
                     }
                     Work::Show(finished) => {
                         let event = format!("block://finalized/{}", finished.session_id);
-                        let _ = app.emit(&event, build(finished));
+                        let block = build(finished);
+                        let _ = app.emit(&event, block.clone());
+                        LIVE.remember(block);
                     }
                     Work::Save(cp) => {
                         let _ = store.save_checkpoint(
@@ -899,6 +901,7 @@ pub fn install(app: tauri::AppHandle, store: std::sync::Arc<crate::session::stor
                         let _ = store.clear_checkpoint(&session);
                     }
                     Work::Wipe(session) => {
+                        LIVE.forget(&session);
                         let _ = store.drop_blocks(&session);
                         let _ = store.clear_checkpoint(&session);
                         let event = format!("block://cleared/{session}");
@@ -968,6 +971,49 @@ fn build(finished: Finished) -> Block {
     }
 }
 
+/// Quantos blocos a sessão efêmera guarda em memória: o mesmo teto da
+/// leitura do banco (`session_blocks`).
+pub const LIVE_LIMIT: usize = 200;
+
+/// Os blocos de sessão efêmera (nó Terminal do Orbit), só em memória.
+///
+/// Nunca vão ao disco (portão de 2026-10-17): mas o painel que remonta (o
+/// webview recarregado, a tela aberta depois de o bloco sair) pergunta pelo
+/// `session_blocks`, e o evento ao vivo já passou. Daqui a resposta sai igual
+/// à do banco — já redigida pelo `build` — e some com a sessão (`forget` no
+/// `dispose` e no `clear`).
+#[derive(Default)]
+pub struct LiveBlocks {
+    by_session:
+        parking_lot::Mutex<std::collections::HashMap<String, std::collections::VecDeque<Block>>>,
+}
+
+impl LiveBlocks {
+    pub fn remember(&self, block: Block) {
+        let mut map = self.by_session.lock();
+        let list = map.entry(block.session_id.clone()).or_default();
+        list.push_back(block);
+        while list.len() > LIVE_LIMIT {
+            list.pop_front();
+        }
+    }
+
+    /// Os blocos guardados, do mais antigo ao mais novo. `None` quando a
+    /// sessão não tem nenhum em memória (então a resposta é a do banco).
+    pub fn list(&self, session: &str) -> Option<Vec<Block>> {
+        self.by_session
+            .lock()
+            .get(session)
+            .map(|list| list.iter().cloned().collect())
+    }
+
+    pub fn forget(&self, session: &str) {
+        self.by_session.lock().remove(session);
+    }
+}
+
+pub static LIVE: std::sync::LazyLock<LiveBlocks> = std::sync::LazyLock::new(LiveBlocks::default);
+
 /// Nunca bloqueia: fila cheia descarta o trabalho em vez de segurar o terminal.
 pub fn submit(work: Work) {
     if let Some(finalizer) = FINALIZER.get() {
@@ -987,6 +1033,42 @@ pub fn show(finished: Finished) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn live_block(session: &str, id: u64) -> Block {
+        Block {
+            id,
+            session_id: session.into(),
+            command: format!("echo {id}"),
+            exit_code: Some(0),
+            cwd: None,
+            started_at_ms: 0,
+            finished_at_ms: 1,
+            lines: Vec::new(),
+            truncated: 0,
+            alt_screen: false,
+        }
+    }
+
+    /// Sessão efêmera: os blocos ficam em memória, em ordem, com teto, por
+    /// sessão, e somem no `forget` (dispose/`clear`). Nada toca o banco: o
+    /// tipo nem tem um `Store`.
+    #[test]
+    fn live_blocks_are_bounded_per_session_and_forgotten() {
+        let live = LiveBlocks::default();
+        assert!(live.list("a").is_none());
+        for id in 1..=(LIVE_LIMIT as u64 + 5) {
+            live.remember(live_block("a", id));
+        }
+        live.remember(live_block("b", 1));
+        let a = live.list("a").expect("a tem blocos");
+        assert_eq!(a.len(), LIVE_LIMIT);
+        assert_eq!(a.first().map(|b| b.id), Some(6));
+        assert_eq!(a.last().map(|b| b.id), Some(LIVE_LIMIT as u64 + 5));
+        assert_eq!(live.list("b").map(|l| l.len()), Some(1));
+        live.forget("a");
+        assert!(live.list("a").is_none());
+        assert_eq!(live.list("b").map(|l| l.len()), Some(1));
+    }
 
     /// Fatia como o `String.prototype.slice` do JS: por unidade UTF-16.
     ///
