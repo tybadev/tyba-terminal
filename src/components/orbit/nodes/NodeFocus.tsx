@@ -4,7 +4,7 @@ import { ArrowsIn, FolderSimple } from "@phosphor-icons/react";
 
 import { HostedTerminalPane, useTerminalPane } from "@/components/TerminalPaneHost";
 import { TerminalView } from "@/components/TerminalView";
-import { nodeDir, shortDir, type OrbitNode } from "@/lib/orbit";
+import { hostedAgentOf, nodeDir, shortDir, type OrbitNode } from "@/lib/orbit";
 import { isFocusCloseKey } from "@/lib/orbitFocus";
 import { IS_MAC } from "@/lib/platform";
 import { NodeStatusBadge, useOrbit } from "./NodeFrame";
@@ -22,10 +22,11 @@ import { FULL } from "./NodeTerminal";
  */
 export function NodeFocus({ node, sessionId }: { node: OrbitNode; sessionId: string }) {
   const { t } = useTranslation();
-  const { run, graphDir, setFocusNode } = useOrbit();
+  const { run, runs, graphDir, setFocusNode } = useOrbit();
   // O nó Terminal mostra o painel da aba Terminal também em tamanho real.
   const paneHost = useTerminalPane();
   const tyba = node.kind.type === "terminal" && paneHost !== null;
+  const focusInput = paneHost?.focusInput;
   const nodeRun = run?.nodes[node.id];
   const dir = nodeDir(node.kind, graphDir);
 
@@ -40,6 +41,14 @@ export function NodeFocus({ node, sessionId }: { node: OrbitNode; sessionId: str
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
   }, [setFocusNode]);
+
+  // Entrar no foco dá o teclado ao painel: a linha do TYBA quando ela é
+  // dona, senão o xterm. Um quadro depois, com o painel já montado aqui.
+  useEffect(() => {
+    if (!tyba || !focusInput) return;
+    const raf = requestAnimationFrame(() => focusInput(sessionId));
+    return () => cancelAnimationFrame(raf);
+  }, [tyba, focusInput, sessionId]);
 
   const close = t("orbitFocusClose", { keys: IS_MAC ? "⌘." : "Ctrl+." });
   return (
@@ -77,7 +86,7 @@ export function NodeFocus({ node, sessionId }: { node: OrbitNode; sessionId: str
       </div>
       <div className="relative min-h-0 flex-1 bg-tyba-sunken">
         {tyba ? (
-          <HostedTerminalPane sessionId={sessionId} />
+          <HostedTerminalPane sessionId={sessionId} hostedAgent={hostedAgentOf(runs, node.id)} />
         ) : (
           <TerminalView sessionId={sessionId} visible focused rect={FULL} />
         )}

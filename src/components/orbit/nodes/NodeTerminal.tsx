@@ -6,6 +6,7 @@ import { HostedTerminalPane, useTerminalPane } from "@/components/TerminalPaneHo
 import { TerminalView } from "@/components/TerminalView";
 import { sessionScreenLines } from "@/lib/ipc";
 import { nodeRect, onScreen } from "@/lib/graphLayout";
+import type { Runner } from "@/lib/orbit";
 import { canvasWheel, nodeTerminalClass } from "@/lib/nodeTerminal";
 import { getTerm } from "@/lib/termRegistry";
 import { useOrbit } from "./NodeFrame";
@@ -41,11 +42,14 @@ export function NodeTerminal({
   sessionId,
   selected,
   tyba = false,
+  hostedAgent = null,
 }: {
   nodeId: string;
   sessionId: string;
   selected: boolean;
   tyba?: boolean;
+  /** Nó Terminal: o agente com as ferramentas do Orbit no shell. */
+  hostedAgent?: Runner | null;
 }) {
   const { focusNode } = useOrbit();
   const paneHost = useTerminalPane();
@@ -93,7 +97,7 @@ export function NodeTerminal({
       {inFocus || !visible ? (
         <TerminalPreview sessionId={sessionId} />
       ) : tyba && paneHost ? (
-        <HostedTerminalPane sessionId={sessionId} zoom={zoom} />
+        <HostedTerminalPane sessionId={sessionId} zoom={zoom} hostedAgent={hostedAgent} />
       ) : (
         // A margem fica do lado de fora do invólucro de zoom: escala junto
         // com o nó, como o resto do cartão.

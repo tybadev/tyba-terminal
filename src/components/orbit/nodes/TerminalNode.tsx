@@ -3,7 +3,16 @@ import { useTranslation } from "react-i18next";
 import { Terminal, X } from "@phosphor-icons/react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 
-import { ORCHESTRATOR_HANDLE, nodeDir, shownSession, shortDir, terminalRun, type NodeKind } from "@/lib/orbit";
+import { OpenAIIcon } from "@/components/icons/OpenAIIcon";
+import {
+  ORCHESTRATOR_HANDLE,
+  hostedAgentOf,
+  nodeDir,
+  shownSession,
+  shortDir,
+  terminalRun,
+  type NodeKind,
+} from "@/lib/orbit";
 import { NodeDir, NodeFrame, detailBtn, useOrbit, type OrbitFlowNode } from "./NodeFrame";
 import { NodeTerminal } from "./NodeTerminal";
 
@@ -25,6 +34,9 @@ export function TerminalNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
   const open = terminalRun(runs, id) !== null;
   const session = shownSession(kind, run, runs, id, live);
   const dir = nodeDir(kind, graphDir);
+  // O claude/codex digitado no shell, com as ferramentas do Orbit (quadro
+  // OrbitTerminalTyba, B): o nome na cápsula e o anel trabalhando.
+  const hostedAgent = open ? hostedAgentOf(runs, id) : null;
   // Trava o Abrir até o core responder: sem dois cliques abrindo dois shells.
   const [opening, setOpening] = useState(false);
   const openNow = () => {
@@ -40,12 +52,23 @@ export function TerminalNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
       selected={selected}
       mark={<Terminal size={14} weight="bold" />}
       markTone={open ? "text-tyba-green" : "text-tyba-text-muted"}
-      ring={open ? "live" : "idle"}
+      ring={hostedAgent ? "working" : open ? "live" : "idle"}
       status={
         open ? (
-          <span className="shrink-0 rounded-full bg-tyba-green/[.14] px-2.5 text-[11.5px] leading-[20px] text-tyba-green">
-            {t("orbitTerminalLive")}
-          </span>
+          <>
+            {hostedAgent === "claude" && (
+              <span className="shrink-0 text-[11.5px] leading-[20px] text-tyba-amber">✳ claude</span>
+            )}
+            {hostedAgent === "codex" && (
+              <span className="flex shrink-0 items-center gap-1 text-[11.5px] leading-[20px] text-tyba-cyan">
+                <OpenAIIcon size={11} />
+                codex
+              </span>
+            )}
+            <span className="shrink-0 rounded-full bg-tyba-green/[.14] px-2.5 text-[11.5px] leading-[20px] text-tyba-green">
+              {t("orbitTerminalLive")}
+            </span>
+          </>
         ) : (
           false
         )
@@ -77,7 +100,13 @@ export function TerminalNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
         style={{ ...hidden, top: 20, right: 14 }}
       />
       {session ? (
-        <NodeTerminal nodeId={id} sessionId={session} selected={selected} tyba />
+        <NodeTerminal
+          nodeId={id}
+          sessionId={session}
+          selected={selected}
+          tyba
+          hostedAgent={hostedAgent}
+        />
       ) : (
         <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 bg-tyba-sunken">
           <button

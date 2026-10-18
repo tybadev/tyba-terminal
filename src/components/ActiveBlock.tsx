@@ -26,6 +26,7 @@ export {
 export function ActiveBlockHeader({
   command,
   startedAtMs,
+  note = null,
   rect,
   liftPx = 0,
   paneTop = 0,
@@ -34,6 +35,8 @@ export function ActiveBlockHeader({
   command: string;
   /** Quando o comando começou, pelo relógio do core. `null`: sem contador. */
   startedAtMs: number | null;
+  /** Depois do tempo, com " · " (o nó Terminal: "ferramentas do Orbit"). */
+  note?: string | null;
   rect: PaneRectStyle;
   /**
    * Quanto a faixa ao vivo sobe além do que a conta em % diz, em px.
@@ -133,7 +136,7 @@ export function ActiveBlockHeader({
           Aceso (glow) porque está vivo; o pulso para em reduced-motion. */}
       <span className="flex shrink-0 items-center gap-2 font-mono text-[11px] leading-5 text-tyba-green">
         <span className="size-[7px] shrink-0 rounded-full bg-tyba-green-fill shadow-[var(--tyba-glow-green)] tyba-pulse" />
-        {elapsed && t("blockRunningFor", { time: elapsed })}
+        {[elapsed && t("blockRunningFor", { time: elapsed }), note].filter(Boolean).join(" · ")}
       </span>
     </div>
   );

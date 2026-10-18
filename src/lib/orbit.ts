@@ -717,6 +717,11 @@ export interface NodeRun {
   stale?: boolean;
   /** Por que ficou "↻ para aplicar" (o último motivo, guardado no core). */
   staleReason?: StaleReason | null;
+  /**
+   * Terminal: o claude/codex digitado no shell do nó, rodando COM as
+   * ferramentas do Orbit. `null` sem agente ou sem as ferramentas.
+   */
+  hostedAgent?: Runner | null;
 }
 
 /** Motivo do "↻ para aplicar": origem rodou de novo, config do nó, ligações ou variável. */
@@ -1095,6 +1100,10 @@ export const terminalRun = <R extends Pick<Run, "terminal" | "status" | "nodes">
   runs: readonly R[],
   nodeId: string,
 ): R | null => runs.find((r) => terminalLive(r, nodeId)) ?? null;
+
+/** O agente com as ferramentas do Orbit no shell do Terminal `nodeId` (ver `NodeRun.hostedAgent`). */
+export const hostedAgentOf = (runs: readonly Run[], nodeId: string): Runner | null =>
+  terminalRun(runs, nodeId)?.nodes[nodeId]?.hostedAgent ?? null;
 
 /**
  * A sessão que o corpo do nó mostra: o Terminal, a do run ao vivo que o

@@ -66,6 +66,7 @@ export const SessionBlocks = memo(function SessionBlocks({
   active,
   command,
   commandStartedAtMs,
+  runningNote,
   marked,
   copyCombo,
   onInject,
@@ -128,6 +129,7 @@ export const SessionBlocks = memo(function SessionBlocks({
         <ActiveBlockHeader
           command={command}
           startedAtMs={commandStartedAtMs}
+          note={runningNote}
           rect={liveBox}
           liftPx={lift}
           paneTop={pane.top}

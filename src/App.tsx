@@ -499,10 +499,18 @@ import {
   DEFAULT_RICH_INPUT,
   RICH_INPUT_PREF_KEY,
   parseRichInputPref,
+  richInputToAutoOpen,
+  richInputToUndismiss,
   richInputVisibility,
   shouldShowRichInput,
   type RichInputPref,
 } from "./lib/richInput";
+import {
+  gridAttention,
+  loadWithRetry,
+  orbitPanesToPrune,
+  orbitPickKey,
+} from "./lib/orbitPanes";
 import {
   captureState,
   comboOf,
@@ -1059,6 +1067,11 @@ export default function App() {
   const richInputFocused = useRef(false);
   const richInputAutoOpened = useRef<Set<string>>(new Set());
   const dismissedCommand = useRef<Record<string, string | null>>({});
+  // Sessões fora da grade que mostram o painel da aba Terminal: o nó
+  // Terminal do Orbit (ver `TerminalPaneHost`). Contador por montagem.
+  const [orbitPanes, setOrbitPanes] = useState<Record<string, number>>({});
+  const orbitPanesRef = useRef(orbitPanes);
+  orbitPanesRef.current = orbitPanes;
   const [showGitStatus, setShowGitStatus] = useState(true);
   const [shellIntegration, setShellIntegration] = useState(true);
   const [startup, setStartup] = useState<StartupMode>("resume");
@@ -2869,29 +2882,64 @@ export default function App() {
     setRichInputDismissed(prune);
   }, [sessions]);
 
+  // A caixa é por sessão: a ativa da grade e as presas a um nó do Orbit (que
+  // nunca são a ativa). Ver `richInputToUndismiss`/`richInputToAutoOpen`.
+  const orbitPaneIds = Object.keys(orbitPanes).join("\n");
   useEffect(() => {
-    if (!activeId) return;
-    const current = activeCommand?.command ?? null;
-    if (
-      richInputDismissed.has(activeId) &&
-      dismissedCommand.current[activeId] !== current
-    ) {
-      setRichInputDismissed((prev) => {
-        const next = new Set(prev);
-        next.delete(activeId);
-        return next;
-      });
-    }
-  }, [activeId, activeCommand?.command, richInputDismissed]);
+    const ids = [activeId, ...orbitPaneIds.split("\n")].filter(
+      (id): id is string => Boolean(id),
+    );
+    const undismiss = richInputToUndismiss(
+      ids,
+      richInputDismissed,
+      dismissedCommand.current,
+      (id) => sessionCommands[id]?.command ?? null,
+    );
+    if (undismiss.length === 0) return;
+    setRichInputDismissed((prev) => {
+      const next = new Set(prev);
+      for (const id of undismiss) next.delete(id);
+      return next;
+    });
+  }, [activeId, orbitPaneIds, sessionCommands, richInputDismissed]);
 
   useEffect(() => {
-    if (!richInputPref.autoOpenOnStart || !activeId || !richInputEligible) {
-      return;
+    const ids = [activeId, ...orbitPaneIds.split("\n")].filter(
+      (id): id is string => Boolean(id),
+    );
+    const open = richInputToAutoOpen(
+      ids,
+      richInputPref,
+      (id) => {
+        if (id === activeId) return richInputEligible;
+        const s = sessionById.get(id);
+        return (
+          s !== undefined &&
+          shouldShowRichInput(
+            s.kind,
+            sessionCommands[id]?.agent_match ?? false,
+            richInputPref,
+          )
+        );
+      },
+      richInputAutoOpened.current,
+    );
+    for (const id of open) {
+      richInputAutoOpened.current.add(id);
+      // A do nó abre sem o pulso de foco: ele é da caixa da sessão ativa.
+      if (id === activeId) openRichInput(id);
+      else
+        setRichInputOpened((prev) => (prev.has(id) ? prev : new Set(prev).add(id)));
     }
-    if (richInputAutoOpened.current.has(activeId)) return;
-    richInputAutoOpened.current.add(activeId);
-    openRichInput(activeId);
-  }, [activeId, richInputEligible, richInputPref.autoOpenOnStart, openRichInput]);
+  }, [
+    activeId,
+    orbitPaneIds,
+    richInputEligible,
+    richInputPref,
+    sessionById,
+    sessionCommands,
+    openRichInput,
+  ]);
 
 
   useEffect(() => {
@@ -2979,8 +3027,11 @@ export default function App() {
     ? workspaceAgentStatus(activeWorkspace)?.session.status.state === "running"
     : false;
   const unseenAttention = useMemo(
-    () => sessions.some((s) => s.attention),
-    [sessions],
+    () =>
+      gridAttention(sessions, (id) =>
+        Boolean(findSessionLocation(layout.workspaces, id)),
+      ),
+    [sessions, layout.workspaces],
   );
 
   useEffect(() => {
@@ -4200,9 +4251,6 @@ export default function App() {
   // framework e plugins. Até lá a linha aparece desabilitada em vez de a tela
   // ficar em branco sem lugar nenhum para digitar. A preferência só adianta a
   // linha onde o hook pode chegar (ver `lineVisible`).
-  // Sessões fora da grade que mostram o painel da aba Terminal: o nó
-  // Terminal do Orbit (ver `TerminalPaneHost`). Contador por montagem.
-  const [orbitPanes, setOrbitPanes] = useState<Record<string, number>>({});
   const paneLines = new Map<string, PaneLine>();
   for (const s of sessions) {
     if (!pannedSessions.has(s.id) && !orbitPanes[s.id]) continue;
@@ -4256,15 +4304,74 @@ export default function App() {
   // prompt, blocos…) sai das assinaturas por `sessions`, então ela entra na
   // lista pela leitura do core. Uma pergunta por sessão — a que já morreu e
   // saiu do core não vira laço.
+  // Marcada só depois de uma leitura que deu certo; a que falha (ou volta
+  // `ready: false`) tenta de novo algumas vezes (`loadWithRetry`).
   const askedOrbitPanes = useRef<Set<string>>(new Set());
+  // A altura da linha do TYBA de cada nó, medida: a faixa "O claude está com
+  // o teclado" ocupa a mesma (ver `renderPane`).
+  const orbitLineHeights = useRef<Record<string, number>>({});
+  const askingOrbitPanes = useRef<Set<string>>(new Set());
   useEffect(() => {
     const missing = Object.keys(orbitPanes).filter(
-      (id) => !sessionById.has(id) && !askedOrbitPanes.current.has(id),
+      (id) =>
+        !sessionById.has(id) &&
+        !askedOrbitPanes.current.has(id) &&
+        !askingOrbitPanes.current.has(id),
     );
     if (missing.length === 0) return;
-    for (const id of missing) askedOrbitPanes.current.add(id);
-    void refreshSessions();
+    for (const id of missing) askingOrbitPanes.current.add(id);
+    void loadWithRetry(refreshSessions).then((ok) => {
+      for (const id of missing) {
+        askingOrbitPanes.current.delete(id);
+        if (ok) askedOrbitPanes.current.add(id);
+      }
+    });
   }, [orbitPanes, sessionById, refreshSessions]);
+  // Painel solto (nó fechado, fora da tela, modo foco): esquece a pergunta e
+  // relê a lista do core. A sessão que fechou sai da lista do `App` com os
+  // blocos dela; a que segue viva fica (ver `orbitPanesToPrune`).
+  const prevOrbitPanes = useRef<string[]>([]);
+  const detachedOrbitPanes = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    const left = prevOrbitPanes.current.filter((id) => !orbitPanes[id]);
+    prevOrbitPanes.current = Object.keys(orbitPanes);
+    for (const id of Object.keys(orbitPanes)) detachedOrbitPanes.current.delete(id);
+    if (left.length === 0) return;
+    for (const id of left) {
+      askedOrbitPanes.current.delete(id);
+      detachedOrbitPanes.current.add(id);
+    }
+    void refreshSessions();
+  }, [orbitPanes, refreshSessions]);
+  useEffect(() => {
+    const detached = detachedOrbitPanes.current;
+    if (detached.size === 0) return;
+    const drop = new Set(
+      orbitPanesToPrune({
+        detached,
+        sessions: sessions.map((s) => ({
+          id: s.id,
+          finished: isFinishedStatus(s.status),
+        })),
+        attached: (id) => Boolean(orbitPanes[id]),
+        inLayout: (id) => Boolean(findSessionLocation(layout.workspaces, id)),
+      }),
+    );
+    // A que já saiu do core (o `refreshSessions` a tirou) só leva os blocos.
+    for (const id of detached) if (!sessionById.has(id)) drop.add(id);
+    // Fica em `detached` até voltar a um nó: se uma leitura do core a trouxer
+    // de novo (fechada), sai de novo.
+    if (drop.size === 0) return;
+    setSessions((prev) =>
+      prev.some((s) => drop.has(s.id)) ? prev.filter((s) => !drop.has(s.id)) : prev,
+    );
+    setBlocks((prev) => {
+      if (![...drop].some((id) => id in prev)) return prev;
+      const next = { ...prev };
+      for (const id of drop) delete next[id];
+      return next;
+    });
+  }, [sessions, sessionById, orbitPanes, layout.workspaces]);
   const focusOrbitInput = useCallback(
     (id: SessionId) => {
       if (ownsLineRef.current[id]) focusLine(id);
@@ -4733,6 +4840,34 @@ export default function App() {
         const action = combo
           ? (Object.keys(bindings) as KeyAction[]).find((a) => bindings[a] === combo)
           : undefined;
+        // Blocos marcados no nó Terminal: ⌘C copia e Esc limpa, como na grade.
+        const pick = blockPickRef.current;
+        const pickTerm = pick ? getTerm(pick.session) : undefined;
+        const selection = window.getSelection();
+        const pickKey = orbitPickKey({
+          key: e.key,
+          isCopy: action === "copy",
+          pickSession: pick?.session ?? null,
+          attached: (id) => Boolean(orbitPanesRef.current[id]),
+          inTextField: inTextField(document.activeElement),
+          textSelected:
+            (selection !== null && !selection.isCollapsed) ||
+            (isTermFocused(pickTerm) && (pickTerm?.term.hasSelection() ?? false)),
+        });
+        if (pick && pickKey) {
+          e.preventDefault();
+          e.stopPropagation();
+          if (e.repeat) return;
+          if (pickKey === "clear") {
+            setBlockPick(null);
+            return;
+          }
+          const chosen = pickedBlocks(pick.selection, blocksRef.current[pick.session] ?? []);
+          if (chosen.length > 0) {
+            void writeClipboardText(blocksMarkdown(chosen)).catch(() => {});
+          }
+          return;
+        }
         if (!action || !allowedUnderOrbit(action)) return;
         e.preventDefault();
         e.stopPropagation();
@@ -5379,10 +5514,13 @@ export default function App() {
   const renderPane = (
     s: Session,
     paneRect: NonNullable<typeof paneLayout>["panes"][number] | null,
-    orbit: { zoom?: number } | null = null,
+    orbit: { zoom?: number; hostedAgent?: "claude" | "codex" | null } | null = null,
   ) => {
     const bare = orbit !== null;
     const nodeZoom = orbit?.zoom;
+    // O claude/codex com as ferramentas do Orbit no shell do nó (quadro
+    // OrbitTerminalTyba, B).
+    const hostedAgent = orbit?.hostedAgent ?? null;
     // O terminal e os blocos medem em % da ÁREA DE CONTEÚDO do
     // painel — o painel menos a linha do TYBA, que mora no
     // rodapé dele. Ver o invólucro abaixo.
@@ -5427,6 +5565,13 @@ export default function App() {
       resumableAgents.get(s.id),
       dismissedResumeInvites.has(s.id),
     );
+    // No nó, o agente que toma o painel deixa no lugar da linha "O claude
+    // está com o teclado deste pane." — na MESMA altura da linha, para o PTY
+    // não mudar de tamanho quando ele entra e sai.
+    const keyboardAgent =
+      bare && blocked && !line?.visible
+        ? (hostedAgent ?? (detected ? agentBinaryName(detected.kind) : null))
+        : null;
     // A faixa da sessão remota: a linha que explica por que ela
     // é comum, ou o agente rodando no servidor sem jaula. Uma
     // só — as duas ocupam o mesmo lugar do pane.
@@ -5648,6 +5793,8 @@ export default function App() {
                 command: sessionCommands[s.id]?.command,
                 commandStartedAtMs:
                   sessionCommands[s.id]?.started_at_ms,
+                runningNote:
+                  bare && hostedAgent ? t("orbitTerminalTools") : null,
                 marked:
                   blockPick?.session === s.id
                     ? markedBlocks
@@ -5669,6 +5816,13 @@ export default function App() {
           // paleta e a caixa de agente seguem essa resposta.
           <div
             className="shrink-0"
+            ref={
+              bare
+                ? (el) => {
+                    if (el) orbitLineHeights.current[s.id] = el.offsetHeight;
+                  }
+                : undefined
+            }
             onPointerDownCapture={() => {
               if (paneRect && s.id !== activeId) {
                 void focusPane(paneRect.pane).catch(() => {});
@@ -5713,7 +5867,11 @@ export default function App() {
                 cwd: cwdKeyOf(s.id),
                 repoRoot: s.repo_root ?? null,
               }}
-              focusOnMount={!bare && s.id === activeId && line.owns}
+              // No nó só no modo foco (sem zoom): lá ele nasce com o teclado.
+              focusOnMount={
+                (bare ? nodeZoom === undefined : s.id === activeId) &&
+                line.owns
+              }
               focusNonce={lineFocusNonces[s.id] ?? 0}
               state={line.state}
               boot={shellBoots[s.id] ?? null}
@@ -5741,6 +5899,16 @@ export default function App() {
               pending={pendings.current[s.id]}
               onPendingChange={rememberPending}
             />
+          </div>
+        )}
+        {keyboardAgent && (
+          <div
+            className="flex shrink-0 items-center border-t border-tyba-border px-4 font-mono text-[11px] text-tyba-text-faint"
+            style={{ height: orbitLineHeights.current[s.id] }}
+          >
+            <span className="truncate py-[11px]">
+              {t("orbitTerminalAgentKeyboard", { agent: keyboardAgent })}
+            </span>
           </div>
         )}
         {bare && !line?.owns && orbitRichInput(s)}
@@ -5782,9 +5950,9 @@ export default function App() {
   // Novo a cada render de propósito: o nó re-renderiza junto com o estado
   // do painel, como os painéis da grade.
   const terminalPaneHost: TerminalPaneHost = {
-    render: (id, zoom) => {
+    render: (id, zoom, hostedAgent) => {
       const s = sessionById.get(id);
-      return s ? renderPane(s, null, { zoom }) : null;
+      return s ? renderPane(s, null, { zoom, hostedAgent }) : null;
     },
     attach: attachOrbitPane,
     focusInput: focusOrbitInput,
@@ -5818,7 +5986,7 @@ export default function App() {
               return next;
             })
           }
-          onGoToSession={goToSession}
+          onGoToSession={focusSessionOrNode}
           typedAgentSessions={typedAgentSessions}
           sessionLabel={(id) => {
             // O nome que a barra lateral mostra para a sessão, não o do
@@ -6146,7 +6314,7 @@ export default function App() {
               approvals={approvals}
               open={inboxOpen}
               onOpenChange={setInboxOpen}
-              onGoToSession={goToSession}
+              onGoToSession={focusSessionOrNode}
             />
           </ErrorBoundary>
 

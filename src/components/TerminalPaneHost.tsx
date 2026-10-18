@@ -15,9 +15,14 @@ export interface TerminalPaneHost {
   /**
    * O painel da sessão. `zoom` é o do canvas (o xterm fora da escala, ver
    * `nodeTerminal`); ausente no modo foco, em tamanho real. `null` enquanto
-   * o `App` ainda não conhece a sessão (ver `attach`).
+   * o `App` ainda não conhece a sessão (ver `attach`). `hostedAgent`: o
+   * claude/codex com as ferramentas do Orbit no shell (`NodeRun.hostedAgent`).
    */
-  render: (sessionId: SessionId, zoom?: number) => ReactNode;
+  render: (
+    sessionId: SessionId,
+    zoom?: number,
+    hostedAgent?: "claude" | "codex" | null,
+  ) => ReactNode;
   /**
    * Pede ao `App` o estado de painel desta sessão (a linha, a lista de
    * sessões). Devolve o soltar.
@@ -37,12 +42,14 @@ export function useTerminalPane(): TerminalPaneHost | null {
 export function HostedTerminalPane({
   sessionId,
   zoom,
+  hostedAgent = null,
 }: {
   sessionId: SessionId;
   zoom?: number;
+  hostedAgent?: "claude" | "codex" | null;
 }) {
   const host = useTerminalPane();
   const attach = host?.attach;
   useEffect(() => attach?.(sessionId), [attach, sessionId]);
-  return <>{host?.render(sessionId, zoom) ?? null}</>;
+  return <>{host?.render(sessionId, zoom, hostedAgent) ?? null}</>;
 }

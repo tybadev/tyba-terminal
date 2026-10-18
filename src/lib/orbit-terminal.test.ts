@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import {
   createdFlow,
+  hostedAgentOf,
   importItems,
   isLiveRun,
   isOrchestrator,
@@ -165,5 +166,23 @@ describe("importação com Terminal", () => {
     const node = newNode("t", "Terminal · api", termKind, { x: 0, y: 0 });
     const graph: Graph = { id: "g", name: "g", dir: "/tmp", variables: {}, edges: [], nodes: [node] };
     expect(importItems({ graph, integrations: [] })).toEqual([{ type: "terminal", node, dir: "/srv/api" }]);
+  });
+});
+
+describe("hostedAgentOf", () => {
+  const live = (patch: Partial<NodeRun>) =>
+    run({ t: nodeRun({ status: "running", sessionId: "shell-1", ...patch }) }, { id: "live", terminal: "t" });
+
+  test("o agente com as ferramentas do Orbit, do run que segura o Terminal", () => {
+    expect(hostedAgentOf([live({ hostedAgent: "claude" })], "t")).toBe("claude");
+    expect(hostedAgentOf([live({ hostedAgent: "codex" })], "t")).toBe("codex");
+  });
+
+  test("sem agente, sem o campo, ou Terminal fechado: null", () => {
+    expect(hostedAgentOf([live({ hostedAgent: null })], "t")).toBeNull();
+    expect(hostedAgentOf([live({})], "t")).toBeNull();
+    const closed = { ...live({ hostedAgent: "claude" }), status: "done" as const };
+    expect(hostedAgentOf([closed], "t")).toBeNull();
+    expect(hostedAgentOf([live({ hostedAgent: "claude" })], "outro")).toBeNull();
   });
 });
