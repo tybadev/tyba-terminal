@@ -7,6 +7,7 @@ import {
   FolderSimple,
   NotePencil,
   PlugsConnected,
+  Terminal,
   TerminalWindow,
 } from "@phosphor-icons/react";
 
@@ -24,6 +25,7 @@ const ICON: Record<PaletteIcon, ReactNode> = {
   claude: <ClaudeIcon size={13} />,
   codex: <OpenAIIcon size={13} />,
   process: <TerminalWindow size={13} />,
+  terminal: <Terminal size={13} />,
   service: <Cube size={13} />,
   browser: <Browser size={13} />,
   note: <NotePencil size={13} />,

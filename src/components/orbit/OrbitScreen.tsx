@@ -48,6 +48,7 @@ import {
   findSessionNode,
   integrationsById,
   invalidEdges,
+  isLiveRun,
   createdByOf,
   deleteGraph,
   ephemeralCreated,
@@ -72,6 +73,7 @@ import {
   newNode,
   onRun,
   pickGraph,
+  rememberDir,
   rememberGraph,
   runGet,
   runNode,
@@ -85,6 +87,9 @@ import {
   saveGraph,
   selectedRun,
   stoppableRuns,
+  terminalClose,
+  terminalOpen,
+  terminalTitle,
   toFlow,
   type Graph,
   type ImportPreview,
@@ -102,6 +107,7 @@ import { ImportDialog } from "./ImportDialog";
 import { IntegrationsPanel } from "./IntegrationsPanel";
 import { OrbitCanvas, type CreatedView, type OrbitFlowEdge } from "./OrbitCanvas";
 import { RunTimeline } from "./RunTimeline";
+import { TerminalFolderPrompt } from "./TerminalFolderPrompt";
 import { CanvasProvider, STATUS_TONE, type OrbitFlowNode } from "./nodes/NodeFrame";
 import { SubagentMark, subagentTone, useSubagentTime } from "./nodes/SubagentNode";
 import { useNodeSubagents } from "./useNodeSubagents";
@@ -570,6 +576,83 @@ function OrbitInner({
     }
   };
 
+  // + Terminal (barra e paleta): o seletor de pasta pergunta onde; ↵ cria o
+  // nó, grava o grafo (o core lê do banco) e pede ao core para abrir. Recusou
+  // (outro Terminal aberto, pasta que sumiu): o nó sai e o porquê aparece.
+  const [askTerminal, setAskTerminal] = useState(false);
+  const terminalAt = useRef<{ x: number; y: number } | null>(null);
+  const addTerminal = (at: { x: number; y: number } | null) => {
+    terminalAt.current = at;
+    setAskTerminal(true);
+  };
+  const createTerminal = async (dir: string) => {
+    setAskTerminal(false);
+    if (!meta) return;
+    const node = newNode(crypto.randomUUID(), terminalTitle(dir), { type: "terminal", dir }, { x: 0, y: 0 });
+    const mid = screenToFlowPosition({ x: window.innerWidth / 2, y: window.innerHeight / 2 });
+    const want = terminalAt.current ?? { x: mid.x - node.size.w / 2, y: mid.y - node.size.h / 2 };
+    node.position = freeSpot(want, node.size, nodesRef.current.map(nodeRect));
+    if (dir) rememberDir(dir);
+    const next: OrbitFlowNode[] = [
+      ...nodesRef.current.map((n) => ({ ...n, selected: false })),
+      {
+        id: node.id,
+        type: node.kind.type,
+        position: node.position,
+        width: node.size.w,
+        height: node.size.h,
+        selected: true,
+        data: { node },
+      },
+    ];
+    setNodes(next);
+    try {
+      const graph = fromFlow(meta, next, edgesRef.current);
+      await saveGraph(graph);
+      lastSaved.current = JSON.stringify(graph);
+      dispatchRun({ type: "update", run: await terminalOpen(meta.id, node.id) });
+      setError(null);
+    } catch (e) {
+      setNodes((ns) => ns.filter((n) => n.id !== node.id));
+      setError(t("orbitTerminalError", { error: String(e) }));
+    }
+  };
+
+  // Abrir do Terminal salvo (fechado) e ⋯ → Fechar: o core decide e recusa;
+  // o retrato novo chega pelo evento do run (e é relido aqui).
+  const graphIdRef = useRef<string | null>(null);
+  graphIdRef.current = meta?.id ?? null;
+  const flushRef = useRef(flush);
+  flushRef.current = flush;
+  const openTerminal = useCallback(
+    async (nodeId: string) => {
+      const gid = graphIdRef.current;
+      if (!gid) return;
+      try {
+        await flushRef.current();
+        dispatchRun({ type: "update", run: await terminalOpen(gid, nodeId) });
+        setError(null);
+      } catch (e) {
+        setError(t("orbitTerminalError", { error: String(e) }));
+      }
+    },
+    [t],
+  );
+  const closeTerminal = useCallback(
+    (nodeId: string) => {
+      const gid = graphIdRef.current;
+      if (!gid) return;
+      const runId = runIdRef.current;
+      terminalClose(gid, nodeId)
+        .then(() => (runId ? runGet(runId) : null))
+        .then((run) => {
+          if (run) dispatchRun({ type: "update", run });
+        })
+        .catch((e) => setError(t("orbitTerminalError", { error: String(e) })));
+    },
+    [t],
+  );
+
   // Lido por ref: a ação fica a mesma enquanto a execução muda.
   const runIdRef = useRef<string | null>(null);
   runIdRef.current = run?.id ?? null;
@@ -854,6 +937,8 @@ function OrbitInner({
         void resolveApproval(id, decision).catch((e) =>
           setError(t("orbitApprovalError", { error: String(e) })),
         ),
+      openTerminal,
+      closeTerminal,
     }),
     [
       integrations,
@@ -864,6 +949,8 @@ function OrbitInner({
       stopOneNode,
       restartOneNode,
       openInBrowser,
+      openTerminal,
+      closeTerminal,
       t,
     ],
   );
@@ -1109,7 +1196,19 @@ function OrbitInner({
           {sep}
           <button
             type="button"
-            disabled={!meta || nodes.length === 0 || running !== null || starting}
+            disabled={!meta}
+            onClick={() => addTerminal(null)}
+            className={`${tbtn} rounded-full enabled:border-tyba-green/30 enabled:bg-tyba-green-tint enabled:text-tyba-green enabled:hover:border-tyba-green/60`}
+          >
+            <Plus size={13} weight="bold" />
+            {t("orbitAddTerminal")}
+          </button>
+          {/* Com Terminal aberto o ▶ fica clicável: o core recusa e diz por quê. */}
+          <button
+            type="button"
+            disabled={
+              !meta || nodes.length === 0 || (running !== null && !isLiveRun(running)) || starting
+            }
             onClick={() => void start()}
             className={`${tbtn} enabled:border-tyba-green/45 enabled:bg-tyba-green-tint enabled:font-medium enabled:text-tyba-green enabled:hover:border-tyba-green enabled:hover:bg-tyba-green-tint`}
           >
@@ -1285,8 +1384,9 @@ function OrbitInner({
               onRemoved={onRemoved}
               error={error}
               newDir={newDir}
-              foreground={!covered && !showInts && importing === null}
+              foreground={!covered && !showInts && importing === null && !askTerminal}
               onCardApprovals={cardApprovals}
+              onAddTerminal={addTerminal}
             />
           ) : (
             <div className="flex flex-1 items-center justify-center text-[12.5px] text-tyba-text-faint">
@@ -1378,6 +1478,12 @@ function OrbitInner({
           />
         )}
       </div>
+      <TerminalFolderPrompt
+        open={askTerminal}
+        home={home ?? ""}
+        onChoose={(dir) => void createTerminal(dir)}
+        onClose={() => setAskTerminal(false)}
+      />
       {importing && (
         <ImportDialog
           path={importing.path}

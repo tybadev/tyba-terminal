@@ -118,6 +118,7 @@ import { NodePalette, PALETTE_H, PALETTE_W } from "./NodePalette";
 import { NoteNode } from "./nodes/NoteNode";
 import { ProcessNode } from "./nodes/ProcessNode";
 import { ServiceNode } from "./nodes/ServiceNode";
+import { TerminalNode } from "./nodes/TerminalNode";
 import {
   SubagentNode,
   SubagentRoundsNode,
@@ -137,6 +138,7 @@ const nodeTypes = {
   integration: IntegrationNode,
   browser: BrowserNode,
   service: ServiceNode,
+  terminal: TerminalNode,
   subagent: SubagentNode,
   subagentRounds: SubagentRoundsNode,
 };
@@ -411,6 +413,7 @@ export function OrbitCanvas({
   newDir,
   foreground,
   onCardApprovals,
+  onAddTerminal,
 }: {
   nodes: OrbitFlowNode[];
   edges: OrbitFlowEdge[];
@@ -435,6 +438,8 @@ export function OrbitCanvas({
   foreground: boolean;
   /** Os pedidos que uma cápsula mostra na tela agora: saem do toast. */
   onCardApprovals: (ids: ReadonlySet<number>) => void;
+  /** Terminal da paleta: a tela pergunta a pasta e cria o nó ali, já aberto. */
+  onAddTerminal: (position: { x: number; y: number }) => void;
 }) {
   const { t } = useTranslation();
   const { screenToFlowPosition, zoomTo, fitView, setCenter } = useReactFlow();
@@ -872,6 +877,7 @@ export function OrbitCanvas({
           claude: t("graphAgentClaude"),
           codex: t("graphAgentCodex"),
           process: t("orbitKindProcess"),
+          terminal: t("orbitKindTerminal"),
           service: t("orbitKindService"),
           browser: t("orbitKindBrowser"),
           note: t("orbitKindNote"),
@@ -909,6 +915,11 @@ export function OrbitCanvas({
         ? { x: palette.flow.x, y: palette.flow.y - 40 }
         : { x: palette.flow.x - node.size.w / 2, y: palette.flow.y - 20 };
     node.position = freeSpot(want, node.size, occupied());
+    if (node.kind.type === "terminal") {
+      setPalette(null);
+      onAddTerminal(node.position);
+      return;
+    }
     if (entry.group === "folder" && "dir" in entry.kind) rememberDir(entry.kind.dir);
     setNodes((ns) => [...ns.map((n) => ({ ...n, selected: false })), flowNodeOf(node, true)]);
     if (palette.from) {

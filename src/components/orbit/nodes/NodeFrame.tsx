@@ -100,6 +100,10 @@ export interface CanvasActions {
   keepCreated: (nodeId: string | null, orchestrator?: string) => void;
   /** Permitir/Negar da cápsula âmbar: resolve o pedido no core. */
   answerApproval: (requestId: number, decision: ApprovalDecision) => void;
+  /** Abrir do nó Terminal: o core abre a sessão ao vivo dele (sem ▶). */
+  openTerminal: (nodeId: string) => Promise<void>;
+  /** ⋯ → Fechar do Terminal: o core mata o shell e fecha a sessão ao vivo. */
+  closeTerminal: (nodeId: string) => void;
 }
 
 export interface CanvasState {
@@ -142,6 +146,8 @@ export const CanvasActionsContext = createContext<CanvasActions>({
   openInBrowser: () => {},
   keepCreated: () => {},
   answerApproval: () => {},
+  openTerminal: async () => {},
+  closeTerminal: () => {},
 });
 
 export const CanvasStateContext = createContext<CanvasState>({
@@ -417,7 +423,7 @@ export interface NodeDetail {
 const capsuleBtn = "nodrag shrink-0 rounded-full px-3 py-[3px] text-[11.5px] leading-[18px]";
 
 /** Botão da grade do ⋯ (quadro: pílula clara). */
-const detailBtn =
+export const detailBtn =
   "inline-flex items-center gap-1.5 rounded-full bg-tyba-text/[.08] px-3 py-[3px] text-[11.5px]";
 
 /**
@@ -662,6 +668,8 @@ export function NodeFrame({
   paper = false,
   inUse = false,
   clearData,
+  ring: ringOverride,
+  actions,
   children,
 }: {
   id: string;
@@ -686,6 +694,10 @@ export function NodeFrame({
   inUse?: boolean;
   /** Navegador nativo: "Apagar dados do navegador" no ⋯, confirmado na cápsula. */
   clearData?: () => void;
+  /** Toma o lugar do anel do estado (o Terminal aberto: verde cheio, sem girar). */
+  ring?: FrameRing;
+  /** Botões do nó na grade do ⋯, antes do Apagar (o Fechar do Terminal). */
+  actions?: (close: () => void) => ReactNode;
   children: ReactNode;
 }) {
   const { t } = useTranslation();
@@ -714,7 +726,8 @@ export function NodeFrame({
   const controls = nodeControls(node.kind, run, id, live);
   const again = controls.restart || controls.rerun;
   const request = approvals.get(id) ?? null;
-  const ring = ringState(nodeRun, request !== null, run?.settled);
+  const ring =
+    request === null && ringOverride ? ringOverride : ringState(nodeRun, request !== null, run?.settled);
   const failed = ring === "failed";
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -1084,6 +1097,7 @@ export function NodeFrame({
                   {t("orbitKeepAll")}
                 </button>
               )}
+              {actions?.(() => setOpen(false))}
               {clearData && (
                 <button
                   type="button"

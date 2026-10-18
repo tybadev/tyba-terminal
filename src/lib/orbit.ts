@@ -1060,6 +1060,45 @@ export const keepCreated = (
  * começar, o core mata os agentes vivos dos runs anteriores do grafo. */
 export const runStart = (graphId: string) => invoke<string>("orbit_run_start", { graphId });
 
+/**
+ * + Terminal / Abrir: o core abre a sessão ao vivo do nó Terminal (sem ▶) e
+ * devolve o run. Recusa o segundo Terminal do grafo e a pasta que não existe.
+ */
+export const terminalOpen = (graphId: string, nodeId: string) =>
+  invoke<Run>("orbit_terminal_open", { graphId, nodeId });
+
+/** ⋯ → Fechar: o core mata o shell do Terminal e fecha a sessão ao vivo dele. */
+export const terminalClose = (graphId: string, nodeId: string) =>
+  invoke<void>("orbit_terminal_close", { graphId, nodeId });
+
+/** A sessão ao vivo de um Terminal, ainda aberta (o core manda `terminal`). */
+export const isLiveRun = (run: Pick<Run, "terminal" | "status"> | null): boolean =>
+  Boolean(run?.terminal) && run?.status === "running";
+
+/** O Terminal `nodeId` está aberto no run à vista: a cápsula diz "ao vivo". */
+export const terminalLive = (
+  run: Pick<Run, "terminal" | "status" | "nodes"> | null,
+  nodeId: string,
+): boolean => isLiveRun(run) && run?.terminal === nodeId && run.nodes[nodeId]?.status === "running";
+
+/** Os nós da sessão ao vivo na faixa de baixo: o Terminal e, depois, os que ela criou. */
+export function liveRunNodes(
+  graph: Pick<Graph, "nodes">,
+  run: Pick<Run, "terminal" | "nodes">,
+): string[] {
+  const ids = graph.nodes.map((n) => n.id).filter((id) => id in run.nodes);
+  return [
+    ...ids.filter((id) => id === run.terminal),
+    ...ids.filter((id) => id !== run.terminal),
+  ];
+}
+
+/** "Terminal · api": o nome do nó Terminal novo, pela pasta onde ele roda. */
+export function terminalTitle(dir: string): string {
+  const base = dir.split(/[\\/]/).filter(Boolean).pop();
+  return base ? `Terminal · ${base}` : "Terminal";
+}
+
 /** ■ Parar: o core mata o process group de cada nó rodando. */
 export const runStop = (runId: string) => invoke<void>("orbit_run_stop", { runId });
 

@@ -10,6 +10,7 @@ export type PaletteIcon =
   | "claude"
   | "codex"
   | "process"
+  | "terminal"
   | "service"
   | "browser"
   | "note"
@@ -38,6 +39,7 @@ export interface PaletteLabels {
   claude: string;
   codex: string;
   process: string;
+  terminal: string;
   service: string;
   browser: string;
   note: string;
@@ -71,7 +73,7 @@ const process = (command: string, dir: string): NodeKind => ({
 
 /**
  * Tudo que a paleta oferece, na ordem do quadro: os tipos (Agente Claude,
- * Agente Codex, Processo, Serviço, Navegador, Nota), as integrações salvas,
+ * Agente Codex, Processo, Terminal, Serviço, Navegador, Nota), as integrações salvas,
  * os snippets (viram Processo com o comando) e as pastas recentes.
  */
 export function paletteEntries({
@@ -103,6 +105,14 @@ export function paletteEntries({
         label: labels.process,
         title: labels.process,
         kind: process("", dir),
+      },
+      {
+        // Não nasce daqui: quem escolhe abre o seletor de pasta (+ Terminal).
+        id: "type:terminal",
+        icon: "terminal",
+        label: labels.terminal,
+        title: labels.terminal,
+        kind: { type: "terminal", dir },
       },
       {
         id: "type:service",

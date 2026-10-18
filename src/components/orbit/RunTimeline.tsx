@@ -5,6 +5,8 @@ import { CaretRight, Warning } from "@phosphor-icons/react";
 import {
   concurrentAgents,
   formatDuration,
+  isLiveRun,
+  liveRunNodes,
   nodeElapsed,
   nodeStatusLabel,
   runElapsed,
@@ -66,7 +68,26 @@ export function RunTimeline({
       aria-label={t("orbitRunCurrent")}
       className="flex h-16 shrink-0 items-center gap-5 border-t border-tyba-border bg-tyba-surface px-[18px] font-mono"
     >
-      {run ? (
+      {run && isLiveRun(run) ? (
+        // Quadro OrbitTerminal 4: a sessão ao vivo do Terminal, sem número
+        // nem passos do grafo — o Terminal e o que ele criou, cada um com o estado.
+        <>
+          <div className="flex shrink-0 flex-col gap-[3px]">
+            <span className="text-[13px] font-medium text-tyba-green">{t("orbitLiveRun")}</span>
+            <span className="text-[11px] text-tyba-text-faint">{t("orbitLiveRunHint")}</span>
+          </div>
+          <ol
+            aria-label={t("orbitRunSteps")}
+            className="m-0 flex min-w-0 flex-1 list-none items-center gap-5 overflow-x-auto p-0"
+          >
+            {liveRunNodes(graph, run).map((id) => (
+              <li key={id} className="flex">
+                {step(id)}
+              </li>
+            ))}
+          </ol>
+        </>
+      ) : run ? (
         <>
           <div className="flex shrink-0 flex-col gap-[3px]">
             <span className="text-[13px] font-medium text-tyba-text">

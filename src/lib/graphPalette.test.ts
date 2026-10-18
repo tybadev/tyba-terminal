@@ -8,6 +8,7 @@ const labels = {
   claude: "Agente Claude",
   codex: "Agente Codex",
   process: "Processo",
+  terminal: "Terminal",
   service: "Serviço",
   browser: "Navegador",
   note: "Nota",
@@ -42,11 +43,17 @@ describe("paletteEntries", () => {
       "type",
       "type",
       "type",
+      "type",
       "integration",
       "snippet",
       "folder",
     ]);
-    expect(labelsOf(entries.slice(0, 6))).toEqual(Object.values(labels));
+    expect(labelsOf(entries.slice(0, 7))).toEqual(Object.values(labels));
+  });
+
+  test("Terminal nasce com a pasta da paleta", () => {
+    const term = entries.find((e) => e.id === "type:terminal");
+    expect(term?.kind).toEqual({ type: "terminal", dir: "/srv/api" });
   });
 
   test("snippet vira Processo com o comando, na pasta do nó novo", () => {
