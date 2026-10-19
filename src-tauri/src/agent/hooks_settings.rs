@@ -232,11 +232,14 @@ pub fn guard_only_hook_command(exe: &Path) -> String {
 /// guarda-corpo. Nada vai ao core — o aninhado não pode sequestrar o
 /// monitor nem a conversa do pane do pai. Sem `onFailure` (falha = sem
 /// decisão) e sem `statusMessage`.
+/// As ferramentas que o guarda-corpo olha: as de shell e as MCP.
+pub const GUARD_MATCHER: &str = "Bash|PowerShell|mcp__.*";
+
 pub fn guard_only_settings(hook_cmd: &str) -> Value {
     json!({
         "hooks": {
             "PreToolUse": [{
-                "matcher": "Bash",
+                "matcher": GUARD_MATCHER,
                 "hooks": [{
                     "type": "command",
                     "command": hook_cmd,
@@ -325,7 +328,7 @@ mod tests {
         let v = guard_only_settings(&cmd);
         let events: Vec<_> = v["hooks"].as_object().unwrap().keys().collect();
         assert_eq!(events, ["PreToolUse"]);
-        assert_eq!(v["hooks"]["PreToolUse"][0]["matcher"], "Bash");
+        assert_eq!(v["hooks"]["PreToolUse"][0]["matcher"], GUARD_MATCHER);
         let hook = &v["hooks"]["PreToolUse"][0]["hooks"][0];
         assert_eq!(hook["command"], cmd);
         assert_eq!(hook["timeout"], OBSERVER_HOOK_TIMEOUT);

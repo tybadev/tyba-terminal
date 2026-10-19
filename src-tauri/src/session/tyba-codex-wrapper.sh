@@ -2,8 +2,8 @@
 # `codex` do TYBA. Este diretorio entra na frente do PATH do pane, entao
 # `command codex`, scripts e Makefiles chegam aqui em vez do binario de
 # verdade. Tudo vai para `tyba _codex -- "$@"`, que sobe o codex de verdade
-# com o hook pre-push do TYBA (push para main/master) e o guarda-corpo de
-# texto, sem gate e sem jaula. Os args seguem como "$@".
+# com o hook pre-push do TYBA (push para main/master), sem gate e sem
+# jaula. Os args seguem como "$@".
 #
 # Nunca chama a si mesmo: sem o `tyba`, executa o codex de verdade pelo
 # caminho que o core resolveu ao abrir o pane, ou pelo PATH pulando este

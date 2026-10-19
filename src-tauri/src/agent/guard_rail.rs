@@ -632,7 +632,11 @@ fn gh_verdict(args: &[String]) -> Option<&'static str> {
     if subcommand_is(&args, "pr", "merge") {
         return Some(PR_MERGE_MESSAGE);
     }
-    if subcommand_is(&args, "pr", "review") && args.iter().any(|a| a == "--approve" || a == "-a") {
+    // `--approve`, `-a` e `a` dentro de flags curtas juntas (`-ab "ok"`).
+    let approves = |a: &String| {
+        a == "--approve" || (a.starts_with('-') && !a.starts_with("--") && a.contains('a'))
+    };
+    if subcommand_is(&args, "pr", "review") && args.iter().any(approves) {
         return Some(PR_APPROVE_MESSAGE);
     }
     if args.first().is_some_and(|a| a == "api") {
@@ -861,17 +865,63 @@ fn tool_command(input: &Value) -> Option<String> {
 /// shell que bate no guarda-corpo tem algo a dizer (`deny` com motivo);
 /// qualquer outro caso é `None` — stdout vazio e saída 0, que para o Claude
 /// Code e o Codex é "sem decisão": o fluxo de permissão normal deles segue.
+/// Ferramentas MCP (GitHub, GitLab): merge, aprovação e escrita na branch
+/// padrão pelo servidor MCP, sem passar por shell.
+fn mcp_verdict(tool: &str, input: Option<&Value>) -> Option<&'static str> {
+    let name = tool.rsplit("__").next().unwrap_or(tool);
+    let field = |k: &str| {
+        input
+            .and_then(|i| i.get(k))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    };
+    if name.ends_with("merge_pull_request") || name.ends_with("merge_merge_request") {
+        return Some(PR_MERGE_MESSAGE);
+    }
+    if name.ends_with("approve_merge_request") {
+        return Some(PR_APPROVE_MESSAGE);
+    }
+    let review = [
+        "create_pull_request_review",
+        "submit_pending_pull_request_review",
+        "create_and_submit_pull_request_review",
+    ];
+    if review.iter().any(|r| name.ends_with(r))
+        && field("event").is_some_and(|e| e.eq_ignore_ascii_case("APPROVE"))
+    {
+        return Some(PR_APPROVE_MESSAGE);
+    }
+    let writes = ["push_files", "create_or_update_file", "delete_file"];
+    if writes.iter().any(|w| name.ends_with(w)) {
+        // Sem `branch`, o servidor escreve na branch padrão: recusa também.
+        let branch = field("branch");
+        let main = branch
+            .as_deref()
+            .is_none_or(|b| matches!(b.trim_start_matches("refs/heads/"), "main" | "master" | ""));
+        return main.then_some(PUSH_MAIN_MESSAGE);
+    }
+    None
+}
+
 pub fn hook_output(payload: &Value) -> Option<String> {
     let field = |k: &str| payload.get(k).and_then(Value::as_str);
-    if field("hook_event_name")? != "PreToolUse" || !SHELL_TOOLS.contains(&field("tool_name")?) {
+    if field("hook_event_name")? != "PreToolUse" {
         return None;
     }
-    let mut command = tool_command(payload.get("tool_input")?)?;
-    // No PowerShell `\` é caractere de caminho, não escape.
-    if field("tool_name") == Some("PowerShell") {
-        command = command.replace('\\', "/");
-    }
-    let reason = guard_rail(&command)?;
+    let tool = field("tool_name")?;
+    let reason = if tool.starts_with("mcp__") {
+        mcp_verdict(tool, payload.get("tool_input"))?
+    } else {
+        if !SHELL_TOOLS.contains(&tool) {
+            return None;
+        }
+        let mut command = tool_command(payload.get("tool_input")?)?;
+        // No PowerShell `\` é caractere de caminho, não escape.
+        if tool == "PowerShell" {
+            command = command.replace('\\', "/");
+        }
+        guard_rail(&command)?
+    };
     Some(
         json!({
             "hookSpecificOutput": {
@@ -1040,6 +1090,8 @@ mod tests {
             "gh pr review 3 --approve",
             "gh pr review --approve -b ok",
             "gh pr review -R o/r 3 -a",
+            "gh pr review 3 -ab \"ok\"",
+            "gh pr review 3 -ba ok",
         ] {
             assert_eq!(guard(cmd), Some(PR_APPROVE_MESSAGE), "{cmd}");
         }
@@ -1140,6 +1192,79 @@ mod tests {
             "tool_name": tool,
             "tool_input": input,
         })
+    }
+
+    #[test]
+    fn mcp_merge_approve_and_main_writes_are_refused() {
+        let deny = |tool: &str, input: Value| {
+            hook_output(&pre_tool_use(tool, input))
+                .and_then(|o| serde_json::from_str::<Value>(&o).ok())
+                .and_then(|v| {
+                    v["hookSpecificOutput"]["permissionDecisionReason"]
+                        .as_str()
+                        .map(str::to_string)
+                })
+        };
+        for (tool, input, reason) in [
+            (
+                "mcp__github__merge_pull_request",
+                json!({"pullNumber": 3}),
+                PR_MERGE_MESSAGE,
+            ),
+            (
+                "mcp__gitlab__merge_merge_request",
+                json!({}),
+                PR_MERGE_MESSAGE,
+            ),
+            (
+                "mcp__gitlab__approve_merge_request",
+                json!({}),
+                PR_APPROVE_MESSAGE,
+            ),
+            (
+                "mcp__github__create_pull_request_review",
+                json!({"event": "APPROVE"}),
+                PR_APPROVE_MESSAGE,
+            ),
+            (
+                "mcp__github__submit_pending_pull_request_review",
+                json!({"event": "approve"}),
+                PR_APPROVE_MESSAGE,
+            ),
+            (
+                "mcp__github__create_and_submit_pull_request_review",
+                json!({"event": "APPROVE"}),
+                PR_APPROVE_MESSAGE,
+            ),
+            (
+                "mcp__github__push_files",
+                json!({"branch": "main", "files": []}),
+                PUSH_MAIN_MESSAGE,
+            ),
+            (
+                "mcp__github__create_or_update_file",
+                json!({"branch": "master"}),
+                PUSH_MAIN_MESSAGE,
+            ),
+            (
+                "mcp__github__delete_file",
+                json!({"path": "x"}),
+                PUSH_MAIN_MESSAGE,
+            ),
+        ] {
+            assert_eq!(deny(tool, input).as_deref(), Some(reason), "{tool}");
+        }
+        for (tool, input) in [
+            (
+                "mcp__github__create_pull_request_review",
+                json!({"event": "COMMENT"}),
+            ),
+            ("mcp__github__push_files", json!({"branch": "feat/x"})),
+            ("mcp__github__create_pull_request", json!({"base": "main"})),
+            ("mcp__github__get_pull_request", json!({})),
+        ] {
+            assert_eq!(deny(tool, input), None, "{tool}");
+        }
     }
 
     #[test]

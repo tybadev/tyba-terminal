@@ -83,7 +83,7 @@ pub fn hooks_json() -> Value {
         match *event {
             "SessionStart" => entry["matcher"] = json!(SESSION_START_MATCHER),
             // O guarda-corpo só olha `Bash`: as outras ferramentas nem chamam o hook.
-            "PreToolUse" => entry["matcher"] = json!("Bash"),
+            "PreToolUse" => entry["matcher"] = json!(crate::agent::hooks_settings::GUARD_MATCHER),
             _ => {}
         }
         hooks.insert((*event).to_string(), json!([entry]));
@@ -525,7 +525,10 @@ mod tests {
             v["hooks"]["SessionStart"][0]["matcher"],
             "startup|resume|clear|compact|fork"
         );
-        assert_eq!(v["hooks"]["PreToolUse"][0]["matcher"], "Bash");
+        assert_eq!(
+            v["hooks"]["PreToolUse"][0]["matcher"],
+            crate::agent::hooks_settings::GUARD_MATCHER
+        );
         assert_eq!(
             v["hooks"]["Stop"][0]["hooks"][0]["command"],
             "\"${CLAUDE_PLUGIN_ROOT}/scripts/hook.sh\"",

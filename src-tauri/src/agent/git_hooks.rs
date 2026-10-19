@@ -98,16 +98,20 @@ fi
 exec git read-tree -u -m HEAD "$1"
 "#;
 
-const PRE_PUSH_TAIL: &str = r#"input=$(cat; printf x)
-input=${input%x}
+/// Lê a entrada direto do stdin, sem heredoc nem arquivo temporário: com o
+/// `/tmp` só leitura (sandbox, bash 3.2 do macOS) o heredoc falhava e o hook
+/// passava. Linha: `<ref local> <sha local> <ref remota> <sha remoto>`.
+const PRE_PUSH_TAIL: &str = r#"input=""
 refused=""
-while read -r local_ref local_sha remote_ref remote_sha; do
+while IFS= read -r line || [ -n "$line" ]; do
+  input="$input$line
+"
+  remote_ref=${line#* * }
+  remote_ref=${remote_ref%% *}
   case "$remote_ref" in
     refs/heads/main|refs/heads/master) refused=${remote_ref#refs/heads/} ;;
   esac
-done <<TYBA_EOF
-$input
-TYBA_EOF
+done
 if [ -n "$refused" ]; then
   echo "TYBA: push para $refused recusado (guarda-corpo fixo do TYBA): agente não empurra para main/master. Faça o push numa branch própria e abra um PR; o merge na main fica com o humano." >&2
   exit 1
@@ -169,7 +173,9 @@ pub fn write_hooks(dir: &Path) -> std::io::Result<()> {
     }
     for entry in std::fs::read_dir(dir)?.flatten() {
         let name = entry.file_name();
-        if !HOOK_NAMES.iter().any(|n| name.as_os_str() == *n) {
+        // Temporário de gravação (`.nome.pid.tmp`) não é apagado aqui.
+        let temp = name.to_string_lossy().starts_with('.');
+        if !temp && !HOOK_NAMES.iter().any(|n| name.as_os_str() == *n) {
             let _ = std::fs::remove_file(entry.path());
         }
     }
@@ -183,9 +189,71 @@ pub fn write_hooks(dir: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Trava entre quem confere e regrava a pasta (sessões do app e `tyba
+/// _codex` de vários panes): um arquivo criado com `create_new` ao lado da
+/// pasta. Trava velha (processo que morreu segurando) expira.
+struct HooksLock(std::path::PathBuf);
+
+const LOCK_STALE: std::time::Duration = std::time::Duration::from_secs(10);
+const LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+impl HooksLock {
+    fn acquire(dir: &Path) -> std::io::Result<Self> {
+        let name = format!(
+            ".{}.lock",
+            dir.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("git-hooks")
+        );
+        let parent = dir.parent().unwrap_or(Path::new("."));
+        std::fs::create_dir_all(parent)?;
+        let path = parent.join(name);
+        let deadline = std::time::Instant::now() + LOCK_WAIT;
+        loop {
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+            {
+                Ok(_) => return Ok(Self(path)),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    let stale = std::fs::metadata(&path)
+                        .and_then(|m| m.modified())
+                        .ok()
+                        .and_then(|t| t.elapsed().ok())
+                        .is_some_and(|age| age > LOCK_STALE);
+                    if stale {
+                        let _ = std::fs::remove_file(&path);
+                        continue;
+                    }
+                    if std::time::Instant::now() >= deadline {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::TimedOut,
+                            "outra sessão segura a trava da pasta de hooks",
+                        ));
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+}
+
+impl Drop for HooksLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
 /// Confere a pasta a cada sessão de agente e regrava se ela sumiu, foi
-/// mexida ou é de outra versão.
+/// mexida ou é de outra versão. Conferir e regravar ficam sob a mesma trava:
+/// duas sessões juntas não deixam a pasta pela metade.
 pub fn ensure_hooks(dir: &Path) -> std::io::Result<()> {
+    if hooks_current(dir) {
+        return Ok(());
+    }
+    let _lock = HooksLock::acquire(dir)?;
     if hooks_current(dir) {
         return Ok(());
     }
@@ -463,6 +531,26 @@ mod tests {
         set_mode(&dir, 0o700).unwrap();
     }
 
+    /// Duas sessões regravando juntas: as duas terminam com a pasta inteira.
+    #[cfg(unix)]
+    #[test]
+    fn two_sessions_rewriting_at_once_both_end_with_the_hooks() {
+        for _ in 0..20 {
+            let tmp = tempfile::tempdir().unwrap();
+            let dir = tmp.path().join("git-hooks");
+            let run = || {
+                let dir = dir.clone();
+                std::thread::spawn(move || ensure_hooks(&dir))
+            };
+            let (a, b) = (run(), run());
+            a.join().unwrap().unwrap();
+            b.join().unwrap().unwrap();
+            assert!(hooks_current(&dir));
+            assert!(!tmp.path().join(".git-hooks.lock").exists(), "trava solta");
+            set_mode(&dir, 0o700).unwrap();
+        }
+    }
+
     /// e2e com git de verdade (repos sintéticos num tempdir, remoto bare).
     #[cfg(unix)]
     mod e2e {
@@ -580,6 +668,38 @@ mod tests {
                     .unwrap();
                 String::from_utf8_lossy(&out.stdout).trim().to_string()
             }
+        }
+
+        impl Lab {
+            /// Como [`Lab::agent`], com o `TMPDIR` apontando para onde não
+            /// dá para gravar (sandbox só leitura).
+            fn agent_without_tmp(&self, script: &str) -> Output {
+                let mut sh = Command::new("bash");
+                sh.current_dir(&self.work)
+                    .arg("-c")
+                    .arg(script)
+                    .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                    .env("GIT_CONFIG_NOSYSTEM", "1")
+                    .env("TMPDIR", "/nao/existe/tmp")
+                    .env_remove("GIT_CONFIG_COUNT");
+                let mut env = HashMap::new();
+                with_hooks(&mut env, &self.hooks);
+                sh.envs(env);
+                sh.output().unwrap()
+            }
+        }
+
+        #[test]
+        fn read_only_tmp_does_not_open_the_hook() {
+            let lab = lab();
+            let out = lab.agent_without_tmp("git push origin main");
+            assert!(refused(&out), "{}", String::from_utf8_lossy(&out.stderr));
+            let out = lab.agent_without_tmp("git push origin feat");
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
         }
 
         fn refused(out: &Output) -> bool {
