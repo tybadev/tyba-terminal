@@ -1797,15 +1797,62 @@ fn agent_wrapper_dir() -> Option<&'static Path> {
 /// A pasta de hooks git do TYBA (`core.hooksPath` de toda sessão de agente):
 /// o `pre-push` que recusa main/master e os de passagem para os do usuário.
 /// Ver [`crate::agent::git_hooks`].
+///
+/// Mora na pasta de dados do app (a do `tyba.db`, separada entre dev e
+/// produção pelo identificador do perfil), não no temporário: não some numa
+/// limpeza. Reescrita uma vez por execução do app, com o conteúdo do binário
+/// atual. Sem conseguir gravar, devolve `None` com aviso no log — a sessão de
+/// agente sobe sem o hook em vez de falhar (e tenta de novo na próxima).
 pub(crate) fn tyba_git_hooks_dir() -> Option<&'static Path> {
     static DIR: OnceLock<PathBuf> = OnceLock::new();
-    cached_integration_path(&DIR, write_git_hooks, "hooks git")
+    if let Some(dir) = DIR.get() {
+        return Some(dir.as_path());
+    }
+    // No Windows o app aberto pela GUI pode não ter `HOME`.
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from);
+    let dir = git_hooks_dir_in(std::env::var_os("TYBA_DATA_DIR"), home.as_deref());
+    match dir.as_deref().map(write_git_hooks) {
+        Some(Ok(())) => {
+            let _ = DIR.set(dir?);
+            DIR.get().map(PathBuf::as_path)
+        }
+        Some(Err(err)) => {
+            eprintln!(
+                "tyba: hooks git indisponíveis (a sessão sobe sem o pre-push do TYBA): {err}"
+            );
+            None
+        }
+        None => {
+            eprintln!("tyba: hooks git indisponíveis: sem pasta de dados (HOME)");
+            None
+        }
+    }
 }
 
-fn write_git_hooks() -> std::io::Result<PathBuf> {
-    let dir = integration_dir("git-hooks")?;
-    crate::agent::git_hooks::write_hooks(&dir)?;
-    Ok(dir)
+/// `<dados do TYBA>/git-hooks`: `TYBA_DATA_DIR`, ou a pasta de dados do app
+/// por perfil.
+fn git_hooks_dir_in(
+    data_dir_env: Option<std::ffi::OsString>,
+    home: Option<&Path>,
+) -> Option<PathBuf> {
+    let root = data_dir_env
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| home.map(crate::lsp::data_dir))?;
+    Some(root.join("git-hooks"))
+}
+
+/// Cria a pasta (0700) e grava os scripts (0700).
+fn write_git_hooks(dir: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+    }
+    crate::agent::git_hooks::write_hooks(dir)
 }
 
 /// A pasta do wrapper `claude` que o agente aberto pelo TYBA põe na frente do
@@ -2198,6 +2245,44 @@ mod hook_zsh_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn git_hooks_live_in_the_app_data_dir() {
+        let home = Path::new("/Users/x");
+        assert_eq!(
+            git_hooks_dir_in(None, Some(home)),
+            Some(crate::lsp::data_dir(home).join("git-hooks"))
+        );
+        assert!(!git_hooks_dir_in(None, Some(home))
+            .unwrap()
+            .starts_with(std::env::temp_dir()));
+        assert_eq!(
+            git_hooks_dir_in(Some("/dados/tyba".into()), Some(home)),
+            Some(PathBuf::from("/dados/tyba/git-hooks"))
+        );
+        assert_eq!(git_hooks_dir_in(None, None), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn git_hooks_are_written_private_and_rewritten() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("dados/git-hooks");
+        write_git_hooks(&dir).unwrap();
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&dir), 0o700);
+        assert_eq!(mode(&dir.join("pre-push")), 0o700);
+        // Conteúdo antigo é trocado pelo do binário atual.
+        std::fs::write(dir.join("pre-push"), "velho").unwrap();
+        write_git_hooks(&dir).unwrap();
+        let body = std::fs::read_to_string(dir.join("pre-push")).unwrap();
+        assert!(body.contains("refs/heads/main"), "{body}");
+        // Sem como gravar: erro, não pânico.
+        let blocked = tmp.path().join("arquivo");
+        std::fs::write(&blocked, "x").unwrap();
+        assert!(write_git_hooks(&blocked.join("git-hooks")).is_err());
+    }
 
     #[test]
     fn integration_dir_is_per_profile() {
