@@ -2,7 +2,7 @@
 //! "hospede este agente" — sem cwd nem session-id (o core deriva os dois do
 //! peer da conexão, nunca do que o pedido afirma). Ver o `[!danger]` da spec
 //! e a ADR 2026-09-02: esta é uma superfície de IPC NOVA que pode pedir ao
-//! core que suba um agente com gate numa pasta, e por isso o protocolo é
+//! core que suba um agente numa pasta, e por isso o protocolo é
 //! deliberadamente pequeno — um único `op`, um único agente por vez.
 //!
 //! Reusa o ESTILO de `hook_ipc::framing`/`server` (linha JSON, inflight
@@ -592,7 +592,7 @@ pub fn jail_args(argv: &[String]) -> Vec<String> {
 /// o alvo do shim do rc e do wrapper `claude` no PATH do pane (M6-A). Toda
 /// forma de chamar `claude` chega aqui; [`crate::agent::claude_cli::route`]
 /// decide o caminho. Nunca trava o terminal: qualquer dúvida no canal cai no
-/// binário de verdade — mas marcado, para o pane mostrar "sem gate".
+/// binário de verdade, com um aviso no terminal.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub fn maybe_run_jail_mode() -> Option<i32> {
     let argv: Vec<String> = std::env::args().collect();
@@ -633,10 +633,8 @@ pub fn maybe_run_jail_mode() -> Option<i32> {
     None
 }
 
-/// Marcador no env do `claude` cru que passou pelo `_jail` (M6-A). O core lê
-/// do processo detectado (`process_probe::shim_route`): `passthrough` não
-/// pede aviso nenhum; `ungated`/`fallback` acendem o "sem gate" vermelho.
-/// Nunca a faixa âmbar "Reabrir com gate": esse claude já passou pelo TYBA.
+/// Marcador que versões antigas punham no env do `claude` cru (M6-A). Ninguém
+/// lê mais; só é retirado do env do claude, para não vazar de um shell antigo.
 pub const SHIM_ENV: &str = "TYBA_SHIM";
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -660,17 +658,17 @@ fn run_jail_client(socket_path: Option<&Path>, args: &[String]) -> i32 {
             }
             Err(_) => args.to_vec(),
         };
-        return exec_real(&args, None);
+        return exec_real(&args);
     }
     match route(args) {
         ClaudeRoute::Forbidden(reason) => {
             eprintln!("tyba: {reason}. Dentro do TYBA o claude roda sempre com os hooks do TYBA.");
             return 2;
         }
-        ClaudeRoute::Passthrough => return exec_real(args, Some("passthrough")),
+        ClaudeRoute::Passthrough => return exec_real(args),
         ClaudeRoute::Ungated => {
-            eprintln!("tyba: sessão em segundo plano roda fora do pane, SEM gate do TYBA.");
-            return exec_real(args, Some("ungated"));
+            eprintln!("tyba: sessão em segundo plano roda fora do pane, sem os hooks do TYBA.");
+            return exec_real(args);
         }
         ClaudeRoute::Host => {}
     }
@@ -699,16 +697,15 @@ fn run_jail_client(socket_path: Option<&Path>, args: &[String]) -> i32 {
         JailOutcome::RunReal => {}
     }
     // Fail-open final, mas VISÍVEL: o core não hospedou (ou o exec acima
-    // falhou), o terminal não pode travar, e o claude sobe cru marcado como
-    // `fallback` — o pane mostra "sem gate" em vermelho.
-    eprintln!("tyba: o TYBA não conseguiu hospedar este claude; ele roda SEM gate.");
-    exec_real(args, Some("fallback"))
+    // falhou), o terminal não pode travar, e o claude sobe cru, com aviso.
+    eprintln!("tyba: o TYBA não conseguiu hospedar este claude; ele roda sem os hooks do TYBA.");
+    exec_real(args)
 }
 
 /// `exec` do `claude` de verdade com os args intactos (argv, nunca shell).
 /// Nunca o wrapper do TYBA — ver [`crate::agent::claude_cli::real_claude`].
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-fn exec_real(args: &[String], marker: Option<&str>) -> i32 {
+fn exec_real(args: &[String]) -> i32 {
     use std::os::unix::process::CommandExt;
 
     let wrapper_dir = std::env::var_os("TYBA_WRAPPER_DIR").map(PathBuf::from);
@@ -723,10 +720,8 @@ fn exec_real(args: &[String], marker: Option<&str>) -> i32 {
     };
     let mut cmd = std::process::Command::new(real);
     cmd.args(args);
-    match marker {
-        Some(marker) => cmd.env(SHIM_ENV, marker),
-        None => cmd.env_remove(SHIM_ENV),
-    };
+    // Um marcador herdado de versão antiga não chega ao claude.
+    cmd.env_remove(SHIM_ENV);
     let err = cmd.exec();
     eprintln!("tyba _jail: exec de claude falhou: {err}");
     126

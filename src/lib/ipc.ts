@@ -139,19 +139,13 @@ export interface CreateSessionOpts {
   rows: number;
   worktree_task?: string;
   /** Agente na pasta de `cwd`, que já existe (review, conflitos), em vez de num
-   * worktree novo. Sandbox e gate de aprovação continuam valendo. */
+   * worktree novo. O claude sobe como o digitado: a permissão é do prompt
+   * dele, e o TYBA só observa. */
   attach_existing?: boolean;
   /** Id do shell escolhido no picker (ver `listShells`). Ausente = default do OS. */
   shell?: string;
   /** Split de shell: o core abre no cwd vivo desta sessão (lido do kernel). */
   inherit_cwd_from?: SessionId;
-  /** A sessão de agente nasce pelo gate (reabrir um shell-agent gerenciado),
-   * não por review, resolução de conflito ou clique manual. Controla se a
-   * aba se recolhe sozinha quando o agente sai depois de trabalhar. */
-  opened_by_gate?: boolean;
-  /** Id da conversa nativa a retomar no attach do gate — o que o
-   * `kill_shell_agent` devolveu. O core valida antes de virar argumento. */
-  resume_conversation?: string;
 }
 
 /** Um shell disponível para abrir uma sessão (ver `listShells`). */
@@ -927,18 +921,24 @@ export const onAgentAlert = (
 ): Promise<UnlistenFn> =>
   listen<AgentAlertPayload>("agent://alert", (e) => handler(e.payload));
 
-/** `agent://asking` (agente livre, fatia 5): o agente abriu um pedido de
- * permissão no prompt dele. O texto vem pronto do core ("O Claude está
- * pedindo algo · projeto · branch"); nada aqui aprova. */
-export interface AgentAskingPayload {
+/** Agente livre, fatia 5: um pedido de permissão em aberto no prompt do
+ * agente. O core guarda um por sessão e manda a lista inteira, mais antigo
+ * primeiro; o texto vem pronto ("O Claude está pedindo algo · projeto ·
+ * branch"). Nada aqui aprova. */
+export interface AgentAsk {
   session_id: SessionId;
   body: string;
 }
 
-export const onAgentAsking = (
-  handler: (payload: AgentAskingPayload) => void,
+export const onAgentAsks = (
+  handler: (asks: AgentAsk[]) => void,
 ): Promise<UnlistenFn> =>
-  listen<AgentAskingPayload>("agent://asking", (e) => handler(e.payload));
+  listen<AgentAsk[]>("agent://asks", (e) => handler(e.payload));
+
+export const agentAsks = () => invoke<AgentAsk[]>("agent_asks");
+
+/** Só o card some; o pedido segue aberto no prompt do agente. */
+export const dismissAsk = (id: SessionId) => invoke<void>("dismiss_ask", { id });
 
 /** Workspace, aba e pane da sessão — só pelo clique no "Ir". */
 export const focusSession = (id: SessionId) =>

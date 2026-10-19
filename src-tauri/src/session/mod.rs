@@ -215,25 +215,6 @@ pub struct Session {
     /// palpite segurado pelo `ObservedHold`). Só memória.
     #[serde(default, skip_deserializing)]
     pub subagents_working: bool,
-    /// A sessão nasceu do gate (`reopenShellAgentManaged`) em vez de review,
-    /// resolução de conflito ou clique manual do usuário. Puramente do core —
-    /// nunca vai para o front. **In-memory, como `attention`**: não é coluna do
-    /// SQLite, nasce `false` no restore, porque afirmar a origem de uma sessão
-    /// que sobreviveu ao fechamento do app seria um palpite, não um fato.
-    ///
-    /// Herda de `previous` em [`SessionManager::spawn_session`] — é o que faz
-    /// retomar a conversa (mesmo `SessionId`) carregar a origem do gate.
-    #[serde(skip)]
-    pub opened_by_gate: bool,
-    /// Latch: vira `true` no primeiro `Idle` que um agente atinge, e nunca
-    /// volta a `false` na vida da sessão — nem quando ela roda de novo depois.
-    /// Ver a trava em [`SessionManager::apply_status`].
-    ///
-    /// Mesmo tratamento in-memory de `opened_by_gate`: reaparece `false` em
-    /// todo processo novo (spawn ou resume), porque "já trabalhou" é sobre a
-    /// vida atual do processo, não sobre o histórico da conversa.
-    #[serde(skip)]
-    pub did_work: bool,
     /// Modelo, contexto, tokens, custo e limites que o `statusLine` do Claude
     /// reportou (ver [`crate::agent::usage`]). **Nunca persistido**: vai ao
     /// front com a sessão e morre com o processo, como `observed`.
@@ -267,8 +248,8 @@ pub struct CreateSessionOpts {
     #[serde(default)]
     pub worktree_task: Option<String>,
     /// Sessão de agente na pasta de `cwd`, que já existe (review, conflitos), em
-    /// vez de num worktree novo. O agente continua passando pelo sandbox e pelo
-    /// gate de aprovação — é só a origem da pasta que muda.
+    /// vez de num worktree novo — só a origem da pasta muda. O claude sobe como
+    /// o digitado: o TYBA observa e a permissão é do prompt dele.
     #[serde(default)]
     pub attach_existing: bool,
     /// Id do shell escolhido no picker (ver [`available_shells`]). `None` cai no
@@ -281,19 +262,6 @@ pub struct CreateSessionOpts {
     pub inherit_cwd_from: Option<SessionId>,
     #[serde(default)]
     pub initial_prompt: Option<String>,
-    /// A sessão de agente nasce pelo gate (`reopenShellAgentManaged`), não por
-    /// review, resolução de conflito ou clique manual. Só o front que sabe
-    /// disso no instante do spawn — ver [`Session::opened_by_gate`].
-    #[serde(default)]
-    pub opened_by_gate: bool,
-    /// Id da conversa nativa a retomar no attach do gate (M1 do
-    /// claude-monitor): o `kill_shell_agent` devolve o id do transcript que o
-    /// disk observer tinha ligado, e a sessão gerenciada sobe com `--resume`
-    /// nele em vez de começar vazia. Dado que volta do webview: o core valida
-    /// com [`crate::agent::conversation::is_plausible`] antes de virar argv.
-    /// Só vale para `attach_existing`.
-    #[serde(default)]
-    pub resume_conversation: Option<String>,
     /// Alias de modelo do slot da launch config (`opus`/`sonnet`/`haiku`). Dado
     /// que volta do webview: quem o transforma em argv é o runner, e só depois
     /// de [`crate::agent::claude_model_alias`]. Só vale para agente Claude.
@@ -304,26 +272,6 @@ pub struct CreateSessionOpts {
     /// diff sem nenhuma validação.
     #[serde(skip)]
     pub prepared_worktree: Option<(crate::worktree::Worktree, PathBuf)>,
-}
-
-/// O que a sessão nova herda de `previous` (a que ocupava o mesmo `SessionId`
-/// antes deste spawn — é o caso de retomar a conversa de um agente) em
-/// [`SessionManager::spawn_session`].
-///
-/// Separada da mecânica de spawn (PTY, `AppHandle`) para poder testar a
-/// decisão sozinha — `SessionManager::spawn_session` não é genérica sobre
-/// `Runtime`, então `tauri::test::mock_app()` não serve para chamá-la
-/// diretamente num teste.
-///
-/// `opened_by_gate` herda: é o que faz o resume carregar a origem do gate
-/// mesmo quando a própria chamada de resume não pede o gate de novo — sem
-/// isso um agente de gate que morreu antes de trabalhar, retomado, nunca mais
-/// fecharia a própria aba. `did_work` NUNCA herda — reseta a `false` sempre:
-/// "já trabalhou" é sobre o processo que está subindo agora, não sobre a
-/// conversa nativa que ele retoma.
-fn inherit_session_origin(opened_by_gate: bool, previous: Option<&Session>) -> (bool, bool) {
-    let opened_by_gate = opened_by_gate || previous.map(|s| s.opened_by_gate).unwrap_or(false);
-    (opened_by_gate, false)
 }
 
 pub struct SessionManager {
@@ -574,7 +522,6 @@ impl SessionManager {
             None,
             opts.cols,
             opts.rows,
-            opts.opened_by_gate,
             on_exit,
         );
         if result.is_ok() {
@@ -638,7 +585,7 @@ impl SessionManager {
             crate::ssh::command::apply_pty_env(&mut cmd);
         }
         self.spawn_session(
-            app, pty_pool, id, cmd, kind, title, None, None, None, cols, rows, false, on_exit,
+            app, pty_pool, id, cmd, kind, title, None, None, None, cols, rows, on_exit,
         )
     }
 
@@ -805,7 +752,6 @@ impl SessionManager {
             None,
             None,
             cwd,
-            false,
             connection,
             connection_failure,
         );
@@ -841,7 +787,6 @@ impl SessionManager {
         jail: Option<Box<dyn crate::pty::JailedSpawner>>,
         cols: u16,
         rows: u16,
-        opened_by_gate: bool,
         on_exit: impl FnOnce(SessionId) + Send + 'static,
     ) -> Result<Session, PtyError> {
         let cwd = self.prepare_env(&mut cmd, id);
@@ -869,7 +814,6 @@ impl SessionManager {
             repo_root,
             worktree,
             cwd,
-            opened_by_gate,
             ConnectionState::Live,
             None,
         ))
@@ -944,7 +888,6 @@ impl SessionManager {
         repo_root: Option<PathBuf>,
         worktree: Option<crate::worktree::Worktree>,
         cwd: Option<PathBuf>,
-        opened_by_gate: bool,
         connection: ConnectionState,
         connection_failure: Option<CanoFailure>,
     ) -> Session {
@@ -953,7 +896,6 @@ impl SessionManager {
         // agora aqui faria a sessão pular para o fim da lista até o próximo boot
         // devolvê-la ao lugar.
         let previous = self.sessions.read().get(&id).cloned();
-        let (opened_by_gate, did_work) = inherit_session_origin(opened_by_gate, previous.as_ref());
         let session = Session {
             id,
             kind,
@@ -973,8 +915,6 @@ impl SessionManager {
             agent_model: None,
             status_note: None,
             subagents_working: false,
-            opened_by_gate,
-            did_work,
             agent_usage: None,
             shell_resume_offer: false,
             agent_conversation_cwd: previous.and_then(|s| s.agent_conversation_cwd),
@@ -1052,6 +992,7 @@ impl SessionManager {
     pub fn set_status(&self, app: &AppHandle, id: SessionId, status: SessionStatus) {
         if let Some((prev, session)) = self.apply_status(id, status) {
             emit_status(app, &session);
+            crate::agent::asking::on_status(app, id, &session.status);
             crate::notifications::record(app, |n| n.status_changed(Some(&prev), &session));
         }
     }
@@ -1076,19 +1017,6 @@ impl SessionManager {
         let status = status.redacted();
         let mut sessions = self.sessions.write();
         let s = sessions.get_mut(&id)?;
-        // Latch: o primeiro `Idle` que um agente atinge marca "já trabalhou"
-        // pelo resto da vida deste processo, e nunca reseta — nem quando ele
-        // volta a `Running` num turno novo. É o segundo fato (o primeiro é
-        // `opened_by_gate`) que `session_exited` consulta para fechar a aba
-        // sozinha. Só em `Idle`, nunca em `AwaitingInput`: são variantes
-        // distintos (`SessionStatus`) e "esperando" não é "terminou". Nunca
-        // consulta `observed` — aquele é palpite de tela; isto fica do lado
-        // do fato de hook.
-        if matches!(s.kind, SessionKind::Agent { .. })
-            && matches!(status, SessionStatus::Idle { .. })
-        {
-            s.did_work = true;
-        }
         let attention = status.wants_attention() && matches!(s.kind, SessionKind::Agent { .. });
         if s.status == status && s.attention == attention {
             return None;
@@ -1434,6 +1362,7 @@ impl SessionManager {
 
     pub fn dispose(&self, pty_pool: &SharedPtyPool, id: SessionId) {
         self.sessions.write().remove(&id);
+        crate::agent::asking::book().clear(id);
         self.canos.lock().remove(&id);
         self.pane_tokens.lock().remove(&id);
         crate::history::forget_session_host(&id.to_string());
@@ -2272,8 +2201,6 @@ mod tests {
             agent_model: None,
             status_note: None,
             subagents_working: false,
-            opened_by_gate: false,
-            did_work: false,
             agent_usage: None,
             shell_resume_offer: false,
             agent_conversation_cwd: None,
@@ -2846,7 +2773,7 @@ command claude beta
     /// cadeia hospedada, então o status que volta pra shell é o do claude
     /// hospedado — o shim antigo (`"$TYBA_BIN" _jail || command claude`)
     /// lia esse status como "o lançador falhou" e subia um segundo claude
-    /// sem gate e sem jaula, sem ninguém ter digitado nada. A prova: o stub
+    /// cru, sem os hooks do TYBA, sem ninguém ter digitado nada. A prova: o stub
     /// roda UMA vez, e o status de saída chega intacto à shell.
     #[test]
     #[cfg(unix)]
@@ -2879,7 +2806,7 @@ command claude beta
         assert_eq!(
             texto.matches("STUB-RODOU").count(),
             1,
-            "o claude hospedado saiu com erro e o shim relançou um claude CRU (sem gate): {texto:?}"
+            "o claude hospedado saiu com erro e o shim relançou um claude CRU (sem hooks): {texto:?}"
         );
         assert!(
             texto.contains("RC:3"),
@@ -4202,62 +4129,6 @@ echo beta
         }
     }
 
-    /// O latch de `did_work`: o primeiro `Idle` marca "já trabalhou", e um
-    /// `Running` seguinte (turno novo) não desliga a marca de volta. Entrega
-    /// F, item 7 do contrato de cobertura.
-    #[test]
-    fn did_work_latches_on_first_idle_and_survives_a_new_running_turn() {
-        let store = Arc::new(Store::open_in_memory().unwrap());
-        store
-            .upsert_session(&make(
-                SessionKind::Agent {
-                    runner: AgentRunnerKind::ClaudeCode,
-                },
-                SessionStatus::Running,
-            ))
-            .unwrap();
-        let manager = SessionManager::new(Arc::clone(&store));
-        manager.restore().unwrap();
-        let id = manager.list()[0].id;
-        assert!(
-            !manager.get(id).unwrap().did_work,
-            "nasce sem ter trabalhado"
-        );
-
-        manager.apply_status(id, SessionStatus::Idle { summary: None });
-        assert!(
-            manager.get(id).unwrap().did_work,
-            "o primeiro Idle tem de latchar"
-        );
-
-        manager.apply_status(id, SessionStatus::Running);
-        assert!(
-            manager.get(id).unwrap().did_work,
-            "um turno novo não desliga o latch"
-        );
-    }
-
-    /// Item 8: `did_work` nunca latcha fora de sessão de agente — mesmo que o
-    /// status chegue a `Idle` (o que hoje só um hook de agente produz, mas a
-    /// trava não deve depender disso).
-    #[test]
-    fn did_work_never_latches_for_non_agent_kind() {
-        let store = Arc::new(Store::open_in_memory().unwrap());
-        store
-            .upsert_session(&make(SessionKind::Shell, SessionStatus::Running))
-            .unwrap();
-        let manager = SessionManager::new(Arc::clone(&store));
-        manager.restore().unwrap();
-        let id = manager.list()[0].id;
-
-        manager.apply_status(id, SessionStatus::Idle { summary: None });
-
-        assert!(
-            !manager.get(id).unwrap().did_work,
-            "shell não é agente: nunca 'trabalhou' neste sentido"
-        );
-    }
-
     /// A transição do histórico sai do status anterior lido no MESMO lock em
     /// que o novo é gravado; repetir o mesmo status não devolve nada.
     #[test]
@@ -4286,86 +4157,5 @@ echo beta
         assert!(manager.apply_status(id, idle.clone()).is_none());
         let (prev, _) = manager.apply_status(id, SessionStatus::Running).unwrap();
         assert_eq!(prev, idle);
-    }
-
-    /// A distinção que separa "esperando" de "terminou": `AwaitingInput` não
-    /// latcha, só `Idle` latcha.
-    #[test]
-    fn did_work_does_not_latch_on_awaiting_input() {
-        let store = Arc::new(Store::open_in_memory().unwrap());
-        store
-            .upsert_session(&make(
-                SessionKind::Agent {
-                    runner: AgentRunnerKind::ClaudeCode,
-                },
-                SessionStatus::Running,
-            ))
-            .unwrap();
-        let manager = SessionManager::new(Arc::clone(&store));
-        manager.restore().unwrap();
-        let id = manager.list()[0].id;
-
-        manager.apply_status(
-            id,
-            SessionStatus::AwaitingInput {
-                hint: None,
-                reason: AwaitingReason::Reply,
-            },
-        );
-
-        assert!(
-            !manager.get(id).unwrap().did_work,
-            "esperando não é ter terminado"
-        );
-    }
-
-    /// Item 9: o resume (mesmo `SessionId`) herda `opened_by_gate` de
-    /// `previous`, mesmo quando a chamada desta subida não pede o gate.
-    #[test]
-    fn opened_by_gate_is_inherited_from_previous_on_a_same_id_respawn() {
-        let previous = make(
-            SessionKind::Agent {
-                runner: AgentRunnerKind::ClaudeCode,
-            },
-            SessionStatus::Exited { code: -1 },
-        );
-        let mut previous = previous;
-        previous.opened_by_gate = true;
-
-        let (opened_by_gate, _) = inherit_session_origin(false, Some(&previous));
-
-        assert!(
-            opened_by_gate,
-            "o resume tem de herdar a origem do gate da sessão anterior"
-        );
-    }
-
-    /// O espelho: um spawn de verdade pelo gate (sem `previous`) também
-    /// marca `opened_by_gate`, claro — não é só herança que liga a flag.
-    #[test]
-    fn opened_by_gate_is_set_on_a_fresh_gate_spawn_with_no_previous() {
-        let (opened_by_gate, _) = inherit_session_origin(true, None);
-        assert!(opened_by_gate);
-    }
-
-    /// Item 10: `did_work` NUNCA herda, mesmo que `previous` já tivesse
-    /// latchado antes de morrer — cada spawn é um processo novo, e "já
-    /// trabalhou" é sobre a vida deste processo, não sobre a conversa.
-    #[test]
-    fn did_work_never_inherits_even_when_previous_had_already_latched() {
-        let mut previous = make(
-            SessionKind::Agent {
-                runner: AgentRunnerKind::ClaudeCode,
-            },
-            SessionStatus::Exited { code: -1 },
-        );
-        previous.did_work = true;
-
-        let (_, did_work) = inherit_session_origin(false, Some(&previous));
-
-        assert!(
-            !did_work,
-            "did_work é do processo, não da conversa — não pode sobreviver ao respawn"
-        );
     }
 }

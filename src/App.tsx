@@ -2033,26 +2033,14 @@ export default function App() {
     }
   }, [activeId, activeWorkspace, sideView, subagentsBySession]);
 
-  // O `hosting` do shim v2 (tech-spec §7), por sessão — projeção de
-  // `detectedBySession` porque `agentsBoard.buildRows`/`AgentRow` só
-  // precisam do booleano, nunca do `pid`/`start_ms`/`jailed` que o resto do
-  // App usa. É o que decide o selo "sem gate" no quadro, na fila e na barra
-  // lateral (ver `agentsBoard.rowShowsNoGate`): hospedado já está dentro do
-  // gate, mesmo continuando `kind.type === "shell"`.
-  const hostingBySession = useMemo(() => {
-    const map = new Map<SessionId, boolean>();
-    for (const [id, d] of detectedBySession) map.set(id, d.hosting);
-    return map;
-  }, [detectedBySession]);
-
-  // Conta as duas seções do quadro: o agente sem gate também pede alguém, e o
+  // Conta as duas seções do quadro: o agente deduzido da tela também pede alguém, e o
 
   // Uma lista só, consumida pelo contador e pela seção da barra lateral. Duas
   // derivações independentes do mesmo estado dariam contador e lista que
   // discordam — e é exatamente o número em cima da lista que denuncia.
   const agentRows = useMemo(
-    () => boardOrder(buildAgentRows(sessions, layout, hostingBySession)),
-    [sessions, layout, hostingBySession],
+    () => boardOrder(buildAgentRows(sessions, layout)),
+    [sessions, layout],
   );
   const agentsWaiting = useMemo(
     () => agentRows.filter(wantsAttention).length,
@@ -2142,10 +2130,9 @@ export default function App() {
     [],
   );
 
-  // Sessão de AGENTE na pasta que já existe — nunca uma sessão de shell com o
-  // binário digitado dentro. Digitar `claude` num shell sobe o agente sem
-  // sandbox, com o env inteiro do usuário e, sobretudo, sem os hooks: sem
-  // PreToolUse não há gate, e um agente fora do inbox faz o que quiser.
+  // Sessão de AGENTE na pasta que já existe (review, conflitos): o core sobe o
+  // claude com os hooks do observador — monitor, conversa, subagentes e o
+  // guarda-corpo de push/merge —, como o claude digitado.
   const spawnAgentSession = useCallback(
     async (
       title: string,
@@ -6089,7 +6076,6 @@ export default function App() {
                         sessions={sessions}
                         layout={layout}
                         activeSessionId={activeId}
-                        hostingBySession={hostingBySession}
                         nextAttentionCombo={bindings.nextAttentionSession}
                         onJump={jumpToAgent}
                         onNextAttention={goToNextAttention}
@@ -6806,8 +6792,7 @@ export default function App() {
                           sessions={sessions}
                           layout={layout}
                           approvals={approvals}
-                          hostingBySession={hostingBySession}
-                          onJump={jumpToAgent}
+                            onJump={jumpToAgent}
                           onReviewDiff={(id) =>
                             void openDiffContentTab(id).catch(() => {})
                           }
