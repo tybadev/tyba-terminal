@@ -103,18 +103,27 @@ describe("orquestrador: marca e ligação dos criados no canvas", () => {
     ]);
   });
 
-  // O caso do teste do dono: os 3 agentes foram mantidos e o run fechou.
-  test("mantidos (já no grafo) seguem marcados e ligados com o run à vista, mesmo fechado", () => {
+  // Decisão de 2026-10-19: mantido é do dono. Antes (teste do dono de 16/10)
+  // os mantidos seguiam com a tracejada e a marca enquanto o run estava à
+  // vista; agora perdem as duas, e o agente mantido volta a ter a porta de
+  // orquestrador (createdBy não o tem).
+  test("mantidos (já no grafo) perdem a tracejada e a marca, com o run aberto ou fechado", () => {
     const list = ["orq-1", "orq-2", "orq-3"].map((id) => agent(id, { kept: true }));
-    const r = run("done", list);
-    const flow = createdFlow(r, [orchestrator, ...list.map((c) => c.node)]);
-    expect(flow.nodes).toEqual([]);
-    expect(flow.byEdges.map((e) => [e.source, e.target])).toEqual([
-      ["o", "orq-1"],
-      ["o", "orq-2"],
-      ["o", "orq-3"],
-    ]);
-    expect(createdByOf(r).has("orq-2")).toBe(true);
+    const graph = [orchestrator, ...list.map((c) => c.node)];
+    for (const status of ["running", "done"] as const) {
+      const r = run(status, list);
+      expect(createdFlow(r, graph).nodes).toEqual([]);
+      expect(createdFlow(r, graph).byEdges).toEqual([]);
+      expect(createdByOf(r).size).toBe(0);
+    }
+  });
+
+  test("Manter um só: o mantido sai da marca e da tracejada, o efêmero segue com as duas", () => {
+    const kept = agent("orq-2", { kept: true });
+    const r = run("running", [agent("orq-1"), kept]);
+    const flow = createdFlow(r, [orchestrator, kept.node]);
+    expect(flow.byEdges.map((e) => [e.source, e.target])).toEqual([["o", "orq-1"]]);
+    expect([...createdByOf(r).entries()]).toEqual([["orq-1", "o"]]);
   });
 
   test("selo 'criado pelo X' só enquanto não mantido; mantido é do dono", () => {

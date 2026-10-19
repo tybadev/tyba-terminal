@@ -844,15 +844,16 @@ export const ephemeralCreated = (run: Run | null): Created[] =>
   run?.status === "running" ? (run.created ?? []).filter((c) => !c.kept) : [];
 
 /**
- * Quem o orquestrador criou no run à vista: id do nó → id do criador. Vale
- * para os efêmeros E para os mantidos, em qualquer estado do run: a marca e a
- * ligação tracejada seguem enquanto esse run está à vista. Antes a origem
- * saía só de {@link ephemeralCreated}, e "Manter no grafo" (ou o fim do run)
- * a apagava na hora — no teste do dono os 3 agentes mantidos viraram nós
- * comuns, sem marca e sem ligação.
+ * Quem o orquestrador criou no run à vista e o dono ainda não manteve: id do
+ * nó → id do criador. Mantido, o nó é do dono (decisão de 2026-10-19): sem
+ * contorno violeta tracejado, sem tracejada até o criador e, no agente, com a
+ * porta de orquestrador e o "Não criar nós" de qualquer agente do grafo. A
+ * origem fica no log da sessão do nó.
  */
 export function createdByOf(run: Run | null): Map<string, string> {
-  return new Map((run?.created ?? []).map((c) => [c.node.id, c.createdBy]));
+  return new Map(
+    (run?.created ?? []).filter((c) => !c.kept).map((c) => [c.node.id, c.createdBy]),
+  );
 }
 
 /**
@@ -879,7 +880,7 @@ export interface CreatedFlow {
  * Nós e ligações dos criados. A tracejada só sai de um orquestrador do
  * grafo — agente ou Terminal, os que têm a porta {@link ORCHESTRATOR_HANDLE}
  * (o claude/codex digitado no Terminal cria em nome dele) — e só chega num
- * nó que está desenhado — efêmero ou já mantido no grafo.
+ * efêmero desenhado: o mantido é do dono e não a tem.
  */
 export function createdFlow(run: Run | null, graphNodes: readonly OrbitNode[]): CreatedFlow {
   const ephemeral = ephemeralCreated(run);
@@ -888,7 +889,8 @@ export function createdFlow(run: Run | null, graphNodes: readonly OrbitNode[]): 
   const orchestrates = (id: string) => isOrchestrator(inGraph.get(id)?.kind);
   const byEdges: CreatedFlow["byEdges"] = [];
   for (const c of run?.created ?? []) {
-    if (!drawn.has(c.node.id) || !orchestrates(c.createdBy)) continue;
+    // Mantido é do dono: a tracejada até o criador sai junto com a marca.
+    if (c.kept || !drawn.has(c.node.id) || !orchestrates(c.createdBy)) continue;
     byEdges.push({
       id: `${c.node.id}:by`,
       source: c.createdBy,
