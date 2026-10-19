@@ -1794,6 +1794,19 @@ fn agent_wrapper_dir() -> Option<&'static Path> {
     cached_integration_path(&DIR, write_agent_wrapper, "wrapper do claude")
 }
 
+/// A pasta do wrapper `claude` que o agente aberto pelo TYBA põe na frente do
+/// PATH (guarda-corpo do claude aninhado). Fora do unix não há wrapper.
+pub(crate) fn nested_guard_wrapper() -> Option<&'static Path> {
+    #[cfg(unix)]
+    {
+        agent_wrapper_dir()
+    }
+    #[cfg(not(unix))]
+    {
+        None
+    }
+}
+
 #[cfg(unix)]
 fn write_agent_wrapper() -> std::io::Result<PathBuf> {
     use std::os::unix::fs::PermissionsExt;

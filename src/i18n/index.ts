@@ -1046,11 +1046,6 @@ const resources = {
         "Binário `codex` não encontrado no PATH — instale o Codex CLI",
       worktreeAgentPrompt: "Prompt inicial (opcional)",
       worktreeAgentPromptPlaceholder: "O que o agente deve fazer primeiro?",
-      agentConsentTitle: "Este repo pede variáveis do seu ambiente",
-      agentConsentBody:
-        "O .tyba/config.toml deste repo pede que o agente receba estas variáveis do SEU ambiente. Sem permitir, a sessão sobe só com o baseline padrão.",
-      agentConsentAllow: "Permitir",
-      agentConsentSkip: "Agora não",
       agentReadyTimeoutTitle: "O prompt inicial não foi enviado",
       agentReadyTimeoutBody:
         "O prompt inicial ficou no composer — revise e envie.",
@@ -3110,11 +3105,6 @@ const resources = {
         "`codex` binary not found in PATH — install the Codex CLI",
       worktreeAgentPrompt: "Initial prompt (optional)",
       worktreeAgentPromptPlaceholder: "What should the agent do first?",
-      agentConsentTitle: "This repo asks for variables from your environment",
-      agentConsentBody:
-        "This repo's .tyba/config.toml asks for the agent to receive these variables from YOUR environment. Without allowing, the session starts with the default baseline only.",
-      agentConsentAllow: "Allow",
-      agentConsentSkip: "Not now",
       agentReadyTimeoutTitle: "The initial prompt wasn't sent",
       agentReadyTimeoutBody:
         "The initial prompt stayed in the composer — review and send it.",

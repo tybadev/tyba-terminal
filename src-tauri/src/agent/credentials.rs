@@ -597,20 +597,23 @@ pub(crate) fn emit_warnings(
     app: &tauri::AppHandle,
     session_id: crate::session::SessionId,
     env: &HashMap<String, String>,
-    spec: &crate::sandbox::SandboxSpec,
+    home: &std::path::Path,
+    // A jaula, quando há: só ela tem o diagnóstico de escrita dentro do
+    // bwrap. O agente livre (sem jaula) roda o resto — host e deriva.
+    jail: Option<&crate::sandbox::SandboxSpec>,
     store: &crate::session::store::Store,
 ) {
     use tauri::Emitter;
 
-    let claude = claude_config_dir(&spec.home, env);
+    let claude = claude_config_dir(home, env);
     // `names` só é `Some` pro achado de deriva (review r1, v0.6.2) — é o que
     // `ack_drift_names` precisa de volta do front pra marcar durável só o
     // que foi realmente visto (ver o comentário de `drift_alarm_names`).
     let mut findings: Vec<(SandboxWarningKind, Option<String>, Option<Vec<String>>)> = Vec::new();
 
-    if let Ok(argv) = crate::sandbox::bwrap::build_args(spec) {
+    if let Some(Ok(argv)) = jail.map(crate::sandbox::bwrap::build_args) {
         findings.extend(
-            diagnose_state_writability(&argv, &spec.home, &claude)
+            diagnose_state_writability(&argv, home, &claude)
                 .into_iter()
                 .map(|kind| (kind, None, None)),
         );

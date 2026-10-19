@@ -1,25 +1,4 @@
-import type { AgentRepoConfig, CreateSessionOpts } from "./ipc";
-
-export function needsConsentPrompt(config: AgentRepoConfig | null): boolean {
-  return config !== null && config.consent !== true;
-}
-
-export type ConsentDecision = "allow" | "skip";
-
-export interface ConsentOutcome {
-  persist: boolean;
-  config: AgentRepoConfig;
-}
-
-export function applyConsentDecision(
-  config: AgentRepoConfig,
-  decision: ConsentDecision,
-): ConsentOutcome {
-  if (decision === "allow") {
-    return { persist: true, config: { ...config, consent: true } };
-  }
-  return { persist: false, config: { ...config, consent: false } };
-}
+import type { CreateSessionOpts } from "./ipc";
 
 export type AgentRunnerId = "claude_code" | "codex";
 
@@ -32,8 +11,7 @@ export function runnerFromDefault(
 }
 
 /** A preferência de review é uma linha de comando (`claude`, `codex --flag`), mas
- * uma sessão de agente exige o runner do core — é ele que carrega hooks, sandbox
- * e env allowlist. Casa pelo binário, ignorando argumentos; o que não for
+ * uma sessão de agente exige o runner do core — é ele que carrega os hooks. Casa pelo binário, ignorando argumentos; o que não for
  * reconhecido cai no Claude Code, que é o default do produto. */
 export function runnerFromCommand(
   command: string | null | undefined,

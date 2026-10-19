@@ -846,6 +846,11 @@ fn hook_route(runner: &AgentRunnerKind, hook_event_name: &str) -> HookRoute {
 /// decisão. O `PermissionRequest` do Claude já é só aviso (`NativePrompt`).
 fn session_route(runner: &AgentRunnerKind, hook_event_name: &str, observe_only: bool) -> HookRoute {
     match hook_route(runner, hook_event_name) {
+        // Codex livre: o `PermissionRequest` dele vira o mesmo aviso de
+        // pedido do Claude; a resposta é no prompt do Codex.
+        HookRoute::ToolUse if observe_only && hook_event_name == "PermissionRequest" => {
+            HookRoute::NativePrompt
+        }
         HookRoute::ToolUse if observe_only => HookRoute::Observe,
         route => route,
     }
@@ -1552,32 +1557,62 @@ pub fn attach_agent_session(
     )
 }
 
-/// Agente livre (decisão do dono, 2026-10-19): o claude que o TYBA abre —
-/// agente novo em worktree, review, conflitos, launch config com ou sem
-/// `isolate`, retomar — roda como o claude digitado: hooks que só observam
-/// (`_hook --observe`, com o guarda-corpo), sem card, sem jaula do TYBA e com
-/// o env de um pane novo ([`free_agent_env`]). Quem pergunta é o prompt do
-/// próprio Claude. O Codex segue como está (tabela do agente livre: "Codex
-/// gerenciado: sandbox próprio do codex — igual"), com o gate do TYBA — o
-/// `PermissionRequest` dele é o protocolo de aprovação.
+/// Agente livre (decisões do dono, 2026-10-19): o claude e o codex que o
+/// TYBA abre — agente novo em worktree, review, conflitos, launch config com
+/// ou sem `isolate`, retomar — rodam como o agente digitado: hooks que só
+/// observam (`_hook --observe`, com o guarda-corpo), sem card, sem jaula do
+/// TYBA e com o env do shell de login ([`free_agent_env`]). Quem pergunta é o
+/// próprio CLI (o prompt do Claude; o sandbox e a aprovação do Codex). Só um
+/// runner custom segue no caminho antigo.
 fn runs_free(runner: &AgentRunnerKind) -> bool {
-    matches!(runner, AgentRunnerKind::ClaudeCode)
+    matches!(runner, AgentRunnerKind::ClaudeCode | AgentRunnerKind::Codex)
 }
 
 /// O que sai do env do agente livre: o que desligaria os hooks do
 /// `--settings` (e com eles o guarda-corpo) e o marcador de versões antigas.
 const FREE_ENV_REMOVE: &[&str] = &["CLAUDE_CODE_SIMPLE", "CLAUDE_CODE_SAFE_MODE", "TYBA_SHIM"];
 
-/// O env do agente livre: o mesmo ponto de partida de um pane novo do TYBA —
-/// o env do processo do TYBA (já limpo dos marcadores de sessão herdados,
-/// `agent::inherited_env`) com o PATH do shell de login e o terminal que o
-/// pane anuncia —, menos [`FREE_ENV_REMOVE`]. Sem allowlist e sem override de
-/// git: vale o git config do dono, como no claude digitado.
-fn free_agent_env(base: HashMap<String, String>, login_path: String) -> HashMap<String, String> {
-    let mut env = base;
-    env.insert("PATH".into(), login_path);
+/// Links clicáveis no terminal (OSC 8) para todo agente (decisão do dono,
+/// 2026-10-19): o claude e o codex só os emitem com isto.
+pub(crate) const FORCE_HYPERLINK: (&str, &str) = ("FORCE_HYPERLINK", "1");
+
+/// O env do agente livre: o env COMPLETO do shell de login do dono
+/// ([`crate::shell_path::login_shell_vars`]; sem resposta dele, o env do
+/// processo do TYBA) — `SSH_AUTH_SOCK`, `ANTHROPIC_API_KEY`, `AWS_PROFILE`,
+/// `CLAUDE_CONFIG_DIR`, proxy —, com o PATH de login, o terminal que o pane
+/// anuncia e `FORCE_HYPERLINK`; menos os marcadores de sessão herdados e
+/// [`FREE_ENV_REMOVE`]. Sem allowlist e sem override de git: vale o git
+/// config do dono. O rc roda fora do repositório: direnv e `.nvmrc` por
+/// pasta não entram.
+///
+/// `nested_wrapper`: a pasta do wrapper `claude` do TYBA. Entra na frente do
+/// PATH com `TYBA_HOSTED=1`, como no pane: um claude aberto de dentro do
+/// agente (Bash, script, `claude -p`) passa pelo `_jail` e ganha o
+/// guarda-corpo.
+fn free_agent_env(
+    base: HashMap<String, String>,
+    login_path: String,
+    nested_wrapper: Option<&Path>,
+) -> HashMap<String, String> {
+    let mut env: HashMap<String, String> = base
+        .into_iter()
+        .filter(|(k, _)| !crate::agent::inherited_env::is_inherited_session_marker(k))
+        .collect();
+    let path = match nested_wrapper {
+        Some(dir) => {
+            env.insert("TYBA_HOSTED".into(), "1".into());
+            let mut dirs = vec![dir.to_path_buf()];
+            dirs.extend(std::env::split_paths(&login_path));
+            std::env::join_paths(dirs)
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or(login_path)
+        }
+        None => login_path,
+    };
+    env.insert("PATH".into(), path);
     env.insert("TERM".into(), "xterm-256color".into());
     env.insert("COLORTERM".into(), "truecolor".into());
+    env.insert(FORCE_HYPERLINK.0.into(), FORCE_HYPERLINK.1.into());
     for key in FREE_ENV_REMOVE {
         env.remove(*key);
     }
@@ -1668,6 +1703,7 @@ fn build_hosted_command(
     // Track C consome estes via `/proc/<agente>/environ`.
     cmd.env("TYBA_HOSTED", "1");
     cmd.env("TYBA_JAILED", "0");
+    cmd.env(FORCE_HYPERLINK.0, FORCE_HYPERLINK.1);
     let spec = passthrough_spec(cwd, runtime, socket_path, exe);
     let cmd = crate::sandbox::passthrough::PassthroughSandbox.wrap(cmd, &spec)?;
     Ok(HostedCommand { cmd, worktree_root })
@@ -2098,7 +2134,11 @@ fn spawn_prepared(
 
     let user_env: HashMap<String, String> = std::env::vars().collect();
     let env = if free {
-        free_agent_env(user_env, crate::shell_path::agent_path())
+        free_agent_env(
+            crate::shell_path::login_shell_vars().unwrap_or_else(|| user_env.clone()),
+            crate::shell_path::agent_path(),
+            crate::session::nested_guard_wrapper(),
+        )
     } else {
         let config = consented_config(&ctx.store, &root);
         let mut env = crate::repo_config::agent_env(config.as_ref(), &user_env);
@@ -2138,6 +2178,21 @@ fn spawn_prepared(
     // não por `wrap`. `jailed_spawner` devolve `Some` só no Windows; mac/linux
     // seguem reescrevendo argv via `wrap` e `jail` fica `None`.
     let (cmd, jail) = if free {
+        // Avisos de credencial e o preflight de login não são da jaula: valem
+        // para o agente livre também (o diagnóstico da jaula fica de fora).
+        #[cfg(target_os = "linux")]
+        if matches!(runner.kind(), AgentRunnerKind::ClaudeCode) {
+            let home = env.get("HOME").map(PathBuf::from).unwrap_or_default();
+            crate::agent::credentials::emit_warnings(&ctx.app, id, &env, &home, None, &ctx.store);
+        }
+        if matches!(runner.kind(), AgentRunnerKind::ClaudeCode) {
+            crate::agent::auth_preflight::spawn_preflight(
+                ctx.app.clone(),
+                id,
+                crate::agent::resolved_binary(&AgentRunnerKind::ClaudeCode),
+                env.clone(),
+            );
+        }
         // Sem jaula, mas pela trait `Sandbox` (princípio 2): o passthrough.
         use crate::sandbox::Sandbox;
         let spec = passthrough_spec(&worktree.path, &runtime, &socket_path, &exe);
@@ -2163,7 +2218,14 @@ fn spawn_prepared(
         // depende da inversão da política (§2). Nunca bloqueia o spawn (§6).
         #[cfg(target_os = "linux")]
         if matches!(runner.kind(), AgentRunnerKind::ClaudeCode) {
-            crate::agent::credentials::emit_warnings(&ctx.app, id, &env, &spec, &ctx.store);
+            crate::agent::credentials::emit_warnings(
+                &ctx.app,
+                id,
+                &env,
+                &spec.home,
+                Some(&spec),
+                &ctx.store,
+            );
         }
         // Entrega C, mecanismo 1 (preflight): mesmo ponto/condição do
         // `emit_warnings` acima, mas CROSS-PLATFORM (sem `cfg(linux)`) — a
@@ -2484,7 +2546,16 @@ mod build_hosted_command_tests {
 
         let mut keys: Vec<&str> = plan.env.iter().map(|(k, _)| k.as_str()).collect();
         keys.sort_unstable();
-        assert_eq!(keys, ["TYBA_HOOK_SOCKET", "TYBA_HOSTED", "TYBA_JAILED"]);
+        // `FORCE_HYPERLINK`: links clicáveis para todo agente (dono, 2026-10-19).
+        assert_eq!(
+            keys,
+            [
+                "FORCE_HYPERLINK",
+                "TYBA_HOOK_SOCKET",
+                "TYBA_HOSTED",
+                "TYBA_JAILED"
+            ]
+        );
 
         let pane: Vec<(std::ffi::OsString, std::ffi::OsString)> = [
             ("TYBA_TEST_PANE_VAR", "1"),
@@ -2645,9 +2716,9 @@ mod free_session_tests {
     /// Novo em worktree, attach e retomar passam todos por `spawn_prepared`,
     /// que decide por aqui: o claude roda livre, o codex segue no gate.
     #[test]
-    fn claude_runs_free_and_codex_keeps_the_gate() {
+    fn claude_and_codex_run_free() {
         assert!(runs_free(&AgentRunnerKind::ClaudeCode));
-        assert!(!runs_free(&AgentRunnerKind::Codex));
+        assert!(runs_free(&AgentRunnerKind::Codex));
     }
 
     #[test]
@@ -2663,7 +2734,7 @@ mod free_session_tests {
         .into_iter()
         .map(|(k, v)| (k.to_string(), v.to_string()))
         .collect();
-        let env = free_agent_env(base, "/opt/homebrew/bin:/usr/bin".into());
+        let env = free_agent_env(base, "/opt/homebrew/bin:/usr/bin".into(), None);
         assert_eq!(env["PATH"], "/opt/homebrew/bin:/usr/bin");
         // O env do dono passa inteiro, sem allowlist.
         assert_eq!(env["AWS_PROFILE"], "dev");
@@ -2673,6 +2744,30 @@ mod free_session_tests {
             assert!(!env.contains_key(*gone), "{gone}");
         }
         assert!(!env.contains_key("GIT_CONFIG_COUNT"), "sem override de git");
+        assert_eq!(env["FORCE_HYPERLINK"], "1");
+        assert!(!env.contains_key("TYBA_HOSTED"));
+    }
+
+    /// Com o wrapper: ele vai na frente do PATH e o `TYBA_HOSTED=1` faz o
+    /// claude aberto de dentro do agente sair com o guarda-corpo. Marcador de
+    /// sessão herdado nunca passa.
+    #[test]
+    fn free_env_puts_the_nested_guard_in_front() {
+        let base: HashMap<String, String> = [
+            ("CLAUDE_CODE_SESSION_ID", "de-fora"),
+            ("TYBA_HOOK_SOCKET", "/tmp/velho"),
+            ("ANTHROPIC_API_KEY", "sintetica"),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+        let env = free_agent_env(base, "/usr/bin".into(), Some(Path::new("/w/bin")));
+        let dirs: Vec<PathBuf> = std::env::split_paths(&env["PATH"]).collect();
+        assert_eq!(dirs, [PathBuf::from("/w/bin"), PathBuf::from("/usr/bin")]);
+        assert_eq!(env["TYBA_HOSTED"], "1");
+        assert_eq!(env["ANTHROPIC_API_KEY"], "sintetica");
+        assert!(!env.contains_key("CLAUDE_CODE_SESSION_ID"));
+        assert!(!env.contains_key("TYBA_HOOK_SOCKET"));
     }
 }
 

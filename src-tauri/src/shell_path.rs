@@ -12,6 +12,12 @@
 //! A mesma invocação devolve o `SSH_AUTH_SOCK` do login shell: é por onde o
 //! `ssh` do core alcança o agente que o dono configurou no rc (1Password,
 //! Secretive), e sem ele o app lançado pelo Dock só vê o agente do launchd.
+//!
+//! E devolve o env COMPLETO do login shell (`env -0`), que só vai para o
+//! agente livre que o TYBA abre (agente livre: o env do agente é o do shell
+//! de login do dono — `ANTHROPIC_API_KEY`, `AWS_PROFILE`, `CLAUDE_CONFIG_DIR`,
+//! proxy). O rc roda fora de qualquer repositório: o que é por pasta
+//! (direnv, `.nvmrc`) não entra.
 
 use std::path::Path;
 use std::process::Command;
@@ -21,13 +27,18 @@ use std::time::Duration;
 const RESOLVE_TIMEOUT: Duration = Duration::from_secs(3);
 const MARKER: &str = "__TYBA_PATH__";
 const SOCK_MARKER: &str = "__TYBA_SOCK__";
+const ENV_MARKER: &str = "__TYBA_ENV__";
+/// Marca a invocação de resolução; não vai para o env do agente.
+const RESOLVING_VAR: &str = "TYBA_RESOLVING_PATH";
 
-/// O que o login shell do dono tem e o processo do app pode não ter. Só estas
-/// duas variáveis atravessam — nenhuma outra do rc chega aos processos do core.
+/// O que o login shell do dono tem e o processo do app pode não ter. `path` e
+/// `ssh_auth_sock` servem o core; `vars` (o env inteiro) só vai para o agente
+/// livre que o TYBA abre.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LoginEnv {
     pub path: Option<String>,
     pub ssh_auth_sock: Option<String>,
+    pub vars: Option<Vec<(String, String)>>,
 }
 
 static RESOLVED: OnceLock<Option<LoginEnv>> = OnceLock::new();
@@ -46,6 +57,21 @@ pub fn agent_path_if_resolved() -> Option<String> {
     RESOLVED.get().map(|_| agent_path())
 }
 
+/// O env completo do shell de login, resolvido uma vez (até 3 s, com cache).
+/// `None` quando o shell não respondeu: quem chama cai no env do processo.
+pub fn login_shell_vars() -> Option<std::collections::HashMap<String, String>> {
+    let vars = RESOLVED
+        .get_or_init(resolve_login_env)
+        .as_ref()?
+        .vars
+        .clone()?;
+    Some(
+        vars.into_iter()
+            .filter(|(k, _)| k != RESOLVING_VAR)
+            .collect(),
+    )
+}
+
 /// Resolvido uma vez. Variável que o login shell não trouxe cai na do processo.
 pub fn login_env() -> LoginEnv {
     let resolved = RESOLVED.get_or_init(resolve_login_env).clone();
@@ -62,6 +88,7 @@ fn with_process_fallback(
         path: non_empty(resolved.path).or_else(|| non_empty(process("PATH"))),
         ssh_auth_sock: non_empty(resolved.ssh_auth_sock)
             .or_else(|| non_empty(process("SSH_AUTH_SOCK"))),
+        vars: resolved.vars,
     }
 }
 
@@ -77,9 +104,10 @@ fn resolve_login_env_with(shell: &Path, timeout: Duration) -> Option<LoginEnv> {
     let mut child = Command::new(shell)
         .arg("-lic")
         .arg(format!(
-            "printf '{MARKER}%s{MARKER}{SOCK_MARKER}%s{SOCK_MARKER}' \"$PATH\" \"$SSH_AUTH_SOCK\""
+            "printf '{MARKER}%s{MARKER}{SOCK_MARKER}%s{SOCK_MARKER}' \"$PATH\" \"$SSH_AUTH_SOCK\"; \
+             printf '{ENV_MARKER}'; env -0 2>/dev/null; printf '{ENV_MARKER}'"
         ))
-        .env("TYBA_RESOLVING_PATH", "1")
+        .env(RESOLVING_VAR, "1")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
@@ -106,7 +134,22 @@ fn resolve_login_env_with(shell: &Path, timeout: Duration) -> Option<LoginEnv> {
     Some(LoginEnv {
         path: Some(path),
         ssh_auth_sock: parse_between(&stdout, SOCK_MARKER),
+        vars: parse_env_block(&stdout),
     })
+}
+
+/// O `env -0` entre os marcadores: `NOME=valor` separados por NUL. Bloco
+/// vazio ou ausente (shell sem `env -0`) é `None`.
+fn parse_env_block(stdout: &str) -> Option<Vec<(String, String)>> {
+    let (_, rest) = stdout.split_once(ENV_MARKER)?;
+    let (block, _) = rest.rsplit_once(ENV_MARKER)?;
+    let vars: Vec<(String, String)> = block
+        .split('\0')
+        .filter_map(|entry| entry.split_once('='))
+        .filter(|(k, _)| !k.is_empty() && !k.contains(['\n', ' ']))
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+    (!vars.is_empty()).then_some(vars)
 }
 
 /// O rc do usuário pode imprimir qualquer coisa (banner, fastfetch, aviso de
@@ -150,11 +193,18 @@ mod tests {
             dir.path(),
             "echo 'banner do rc'\n\
              PATH=/opt/fake/bin:/usr/bin SSH_AUTH_SOCK='/tmp/agent dir/agent.sock'\n\
-             export PATH SSH_AUTH_SOCK\n\
+             SYNTH_ONLY_IN_RC='valor com espaço
+\
+e linha'\n\
+             export PATH SSH_AUTH_SOCK SYNTH_ONLY_IN_RC\n\
              eval \"$2\"",
         );
         let env = resolve_login_env_with(&shell, Duration::from_secs(3)).expect("resolveu");
         assert_eq!(env.path.as_deref(), Some("/opt/fake/bin:/usr/bin"));
+        let vars: std::collections::HashMap<_, _> =
+            env.vars.clone().expect("env").into_iter().collect();
+        assert_eq!(vars["PATH"], "/opt/fake/bin:/usr/bin");
+        assert_eq!(vars["SYNTH_ONLY_IN_RC"], "valor com espaço\ne linha");
         assert_eq!(
             env.ssh_auth_sock.as_deref(),
             Some("/tmp/agent dir/agent.sock")
@@ -196,6 +246,7 @@ mod tests {
             Some(LoginEnv {
                 path: Some("/opt/fake/bin".into()),
                 ssh_auth_sock: None,
+                vars: None,
             }),
             process,
         );
