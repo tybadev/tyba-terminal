@@ -809,6 +809,8 @@ export interface AgentRepoConfig {
   hash: string;
   default_agent: string | null;
   env_allow: string[];
+  /** `nome — comando` de cada snippet do repo. */
+  snippets: string[];
   consent: boolean | null;
 }
 

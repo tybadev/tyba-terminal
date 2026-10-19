@@ -1,10 +1,61 @@
 import { describe, expect, test } from "bun:test";
 
+import type { AgentRepoConfig } from "./ipc";
 import {
+  applyConsentDecision,
   buildAgentSessionOpts,
+  needsConsentPrompt,
   runnerFromCommand,
   runnerFromDefault,
 } from "./agentSession";
+
+const config = (over: Partial<AgentRepoConfig> = {}): AgentRepoConfig => ({
+  hash: "abc123",
+  default_agent: "codex",
+  env_allow: [],
+  snippets: ["test — cargo test"],
+  consent: null,
+  ...over,
+});
+
+describe("needsConsentPrompt", () => {
+  test("sem config no repo, nada pra consentir", () => {
+    expect(needsConsentPrompt(null)).toBe(false);
+  });
+
+  test("já consentido não pede de novo", () => {
+    expect(needsConsentPrompt(config({ consent: true }))).toBe(false);
+  });
+
+  test("agente padrão ou snippets pedem consentimento", () => {
+    expect(needsConsentPrompt(config())).toBe(true);
+    expect(needsConsentPrompt(config({ default_agent: null }))).toBe(true);
+    expect(needsConsentPrompt(config({ snippets: [] }))).toBe(true);
+    expect(needsConsentPrompt(config({ consent: false }))).toBe(true);
+  });
+
+  test("só env (que não vale mais) não pede nada", () => {
+    expect(
+      needsConsentPrompt(
+        config({ default_agent: null, snippets: [], env_allow: ["DB_URL"] }),
+      ),
+    ).toBe(false);
+  });
+});
+
+describe("applyConsentDecision", () => {
+  test("permitir marca consent true e pede persistência", () => {
+    const outcome = applyConsentDecision(config(), "allow");
+    expect(outcome.persist).toBe(true);
+    expect(outcome.config.consent).toBe(true);
+  });
+
+  test("agora não segue sem persistir", () => {
+    const outcome = applyConsentDecision(config(), "skip");
+    expect(outcome.persist).toBe(false);
+    expect(outcome.config.consent).toBe(false);
+  });
+});
 
 describe("buildAgentSessionOpts", () => {
   test("monta o payload com kind agent/claude_code e worktree_task", () => {

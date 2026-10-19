@@ -1043,6 +1043,12 @@ const resources = {
         "Binário `codex` não encontrado no PATH — instale o Codex CLI",
       worktreeAgentPrompt: "Prompt inicial (opcional)",
       worktreeAgentPromptPlaceholder: "O que o agente deve fazer primeiro?",
+      agentConsentTitle: "Este repo tem um .tyba/config.toml",
+      agentConsentBody:
+        "Ele escolhe o agente padrão e põe snippets — comandos — na sua paleta. Só valem depois que você permitir.",
+      agentConsentDefaultAgent: "agente padrão: {{agent}}",
+      agentConsentAllow: "Permitir",
+      agentConsentSkip: "Agora não",
       agentReadyTimeoutTitle: "O prompt inicial não foi enviado",
       agentReadyTimeoutBody:
         "O prompt inicial ficou no composer — revise e envie.",
@@ -3100,6 +3106,12 @@ const resources = {
         "`codex` binary not found in PATH — install the Codex CLI",
       worktreeAgentPrompt: "Initial prompt (optional)",
       worktreeAgentPromptPlaceholder: "What should the agent do first?",
+      agentConsentTitle: "This repo has a .tyba/config.toml",
+      agentConsentBody:
+        "It picks the default agent and adds snippets — commands — to your palette. They only apply after you allow them.",
+      agentConsentDefaultAgent: "default agent: {{agent}}",
+      agentConsentAllow: "Allow",
+      agentConsentSkip: "Not now",
       agentReadyTimeoutTitle: "The initial prompt wasn't sent",
       agentReadyTimeoutBody:
         "The initial prompt stayed in the composer — review and send it.",

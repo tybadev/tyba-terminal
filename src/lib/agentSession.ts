@@ -1,4 +1,29 @@
-import type { CreateSessionOpts } from "./ipc";
+import type { AgentRepoConfig, CreateSessionOpts } from "./ipc";
+
+/** O `.tyba/config.toml` do repo pede consentimento: ele escolhe o agente
+ * padrão e põe snippets (comandos) na paleta. Sem nada disso, ou já
+ * consentido, nada a perguntar. */
+export function needsConsentPrompt(config: AgentRepoConfig | null): boolean {
+  if (config === null || config.consent === true) return false;
+  return config.default_agent !== null || config.snippets.length > 0;
+}
+
+export type ConsentDecision = "allow" | "skip";
+
+export interface ConsentOutcome {
+  persist: boolean;
+  config: AgentRepoConfig;
+}
+
+export function applyConsentDecision(
+  config: AgentRepoConfig,
+  decision: ConsentDecision,
+): ConsentOutcome {
+  if (decision === "allow") {
+    return { persist: true, config: { ...config, consent: true } };
+  }
+  return { persist: false, config: { ...config, consent: false } };
+}
 
 export type AgentRunnerId = "claude_code" | "codex";
 

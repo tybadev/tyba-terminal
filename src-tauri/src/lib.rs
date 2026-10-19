@@ -7460,6 +7460,9 @@ struct AgentConfigInfo {
     hash: String,
     default_agent: Option<String>,
     env_allow: Vec<String>,
+    /// Os snippets do repo (`nome — comando`): entram na paleta do dono só
+    /// depois do consentimento, e o diálogo mostra o que eles rodam.
+    snippets: Vec<String>,
     consent: Option<bool>,
 }
 
@@ -7514,6 +7517,11 @@ async fn agent_repo_config(
             hash,
             default_agent: config.default_agent,
             env_allow: config.env_allow,
+            snippets: config
+                .snippets
+                .iter()
+                .map(|s| format!("{} — {}", s.name, s.command))
+                .collect(),
             consent,
         }))
     })

@@ -22,14 +22,19 @@ import {
 import {
   agentBinaryAvailable,
   agentRepoConfig,
+  setAgentConfigConsent,
   worktreeSetupScript,
   worktreeSetSetupConsent,
+  type AgentRepoConfig,
   type SetupScriptInfo,
 } from "../lib/ipc";
 import {
+  needsConsentPrompt,
+  applyConsentDecision,
   runnerFromDefault,
   type AgentRunnerId,
 } from "../lib/agentSession";
+import { AgentConsentDialog } from "./AgentConsentDialog";
 import { ClaudeIcon } from "./icons/ClaudeIcon";
 import { OpenAIIcon } from "./icons/OpenAIIcon";
 import { basename } from "@/lib/utils";
@@ -62,6 +67,8 @@ export function WorktreeCreateDialog({ dir, onClose, onCreate }: Props) {
   const [agentPrompt, setAgentPrompt] = useState("");
   const [runner, setRunner] = useState<AgentRunnerId>("claude_code");
   const [codexAvailable, setCodexAvailable] = useState(false);
+  const [agentConfig, setAgentConfig] = useState<AgentRepoConfig | null>(null);
+  const [consentOpen, setConsentOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -76,6 +83,8 @@ export function WorktreeCreateDialog({ dir, onClose, onCreate }: Props) {
     setAgentPrompt("");
     setRunner("claude_code");
     setCodexAvailable(false);
+    setAgentConfig(null);
+    setConsentOpen(false);
     void worktreeSetupScript(dir)
       .then((info) => {
         setScript(info);
@@ -86,10 +95,11 @@ export function WorktreeCreateDialog({ dir, onClose, onCreate }: Props) {
     void codexReady.then(setCodexAvailable);
     void agentRepoConfig(dir)
       .then(async (config) => {
+        setAgentConfig(config);
         const preferred = runnerFromDefault(config?.default_agent);
         if (preferred === "codex" && (await codexReady)) setRunner("codex");
       })
-      .catch(() => {});
+      .catch(() => setAgentConfig(null));
   }, [dir]);
 
   if (!dir) return null;
@@ -116,7 +126,28 @@ export function WorktreeCreateDialog({ dir, onClose, onCreate }: Props) {
   const create = async () => {
     const title = task.trim();
     if (!title || busy) return;
+    if (agentMode && needsConsentPrompt(agentConfig)) {
+      setConsentOpen(true);
+      return;
+    }
     await runCreate(title);
+  };
+
+  const decideConsent = async (allow: boolean) => {
+    setConsentOpen(false);
+    if (agentConfig) {
+      const outcome = applyConsentDecision(
+        agentConfig,
+        allow ? "allow" : "skip",
+      );
+      setAgentConfig(outcome.config);
+      if (outcome.persist) {
+        await setAgentConfigConsent(dir, agentConfig.hash, true).catch(
+          () => {},
+        );
+      }
+    }
+    await runCreate(task.trim());
   };
 
   return (
@@ -249,6 +280,12 @@ export function WorktreeCreateDialog({ dir, onClose, onCreate }: Props) {
           </Button>
         </div>
       </DialogContent>
+
+      <AgentConsentDialog
+        config={consentOpen ? agentConfig : null}
+        onAllow={() => void decideConsent(true)}
+        onSkip={() => void decideConsent(false)}
+      />
     </Dialog>
   );
 }
