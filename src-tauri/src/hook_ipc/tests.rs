@@ -880,7 +880,7 @@ fn observe(input: serde_json::Value, socket: Option<&Path>) -> String {
         Cursor::new(bytes),
         &mut out,
         socket,
-        &crate::agent::claude_plugin::guard_rail_output,
+        &crate::agent::guard_rail::guard_rail_output,
         fast_retry(),
     );
     assert_eq!(code, 0);
@@ -981,7 +981,7 @@ fn observer_denies_push_to_main_with_the_guard_rail_message_even_without_tyba() 
     assert_eq!(v["hookSpecificOutput"]["permissionDecision"], "deny");
     assert_eq!(
         v["hookSpecificOutput"]["permissionDecisionReason"],
-        crate::agent::claude_plugin::PUSH_MAIN_MESSAGE
+        crate::agent::guard_rail::PUSH_MAIN_MESSAGE
     );
 }
 
@@ -1044,7 +1044,7 @@ fn observer_guard_rail_wins_over_a_core_that_would_allow() {
     assert_eq!(v["hookSpecificOutput"]["permissionDecision"], "deny");
     assert_eq!(
         v["hookSpecificOutput"]["permissionDecisionReason"],
-        crate::agent::claude_plugin::PR_MERGE_MESSAGE
+        crate::agent::guard_rail::PR_MERGE_MESSAGE
     );
     server.shutdown();
 }
@@ -1057,7 +1057,7 @@ fn guard_only(input: serde_json::Value) -> String {
     let code = super::run_guard_only_client(
         Cursor::new(bytes),
         &mut out,
-        &crate::agent::claude_plugin::guard_rail_output,
+        &crate::agent::guard_rail::guard_rail_output,
     );
     assert_eq!(code, 0);
     String::from_utf8(out).unwrap()
@@ -1070,7 +1070,7 @@ fn guard_only_denies_push_to_main_and_is_silent_otherwise() {
     assert_eq!(v["hookSpecificOutput"]["permissionDecision"], "deny");
     assert_eq!(
         v["hookSpecificOutput"]["permissionDecisionReason"],
-        crate::agent::claude_plugin::PUSH_MAIN_MESSAGE
+        crate::agent::guard_rail::PUSH_MAIN_MESSAGE
     );
     for event in [
         bash("ls"),

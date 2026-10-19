@@ -26,7 +26,10 @@ O que o TYBA faz:
 
 **Riscos aceitos**: o agente tem o mesmo poder de qualquer comando que o usuário roda no shell; prompt injection que leva a um comando aprovado sem ler é o mesmo risco do Claude Code puro e do Warp. O guarda-corpo é por texto de comando — contornável por um agente determinado (script, alias); é proteção contra o erro, não fronteira.
 
-As seções abaixo sobre classificação de risco, cards de aprovação, env por allowlist e jaula (Seatbelt/bwrap/Windows) descrevem o **modelo anterior**. O código delas sai do caminho padrão em PRs seguintes; o que for mantido para um eventual modo autônomo será marcado aqui.
+- **Sessões que o TYBA abre** (agente novo em worktree, review, conflitos, launch config com ou sem `isolate`, retomar a conversa): o claude sobe como o digitado — hooks que só observam (com o guarda-corpo), sem card, sem jaula do TYBA (o `Sandbox` é o passthrough) e com o env de um pane novo do TYBA (o env do processo do TYBA com o PATH do shell de login, menos `CLAUDE_CODE_SIMPLE`/`CLAUDE_CODE_SAFE_MODE`). Sem override de git: vale o git config do dono.
+- **Guarda-corpo falha fechado**: `git push` sem destino explícito (ou com `HEAD`/`@`) com a branch atual ilegível é recusado. A branch é lida do `HEAD` do repositório, sem rodar git. Vale em todo SO, inclusive no Windows.
+
+As seções abaixo sobre classificação de risco, cards de aprovação, env por allowlist e jaula (Seatbelt/bwrap/Windows) descrevem o **modelo anterior**. O que continua valendo dele: o **Codex** que o TYBA abre segue com o gate do TYBA (cards, classificação de risco, env por allowlist) e com o sandbox próprio do codex; a jaula do TYBA (Seatbelt/bwrap/Windows) não está mais no caminho padrão de nenhum agente — o código fica para um eventual modo autônomo.
 
 ## Classificação de risco de comandos (modelo anterior)
 

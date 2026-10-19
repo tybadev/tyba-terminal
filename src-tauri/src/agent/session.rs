@@ -1495,7 +1495,6 @@ pub fn create_agent_session(
         worktree.clone(),
         task,
         None,
-        false,
         on_exit,
     );
     if result.is_err() {
@@ -1539,11 +1538,6 @@ pub fn attach_agent_session(
         .or_else(|| opts.title.clone())
         .unwrap_or_else(|| worktree.branch.clone());
 
-    // Agente livre, fatia 6: o claude em attach (review, conflitos, launch
-    // config sem `isolate`) só é observado — hooks `_hook --observe`, sem card;
-    // quem pergunta é o prompt do próprio Claude. A jaula continua. O Codex
-    // segue no gate: o `PermissionRequest` dele é o protocolo de aprovação.
-    let observe = attach_observes(&runner_kind);
     // Sem `worktree::remove` no erro: a pasta é do usuário, não nossa.
     spawn_prepared(
         ctx,
@@ -1554,14 +1548,40 @@ pub fn attach_agent_session(
         worktree,
         task,
         None,
-        observe,
         on_exit,
     )
 }
 
-/// Se a sessão em attach deste runner roda no modelo do agente livre.
-fn attach_observes(runner: &AgentRunnerKind) -> bool {
+/// Agente livre (decisão do dono, 2026-10-19): o claude que o TYBA abre —
+/// agente novo em worktree, review, conflitos, launch config com ou sem
+/// `isolate`, retomar — roda como o claude digitado: hooks que só observam
+/// (`_hook --observe`, com o guarda-corpo), sem card, sem jaula do TYBA e com
+/// o env de um pane novo ([`free_agent_env`]). Quem pergunta é o prompt do
+/// próprio Claude. O Codex segue como está (tabela do agente livre: "Codex
+/// gerenciado: sandbox próprio do codex — igual"), com o gate do TYBA — o
+/// `PermissionRequest` dele é o protocolo de aprovação.
+fn runs_free(runner: &AgentRunnerKind) -> bool {
     matches!(runner, AgentRunnerKind::ClaudeCode)
+}
+
+/// O que sai do env do agente livre: o que desligaria os hooks do
+/// `--settings` (e com eles o guarda-corpo) e o marcador de versões antigas.
+const FREE_ENV_REMOVE: &[&str] = &["CLAUDE_CODE_SIMPLE", "CLAUDE_CODE_SAFE_MODE", "TYBA_SHIM"];
+
+/// O env do agente livre: o mesmo ponto de partida de um pane novo do TYBA —
+/// o env do processo do TYBA (já limpo dos marcadores de sessão herdados,
+/// `agent::inherited_env`) com o PATH do shell de login e o terminal que o
+/// pane anuncia —, menos [`FREE_ENV_REMOVE`]. Sem allowlist e sem override de
+/// git: vale o git config do dono, como no claude digitado.
+fn free_agent_env(base: HashMap<String, String>, login_path: String) -> HashMap<String, String> {
+    let mut env = base;
+    env.insert("PATH".into(), login_path);
+    env.insert("TERM".into(), "xterm-256color".into());
+    env.insert("COLORTERM".into(), "truecolor".into());
+    for key in FREE_ENV_REMOVE {
+        env.remove(*key);
+    }
+    env
 }
 
 // A partir daqui, e até o fim de `prepare_hosted_agent`, todo o código é
@@ -1596,7 +1616,6 @@ struct HostedCommand {
 /// A spec que acompanha o `wrap` do passthrough. Ele não a lê — o agente
 /// livre não tem jaula —, mas o spawn continua passando pela trait
 /// `Sandbox` (princípio 2), e a trait pede uma.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn passthrough_spec(cwd: &Path, runtime: &Path, socket_path: &Path, exe: &Path) -> SandboxSpec {
     SandboxSpec {
         writable_root: cwd.to_path_buf(),
@@ -1828,7 +1847,6 @@ pub fn resume_agent_session(
         worktree,
         task,
         Some(target.conversation_id),
-        false,
         on_exit,
     )
 }
@@ -2045,9 +2063,9 @@ fn spawn_prepared(
     worktree: crate::worktree::Worktree,
     task: String,
     resume: Option<String>,
-    observe: bool,
     on_exit: impl FnOnce(SessionId) + Send + 'static,
 ) -> Result<Session, String> {
+    let free = runs_free(&runner.kind());
     let runtime = runtime_dir(id)?;
     let socket_path = runtime.join(HOOK_SOCKET_FILE);
     if socket_path.as_os_str().len() > MAX_SOCKET_PATH {
@@ -2055,7 +2073,7 @@ fn spawn_prepared(
     }
 
     let exe = std::env::current_exe().map_err(|e| format!("exe do Tyba: {e}"))?;
-    let hook_cmd = if observe {
+    let hook_cmd = if free {
         observer_hook_command(&exe)
     } else {
         hook_command(&exe)
@@ -2063,7 +2081,7 @@ fn spawn_prepared(
     if matches!(runner.kind(), AgentRunnerKind::ClaudeCode) {
         let status_line =
             session_statusline(&exe, &std::env::vars().collect(), &[&worktree.path, &root]);
-        let settings = if observe {
+        let settings = if free {
             observer_session_settings(&hook_cmd, status_line)
         } else {
             claude_session_settings(&hook_cmd, status_line)
@@ -2079,9 +2097,14 @@ fn spawn_prepared(
     };
 
     let user_env: HashMap<String, String> = std::env::vars().collect();
-    let config = consented_config(&ctx.store, &root);
-    let mut env = crate::repo_config::agent_env(config.as_ref(), &user_env);
-    apply_git_overrides(&mut env);
+    let env = if free {
+        free_agent_env(user_env, crate::shell_path::agent_path())
+    } else {
+        let config = consented_config(&ctx.store, &root);
+        let mut env = crate::repo_config::agent_env(config.as_ref(), &user_env);
+        apply_git_overrides(&mut env);
+        env
+    };
 
     let mut cmd = runner.build_command(
         &worktree.path,
@@ -2114,7 +2137,15 @@ fn spawn_prepared(
     // Camada A do Windows (Opção B): a jaula se aplica no spawn (token + ConPTY),
     // não por `wrap`. `jailed_spawner` devolve `Some` só no Windows; mac/linux
     // seguem reescrevendo argv via `wrap` e `jail` fica `None`.
-    let (cmd, jail) = if runner.self_sandboxes() {
+    let (cmd, jail) = if free {
+        // Sem jaula, mas pela trait `Sandbox` (princípio 2): o passthrough.
+        use crate::sandbox::Sandbox;
+        let spec = passthrough_spec(&worktree.path, &runtime, &socket_path, &exe);
+        (
+            crate::sandbox::passthrough::PassthroughSandbox.wrap(cmd, &spec)?,
+            None,
+        )
+    } else if runner.self_sandboxes() {
         (cmd, None)
     } else {
         let sandbox = crate::sandbox::platform_sandbox()?;
@@ -2177,7 +2208,7 @@ fn spawn_prepared(
         agent_home: agent_home(&env),
         turn_settle: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         seen_transcript: Arc::new(Mutex::new(None)),
-        observe_only: observe,
+        observe_only: free,
     };
     let server = HookServer::bind(
         &socket_path,
@@ -2608,13 +2639,40 @@ mod session_end_tests {
 }
 
 #[cfg(test)]
-mod attach_tests {
+mod free_session_tests {
     use super::*;
 
+    /// Novo em worktree, attach e retomar passam todos por `spawn_prepared`,
+    /// que decide por aqui: o claude roda livre, o codex segue no gate.
     #[test]
-    fn only_claude_attach_runs_observed() {
-        assert!(attach_observes(&AgentRunnerKind::ClaudeCode));
-        assert!(!attach_observes(&AgentRunnerKind::Codex));
+    fn claude_runs_free_and_codex_keeps_the_gate() {
+        assert!(runs_free(&AgentRunnerKind::ClaudeCode));
+        assert!(!runs_free(&AgentRunnerKind::Codex));
+    }
+
+    #[test]
+    fn free_env_is_a_new_pane_env_without_what_turns_hooks_off() {
+        let base: HashMap<String, String> = [
+            ("HOME", "/Users/x"),
+            ("AWS_PROFILE", "dev"),
+            ("PATH", "/usr/bin"),
+            ("CLAUDE_CODE_SIMPLE", "1"),
+            ("CLAUDE_CODE_SAFE_MODE", "1"),
+            ("TYBA_SHIM", "fallback"),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+        let env = free_agent_env(base, "/opt/homebrew/bin:/usr/bin".into());
+        assert_eq!(env["PATH"], "/opt/homebrew/bin:/usr/bin");
+        // O env do dono passa inteiro, sem allowlist.
+        assert_eq!(env["AWS_PROFILE"], "dev");
+        assert_eq!(env["HOME"], "/Users/x");
+        assert_eq!(env["TERM"], "xterm-256color");
+        for gone in FREE_ENV_REMOVE {
+            assert!(!env.contains_key(*gone), "{gone}");
+        }
+        assert!(!env.contains_key("GIT_CONFIG_COUNT"), "sem override de git");
     }
 }
 
