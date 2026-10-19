@@ -1018,8 +1018,13 @@ pub fn maybe_run_plugin_hook() -> Option<i32> {
         let summary = tool
             .as_deref()
             .map(|t| tool_summary(t, payload.get("tool_input")));
-        let _ =
-            crate::hook_ipc::channel::send_plugin_event(token, event.to_string(), tool, summary);
+        let _ = crate::hook_ipc::channel::send_plugin_event(
+            token,
+            event.to_string(),
+            tool,
+            summary,
+            notification_type(&payload),
+        );
     }
     Some(0)
 }
@@ -1043,14 +1048,31 @@ pub fn resolve_plugin_event(
     (peer_session == Some(session)).then_some(session)
 }
 
-/// Fatia 5: eventos do plugin que viram "o Claude está pedindo algo".
-pub fn asks_for_attention(event: &str) -> bool {
-    matches!(event, "PermissionRequest" | "Notification")
+/// O que um evento do plugin faz com o "pedindo" do pane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PluginSignal {
+    /// Pedido de permissão: marca e avisa.
+    Asking,
+    /// O turno fechou ou a sessão recomeçou: o pedido não está mais aberto.
+    Settled,
+    None,
 }
 
-/// O mesmo prompt dispara `PermissionRequest` e `Notification` quase juntos:
-/// um aviso só por pane dentro desta janela.
-pub const ASK_DEBOUNCE: std::time::Duration = std::time::Duration::from_secs(10);
+/// Só permissão conta como pedido. O `Notification` chega também como
+/// `idle_prompt` (~60 s depois de todo turno; decisão do dono de 14/10) e
+/// `auth_success`: nenhum dos dois avisa.
+pub fn plugin_signal(event: &str, notification_type: Option<&str>) -> PluginSignal {
+    match (event, notification_type) {
+        ("PermissionRequest", _) => PluginSignal::Asking,
+        ("Notification", Some("permission_prompt")) => PluginSignal::Asking,
+        ("Stop" | "SessionStart", _) => PluginSignal::Settled,
+        _ => PluginSignal::None,
+    }
+}
+
+/// Casa só o par `PermissionRequest` + `Notification(permission_prompt)` do
+/// MESMO prompt, que chegam quase juntos.
+pub const ASK_DEBOUNCE: std::time::Duration = std::time::Duration::from_secs(2);
 
 pub fn ask_due(last: Option<std::time::Instant>, now: std::time::Instant) -> bool {
     last.is_none_or(|at| now.saturating_duration_since(at) >= ASK_DEBOUNCE)
@@ -1060,18 +1082,57 @@ type AskLog = std::collections::HashMap<crate::session::SessionId, std::time::In
 
 static LAST_ASK: std::sync::Mutex<Option<AskLog>> = std::sync::Mutex::new(None);
 
-/// Reserva o aviso deste pane, se já passou a janela do último.
-pub fn take_ask_slot(session: crate::session::SessionId, now: std::time::Instant) -> bool {
+/// Roda `show` se a janela do último aviso deste pane já passou, e só gasta
+/// a vaga quando o aviso saiu de fato. O lock fica preso durante o `show`: o
+/// par do mesmo prompt chega em duas threads e não pode sair duas vezes.
+pub fn with_ask_slot(
+    session: crate::session::SessionId,
+    now: std::time::Instant,
+    show: impl FnOnce() -> bool,
+) -> bool {
     let Ok(mut guard) = LAST_ASK.lock() else {
-        return true;
+        return show();
     };
     let log = guard.get_or_insert_with(Default::default);
     if !ask_due(log.get(&session).copied(), now) {
         return false;
     }
+    let shown = show();
     log.retain(|_, at| now.saturating_duration_since(*at) < ASK_DEBOUNCE);
-    log.insert(session, now);
-    true
+    if shown {
+        log.insert(session, now);
+    }
+    shown
+}
+
+static PLUGIN_ASKING: std::sync::Mutex<
+    Option<std::collections::HashSet<crate::session::SessionId>>,
+> = std::sync::Mutex::new(None);
+
+/// Panes cujo "pedindo" veio do plugin (claude cru). Só esses a tela pode
+/// limpar: o hospedado tem os próprios eventos.
+pub fn mark_plugin_ask(session: crate::session::SessionId) {
+    if let Ok(mut set) = PLUGIN_ASKING.lock() {
+        set.get_or_insert_with(Default::default).insert(session);
+    }
+}
+
+pub fn take_plugin_ask(session: crate::session::SessionId) -> bool {
+    PLUGIN_ASKING
+        .lock()
+        .ok()
+        .and_then(|mut set| set.as_mut().map(|s| s.remove(&session)))
+        .unwrap_or(false)
+}
+
+/// O `notification_type` do payload, só se tiver cara de identificador.
+pub fn notification_type(payload: &Value) -> Option<String> {
+    payload
+        .get("notification_type")
+        .and_then(Value::as_str)
+        .filter(|t| !t.is_empty() && t.len() <= 40)
+        .filter(|t| t.chars().all(|c| c.is_ascii_lowercase() || c == '_'))
+        .map(str::to_string)
 }
 
 /// Comparação em tempo constante para o token — não vaza por tempo quantos
@@ -1750,23 +1811,69 @@ mod tests {
     }
 
     #[test]
-    fn permission_and_notification_ask_once_per_window() {
-        use std::time::{Duration, Instant};
-        assert!(asks_for_attention("PermissionRequest"));
-        assert!(asks_for_attention("Notification"));
-        assert!(!asks_for_attention("Stop"));
-        assert!(!asks_for_attention("SessionStart"));
-        let at = Instant::now();
-        assert!(ask_due(None, at));
-        assert!(!ask_due(Some(at), at + Duration::from_secs(2)));
-        assert!(ask_due(Some(at), at + ASK_DEBOUNCE));
+    fn only_permission_counts_as_asking() {
+        assert_eq!(
+            plugin_signal("PermissionRequest", None),
+            PluginSignal::Asking
+        );
+        assert_eq!(
+            plugin_signal("Notification", Some("permission_prompt")),
+            PluginSignal::Asking
+        );
+        assert_eq!(
+            plugin_signal("Notification", Some("idle_prompt")),
+            PluginSignal::None
+        );
+        assert_eq!(
+            plugin_signal("Notification", Some("auth_success")),
+            PluginSignal::None
+        );
+        assert_eq!(plugin_signal("Notification", None), PluginSignal::None);
+        assert_eq!(plugin_signal("Stop", None), PluginSignal::Settled);
+        assert_eq!(plugin_signal("SessionStart", None), PluginSignal::Settled);
+        assert_eq!(plugin_signal("SubagentStop", None), PluginSignal::None);
+    }
 
-        let pane = crate::session::SessionId::new_v4();
-        let other = crate::session::SessionId::new_v4();
-        assert!(take_ask_slot(pane, at));
-        assert!(!take_ask_slot(pane, at + Duration::from_secs(1)));
-        assert!(take_ask_slot(other, at + Duration::from_secs(1)));
-        assert!(take_ask_slot(pane, at + ASK_DEBOUNCE));
+    #[test]
+    fn notification_type_is_only_an_identifier() {
+        let p = |t: &str| json!({ "notification_type": t });
+        assert_eq!(
+            notification_type(&p("permission_prompt")).as_deref(),
+            Some("permission_prompt")
+        );
+        assert_eq!(notification_type(&p("rm -rf /")), None);
+        assert_eq!(notification_type(&json!({})), None);
+    }
+
+    #[test]
+    fn ask_slot_pairs_one_prompt_and_spends_only_when_shown() {
+        use std::time::{Duration, Instant};
+        let at = Instant::now();
+        let a = crate::session::SessionId::new_v4();
+        let b = crate::session::SessionId::new_v4();
+        // Aviso que não saiu (calado, desligado) não gasta a vaga.
+        assert!(!with_ask_slot(a, at, || false));
+        assert!(with_ask_slot(a, at, || true));
+        // O par do mesmo prompt, logo em seguida: um aviso só.
+        let mut called = false;
+        assert!(!with_ask_slot(a, at + Duration::from_millis(300), || {
+            called = true;
+            true
+        }));
+        assert!(!called);
+        // Outro pane não espera; o próximo pedido real do mesmo pane também
+        // não se perde (aprovar A e sair → B em poucos segundos).
+        assert!(with_ask_slot(b, at + Duration::from_millis(300), || true));
+        assert!(with_ask_slot(a, at + ASK_DEBOUNCE, || true));
+    }
+
+    #[test]
+    fn plugin_ask_mark_is_taken_once() {
+        let s = crate::session::SessionId::new_v4();
+        assert!(!take_plugin_ask(s));
+        mark_plugin_ask(s);
+        assert!(take_plugin_ask(s));
+        assert!(!take_plugin_ask(s));
     }
 
     #[test]

@@ -177,22 +177,6 @@ pub fn asking_body(agent: &str, project: Option<&str>, branch: Option<&str>) -> 
     body
 }
 
-/// Quanto tempo depois do aviso a volta ao TYBA ainda conta como o clique
-/// nele. O plugin de notificação do Tauri não entrega o clique; no macOS ele
-/// só traz o app para a frente, então "a janela ganhou foco logo depois de um
-/// aviso" é o sinal que existe.
-pub const FOCUS_WINDOW: std::time::Duration = std::time::Duration::from_secs(10 * 60);
-
-/// A sessão que a janela deve focar ao voltar, se o aviso ainda é recente.
-pub fn focus_target<T: Copy>(
-    pending: Option<(T, std::time::Instant)>,
-    now: std::time::Instant,
-) -> Option<T> {
-    pending
-        .filter(|(_, at)| now.saturating_duration_since(*at) <= FOCUS_WINDOW)
-        .map(|(id, _)| id)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -215,22 +199,6 @@ mod tests {
             asking_body("Codex", Some(""), Some("main")),
             "O Codex está pedindo algo · main"
         );
-    }
-
-    #[test]
-    fn foco_so_vale_logo_depois_do_aviso() {
-        use std::time::{Duration, Instant};
-        let at = Instant::now();
-        assert_eq!(
-            focus_target(Some((7, at)), at + Duration::from_secs(30)),
-            Some(7)
-        );
-        assert_eq!(focus_target(Some((7, at)), at + FOCUS_WINDOW), Some(7));
-        assert_eq!(
-            focus_target(Some((7, at)), at + FOCUS_WINDOW + Duration::from_secs(1)),
-            None
-        );
-        assert_eq!(focus_target::<u8>(None, at), None);
     }
 
     #[test]

@@ -75,6 +75,24 @@ pub fn native_prompt_status(hint: Option<String>) -> SessionStatus {
     }
 }
 
+/// A sessão está no prompt nativo de permissão.
+pub fn is_native_prompt(status: &SessionStatus) -> bool {
+    matches!(
+        status,
+        SessionStatus::AwaitingInput {
+            reason: AwaitingReason::NativePrompt,
+            ..
+        }
+    )
+}
+
+/// Claude cru (plugin): o "pedindo" sai quando ele volta a trabalhar (tela)
+/// ou o turno fecha. Volta ao `Running` de sempre do shell; só mexe no prompt
+/// nativo.
+pub fn status_leaving_plugin_prompt(current: &SessionStatus) -> Option<SessionStatus> {
+    is_native_prompt(current).then_some(SessionStatus::Running)
+}
+
 /// O que o `SessionEnd` faz com o status atual.
 ///
 /// Só mexe no prompt nativo: o agente que encerra a sessão (`/clear`, saída)
@@ -424,5 +442,18 @@ mod tests {
     fn status_subagent_signals_never_change_session_status() {
         assert!(status_for(&AgentSignal::SubagentStarted).is_none());
         assert!(status_for(&AgentSignal::SubagentEnded).is_none());
+    }
+
+    #[test]
+    fn plugin_prompt_leaves_only_the_native_prompt() {
+        assert_eq!(
+            status_leaving_plugin_prompt(&native_prompt_status(None)),
+            Some(SessionStatus::Running)
+        );
+        assert_eq!(status_leaving_plugin_prompt(&SessionStatus::Running), None);
+        assert_eq!(
+            status_leaving_plugin_prompt(&SessionStatus::Idle { summary: None }),
+            None
+        );
     }
 }

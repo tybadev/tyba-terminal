@@ -102,6 +102,9 @@ pub struct ChannelRequest {
     pub tool: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
+    /// Fatia 5: o `notification_type` do `Notification` (só identificador).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notification_type: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -476,6 +479,7 @@ pub fn resolve_jail_outcome(socket_path: Option<&Path>, args: &[String]) -> Jail
         event: None,
         tool: None,
         summary: None,
+        notification_type: None,
     };
     let Some(response) = exchange(stream, &request) else {
         return JailOutcome::RunReal;
@@ -529,6 +533,7 @@ pub fn send_plugin_event(
     event: String,
     tool: Option<String>,
     summary: Option<String>,
+    notification_type: Option<String>,
 ) -> Option<ChannelResponse> {
     let socket_path = jail_connect_socket_path();
     if !socket_dir_is_ours(&socket_path) {
@@ -549,6 +554,7 @@ pub fn send_plugin_event(
         event: Some(event),
         tool,
         summary,
+        notification_type,
     };
     exchange(stream, &request)
 }
@@ -976,6 +982,7 @@ mod server_tests {
                 event: None,
                 tool: None,
                 summary: None,
+                notification_type: None,
             },
         );
         assert_eq!(
@@ -1039,6 +1046,7 @@ mod server_tests {
                 event: Some("PermissionRequest".into()),
                 tool: Some("Bash".into()),
                 summary: Some("Bash: ls".into()),
+                notification_type: None,
             },
         );
         assert_eq!(response, Some(ChannelResponse::Plugin));
@@ -1076,6 +1084,7 @@ mod server_tests {
                 event: None,
                 tool: None,
                 summary: None,
+                notification_type: None,
             },
         );
         assert_eq!(response, None);
@@ -1169,6 +1178,7 @@ mod server_tests {
                 event: None,
                 tool: None,
                 summary: None,
+                notification_type: None,
             },
         );
         assert_eq!(
@@ -1300,6 +1310,7 @@ mod protocol_tests {
             event: None,
             tool: None,
             summary: None,
+            notification_type: None,
         };
         let value = serde_json::to_value(&req).unwrap();
         assert_eq!(
@@ -1321,6 +1332,7 @@ mod protocol_tests {
             event: None,
             tool: None,
             summary: None,
+            notification_type: None,
         };
         let line = serde_json::to_string(&req).unwrap();
         let back: ChannelRequest = serde_json::from_str(&line).unwrap();

@@ -1039,6 +1039,16 @@ impl SessionManager {
         Some(s.clone())
     }
 
+    /// Claude cru (plugin): tira o "pedindo" quando ele volta a trabalhar.
+    pub fn leave_native_prompt(&self, app: &AppHandle, id: SessionId) {
+        if let Some(next) = self
+            .get(id)
+            .and_then(|s| crate::status::agent_events::status_leaving_plugin_prompt(&s.status))
+        {
+            self.set_status(app, id, next);
+        }
+    }
+
     pub fn set_status(&self, app: &AppHandle, id: SessionId, status: SessionStatus) {
         if let Some((prev, session)) = self.apply_status(id, status) {
             emit_status(app, &session);

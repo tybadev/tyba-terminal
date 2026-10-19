@@ -927,6 +927,23 @@ export const onAgentAlert = (
 ): Promise<UnlistenFn> =>
   listen<AgentAlertPayload>("agent://alert", (e) => handler(e.payload));
 
+/** `agent://asking` (agente livre, fatia 5): o agente abriu um pedido de
+ * permissão no prompt dele. O texto vem pronto do core ("O Claude está
+ * pedindo algo · projeto · branch"); nada aqui aprova. */
+export interface AgentAskingPayload {
+  session_id: SessionId;
+  body: string;
+}
+
+export const onAgentAsking = (
+  handler: (payload: AgentAskingPayload) => void,
+): Promise<UnlistenFn> =>
+  listen<AgentAskingPayload>("agent://asking", (e) => handler(e.payload));
+
+/** Workspace, aba e pane da sessão — só pelo clique no "Ir". */
+export const focusSession = (id: SessionId) =>
+  invoke<void>("focus_session", { id });
+
 export type AgentRunner = "claude_code" | "codex" | { custom: string };
 
 export interface DetectedAgent {

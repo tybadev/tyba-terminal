@@ -327,10 +327,22 @@ fn install_screen_observers(
                 .map(str::to_string)
         }),
         observed: Arc::new(move |id, observed| {
+            let working = matches!(
+                observed.as_ref().and_then(|o| o.state),
+                Some(session::ObservedState::Running)
+            );
             observed_hold.screen(id, observed, |shown, held| {
                 observed_sessions.set_observed(&observed_app, id, shown);
                 observed_sessions.set_subagents_working(&observed_app, id, held);
-            })
+            });
+            // Fatia 5: o claude cru que pediu permissão voltou a trabalhar —
+            // o "pedindo" do plugin sai.
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            if working && agent::claude_plugin::take_plugin_ask(id) {
+                observed_sessions.leave_native_prompt(&observed_app, id);
+            }
+            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+            let _ = working;
         }),
         // O palpite sai pelo mesmo `notify_native` do agente com hook — mesma
         // checagem de foco, mesma redação, mesma leitura de preferência.
@@ -572,23 +584,23 @@ fn handle_plugin_event(
     }) else {
         return refused;
     };
-    // Fatia 5: o claude cru pedindo algo vira aviso. Fora da thread do canal:
-    // o hook não espera, e o aviso lê git.
+    // Fatia 5: o claude cru pedindo permissão marca o pane e avisa. Fora da
+    // thread do canal: o hook não espera, e o aviso lê git.
     let event = request.event.as_deref().unwrap_or("");
-    if agent::claude_plugin::asks_for_attention(event)
-        && agent::claude_plugin::take_ask_slot(session, std::time::Instant::now())
-    {
-        let app = app.clone();
-        std::thread::spawn(move || {
-            let state = app.state::<AppState>();
-            agent::session::notify_asking(
-                &app,
-                &state.sessions,
-                &state.store,
-                &crate::session::AgentRunnerKind::ClaudeCode,
-                session,
-            );
-        });
+    match agent::claude_plugin::plugin_signal(event, request.notification_type.as_deref()) {
+        agent::claude_plugin::PluginSignal::Asking => {
+            let app = app.clone();
+            std::thread::spawn(move || {
+                let state = app.state::<AppState>();
+                agent::session::plugin_asking(&app, &state.sessions, &state.store, session);
+            });
+        }
+        agent::claude_plugin::PluginSignal::Settled => {
+            if agent::claude_plugin::take_plugin_ask(session) {
+                state.sessions.leave_native_prompt(app, session);
+            }
+        }
+        agent::claude_plugin::PluginSignal::None => {}
     }
     ChannelResponse::Plugin
 }
@@ -5463,6 +5475,16 @@ fn update_dismiss(state: State<'_, AppState>, version: String) -> Result<(), Str
     update::dismiss(&state.store, &version)
 }
 
+/// Fatia 5: o "Ir" do card de pedido — workspace, aba e pane da sessão. Só
+/// por clique; o foco da janela nunca troca de pane sozinho.
+#[tauri::command]
+fn focus_session(app: AppHandle, state: State<'_, AppState>, id: SessionId) -> Result<(), String> {
+    if state.layout.focus_session(id).map_err(|e| e.to_string())? {
+        emit_layout(&app, &state);
+    }
+    Ok(())
+}
+
 #[tauri::command]
 fn activate_tab(
     app: AppHandle,
@@ -9096,16 +9118,6 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .on_window_event(|window, event| {
-            // Agente livre, fatia 5: o clique no aviso traz o app para a
-            // frente; a volta logo depois de um aviso foca o pane dele.
-            if matches!(event, tauri::WindowEvent::Focused(true)) && window.label() == "main" {
-                if let Some(id) = agent::session::take_focus_target() {
-                    let state = window.state::<AppState>();
-                    if state.layout.focus_session(id).unwrap_or(false) {
-                        emit_layout(window.app_handle(), &state);
-                    }
-                }
-            }
             if matches!(event, tauri::WindowEvent::Destroyed) {
                 if let Some(state) = window.try_state::<AppState>() {
                     state.pty_pool.drop_window_attachers(window.label());
@@ -9640,6 +9652,7 @@ pub fn run() {
             session_line_echo,
             session_blocks,
             wipe_blocks,
+            focus_session,
             search_command_history,
             scan_shell_history_sources,
             import_shell_history,
