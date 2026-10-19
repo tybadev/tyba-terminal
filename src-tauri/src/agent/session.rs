@@ -933,17 +933,30 @@ fn on_orbit_tool(ctx: &HandlerCtx, event: &HookEvent) -> HookAction {
                 .into(),
         };
     };
-    let tool = event
-        .raw
-        .get("tool")
-        .and_then(|t| t.as_str())
-        .unwrap_or_default();
+    use crate::orbit::orchestrator::ToolRequest;
+    let text = |key: &str| event.raw.get(key).and_then(|t| t.as_str());
+    let tool = text("tool").unwrap_or_default();
     let args = event
         .raw
         .get("arguments")
         .cloned()
         .unwrap_or_else(|| serde_json::json!({}));
-    match tools.call(tool, &args) {
+    let call_id = text("call_id");
+    let request = match (text("control"), call_id) {
+        (Some("cancel"), Some(id)) => ToolRequest::Cancel(id),
+        (Some("ack"), Some(id)) => ToolRequest::Ack(id),
+        (Some(_), _) => {
+            return HookAction::Deny {
+                reason: "controle do Orbit desconhecido".into(),
+            }
+        }
+        (None, _) => ToolRequest::Call {
+            tool,
+            args: &args,
+            call_id,
+        },
+    };
+    match tools.request(&request) {
         Ok(value) => HookAction::Result { value },
         Err(reason) => HookAction::Deny { reason },
     }
@@ -2994,7 +3007,7 @@ mod build_hosted_command_tests {
         let exe = std::env::current_exe().unwrap();
         let socket = runtime.path().join(HOOK_SOCKET_FILE);
         let tools = crate::orbit::orchestrator::ToolHandler {
-            call: Arc::new(|_, _| Ok(serde_json::json!({}))),
+            call: Arc::new(|_| Ok(serde_json::json!({}))),
             can_create: true,
         };
         let orbit = hosted_orbit_args(runtime.path(), &exe, &socket, Some(&tools)).unwrap();

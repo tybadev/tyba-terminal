@@ -39,23 +39,50 @@ pub const MAX_PLAN_TEXT_CHARS: usize = 300;
 /// Título da nota de plano.
 pub const PLAN_TITLE: &str = "Plano";
 
-/// Quem atende as ferramentas da sessão de um agente do Orbit:
-/// `(ferramenta, argumentos) → resultado`. Montado pelo run para o nó,
-/// levado até o handler do socket de hooks da sessão. `can_create` é falso
-/// no agente criado por outro agente (sem cascata): o `tools/list` dele não
-/// anuncia as `orbit_create_*`, e o core recusa a chamada mesmo assim.
+/// Quem atende as ferramentas da sessão de um agente do Orbit: um
+/// [`ToolRequest`] → resultado. Montado pelo run para o nó, levado até o
+/// handler do socket de hooks da sessão. `can_create` é falso no agente
+/// criado por outro agente (sem cascata): o `tools/list` dele não anuncia as
+/// `orbit_create_*`, e o core recusa a chamada mesmo assim.
 #[derive(Clone)]
 pub struct ToolHandler {
     pub call: Arc<ToolFn>,
     pub can_create: bool,
 }
 
-/// `(ferramenta, argumentos) → resultado`.
-pub type ToolFn = dyn Fn(&str, &Value) -> Result<Value, String> + Send + Sync;
+/// Um pedido do `tyba _orbit-mcp` da sessão.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ToolRequest<'a> {
+    /// Uma ferramenta. `call_id`: o id que a ponte deu à chamada (cancelar,
+    /// confirmar a entrega); sem ele, a resposta conta como entregue.
+    Call {
+        tool: &'a str,
+        args: &'a Value,
+        call_id: Option<&'a str>,
+    },
+    /// O CLI desistiu da chamada (`notifications/cancelled`): o `orbit_wait`
+    /// dela para.
+    Cancel(&'a str),
+    /// A ponte escreveu a resposta da chamada para o CLI: os avisos do dono
+    /// que ela levava contam como vistos.
+    Ack(&'a str),
+}
+
+/// [`ToolRequest`] → resultado.
+pub type ToolFn = dyn Fn(&ToolRequest<'_>) -> Result<Value, String> + Send + Sync;
 
 impl ToolHandler {
+    /// Uma ferramenta sem `call_id` (a resposta conta como entregue).
     pub fn call(&self, tool: &str, args: &Value) -> Result<Value, String> {
-        (self.call)(tool, args)
+        (self.call)(&ToolRequest::Call {
+            tool,
+            args,
+            call_id: None,
+        })
+    }
+
+    pub fn request(&self, request: &ToolRequest<'_>) -> Result<Value, String> {
+        (self.call)(request)
     }
 }
 

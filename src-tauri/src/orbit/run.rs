@@ -18,7 +18,9 @@ use serde::{Deserialize, Serialize};
 
 use super::agent::{AgentTurn, Snapshot};
 use super::browser::AgentAction;
-use super::orchestrator::{self, Created, Plan, PlanStep, ToolCall, ToolHandler, MAX_CREATED};
+use super::orchestrator::{
+    self, Created, Plan, PlanStep, ToolCall, ToolHandler, ToolRequest, MAX_CREATED,
+};
 use super::service::{self, ServiceReady, ServiceSource};
 use super::talk::{self, Mailbox, PeerState};
 use super::{Edge, EdgeKind, Graph, Integration, Node, NodeKind, OutputKind, Runner, Stored};
@@ -426,6 +428,9 @@ pub struct Scheduler {
     next_notice: u64,
     /// Até que aviso cada agente já recebeu.
     notice_seen: HashMap<String, u64>,
+    /// Avisos levados numa resposta que a ponte ainda não confirmou:
+    /// agente → (`call_id`, o último aviso dela).
+    notice_offered: HashMap<String, (String, u64)>,
 }
 
 /// Teto dos avisos do dono guardados por run: passou, sai o mais velho.
@@ -525,6 +530,7 @@ impl Scheduler {
             notices: Vec::new(),
             next_notice: 1,
             notice_seen: HashMap::new(),
+            notice_offered: HashMap::new(),
         }
     }
 
@@ -590,19 +596,49 @@ impl Scheduler {
     }
 
     /// Os avisos do dono que `agent` ainda não recebeu, do mais velho ao mais
-    /// novo; cada um sai uma vez só por agente.
+    /// novo, já marcados vistos (cada um sai uma vez só por agente).
     pub fn take_notices(&mut self, agent: &str) -> Vec<OwnerNotice> {
-        let seen = self.notice_seen.get(agent).copied().unwrap_or(0);
-        let fresh: Vec<OwnerNotice> = self
-            .notices
-            .iter()
-            .filter(|n| n.creator == agent && n.seq > seen)
-            .cloned()
-            .collect();
+        let fresh = self.unseen_notices(agent);
         if let Some(last) = fresh.last() {
             self.notice_seen.insert(agent.to_string(), last.seq);
         }
         fresh
+    }
+
+    /// Os avisos que `agent` ainda não recebeu, levados pela resposta
+    /// `call_id`: só contam como vistos com o [`Scheduler::ack_notices`]
+    /// dela; sem ele, a próxima chamada os leva de novo.
+    pub fn offer_notices(&mut self, agent: &str, call_id: &str) -> Vec<OwnerNotice> {
+        let fresh = self.unseen_notices(agent);
+        if let Some(last) = fresh.last() {
+            self.notice_offered
+                .insert(agent.to_string(), (call_id.to_string(), last.seq));
+        }
+        fresh
+    }
+
+    /// A ponte escreveu a resposta `call_id` para o CLI: o que ela levava
+    /// conta como visto. Confirmação de outra chamada não faz nada.
+    pub fn ack_notices(&mut self, agent: &str, call_id: &str) {
+        let Some((id, seq)) = self.notice_offered.get(agent) else {
+            return;
+        };
+        if id != call_id {
+            return;
+        }
+        let seq = *seq;
+        self.notice_offered.remove(agent);
+        let seen = self.notice_seen.entry(agent.to_string()).or_insert(0);
+        *seen = (*seen).max(seq);
+    }
+
+    fn unseen_notices(&self, agent: &str) -> Vec<OwnerNotice> {
+        let seen = self.notice_seen.get(agent).copied().unwrap_or(0);
+        self.notices
+            .iter()
+            .filter(|n| n.creator == agent && n.seq > seen)
+            .cloned()
+            .collect()
     }
 
     /// Retrato para publicar, com versão nova. Tirado com o lock na mão, a
@@ -1712,6 +1748,9 @@ pub struct Runs<H: RunHost> {
     /// checagem e a entrada em `active` ([`Runs::reserve`]). Lock sempre
     /// depois de `active`.
     starting: Mutex<Vec<(String, bool)>>,
+    /// Chamadas que o CLI cancelou (`call_id` → quando): o `orbit_wait`
+    /// delas para ([`Runs::cancel_call`]).
+    cancelled: Mutex<HashMap<String, u64>>,
     /// Quanto tempo de tudo quieto assenta o run ([`SETTLE_MS`]; o teste
     /// encurta).
     settle_ms: std::sync::atomic::AtomicU64,
@@ -1817,6 +1856,7 @@ impl<H: RunHost> Runs<H> {
             terminals: Mutex::new(HashMap::new()),
             hosted: Mutex::new(HashMap::new()),
             starting: Mutex::new(Vec::new()),
+            cancelled: Mutex::new(HashMap::new()),
             settle_ms: std::sync::atomic::AtomicU64::new(SETTLE_MS),
             me: me.clone(),
         })
@@ -2928,10 +2968,28 @@ impl<H: RunHost> Runs<H> {
         let me = self.me.clone();
         let (run, node) = (run_id.to_string(), node_id.to_string());
         ToolHandler {
-            call: Arc::new(move |tool, args| {
+            call: Arc::new(move |request| {
                 let runs = me.upgrade().ok_or("o TYBA está fechando")?;
-                let result = runs.orchestrator_call(&run, &node, tool, args);
-                runs.with_notices(&run, &node, result)
+                match *request {
+                    ToolRequest::Call {
+                        tool,
+                        args,
+                        call_id,
+                    } => {
+                        let result = runs.orchestrator_call_as(&run, &node, tool, args, call_id);
+                        runs.with_notices(&run, &node, result, call_id)
+                    }
+                    ToolRequest::Cancel(id) => {
+                        runs.cancel_call(id);
+                        Ok(serde_json::json!({}))
+                    }
+                    ToolRequest::Ack(id) => {
+                        if let Some(a) = runs.active.lock().get_mut(&run) {
+                            a.sched.ack_notices(&node, id);
+                        }
+                        Ok(serde_json::json!({}))
+                    }
+                }
             }),
             can_create,
         }
@@ -2940,15 +2998,26 @@ impl<H: RunHost> Runs<H> {
     /// A resposta de uma ferramenta com o que o dono fez nos nós que `agent`
     /// criou desde a chamada anterior dele (↻, ■, fechar): objeto ganha
     /// `since_your_last_call`; texto e erro ganham o bloco
-    /// "desde a sua última chamada: …". Cada aviso sai uma vez.
+    /// "desde a sua última chamada: …". Cada aviso conta como visto uma vez
+    /// só: na hora, sem `call_id`; com ele, quando a ponte confirma que
+    /// escreveu a resposta ([`Scheduler::ack_notices`]) — até lá, a próxima
+    /// chamada os leva de novo. Chamada que ninguém mais lê (cancelada, quem
+    /// chamou saiu) não leva aviso.
     fn with_notices(
         &self,
         run_id: &str,
         agent: &str,
         result: Result<serde_json::Value, String>,
+        call_id: Option<&str>,
     ) -> Result<serde_json::Value, String> {
+        if matches!(&result, Err(e) if e == ABANDONED) {
+            return result;
+        }
         let notices = match self.active.lock().get_mut(run_id) {
-            Some(a) => a.sched.take_notices(agent),
+            Some(a) => match call_id {
+                Some(id) => a.sched.offer_notices(agent, id),
+                None => a.sched.take_notices(agent),
+            },
             None => return result,
         };
         if notices.is_empty() {
@@ -2980,6 +3049,28 @@ impl<H: RunHost> Runs<H> {
         orchestrator: &str,
         tool: &str,
         args: &serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        self.orchestrator_call_as(run_id, orchestrator, tool, args, None)
+    }
+
+    /// O CLI desistiu da chamada `call_id`: o `orbit_wait` dela para na
+    /// próxima olhada. Fica guardado até [`CANCEL_KEEP_MS`] (o cancelar pode
+    /// chegar antes de a espera começar).
+    fn cancel_call(&self, call_id: &str) {
+        let t = now();
+        let mut cancelled = self.cancelled.lock();
+        cancelled.retain(|_, at| t.saturating_sub(*at) < CANCEL_KEEP_MS);
+        cancelled.insert(call_id.to_string(), t);
+    }
+
+    /// [`Runs::orchestrator_call`] com o id que a ponte deu à chamada.
+    fn orchestrator_call_as(
+        &self,
+        run_id: &str,
+        orchestrator: &str,
+        tool: &str,
+        args: &serde_json::Value,
+        call_id: Option<&str>,
     ) -> Result<serde_json::Value, String> {
         // Sem cascata: o agente criado por outro não cria nós, nem o que o
         // dono marcou "Não criar nós" — anuncie o `tools/list` dele o que
@@ -3047,6 +3138,7 @@ impl<H: RunHost> Runs<H> {
                 &node,
                 until,
                 std::time::Duration::from_secs(timeout_s),
+                call_id,
             ),
             ToolCall::ReadLog { node, lines } => self.read_log(run_id, orchestrator, &node, lines),
             ToolCall::Plan { steps } => {
@@ -4531,6 +4623,7 @@ impl<H: RunHost> Runs<H> {
         node_id: &str,
         until: orchestrator::WaitFor,
         timeout: std::time::Duration,
+        call_id: Option<&str>,
     ) -> Result<serde_json::Value, String> {
         if node_id == caller {
             return Err("orbit_wait não espera o seu próprio nó".into());
@@ -4554,13 +4647,37 @@ impl<H: RunHost> Runs<H> {
             ));
         }
         let started = std::time::Instant::now();
+        // Quem chama, como estava ao começar: a espera desiste quando ele
+        // some (sessão morta ou trocada, o claude do Terminal saiu).
+        let mark = self
+            .active
+            .lock()
+            .get(run_id)
+            .and_then(|a| caller_mark(a, caller));
         loop {
+            let cancelled = call_id.is_some_and(|id| self.cancelled.lock().remove(id).is_some());
+            let present = {
+                let active = self.active.lock();
+                match (active.get(run_id), &mark) {
+                    (Some(a), Some(m)) => caller_mark(a, caller).is_some_and(|now| now.keeps(m)),
+                    _ => true,
+                }
+            };
+            let present = present
+                && mark
+                    .as_ref()
+                    .and_then(|m| m.session.as_deref())
+                    .is_none_or(|s| self.host.alive(s));
+            if cancelled || !present {
+                return Err(ABANDONED.into());
+            }
             let live = self.live_agents(run_id);
+            let t = now();
             let seen = match self.active.lock().get(run_id) {
                 Some(a) => a.sched.run.nodes.get(node_id).map(|n| {
                     let alive = n.session_id.as_ref().is_some_and(|s| live.contains(s));
                     let turn = a.talk.state(node_id);
-                    let mail = a.talk.waiting(node_id) > 0 || a.talk.delivering(node_id);
+                    let mail = a.talk.waiting(node_id) > 0 || a.talk.delivering(node_id, t);
                     (wait_check(until, n, turn, mail, alive), n.clone(), turn)
                 }),
                 None => None,
@@ -5360,6 +5477,40 @@ fn data_path(edges: &[Edge], start: &str, goal: &str) -> bool {
     }
     false
 }
+
+/// Quem chama o `orbit_wait`, numa olhada: a tentativa e a sessão do nó
+/// dele e, no Terminal, se há agente hospedado no shell.
+#[derive(Debug, Clone, PartialEq)]
+struct CallerMark {
+    attempt: u32,
+    session: Option<String>,
+    hosted: bool,
+}
+
+impl CallerMark {
+    /// Ainda é quem começou a esperar: mesma tentativa e sessão, e o agente
+    /// hospedado no Terminal não saiu.
+    fn keeps(&self, start: &CallerMark) -> bool {
+        self.attempt == start.attempt
+            && self.session == start.session
+            && (self.hosted || !start.hosted)
+    }
+}
+
+fn caller_mark(a: &Active, caller: &str) -> Option<CallerMark> {
+    let n = a.sched.run.nodes.get(caller)?;
+    Some(CallerMark {
+        attempt: n.attempt,
+        session: n.session_id.clone(),
+        hosted: n.hosted_agent.is_some(),
+    })
+}
+
+/// A resposta de uma chamada que ninguém mais lê (o CLI cancelou, quem
+/// chamou saiu): não leva aviso do dono.
+const ABANDONED: &str = "orbit_wait abandonado: quem esperava cancelou ou saiu";
+/// Quanto um cancelamento fica guardado esperando a sua espera.
+const CANCEL_KEEP_MS: u64 = 10 * 60 * 1000;
 
 /// De quanto em quanto o `orbit_wait` olha o nó.
 const WAIT_POLL: std::time::Duration = std::time::Duration::from_millis(100);
@@ -10330,6 +10481,123 @@ mod tests {
                 .contains("parado por você"),
             "{out}"
         );
+        runs.stop(&run.id).unwrap();
+    }
+
+    /// Com `call_id`, o aviso só conta como visto com o ack daquela
+    /// chamada: sem ele, a próxima leva de novo.
+    #[test]
+    fn notices_offered_count_only_after_the_ack() {
+        let g = graph(vec![orchestrator("o")], vec![]);
+        let mut s = Scheduler::new(&g, "r".into(), 0);
+        s.add_node("api", &[]).unwrap();
+        s.run.created.push(Created {
+            node: process("api", "x"),
+            created_by: "o".into(),
+            created_at: 0,
+            edges: Vec::new(),
+            kept: false,
+            discarded: false,
+        });
+        s.log("api", 1, NodeEventKind::Stopped { by: Actor::You });
+        assert_eq!(s.offer_notices("o", "c1").len(), 1);
+        // Sem ack (resposta não escrita): sai de novo.
+        assert_eq!(s.offer_notices("o", "c2").len(), 1);
+        s.ack_notices("o", "c1");
+        assert!(s.has_notices("o"), "ack de outra chamada não vale");
+        s.ack_notices("o", "c2");
+        assert!(!s.has_notices("o"));
+        assert!(s.offer_notices("o", "c3").is_empty());
+    }
+
+    /// O `orbit_wait` cancelado pelo CLI, ou de quem saiu, para e não leva
+    /// os avisos do dono (ninguém os leria).
+    #[cfg(unix)]
+    #[test]
+    fn abandoned_wait_stops_and_keeps_the_notices() {
+        use serde_json::json;
+        let dir = tempfile::tempdir().unwrap();
+        let work = dir.path().join("w");
+        std::fs::create_dir(&work).unwrap();
+        let (runs, host, _app) = pty_runs(dir.path().join("runs"));
+        let g = graph(vec![orchestrator("o"), process("q", "sleep 30")], vec![]);
+        runs.store.save_orbit_graph(&g, true, None).unwrap();
+        let run = runs.start_now(g, vec![]).unwrap();
+        wait_orchestrating(&runs, &run.id, "o");
+        let tools = tools_of(&host, "o");
+        let api = tools
+            .call(
+                "orbit_create_process",
+                &json!({"title": "api", "command": "sleep 30", "dir": work}),
+            )
+            .unwrap()["node_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        wait_status(&runs, &run.id, &api, NodeStatus::Running);
+        let wait_args = json!({"node": api, "until": "exit", "timeout_s": 20});
+        let waiter = {
+            let (tools, args) = (tools.clone(), wait_args.clone());
+            std::thread::spawn(move || {
+                tools.request(&ToolRequest::Call {
+                    tool: "orbit_wait",
+                    args: &args,
+                    call_id: Some("c-1"),
+                })
+            })
+        };
+        std::thread::sleep(Duration::from_millis(200));
+        // O dono para outro nó dele antes: o aviso fica para depois.
+        let other = tools
+            .call(
+                "orbit_create_process",
+                &json!({"title": "web", "command": "sleep 30", "dir": work}),
+            )
+            .unwrap()["node_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        tools.request(&ToolRequest::Cancel("c-1")).unwrap();
+        let err = waiter.join().unwrap().unwrap_err();
+        assert_eq!(err, ABANDONED);
+        runs.stop_one(&run.id, &other).unwrap();
+        // A espera com call_id leva o aviso; sem o ack (resposta não
+        // escrita), a chamada seguinte o leva de novo.
+        let out = tools
+            .request(&ToolRequest::Call {
+                tool: "orbit_wait",
+                args: &wait_args,
+                call_id: Some("c-2"),
+            })
+            .unwrap();
+        assert_eq!(out["owner_acted"], true, "{out}");
+        assert!(out["since_your_last_call"][0]
+            .as_str()
+            .unwrap()
+            .contains("parado por você"));
+        let out = tools.call("orbit_list_nodes", &json!({})).unwrap();
+        assert!(out["since_your_last_call"][0]
+            .as_str()
+            .unwrap()
+            .contains("parado por você"));
+        let out = tools.call("orbit_list_nodes", &json!({})).unwrap();
+        assert!(out.get("since_your_last_call").is_none(), "{out}");
+
+        // Quem chamou saiu (a sessão do agente morreu): a espera desiste.
+        let waiter = {
+            let (tools, args) = (tools.clone(), wait_args.clone());
+            std::thread::spawn(move || tools.call("orbit_wait", &args))
+        };
+        std::thread::sleep(Duration::from_millis(200));
+        let session = runs.get(&run.id).unwrap().nodes["o"]
+            .session_id
+            .clone()
+            .unwrap();
+        host.exit_agent(&session);
+        let started = Instant::now();
+        let err = waiter.join().unwrap().unwrap_err();
+        assert_eq!(err, ABANDONED);
+        assert!(started.elapsed() < Duration::from_secs(10));
         runs.stop(&run.id).unwrap();
     }
 

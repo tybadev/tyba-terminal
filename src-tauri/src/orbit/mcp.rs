@@ -141,10 +141,13 @@ pub fn maybe_run_orbit_mcp_mode() -> Option<i32> {
     let socket = std::env::var_os("TYBA_HOOK_SOCKET").map(PathBuf::from);
     let caller = Caller::from_arg(std::env::args().nth(2).as_deref());
     let stdin = std::io::stdin();
-    let stdout = std::io::stdout();
-    serve(stdin.lock(), stdout.lock(), caller, |tool, args| {
-        call_core(socket.as_deref(), tool, args)
-    });
+    serve(
+        stdin.lock(),
+        std::io::stdout(),
+        caller,
+        |tool, args, call_id| call_core_as(socket.as_deref(), tool, args, Some(call_id)),
+        |kind, call_id| control_core(socket.as_deref(), kind, call_id),
+    );
     Some(0)
 }
 
@@ -248,12 +251,26 @@ pub fn write_open_cmd_shim(runtime_dir: &Path, exe: &Path) -> Result<PathBuf, St
 /// Um pedido de ferramenta pelo socket da sessão. `result` traz o valor;
 /// `deny` traz o motivo (validação recusada, sessão fora do Orbit).
 fn call_core(socket: Option<&Path>, tool: &str, args: &Value) -> Result<Value, String> {
+    call_core_as(socket, tool, args, None)
+}
+
+/// [`call_core`] com o id que a ponte deu à chamada (o core cancela e
+/// confirma a entrega por ele).
+fn call_core_as(
+    socket: Option<&Path>,
+    tool: &str,
+    args: &Value,
+    call_id: Option<&str>,
+) -> Result<Value, String> {
     let socket = socket.ok_or("sessão sem canal com o TYBA (TYBA_HOOK_SOCKET ausente)")?;
-    let event = json!({
+    let mut event = json!({
         "hook_event_name": TOOL_EVENT,
         "tool": tool,
         "arguments": args,
     });
+    if let Some(id) = call_id {
+        event["call_id"] = json!(id);
+    }
     let response = crate::hook_ipc::request(socket, &event).ok_or("o TYBA não respondeu")?;
     match (response.action.as_str(), response.result) {
         ("result", Some(value)) => Ok(value),
@@ -263,33 +280,132 @@ fn call_core(socket: Option<&Path>, tool: &str, args: &Value) -> Result<Value, S
     }
 }
 
+/// Um controle da chamada `call_id` para o core: `cancel` (o CLI desistiu)
+/// ou `ack` (a resposta foi escrita). Sem resposta que importe.
+fn control_core(socket: Option<&Path>, kind: &str, call_id: &str) {
+    let Some(socket) = socket else { return };
+    let event = json!({
+        "hook_event_name": TOOL_EVENT,
+        "control": kind,
+        "call_id": call_id,
+    });
+    let _ = crate::hook_ipc::request(socket, &event);
+}
+
+/// O que uma linha pede à ponte, antes de responder.
+enum Incoming {
+    /// `tools/call` com id: roda numa thread própria.
+    Call(String),
+    /// `notifications/cancelled`: o id do pedido cancelado.
+    Cancel(String),
+    /// O resto: responde na hora.
+    Other,
+}
+
+fn incoming(line: &str) -> Incoming {
+    let Ok(message) = serde_json::from_str::<Value>(line) else {
+        return Incoming::Other;
+    };
+    match message.get("method").and_then(Value::as_str) {
+        Some("tools/call") => match message.get("id") {
+            Some(id @ (Value::String(_) | Value::Number(_))) => Incoming::Call(id.to_string()),
+            _ => Incoming::Other,
+        },
+        Some("notifications/cancelled") => match message.pointer("/params/requestId") {
+            Some(id @ (Value::String(_) | Value::Number(_))) => Incoming::Cancel(id.to_string()),
+            _ => Incoming::Other,
+        },
+        _ => Incoming::Other,
+    }
+}
+
 /// Lê linhas até o EOF e responde cada pedido numa linha. Linha em branco é
-/// ignorada; notificação não tem resposta.
-pub fn serve<R: BufRead, W: Write>(
+/// ignorada; notificação não tem resposta. Cada `tools/call` roda numa
+/// thread própria, com um `call_id` da ponte: uma espera longa
+/// (`orbit_wait`) não segura as outras chamadas, e as respostas saem uma
+/// linha inteira por vez. `notifications/cancelled` avisa o core
+/// (`control("cancel", call_id)`) e a resposta daquela chamada não sai.
+/// Resposta escrita com sucesso é confirmada ao core (`control("ack", …)`):
+/// só então os avisos do dono que ela levava contam como vistos. Volta
+/// depois de o leitor acabar e as chamadas em voo responderem.
+pub fn serve<R: BufRead, W: Write + Send>(
     reader: R,
-    mut writer: W,
+    writer: W,
     caller: Caller,
-    mut call: impl FnMut(&str, &Value) -> Result<Value, String>,
+    call: impl Fn(&str, &Value, &str) -> Result<Value, String> + Sync,
+    control: impl Fn(&str, &str) + Sync,
 ) {
-    for line in reader.lines() {
-        let Ok(line) = line else { return };
-        if line.trim().is_empty() {
-            continue;
-        }
-        if let Some(response) = handle_line(&line, caller, &mut call) {
-            let Ok(mut out) = serde_json::to_vec(&response) else {
+    let writer = std::sync::Mutex::new(writer);
+    // id do pedido (JSON) → (call_id, cancelado).
+    let pending: std::sync::Mutex<std::collections::HashMap<String, (String, bool)>> =
+        std::sync::Mutex::new(std::collections::HashMap::new());
+    let next = std::sync::atomic::AtomicU64::new(1);
+    let write = |response: &Value| -> bool {
+        let Ok(mut out) = serde_json::to_vec(response) else {
+            return false;
+        };
+        out.push(b'\n');
+        let Ok(mut w) = writer.lock() else {
+            return false;
+        };
+        w.write_all(&out).and_then(|()| w.flush()).is_ok()
+    };
+    let (call, control, pending, write) = (&call, &control, &pending, &write);
+    std::thread::scope(|scope| {
+        for line in reader.lines() {
+            let Ok(line) = line else { break };
+            if line.trim().is_empty() {
                 continue;
-            };
-            out.push(b'\n');
-            if writer
-                .write_all(&out)
-                .and_then(|()| writer.flush())
-                .is_err()
-            {
-                return;
+            }
+            match incoming(&line) {
+                Incoming::Call(id) => {
+                    let n = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let call_id = format!("{}-{n}", std::process::id());
+                    if let Ok(mut p) = pending.lock() {
+                        p.insert(id.clone(), (call_id.clone(), false));
+                    }
+                    scope.spawn(move || {
+                        let response =
+                            handle_line(&line, caller, &mut |tool: &str, args: &Value| {
+                                call(tool, args, &call_id)
+                            });
+                        let cancelled = pending
+                            .lock()
+                            .ok()
+                            .and_then(|mut p| p.remove(&id))
+                            .is_none_or(|(_, cancelled)| cancelled);
+                        if cancelled {
+                            return;
+                        }
+                        if response.as_ref().is_some_and(write) {
+                            control("ack", &call_id);
+                        }
+                    });
+                }
+                Incoming::Cancel(id) => {
+                    let call_id = pending.lock().ok().and_then(|mut p| {
+                        p.get_mut(&id).map(|entry| {
+                            entry.1 = true;
+                            entry.0.clone()
+                        })
+                    });
+                    if let Some(call_id) = call_id {
+                        control("cancel", &call_id);
+                    }
+                }
+                Incoming::Other => {
+                    let mut no_tool = |_: &str, _: &Value| -> Result<Value, String> {
+                        Err("ferramenta fora do caminho de tools/call".into())
+                    };
+                    if let Some(response) = handle_line(&line, caller, &mut no_tool) {
+                        if !write(&response) {
+                            break;
+                        }
+                    }
+                }
             }
         }
-    }
+    });
 }
 
 fn error(id: Value, code: i64, message: &str) -> Value {
@@ -1531,7 +1647,13 @@ mod tests {
             "\n",
         );
         let mut out = Vec::new();
-        serve(input.as_bytes(), &mut out, Caller::Node, no_call);
+        serve(
+            input.as_bytes(),
+            &mut out,
+            Caller::Node,
+            |t, a, _| no_call(t, a),
+            |_, _| {},
+        );
         let text = String::from_utf8(out).unwrap();
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines.len(), 2, "{text}");
@@ -1539,6 +1661,68 @@ mod tests {
         assert_eq!(first["result"]["protocolVersion"], "2025-06-18");
         let second: Value = serde_json::from_str(lines[1]).unwrap();
         assert_eq!(second["id"], 1);
+    }
+
+    /// Uma chamada longa não segura as outras; a cancelada não responde e
+    /// avisa o core; a respondida é confirmada (ack) com o call_id dela.
+    #[test]
+    fn serve_runs_calls_apart_cancels_and_acks() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Mutex;
+        let input = concat!(
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"orbit_wait","arguments":{"node":"p","until":"exit"}}}"#,
+            "\n",
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"orbit_node_status","arguments":{"node_id":"p"}}}"#,
+            "\n",
+            r#"{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":1,"reason":"Esc"}}"#,
+            "\n",
+        );
+        let stop = AtomicBool::new(false);
+        let ids: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
+        let controls: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
+        let started = std::time::Instant::now();
+        let mut out = Vec::new();
+        serve(
+            input.as_bytes(),
+            &mut out,
+            Caller::Node,
+            |tool, _, call_id| {
+                ids.lock().unwrap().push((tool.into(), call_id.into()));
+                if tool == "orbit_wait" {
+                    // Serial, a ponte só leria o cancelamento depois disto.
+                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                    while !stop.load(Ordering::SeqCst) {
+                        assert!(std::time::Instant::now() < deadline, "a ponte serializou");
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
+                }
+                Ok(json!({"tool": tool}))
+            },
+            |kind, call_id| {
+                controls.lock().unwrap().push((kind.into(), call_id.into()));
+                if kind == "cancel" {
+                    stop.store(true, Ordering::SeqCst);
+                }
+            },
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(4));
+        let text = String::from_utf8(out).unwrap();
+        let lines: Vec<Value> = text
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(lines.len(), 1, "{text}");
+        assert_eq!(lines[0]["id"], 2);
+        let ids = ids.into_inner().unwrap();
+        let id_of = |tool: &str| ids.iter().find(|(t, _)| t == tool).unwrap().1.clone();
+        let (wait, status) = (id_of("orbit_wait"), id_of("orbit_node_status"));
+        assert_ne!(wait, status);
+        let mut controls = controls.into_inner().unwrap();
+        controls.sort();
+        assert_eq!(
+            controls,
+            vec![("ack".to_string(), status), ("cancel".to_string(), wait)]
+        );
     }
 
     /// Ida e volta pelo socket de verdade: o pedido sai como `OrbitTool`,

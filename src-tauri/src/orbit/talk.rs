@@ -111,10 +111,14 @@ impl Mailbox {
         self.delivered.remove(node);
     }
 
-    /// A fila acabou de ser entregue a `node` e ele ainda não saiu do `Idle`:
-    /// o turno que ela abre não começou.
-    pub fn delivering(&self, node: &str) -> bool {
-        self.delivered.contains_key(node)
+    /// A fila acabou de ser entregue a `node` (há menos de
+    /// [`REDELIVER_AFTER_MS`]) e ele ainda não saiu do `Idle`: o turno que
+    /// ela abre não começou. Passado o prazo, a entrega que não abriu turno
+    /// não conta mais (é o mesmo prazo de entregar de novo).
+    pub fn delivering(&self, node: &str, now: u64) -> bool {
+        self.delivered
+            .get(node)
+            .is_some_and(|at| now.saturating_sub(*at) < REDELIVER_AFTER_MS)
     }
 
     /// Alguma mensagem esperando entrega, para qualquer agente do run.
@@ -461,6 +465,24 @@ mod tests {
         let d = m.on_state(node, PeerState::Ready, now, true)?;
         m.delivered(node, d.count);
         Some(d.block)
+    }
+
+    /// A entrega que não abriu turno deixa de contar no prazo de entregar de
+    /// novo: o `orbit_wait(turn)` não fica preso nela.
+    #[test]
+    fn delivering_expires_with_the_redelivery_window() {
+        let mut m = Mailbox::default();
+        assert!(!m.delivering("b", 0));
+        m.push("b", msg("Front", "oi")).unwrap();
+        deliver(&mut m, "b", 100).unwrap();
+        assert!(m.delivering("b", 100));
+        assert!(m.delivering("b", 100 + REDELIVER_AFTER_MS - 1));
+        assert!(!m.delivering("b", 100 + REDELIVER_AFTER_MS));
+        // O turno começou: não há entrega pendente.
+        m.push("b", msg("Front", "e agora")).unwrap();
+        deliver(&mut m, "b", 200 + REDELIVER_AFTER_MS).unwrap();
+        m.on_state("b", PeerState::Working, 300 + REDELIVER_AFTER_MS, true);
+        assert!(!m.delivering("b", 300 + REDELIVER_AFTER_MS));
     }
 
     #[test]
