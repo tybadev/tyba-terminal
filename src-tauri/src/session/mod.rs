@@ -1794,6 +1794,20 @@ fn agent_wrapper_dir() -> Option<&'static Path> {
     cached_integration_path(&DIR, write_agent_wrapper, "wrapper do claude")
 }
 
+/// A pasta de hooks git do TYBA (`core.hooksPath` de toda sessão de agente):
+/// o `pre-push` que recusa main/master e os de passagem para os do usuário.
+/// Ver [`crate::agent::git_hooks`].
+pub(crate) fn tyba_git_hooks_dir() -> Option<&'static Path> {
+    static DIR: OnceLock<PathBuf> = OnceLock::new();
+    cached_integration_path(&DIR, write_git_hooks, "hooks git")
+}
+
+fn write_git_hooks() -> std::io::Result<PathBuf> {
+    let dir = integration_dir("git-hooks")?;
+    crate::agent::git_hooks::write_hooks(&dir)?;
+    Ok(dir)
+}
+
 /// A pasta do wrapper `claude` que o agente aberto pelo TYBA põe na frente do
 /// PATH (guarda-corpo do claude aninhado). Fora do unix não há wrapper.
 pub(crate) fn nested_guard_wrapper() -> Option<&'static Path> {

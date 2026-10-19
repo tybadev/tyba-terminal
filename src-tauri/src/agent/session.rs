@@ -1634,6 +1634,11 @@ fn free_agent_env(
     for key in FREE_ENV_REMOVE {
         env.remove(*key);
     }
+    // Push para main/master: o `pre-push` do TYBA, por `core.hooksPath` no env
+    // (somado ao `GIT_CONFIG_*` do dono).
+    if let Some(hooks) = crate::session::tyba_git_hooks_dir() {
+        crate::agent::git_hooks::with_hooks(&mut env, hooks);
+    }
     env
 }
 
@@ -1722,6 +1727,11 @@ fn build_hosted_command(
     cmd.env("TYBA_HOSTED", "1");
     cmd.env("TYBA_JAILED", "0");
     cmd.env(FORCE_HYPERLINK.0, FORCE_HYPERLINK.1);
+    // O `core.hooksPath` do TYBA entra no shim, por cima do `GIT_CONFIG_*`
+    // do pane (que só ele conhece): ver `git_hooks::with_hooks_os`.
+    if let Some(hooks) = crate::session::tyba_git_hooks_dir() {
+        cmd.env(crate::agent::git_hooks::HOOKS_DIR_ENV, hooks);
+    }
     let spec = passthrough_spec(cwd, runtime, socket_path, exe);
     let cmd = crate::sandbox::passthrough::PassthroughSandbox.wrap(cmd, &spec)?;
     Ok(HostedCommand { cmd, worktree_root })
@@ -2569,6 +2579,7 @@ mod build_hosted_command_tests {
             keys,
             [
                 "FORCE_HYPERLINK",
+                "TYBA_GIT_HOOKS",
                 "TYBA_HOOK_SOCKET",
                 "TYBA_HOSTED",
                 "TYBA_JAILED"
@@ -2777,7 +2788,14 @@ mod free_session_tests {
         for gone in FREE_ENV_REMOVE {
             assert!(!env.contains_key(*gone), "{gone}");
         }
-        assert!(!env.contains_key("GIT_CONFIG_COUNT"), "sem override de git");
+        // Sem override de git (gpgsign etc.); o único `GIT_CONFIG_*` é o
+        // `core.hooksPath` do pre-push do TYBA.
+        let keys: Vec<&String> = env
+            .iter()
+            .filter(|(k, _)| k.starts_with("GIT_CONFIG_KEY_"))
+            .map(|(_, v)| v)
+            .collect();
+        assert!(keys.iter().all(|k| *k == "core.hooksPath"), "{keys:?}");
         assert_eq!(env["FORCE_HYPERLINK"], "1");
         assert!(!env.contains_key("TYBA_HOSTED"));
     }

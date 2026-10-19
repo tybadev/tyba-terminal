@@ -939,7 +939,7 @@ fn observer_never_waits_on_a_core_that_accepts_and_never_answers() {
     });
 
     let start = std::time::Instant::now();
-    let out = observe(bash("git push origin main"), Some(&path));
+    let out = observe(bash("gh pr merge 1"), Some(&path));
     assert!(
         start.elapsed() < Duration::from_secs(1),
         "o hook esperou o core: {:?}",
@@ -950,10 +950,7 @@ fn observer_never_waits_on_a_core_that_accepts_and_never_answers() {
 
     let line = line_rx.recv_timeout(Duration::from_secs(5)).unwrap();
     let frame: serde_json::Value = serde_json::from_str(line.trim_end()).unwrap();
-    assert_eq!(
-        frame["event"]["tool_input"]["command"],
-        "git push origin main"
-    );
+    assert_eq!(frame["event"]["tool_input"]["command"], "gh pr merge 1");
     release_tx.send(()).unwrap();
 }
 
@@ -974,14 +971,14 @@ fn observer_never_waits_on_a_core_that_never_accepts() {
 }
 
 #[test]
-fn observer_denies_push_to_main_with_the_guard_rail_message_even_without_tyba() {
-    let out = observe(bash("git push origin main"), None);
+fn observer_denies_pr_merge_with_the_guard_rail_message_even_without_tyba() {
+    let out = observe(bash("gh pr merge 1"), None);
     let v: serde_json::Value = serde_json::from_str(&out).unwrap();
     assert_eq!(v["hookSpecificOutput"]["hookEventName"], "PreToolUse");
     assert_eq!(v["hookSpecificOutput"]["permissionDecision"], "deny");
     assert_eq!(
         v["hookSpecificOutput"]["permissionDecisionReason"],
-        crate::agent::guard_rail::PUSH_MAIN_MESSAGE
+        crate::agent::guard_rail::PR_MERGE_MESSAGE
     );
 }
 
@@ -1064,13 +1061,13 @@ fn guard_only(input: serde_json::Value) -> String {
 }
 
 #[test]
-fn guard_only_denies_push_to_main_and_is_silent_otherwise() {
+fn guard_only_denies_turning_the_hook_off_and_is_silent_otherwise() {
     let v: serde_json::Value =
-        serde_json::from_str(&guard_only(bash("git push origin main"))).unwrap();
+        serde_json::from_str(&guard_only(bash("git push --no-verify origin main"))).unwrap();
     assert_eq!(v["hookSpecificOutput"]["permissionDecision"], "deny");
     assert_eq!(
         v["hookSpecificOutput"]["permissionDecisionReason"],
-        crate::agent::guard_rail::PUSH_MAIN_MESSAGE
+        crate::agent::guard_rail::HOOK_BYPASS_MESSAGE
     );
     for event in [
         bash("ls"),

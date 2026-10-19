@@ -54,15 +54,6 @@ fn caged(path: &Path, profile: crate::sandbox::git::GitProfile, extra: &[PathBuf
     ))
 }
 
-/// O git com as mesmas defesas de [`git_in`] (fsmonitor, hooks, pager e
-/// `diff.external` desligados; env de git do processo limpo), mas sem a
-/// jaula do git. Só para leitura que não roda filtro de conteúdo — hoje, o
-/// `symbolic-ref` do guarda-corpo, que pode rodar dentro da sessão do agente
-/// (sem userns no Linux, a jaula aninhada não sobe).
-pub fn git_in_unjailed(path: &Path) -> Command {
-    defended(git_base(path))
-}
-
 fn defended(mut cmd: Command) -> Command {
     cmd.env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_OPTIONAL_LOCKS", "0")

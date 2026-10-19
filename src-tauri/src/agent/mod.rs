@@ -16,6 +16,7 @@ pub mod codex_hooks;
 pub mod conversation;
 pub mod credentials;
 pub mod disk_observer;
+pub mod git_hooks;
 pub mod guard_rail;
 pub mod hooks_settings;
 pub mod inherited_env;
