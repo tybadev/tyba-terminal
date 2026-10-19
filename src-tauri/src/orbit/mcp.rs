@@ -110,6 +110,25 @@ pub const TOOLS: [&str; 23] = [
     "orbit_finish",
 ];
 
+/// As ferramentas que o CLI do agente roda sem pedir permissão ao dono: ler
+/// (estado, lista, log), esperar, abrir navegador local (o core só aceita url
+/// local) e parar nó que o próprio agente criou (o core recusa outro). Nada
+/// que roda comando, mexe em nó do dono ou fala com outro agente: essas
+/// seguem pedindo, como o Bash. `orbit_restart_node` fica de fora porque
+/// também alcança nó do dono ligado ao agente.
+pub const SAFE_TOOLS: [&str; 6] = [
+    "orbit_node_status",
+    "orbit_list_nodes",
+    "orbit_wait",
+    "orbit_read_log",
+    "orbit_create_browser",
+    "orbit_stop_node",
+];
+
+/// O teto do Codex para uma chamada de ferramenta do servidor `orbit`: a
+/// espera mais longa do `orbit_wait` com folga (o padrão do Codex é 60 s).
+pub const CODEX_TOOL_TIMEOUT_S: u64 = super::orchestrator::WAIT_MAX_S + 30;
+
 /// Argumento do modo `$BROWSER` (`tyba _orbit-open <url>`).
 pub const OPEN_MODE: &str = "_orbit-open";
 /// O shim do `$BROWSER` no runtime dir 0700 da sessão.
@@ -986,10 +1005,33 @@ fn args_for(
                 "--config".into(),
                 format!("developer_instructions={}", toml_string(prompt)),
             ]
+            .into_iter()
+            .chain([
+                "--config".into(),
+                format!("{key}.tool_timeout_sec={CODEX_TOOL_TIMEOUT_S}"),
+            ])
+            // Medido no codex-cli 0.144.1: `tools.<nome>.approval_mode`
+            // aceita auto, prompt, writes e approve.
+            .chain(SAFE_TOOLS.iter().flat_map(|tool| {
+                [
+                    "--config".to_string(),
+                    format!("{key}.tools.{tool}.approval_mode=\"approve\""),
+                ]
+            }))
+            .collect()
         }
+        // Numa peça só, como o --mcp-config: a opção é variádica.
         _ => vec![
             format!("--mcp-config={}", claude_config_path.to_string_lossy()),
             format!("--append-system-prompt={prompt}"),
+            format!(
+                "--allowedTools={}",
+                SAFE_TOOLS
+                    .iter()
+                    .map(|t| format!("mcp__{SERVER_NAME}__{t}"))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ),
         ],
     }
 }
@@ -1551,7 +1593,14 @@ mod tests {
         );
         // Encerrar: quando o dono disser que acabou, só a própria sessão.
         assert!(claude[1].contains("orbit_finish") && claude[1].contains("só a sua"));
-        assert_eq!(claude.len(), 2);
+        // As seguras sem pergunta, e só elas.
+        assert_eq!(
+            claude[2],
+            "--allowedTools=mcp__orbit__orbit_node_status,mcp__orbit__orbit_list_nodes,\
+             mcp__orbit__orbit_wait,mcp__orbit__orbit_read_log,mcp__orbit__orbit_create_browser,\
+             mcp__orbit__orbit_stop_node"
+        );
+        assert_eq!(claude.len(), 3);
         let config = claude_config(exe, socket, true);
         assert_eq!(config["mcpServers"]["orbit"]["args"], json!([MODE]));
         assert_eq!(
@@ -1581,7 +1630,7 @@ mod tests {
             cfg,
             true,
         );
-        assert_eq!(codex.len(), 8);
+        assert_eq!(codex.len(), 10 + 2 * SAFE_TOOLS.len());
         assert!(
             codex.chunks(2).all(|pair| pair[0] == "--config"),
             "{codex:?}"
@@ -1618,6 +1667,47 @@ mod tests {
             parsed["env"]["TYBA_HOOK_SOCKET"].as_str(),
             Some("/tmp/tyba-abc/hook.sock")
         );
+        // O teto da chamada cobre o orbit_wait mais longo, e as seguras
+        // passam sem pergunta — em TOML que o Codex lê.
+        let doc: String = codex[8..]
+            .iter()
+            .filter(|a| *a != "--config")
+            .map(|a| a.replacen("mcp_servers.orbit.", "", 1))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let parsed: toml::Value = toml::from_str(&doc).unwrap();
+        assert_eq!(
+            parsed["tool_timeout_sec"].as_integer(),
+            Some(CODEX_TOOL_TIMEOUT_S as i64)
+        );
+        assert!(CODEX_TOOL_TIMEOUT_S > crate::orbit::orchestrator::WAIT_MAX_S);
+        let tools = parsed["tools"].as_table().unwrap();
+        assert_eq!(tools.len(), SAFE_TOOLS.len());
+        for tool in SAFE_TOOLS {
+            assert_eq!(tools[tool]["approval_mode"].as_str(), Some("approve"));
+        }
+    }
+
+    /// As seguras existem, e nada que roda comando, mexe em nó do dono ou
+    /// fala por outro agente entra nelas.
+    #[test]
+    fn safe_tools_are_read_wait_local_browser_and_stop_of_created() {
+        for tool in SAFE_TOOLS {
+            assert!(TOOLS.contains(&tool), "{tool}");
+        }
+        for risky in [
+            "orbit_create_process",
+            "orbit_create_agent",
+            "orbit_restart_node",
+            "orbit_connect",
+            "orbit_reassign",
+            "orbit_send",
+            "orbit_note_write",
+            "orbit_browser_click",
+            "orbit_browser_type",
+        ] {
+            assert!(!SAFE_TOOLS.contains(&risky), "{risky}");
+        }
     }
 
     /// O agente digitado no nó Terminal (`--terminal`): o `tools/list` não
