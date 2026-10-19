@@ -483,6 +483,10 @@ fn agent_payload(
         .as_ref()
         .filter(|_| hosting && !jailed)
         .and_then(|d| agent::process_probe::no_jail_marker(d.pid));
+    let suggest_plugin = detected
+        .as_ref()
+        .is_some_and(|d| matches!(d.kind, crate::session::AgentRunnerKind::ClaudeCode))
+        && plugin_suggested();
     agent::process_probe::AgentDetectedPayload {
         session_id,
         detected,
@@ -490,6 +494,36 @@ fn agent_payload(
         jailed,
         shim,
         no_jail,
+        suggest_plugin,
+    }
+}
+
+/// Fatia 4 do agente livre: o plugin do TYBA falta no Claude desta máquina.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn plugin_suggested() -> bool {
+    std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .is_some_and(|home| agent::claude_plugin::suggest_install(&home))
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn plugin_suggested() -> bool {
+    false
+}
+
+/// Depois de instalar ou desinstalar o plugin, cada pane com agente recebe o
+/// payload de novo: é o que faz o chip sumir (ou voltar) sem esperar o
+/// agente mudar.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn reemit_agent_payloads(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    for session_id in state.sessions.shell_ids() {
+        if let Some(detected) = state.agent_prober.detected(session_id) {
+            let _ = app.emit(
+                agent::process_probe::EVENT_CHANGED,
+                agent_payload(&state, session_id, Some(detected)),
+            );
+        }
     }
 }
 
@@ -7208,27 +7242,33 @@ async fn install_claude_plugin(
     let home = std::env::var_os("HOME")
         .map(std::path::PathBuf::from)
         .ok_or("HOME indisponível")?;
-    tauri::async_runtime::spawn_blocking(move || {
+    let status = tauri::async_runtime::spawn_blocking(move || {
         agent::claude_plugin::install(&dir)?;
         Ok(agent::claude_plugin::status(&home))
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+    reemit_agent_payloads(&app);
+    status
 }
 
 /// M6-B: remove o plugin e o marketplace local do Claude Code.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[tauri::command]
-async fn uninstall_claude_plugin() -> Result<agent::claude_plugin::PluginStatus, String> {
+async fn uninstall_claude_plugin(
+    app: AppHandle,
+) -> Result<agent::claude_plugin::PluginStatus, String> {
     let home = std::env::var_os("HOME")
         .map(std::path::PathBuf::from)
         .ok_or("HOME indisponível")?;
-    tauri::async_runtime::spawn_blocking(move || {
+    let status = tauri::async_runtime::spawn_blocking(move || {
         agent::claude_plugin::uninstall()?;
         Ok(agent::claude_plugin::status(&home))
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+    reemit_agent_payloads(&app);
+    status
 }
 
 /// Se a sessão morta ainda dá para retomar pela conversa nativa do agente.

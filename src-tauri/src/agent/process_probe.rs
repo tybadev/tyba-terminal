@@ -50,6 +50,10 @@ pub struct AgentDetectedPayload {
     /// M7: por que um claude hospedado está sem jaula (`TYBA_NOJAIL`):
     /// `home`, `hidden_dir`, `outside_home` ou `sandbox`. `None` com jaula.
     pub no_jail: Option<String>,
+    /// Agente livre, fatia 4: claude no pane sem o plugin do TYBA (e com os
+    /// hooks livres) — o pane mostra o chip de instalar. Decidido aqui, no
+    /// core; o front só mostra.
+    pub suggest_plugin: bool,
 }
 
 /// Mapeia o nome do processo para o runner conhecido, reusando `runner_binary`

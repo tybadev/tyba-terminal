@@ -296,6 +296,10 @@ const resources = {
       aboutUpToDateShort: "está em dia",
       historyClearHint: "Apaga tudo, de todos os repositórios.",
       claudePluginNotInstalled: "não instalado",
+      pluginChip: "Instalar plugin",
+      pluginChipBusy: "Instalando…",
+      pluginChipHint:
+        "Este claude roda sem o plugin do TYBA. Instale para receber aviso quando ele pedir algo.",
       claudePluginInstallShort: "Instalar",
       claudePluginUnavailableShort: "claude não encontrado",
       settingsSecurity: "Segurança",
@@ -2392,6 +2396,10 @@ const resources = {
       aboutUpToDateShort: "up to date",
       historyClearHint: "Deletes everything, from every repository.",
       claudePluginNotInstalled: "not installed",
+      pluginChip: "Install plugin",
+      pluginChipBusy: "Installing…",
+      pluginChipHint:
+        "This claude runs without the TYBA plugin. Install it to get notified when it asks for something.",
       claudePluginInstallShort: "Install",
       claudePluginUnavailableShort: "claude not found",
       settingsSecurity: "Security",

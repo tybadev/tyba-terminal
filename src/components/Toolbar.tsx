@@ -5,11 +5,14 @@ import {
   ArrowUp,
   GitBranch,
   GitDiff,
+  PuzzlePiece,
   TextAlignLeft,
 } from "@phosphor-icons/react";
 
 import { Shortcut } from "@/components/ui/kbd";
-import type { RepoSnapshot } from "../lib/ipc";
+import { installClaudePlugin, type RepoSnapshot } from "../lib/ipc";
+import { translateError } from "../lib/errors";
+import { toastError } from "../lib/toast";
 import type { BranchChip, ChipId, ToolbarPref } from "../lib/repoSnapshots";
 import { BranchPicker } from "./BranchPicker";
 
@@ -44,6 +47,34 @@ interface Props {
   showRichInput: boolean;
   richInputCombo: string;
   onOpenRichInput: () => void;
+  /** Agente livre, fatia 4: o core achou um claude neste pane sem o plugin
+   * do TYBA. O chip instala; quando o core confirma, o payload volta sem a
+   * sugestão e o chip some. */
+  suggestPlugin: boolean;
+}
+
+/** O chip de instalar o plugin: só emite a intenção. Quem decide se ainda
+ * falta é o core, que reemite a detecção depois de instalar. */
+function PluginChip() {
+  const { t } = useTranslation();
+  const [busy, setBusy] = useState(false);
+  return (
+    <button
+      onClick={() => {
+        setBusy(true);
+        installClaudePlugin()
+          .catch((e) => toastError(t("claudePluginFailed"), translateError(e, t)))
+          .finally(() => setBusy(false));
+      }}
+      disabled={busy}
+      title={t("pluginChipHint")}
+      aria-label={t("pluginChipHint")}
+      className="flex shrink-0 items-center gap-1 rounded-[4px] px-1 py-0.5 text-tyba-text-muted transition-colors hover:bg-tyba-text/[.06] hover:text-tyba-text disabled:opacity-60"
+    >
+      <PuzzlePiece size={12} />
+      <span>{busy ? t("pluginChipBusy") : t("pluginChip")}</span>
+    </button>
+  );
 }
 
 function ClockChip() {
@@ -77,6 +108,7 @@ export function Toolbar({
   showRichInput,
   richInputCombo,
   onOpenRichInput,
+  suggestPlugin,
 }: Props) {
   const { t } = useTranslation();
   if (!pref.enabled) return null;
@@ -220,7 +252,14 @@ export function Toolbar({
 
   const left = pref.left.map(chip).filter(Boolean);
   const right = pref.right.map(chip).filter(Boolean);
-  if (!showRichInput && left.length === 0 && right.length === 0) return null;
+  if (
+    !showRichInput &&
+    !suggestPlugin &&
+    left.length === 0 &&
+    right.length === 0
+  ) {
+    return null;
+  }
 
   return (
     <div className="tyba-lift-t flex h-[26px] min-w-0 shrink-0 items-center justify-between gap-4 px-3.5 text-[11px] text-tyba-text-faint">
@@ -236,6 +275,7 @@ export function Toolbar({
             <Shortcut combo={richInputCombo} />
           </button>
         )}
+        {suggestPlugin && <PluginChip />}
         {left}
       </div>
       <div className="flex shrink-0 items-center gap-4">{right}</div>

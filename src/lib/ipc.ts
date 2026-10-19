@@ -955,6 +955,9 @@ export interface AgentDetectedPayload {
   shim: ShimRoute | null;
   /** M7: por que um claude hospedado está sem jaula. `null` com jaula. */
   no_jail: NoJailReason | null;
+  /** Agente livre, fatia 4: claude no pane sem o plugin do TYBA — o chip de
+   * instalar aparece. Decidido no core. */
+  suggest_plugin: boolean;
 }
 
 /** `raw` (M6-B): o plugin do TYBA para o Claude Code avisou um claude que

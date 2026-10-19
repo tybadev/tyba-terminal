@@ -890,6 +890,27 @@ pub fn status(home: &Path) -> PluginStatus {
     }
 }
 
+/// Fatia 4 do agente livre: o chip "Instalar plugin" no pane. Só aparece
+/// com o plugin ausente e os hooks livres — bloqueado, instalar não adianta
+/// nada, e a tela de Integrações já diz por quê.
+pub fn should_suggest(installed: bool, blocked: Option<&str>) -> bool {
+    !installed && blocked.is_none()
+}
+
+/// O mesmo [`status`] sem resolver o binário: quem pergunta já achou um
+/// claude rodando no pane. Só lê dois JSON, então cabe no poll do probe.
+pub fn suggest_install(home: &Path) -> bool {
+    let env_dir = std::env::var("CLAUDE_CONFIG_DIR").ok();
+    let config = claude_config_dir(env_dir.as_deref(), home);
+    should_suggest(
+        is_installed(read_json(&config.join("plugins/installed_plugins.json")).as_ref()),
+        hooks_blocked(
+            read_json(&config.join("settings.json")).as_ref(),
+            read_json(&managed_settings_path()).as_ref(),
+        ),
+    )
+}
+
 /// Roda os comandos do Claude Code em sequência, parando no primeiro que
 /// falha. Só por clique do usuário (Configurações → Integrações).
 pub fn run_commands(commands: &[Vec<OsString>]) -> Result<(), String> {
@@ -1644,6 +1665,14 @@ mod tests {
         );
         // `allowManagedHooksOnly` só vale na config gerenciada.
         assert_eq!(hooks_blocked(Some(&managed), None), None);
+    }
+
+    #[test]
+    fn chip_only_when_missing_and_hooks_run() {
+        assert!(should_suggest(false, None));
+        assert!(!should_suggest(true, None));
+        assert!(!should_suggest(false, Some("disable_all_hooks")));
+        assert!(!should_suggest(false, Some("managed_hooks_only")));
     }
 
     #[test]
