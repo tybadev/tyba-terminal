@@ -39,8 +39,12 @@ static SECRETS: LazyLock<Regex> = LazyLock::new(|| {
             r"gh[pousr]_[A-Za-z0-9]{20,}",
             r"github_pat_[A-Za-z0-9_]{20,}",
             r"glpat-[A-Za-z0-9_-]{20,}",
-            r"xox[abposr]-[A-Za-z0-9-]{10,}",
+            r"(?:xoxe\.)?xox[abposre]-[A-Za-z0-9-]{10,}",
+            r"xapp-[A-Za-z0-9-]{10,}",
             r"AIza[0-9A-Za-z_-]{35}",
+            // base64("-----BEGIN"): PEM inteiro em base64 (Secret do
+            // Kubernetes). Certificado também cai aqui, e tudo bem.
+            r"LS0tLS1CRUdJTi[A-Za-z0-9+/=]*",
             r"eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+",
         ]
         .join("|"),
@@ -51,9 +55,35 @@ static SECRETS: LazyLock<Regex> = LazyLock::new(|| {
 /// `scheme://user:SENHA@host`: o grupo 1 fica, só a senha vira marca. A senha
 /// vai até o ÚLTIMO `@` antes de `/`, `?`, `#`, aspas ou espaço — host nunca
 /// tem `@`, senha crua às vezes tem.
+///
+/// O grupo 2 marca o digest de imagem (`docker://alpine:3.18@sha256:…`): tem a
+/// forma de `user:senha@`, mas é tag e hash, e fica como está.
 static URL_PASSWORD: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"([A-Za-z][A-Za-z0-9+.-]*://[^\s:/@]*:)[^\s/?#"'<>]+@"#).unwrap()
+    Regex::new(r#"([A-Za-z][A-Za-z0-9+.-]*://[^\s:/@]*:)[^\s/?#"'<>]+@(sha(?:256|512):)?"#).unwrap()
 });
+
+/// As senhas de URL do texto, pulando digest de imagem. `Borrowed` quando não
+/// há nenhuma.
+fn redact_url_passwords(input: &str) -> Cow<'_, str> {
+    let mut out = String::new();
+    let mut last = 0;
+    for c in URL_PASSWORD.captures_iter(input) {
+        if c.get(2).is_some() {
+            continue;
+        }
+        let m = c.get(0).unwrap();
+        out.push_str(&input[last..m.start()]);
+        out.push_str(&c[1]);
+        out.push_str(REDACTION_MARK);
+        out.push('@');
+        last = m.end();
+    }
+    if last == 0 {
+        return Cow::Borrowed(input);
+    }
+    out.push_str(&input[last..]);
+    Cow::Owned(out)
+}
 
 static KEY_START_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(KEY_START).unwrap());
 static KEY_END_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(KEY_END).unwrap());
@@ -68,16 +98,18 @@ pub fn redact(input: &str) -> Cow<'_, str> {
         let nl = if m.contains("\r\n") { "\r\n" } else { "\n" };
         format!("{REDACTION_MARK}{}", nl.repeat(m.matches('\n').count()))
     };
-    let password = |c: &regex::Captures| format!("{}{REDACTION_MARK}@", &c[1]);
     match SECRETS.replace_all(input, mark) {
-        Cow::Borrowed(s) => URL_PASSWORD.replace_all(s, password),
-        Cow::Owned(s) => Cow::Owned(URL_PASSWORD.replace_all(&s, password).into_owned()),
+        Cow::Borrowed(s) => redact_url_passwords(s),
+        Cow::Owned(s) => Cow::Owned(redact_url_passwords(&s).into_owned()),
     }
 }
 
 /// Mesmos padrões do [`redact`], como pergunta: o texto carrega um segredo?
 pub fn contains_secret(input: &str) -> bool {
-    SECRETS.is_match(input) || URL_PASSWORD.is_match(input)
+    SECRETS.is_match(input)
+        || URL_PASSWORD
+            .captures_iter(input)
+            .any(|c| c.get(2).is_none())
 }
 
 /// A linha poderia ser corpo de uma chave: base64, vazia ou cabeçalho de PEM
@@ -244,6 +276,50 @@ mod tests {
             assert!(matches!(redact(line), Cow::Borrowed(_)), "{line}");
             assert!(!contains_secret(line), "{line}");
         }
+    }
+
+    #[test]
+    fn an_image_digest_is_not_a_url_password() {
+        for algo in ["sha256", "sha512"] {
+            let line = format!("image: docker://alpine:3.18@{algo}:{}", "ab".repeat(32));
+            assert!(matches!(redact(&line), Cow::Borrowed(_)), "{line}");
+            assert!(!contains_secret(&line), "{line}");
+        }
+        // Vizinho: uma senha de verdade na mesma linha ainda sai.
+        let line = format!(
+            "docker://alpine:3.18@sha256:{} postgres://u:p@db/x",
+            "ab".repeat(32)
+        );
+        let out = redact(&line);
+        assert!(out.ends_with("postgres://u:[REDACTED]@db/x"), "{out}");
+        assert!(out.contains("alpine:3.18@sha256:"), "{out}");
+    }
+
+    #[test]
+    fn redacts_slack_app_and_refresh_tokens() {
+        for token in [
+            fake("xapp-1-", "A0", 12),
+            fake("xoxe-1-", "B1", 12),
+            fake("xoxe.xoxp-1-", "C2", 12),
+        ] {
+            let line = format!("SLACK={token} ok");
+            assert_eq!(redact(&line), "SLACK=[REDACTED] ok", "{token}");
+        }
+        assert!(!contains_secret("xapp-curto"));
+    }
+
+    #[test]
+    fn redacts_base64_of_a_pem_block() {
+        // `kubectl get secret -o yaml`: o PEM inteiro em base64, começando por
+        // base64("-----BEGIN").
+        let blob = format!("LS0tLS1CRUdJTi{}", "Zm9vYmFy".repeat(20));
+        let line = format!("  tls.key: {blob}");
+        assert_eq!(redact(&line), "  tls.key: [REDACTED]");
+        // Vizinho: base64 de outra coisa fica.
+        assert!(!contains_secret(&format!(
+            "  data: {}",
+            "Zm9vYmFy".repeat(20)
+        )));
     }
 
     #[test]
