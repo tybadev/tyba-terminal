@@ -1453,6 +1453,7 @@ pub fn create_agent_session(
         worktree.clone(),
         task,
         None,
+        false,
         on_exit,
     );
     if result.is_err() {
@@ -1498,6 +1499,11 @@ pub fn attach_agent_session(
         .unwrap_or_else(|| worktree.branch.clone());
     let resume = attach_resume(opts.resume_conversation.as_deref(), runner.as_ref())?;
 
+    // Agente livre, fatia 6: o claude em attach (review, conflitos, launch
+    // config sem `isolate`) só é observado — hooks `_hook --observe`, sem card;
+    // quem pergunta é o prompt do próprio Claude. A jaula continua. O Codex
+    // segue no gate: o `PermissionRequest` dele é o protocolo de aprovação.
+    let observe = attach_observes(&runner_kind);
     // Sem `worktree::remove` no erro: a pasta é do usuário, não nossa.
     spawn_prepared(
         ctx,
@@ -1508,8 +1514,14 @@ pub fn attach_agent_session(
         worktree,
         task,
         resume,
+        observe,
         on_exit,
     )
+}
+
+/// Se a sessão em attach deste runner roda no modelo do agente livre.
+fn attach_observes(runner: &AgentRunnerKind) -> bool {
+    matches!(runner, AgentRunnerKind::ClaudeCode)
 }
 
 /// O id de conversa que o attach do gate pede para retomar, já validado. Ele
@@ -1801,6 +1813,7 @@ pub fn resume_agent_session(
         worktree,
         task,
         Some(target.conversation_id),
+        false,
         on_exit,
     )
 }
@@ -2017,6 +2030,7 @@ fn spawn_prepared(
     worktree: crate::worktree::Worktree,
     task: String,
     resume: Option<String>,
+    observe: bool,
     on_exit: impl FnOnce(SessionId) + Send + 'static,
 ) -> Result<Session, String> {
     let runtime = runtime_dir(id)?;
@@ -2026,12 +2040,19 @@ fn spawn_prepared(
     }
 
     let exe = std::env::current_exe().map_err(|e| format!("exe do Tyba: {e}"))?;
-    let hook_cmd = hook_command(&exe);
+    let hook_cmd = if observe {
+        observer_hook_command(&exe)
+    } else {
+        hook_command(&exe)
+    };
     if matches!(runner.kind(), AgentRunnerKind::ClaudeCode) {
-        let settings = claude_session_settings(
-            &hook_cmd,
-            session_statusline(&exe, &std::env::vars().collect(), &[&worktree.path, &root]),
-        );
+        let status_line =
+            session_statusline(&exe, &std::env::vars().collect(), &[&worktree.path, &root]);
+        let settings = if observe {
+            observer_session_settings(&hook_cmd, status_line)
+        } else {
+            claude_session_settings(&hook_cmd, status_line)
+        };
         let settings_body = serde_json::to_string_pretty(&settings)
             .map_err(|e| format!("settings de hooks: {e}"))?;
         crate::session::write_private(&runtime, HOOK_SETTINGS_FILE, &settings_body)
@@ -2141,7 +2162,7 @@ fn spawn_prepared(
         agent_home: agent_home(&env),
         turn_settle: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         seen_transcript: Arc::new(Mutex::new(None)),
-        observe_only: false,
+        observe_only: observe,
     };
     let server = HookServer::bind(
         &socket_path,
@@ -2575,6 +2596,12 @@ mod session_end_tests {
 #[cfg(test)]
 mod attach_resume_tests {
     use super::*;
+
+    #[test]
+    fn only_claude_attach_runs_observed() {
+        assert!(attach_observes(&AgentRunnerKind::ClaudeCode));
+        assert!(!attach_observes(&AgentRunnerKind::Codex));
+    }
 
     #[test]
     fn no_requested_id_attaches_a_fresh_conversation() {

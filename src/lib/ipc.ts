@@ -965,21 +965,10 @@ export interface AgentDetectedPayload {
   detected: DetectedAgent | null;
   hosting: boolean;
   jailed: boolean;
-  /** M6-A: o claude cru passou pelo `tyba _jail`. `passthrough` (versão,
-   * ajuda, `mcp`...) não pede aviso; `ungated` (segundo plano) e `fallback`
-   * (o core não hospedou) mostram "sem gate" em vermelho. `null` = não passou
-   * pelo TYBA. */
-  shim: ShimRoute | null;
-  /** M7: por que um claude hospedado está sem jaula. `null` com jaula. */
-  no_jail: NoJailReason | null;
   /** Agente livre, fatia 4: claude no pane sem o plugin do TYBA — o chip de
    * instalar aparece. Decidido no core. */
   suggest_plugin: boolean;
 }
-
-/** `raw` (M6-B): o plugin do TYBA para o Claude Code avisou um claude que
- * não passou pelo shim (caminho absoluto, npx). */
-export type ShimRoute = "passthrough" | "ungated" | "fallback" | "raw";
 
 /** M6-B: a integração com o Claude Code (plugin do TYBA). */
 export interface ClaudePluginStatus {
@@ -999,20 +988,9 @@ export const installClaudePlugin = (sessionId?: SessionId) =>
 
 export const uninstallClaudePlugin = () =>
   invoke<ClaudePluginStatus>("uninstall_claude_plugin");
-export type NoJailReason = "home" | "hidden_dir" | "outside_home" | "sandbox";
 
 export const detectedAgent = (sessionId: SessionId) =>
   invoke<AgentDetectedPayload | null>("detected_agent", { sessionId });
-
-/** O que o `kill_shell_agent` devolve: a pasta do agente encerrado e o id da
- * conversa que ele tinha aberta (null quando o core não a identificou). */
-export interface ShellAgentReopen {
-  cwd: string;
-  conversation_id: string | null;
-}
-
-export const killShellAgent = (sessionId: SessionId) =>
-  invoke<ShellAgentReopen>("kill_shell_agent", { sessionId });
 
 /** Se o core consegue retomar a conversa nativa desta sessão morta — id
  * capturado, binário do runner no PATH e pasta ainda no lugar. A decisão é do

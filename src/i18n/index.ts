@@ -658,15 +658,6 @@ const resources = {
       agentsCountBlocked_other: "{{count}} parados",
       agentsNoGate: "sem gate — comandos não passam pela aprovação",
       agentsSessionGone: "A sessão destes agentes não existe mais.",
-      shellAgentNotice:
-        "{{binary}} está rodando fora do TYBA. Reabrir aqui liga a inbox de aprovações e o sandbox.",
-      shellAgentReopen: "Reabrir com gate",
-      shellAgentUngatedFallback:
-        "Sem gate: o TYBA não conseguiu hospedar este {{binary}}. Os comandos dele não passam pela aprovação nem pela jaula.",
-      shellAgentUngatedBackground:
-        "Sem gate: sessão do {{binary}} em segundo plano roda fora deste pane, sem aprovação e sem jaula.",
-      shellAgentUngatedRaw:
-        "Sem gate: este {{binary}} não passou pelo TYBA (caminho absoluto ou npx). Escrita, Bash e rede estão bloqueados — saia e rode `claude` direto no pane.",
       claudePlugin: "Integração com Claude Code",
       claudePluginHint:
         "Instala um plugin do TYBA no seu Claude Code. Num pane do TYBA, o claude avisa o app quando começa, para e pede permissão, e push para main/master e merge de PR são recusados. As outras permissões continuam no prompt do próprio Claude. Fora do TYBA o plugin não faz nada. Mexe na configuração global do Claude Code, por isso só instala quando você pedir.",
@@ -679,22 +670,6 @@ const resources = {
       claudePluginBlockedManaged:
         "Bloqueada: a configuração gerenciada do Claude Code só permite hooks da empresa (allowManagedHooksOnly).",
       claudePluginFailed: "Não deu para mudar a integração com Claude Code",
-      shellAgentIgnore: "Agora não",
-      shellAgentReopenTitle: "Reabrir com gate?",
-      shellAgentReopenDetail:
-        "O {{binary}} atual vai ser encerrado e a mesma conversa reabre numa sessão gerenciada — com inbox de aprovações e sandbox — na mesma pasta. Se o TYBA não identificar a conversa, ela fica no disco; retome com /resume no agente novo.",
-      shellAgentReopenFailed: "Não deu pra reabrir com gate",
-      shellAgentReopenSpawnFailed:
-        "O agente foi encerrado, mas a sessão gerenciada não abriu",
-      shellUnjailedNotice: "Gate ativo · sem sandbox neste {{binary}}.",
-      shellUnjailedHome:
-        "Gate ativo · sem sandbox: o {{binary}} foi aberto direto na sua home. Abra numa pasta de projeto para isolar.",
-      shellUnjailedHiddenDir:
-        "Gate ativo · sem sandbox: o {{binary}} foi aberto numa pasta oculta, onde costumam ficar senhas e chaves. Abra numa pasta de projeto para isolar.",
-      shellUnjailedOutsideHome:
-        "Gate ativo · sem sandbox: o {{binary}} foi aberto fora da sua home. Abra numa pasta de projeto dentro da home para isolar.",
-      shellUnjailedSandbox:
-        "Gate ativo · sem sandbox: a sandbox do sistema não está disponível nesta máquina.",
       sshIntegrationOffSwitch:
         "Terminal comum: a integração do TYBA está desligada neste host.",
       sshIntegrationUnsupportedShell:
@@ -719,16 +694,6 @@ const resources = {
       agentResumeFailed: "Não deu pra retomar a conversa",
       shellResumeNotice:
         "A conversa do Claude que rodava aqui continua no disco. Retomar roda claude --resume neste terminal, e o TYBA segue acompanhando.",
-      "error.agent.reopen_not_detected":
-        "Nenhum agente detectado nesta sessão.",
-      "error.agent.reopen_no_cwd":
-        "Não deu pra descobrir a pasta do agente.",
-      "error.agent.reopen_not_git":
-        "{{path}} não é um repositório git — sessão gerenciada precisa de um repo.",
-      "error.agent.reopen_kill_failed":
-        "Não deu pra encerrar o agente: {{detail}}",
-      "error.agent.reopen_unsupported":
-        "Reabrir com gate ainda não está disponível nesta plataforma.",
       subagentsTitle: "Subagente",
       subagentsSummary: "Resumo",
       subagentsViewerEmpty: "Nenhum subagente em foco.",
@@ -2761,15 +2726,6 @@ const resources = {
       agentsCountBlocked_other: "{{count}} stopped",
       agentsNoGate: "no gate — commands bypass approval",
       agentsSessionGone: "The session for these agents no longer exists.",
-      shellAgentNotice:
-        "{{binary}} running without TYBA's gate — no approval inbox, no sandbox",
-      shellAgentReopen: "Reopen managed",
-      shellAgentUngatedFallback:
-        "No gate: TYBA couldn't host this {{binary}}. Its commands skip approval and the sandbox.",
-      shellAgentUngatedBackground:
-        "No gate: this background {{binary}} session runs outside the pane, with no approval and no sandbox.",
-      shellAgentUngatedRaw:
-        "No gate: this {{binary}} didn't go through TYBA (absolute path or npx). Writes, Bash and network are blocked — exit and run `claude` straight in the pane.",
       claudePlugin: "Claude Code integration",
       claudePluginHint:
         "Installs a TYBA plugin in your Claude Code. In a TYBA pane, claude tells the app when it starts, stops and asks for permission, and pushes to main/master and PR merges are refused. Every other permission stays in Claude's own prompt. Outside TYBA the plugin does nothing. It changes Claude Code's global configuration, so it only installs when you ask.",
@@ -2782,22 +2738,6 @@ const resources = {
       claudePluginBlockedManaged:
         "Blocked: Claude Code's managed settings only allow company hooks (allowManagedHooksOnly).",
       claudePluginFailed: "Couldn't change the Claude Code integration",
-      shellAgentIgnore: "Ignore",
-      shellAgentReopenTitle: "Reopen managed?",
-      shellAgentReopenDetail:
-        "The current {{binary}} will be terminated and the same conversation reopens in a managed session — with approval inbox and sandbox — in the same folder. If TYBA can't identify the conversation, it stays on disk; resume it with /resume in the new agent.",
-      shellAgentReopenFailed: "Could not reopen managed",
-      shellAgentReopenSpawnFailed:
-        "The agent was terminated, but the managed session did not open",
-      shellUnjailedNotice: "Gate on · no sandbox for this {{binary}}.",
-      shellUnjailedHome:
-        "Gate on · no sandbox: {{binary}} was opened right in your home folder. Open it in a project folder to isolate it.",
-      shellUnjailedHiddenDir:
-        "Gate on · no sandbox: {{binary}} was opened in a hidden folder, where passwords and keys usually live. Open it in a project folder to isolate it.",
-      shellUnjailedOutsideHome:
-        "Gate on · no sandbox: {{binary}} was opened outside your home folder. Open it in a project folder inside home to isolate it.",
-      shellUnjailedSandbox:
-        "Gate on · no sandbox: the system sandbox isn't available on this machine.",
       sshIntegrationOffSwitch:
         "Plain terminal: TYBA's integration is off for this host.",
       sshIntegrationUnsupportedShell:
@@ -2822,14 +2762,6 @@ const resources = {
       agentResumeFailed: "Could not resume the conversation",
       shellResumeNotice:
         "The Claude conversation that ran here is still on disk. Resuming runs claude --resume in this terminal, and TYBA keeps following it.",
-      "error.agent.reopen_not_detected": "No agent detected in this session.",
-      "error.agent.reopen_no_cwd": "Could not resolve the agent's folder.",
-      "error.agent.reopen_not_git":
-        "{{path}} is not a git repository — managed sessions require a repo.",
-      "error.agent.reopen_kill_failed":
-        "Could not terminate the agent: {{detail}}",
-      "error.agent.reopen_unsupported":
-        "Reopen managed is not available on this platform yet.",
       subagentsTitle: "Subagent",
       subagentsSummary: "Summary",
       subagentsViewerEmpty: "No subagent in focus.",

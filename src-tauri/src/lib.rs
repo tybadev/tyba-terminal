@@ -460,22 +460,17 @@ fn poll_agent_probers(app: &AppHandle) {
     }
     state.observed_hold.retain(&live);
     for (session_id, detected) in changes {
-        if detected.is_none() {
-            state.agent_prober.clear_raw_plugin(session_id);
-        }
         let _ = app.emit(
             agent::process_probe::EVENT_CHANGED,
-            agent_payload(&state, session_id, detected),
+            agent_payload(session_id, detected),
         );
     }
 }
 
 /// O payload de detecção de uma sessão. Track C (tech-spec §7): derivado do
 /// env do PID detectado a cada leitura — nunca armazenado (§5 da spec,
-/// decisão 5). `(false, false)` quando não há agente nenhum. M6-B: um claude
-/// sem marcador do shim que o plugin avisou como cru vira `shim: "raw"`.
+/// decisão 5). `(false, false)` quando não há agente nenhum.
 fn agent_payload(
-    state: &AppState,
     session_id: SessionId,
     detected: Option<agent::process_probe::DetectedAgent>,
 ) -> agent::process_probe::AgentDetectedPayload {
@@ -483,18 +478,6 @@ fn agent_payload(
         .as_ref()
         .map(|d| agent::process_probe::hosting_markers(d.pid))
         .unwrap_or((false, false));
-    let shim = detected.as_ref().and_then(|d| {
-        agent::process_probe::shim_marker(d.pid).or_else(|| {
-            state
-                .agent_prober
-                .is_raw_plugin(session_id)
-                .then(|| "raw".to_string())
-        })
-    });
-    let no_jail = detected
-        .as_ref()
-        .filter(|_| hosting && !jailed)
-        .and_then(|d| agent::process_probe::no_jail_marker(d.pid));
     let suggest_plugin = detected
         .as_ref()
         .is_some_and(|d| wants_plugin_chip(&d.kind, hosting) && plugin_suggested(d.pid));
@@ -503,8 +486,6 @@ fn agent_payload(
         detected,
         hosting,
         jailed,
-        shim,
-        no_jail,
         suggest_plugin,
     }
 }
@@ -546,7 +527,7 @@ fn reemit_agent_payloads(app: &AppHandle) {
         if let Some(detected) = state.agent_prober.detected(session_id) {
             let _ = app.emit(
                 agent::process_probe::EVENT_CHANGED,
-                agent_payload(&state, session_id, Some(detected)),
+                agent_payload(session_id, Some(detected)),
             );
         }
     }
@@ -7214,56 +7195,6 @@ fn focus_subagent(
     state.subagents.snapshot(session_id)
 }
 
-/// Mata o agente cru detectado numa sessão de shell (F3 do
-/// detectar-agente-no-shell) e devolve o cwd do agente pro front encadear o
-/// attach gerenciado. Valida ANTES de matar que a pasta é um repo git — nunca
-/// derruba o agente pra depois falhar o reopen. O shell da sessão sobrevive.
-///
-/// Devolve também o id da conversa que o disk observer tinha ligado (M1 do
-/// claude-monitor), colhido antes do kill: o attach sobe com `--resume` nele e
-/// a conversa do usuário continua, em vez de ficar órfã no disco. `None` (sem
-/// bind, sessão hospedada) cai no comportamento antigo: sessão nova vazia.
-#[tauri::command]
-async fn kill_shell_agent(
-    state: State<'_, AppState>,
-    session_id: SessionId,
-) -> Result<ShellAgentReopen, crate::error::AppError> {
-    let agent = state
-        .agent_prober
-        .detected(session_id)
-        .ok_or_else(|| crate::error::AppError::new("agent.reopen_not_detected"))?;
-    let leader = state.pty_pool.leader_pid(session_id);
-    let cwd = repo::process_cwd(agent.pid)
-        .or_else(|| leader.and_then(repo::process_cwd))
-        .ok_or_else(|| crate::error::AppError::new("agent.reopen_no_cwd"))?;
-    if repo::toplevel(&cwd).is_none() {
-        return Err(
-            crate::error::AppError::new("agent.reopen_not_git").with("path", cwd.to_string_lossy())
-        );
-    }
-    let conversation_id = state.disk_observer.bound_conversation(session_id);
-    // O grace do SIGTERM (~1,5s) roda fora da thread do command — mesmo padrão
-    // do painel remoto: worker do Tokio nunca dorme.
-    tauri::async_runtime::spawn_blocking(move || {
-        agent::process_probe::terminate_detected(agent.pid, agent.start_ms, leader)
-    })
-    .await
-    .map_err(|e| {
-        crate::error::AppError::new("agent.reopen_kill_failed").with("detail", e.to_string())
-    })??;
-    Ok(ShellAgentReopen {
-        cwd: cwd.to_string_lossy().into_owned(),
-        conversation_id,
-    })
-}
-
-/// O que o front precisa para encadear o attach depois do [`kill_shell_agent`].
-#[derive(serde::Serialize)]
-struct ShellAgentReopen {
-    cwd: String,
-    conversation_id: Option<String>,
-}
-
 /// M6-B: estado da integração com o Claude Code (o plugin do TYBA).
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[tauri::command]
@@ -7589,7 +7520,7 @@ async fn detected_agent(
     Ok(state
         .agent_prober
         .detected(session_id)
-        .map(|detected| agent_payload(&state, session_id, Some(detected))))
+        .map(|detected| agent_payload(session_id, Some(detected))))
 }
 
 #[tauri::command]
@@ -9627,7 +9558,6 @@ pub fn run() {
             subagent_transcript,
             open_agents_panel,
             toggle_agent_queue,
-            kill_shell_agent,
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             claude_plugin_status,
             #[cfg(any(target_os = "linux", target_os = "macos"))]
