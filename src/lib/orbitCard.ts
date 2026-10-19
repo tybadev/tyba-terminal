@@ -370,12 +370,16 @@ export function sessionLog(events: readonly NodeEvent[] | undefined, kind: NodeK
 }
 
 /**
- * "Esperando você" no nó (quadro OrbitEsperando): só rodando e com o pedido
- * aberto. O core já limpa o de quem deixou de rodar; a tela não desenha
- * âmbar por retrato velho (execução do histórico, nó parado).
+ * "Esperando você" no nó (quadro OrbitEsperando): o pedido aberto que o core
+ * pôs. Vale também no nó já pronto/falhou com a sessão viva (o criado que
+ * fechou o turno e recebeu mensagem); nunca no que espera o ▶, foi pulado
+ * ou parado (sem sessão desta tentativa).
  */
 export function waitingYouOf(n: NodeRun | undefined): WaitingYou | null {
-  return n?.status === "running" && n.waitingYou ? n.waitingYou : null;
+  if (!n?.waitingYou) return null;
+  return n.status === "waiting" || n.status === "skipped" || n.status === "stopped"
+    ? null
+    : n.waitingYou;
 }
 
 /**

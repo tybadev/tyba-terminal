@@ -606,6 +606,22 @@ fn held_by_subagents(is_agent: bool, status: &SessionStatus, has_active: bool) -
 /// Depois de voltar a `Running` por evento de subagente (ferramenta, decisão
 /// de aprovação), a marca volta se o orquestrador segue com o turno
 /// encerrado. Evento do próprio orquestrador nunca a repõe.
+/// Ferramenta de subagente (`PreToolUse`/`PostToolUse` com `agent_id`) com o
+/// prompt nativo do agente principal aberto: o prompt segue aberto, e o
+/// `Running` do irmão apagaria o "pedindo" (e a fila "esperando você" do
+/// Orbit). Só o agente principal voltando a trabalhar, o `Stop` ou o
+/// `SessionEnd` tiram a sessão dali.
+fn subagent_keeps_native_prompt(from_subagent: bool, current: Option<&SessionStatus>) -> bool {
+    from_subagent
+        && matches!(
+            current,
+            Some(SessionStatus::AwaitingInput {
+                reason: AwaitingReason::NativePrompt,
+                ..
+            })
+        )
+}
+
 fn label_held_after_running(from_subagent: bool, orchestrator_idle: bool) -> bool {
     from_subagent && orchestrator_idle
 }
@@ -1121,8 +1137,11 @@ fn handle_event(ctx: &HandlerCtx, event: HookEvent) -> HookAction {
                             .set_subagents_working(&ctx.app, ctx.session_id, false);
                         ctx.turn_settle.fetch_add(1, Ordering::SeqCst);
                     }
-                    ctx.sessions
-                        .set_status(&ctx.app, ctx.session_id, SessionStatus::Running);
+                    let current = ctx.sessions.get(ctx.session_id).map(|s| s.status);
+                    if !subagent_keeps_native_prompt(from_subagent, current.as_ref()) {
+                        ctx.sessions
+                            .set_status(&ctx.app, ctx.session_id, SessionStatus::Running);
+                    }
                     if label_held_after_running(
                         from_subagent,
                         ctx.subagents.orchestrator_idle(ctx.session_id),
@@ -3406,6 +3425,29 @@ mod hook_route_tests {
             }
         }
         status
+    }
+
+    /// Subagente irmão rodando ferramenta não fecha o prompt nativo do
+    /// principal; o principal voltando a trabalhar fecha.
+    #[test]
+    fn ferramenta_de_subagente_nao_tira_do_prompt_nativo() {
+        let open = native_prompt_status(Some("bun test".into()));
+        assert!(subagent_keeps_native_prompt(true, Some(&open)));
+        assert!(!subagent_keeps_native_prompt(false, Some(&open)));
+        for other in [
+            SessionStatus::Idle { summary: None },
+            SessionStatus::Running,
+            SessionStatus::AwaitingInput {
+                hint: None,
+                reason: AwaitingReason::Approval,
+            },
+        ] {
+            assert!(
+                !subagent_keeps_native_prompt(true, Some(&other)),
+                "{other:?}"
+            );
+        }
+        assert!(!subagent_keeps_native_prompt(true, None));
     }
 
     fn is_native_prompt(status: &SessionStatus) -> bool {

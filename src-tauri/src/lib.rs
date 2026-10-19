@@ -414,6 +414,16 @@ fn poll_agent_probers(app: &AppHandle) {
             },
             approvals::now_ms(),
         );
+        // O claude digitado no Terminal pede permissão na sessão do shell.
+        runs.terminal_attention(
+            &|session| {
+                SessionId::parse_str(session)
+                    .ok()
+                    .and_then(|id| state.sessions.get(id))
+                    .and_then(|s| orbit::agent::waiting_you(Some(&s.status)))
+            },
+            approvals::now_ms(),
+        );
     }
     let leader_by_session: std::collections::HashMap<SessionId, u32> =
         shells.iter().copied().collect();

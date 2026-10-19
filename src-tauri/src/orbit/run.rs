@@ -263,8 +263,10 @@ pub struct WaitingYou {
 }
 
 impl WaitingYou {
-    /// O próximo estado dado o que a sessão diz agora. O mesmo motivo
-    /// guarda o começo (o relógio da fila não recomeça a cada poll).
+    /// O próximo estado dado o que a sessão diz agora. O mesmo pedido (motivo
+    /// e resumo) guarda o começo: o relógio da fila não recomeça a cada poll.
+    /// Pedido novo (outro resumo, ou a sessão saiu do pedido entre os dois:
+    /// `current` já é `None`) recomeça.
     fn next(
         current: Option<&WaitingYou>,
         attention: Option<super::agent::Attention>,
@@ -272,7 +274,7 @@ impl WaitingYou {
     ) -> Option<WaitingYou> {
         let a = attention?;
         let since = current
-            .filter(|c| c.reason == a.reason)
+            .filter(|c| c.reason == a.reason && c.hint == a.hint)
             .map_or(at, |c| c.since);
         Some(WaitingYou {
             reason: a.reason,
@@ -282,12 +284,14 @@ impl WaitingYou {
     }
 }
 
-/// A fila de atenção: nós rodando que esperam o dono, o mais antigo
-/// primeiro (empate: pelo id, para a ordem não pular entre retratos).
+/// A fila de atenção: nós que esperam o dono, o mais antigo primeiro
+/// (empate: pelo id, para a ordem não pular entre retratos). Vale também o
+/// nó já fechado com a sessão viva (o criado que fechou o turno e recebeu
+/// mensagem, o agente cujo 1º turno falhou): quem limpa é o
+/// [`Sched::snapshot`] e a saída da sessão.
 fn waiting_queue(nodes: &HashMap<String, NodeRun>) -> Vec<String> {
     let mut queue: Vec<(&String, u64)> = nodes
         .iter()
-        .filter(|(_, n)| n.status == NodeStatus::Running)
         .filter_map(|(id, n)| n.waiting_you.as_ref().map(|w| (id, w.since)))
         .collect();
     queue.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(b.0)));
@@ -699,11 +703,21 @@ impl Scheduler {
     /// Retrato para publicar, com versão nova. Tirado com o lock na mão, a
     /// ordem das versões é a ordem dos estados.
     pub fn snapshot(&mut self) -> Run {
-        // Shell que parou (fechar, ■ Parar, `exit`) leva o agente junto; e
-        // quem não roda mais não espera o dono (caiu, terminou, parou).
+        // Shell que parou (fechar, ■ Parar, `exit`) leva o agente junto. Nó
+        // sem sessão desta tentativa (esperando, pulado, parado) ou run
+        // fechado não espera o dono; pronto/falhou com a sessão viva, sim (a
+        // saída dela limpa, `agent_exited`).
+        let closed = self.run.status != RunStatus::Running;
         for n in self.run.nodes.values_mut() {
             if n.status != NodeStatus::Running {
                 n.hosted_agent = None;
+            }
+            if closed
+                || matches!(
+                    n.status,
+                    NodeStatus::Waiting | NodeStatus::Skipped | NodeStatus::Stopped
+                )
+            {
                 n.waiting_you = None;
             }
         }
@@ -2174,6 +2188,52 @@ impl<H: RunHost> Runs<H> {
         }
     }
 
+    /// "Esperando você" no nó Terminal: o claude digitado no shell do nó
+    /// marca a **sessão do shell** com o prompt nativo (`on_native_prompt`).
+    /// A cada tick do poll de processos, `attention(sessão)` diz o pedido
+    /// aberto em cada shell de Terminal aberto; entra e sai da fila como o
+    /// agente de nó ([`WaitingYou::next`]).
+    pub fn terminal_attention(
+        &self,
+        attention: &dyn Fn(&str) -> Option<super::agent::Attention>,
+        now: u64,
+    ) {
+        // `terminals` é travado depois de `active`: copia antes.
+        let shells: Vec<(String, (String, String, u32))> = self
+            .terminals
+            .lock()
+            .iter()
+            .map(|(s, t)| (s.clone(), t.clone()))
+            .collect();
+        let mut changed: Vec<String> = Vec::new();
+        for (session, (run_id, node_id, attempt)) in shells {
+            let asked = attention(&session);
+            let mut active = self.active.lock();
+            let Some(a) = active.get_mut(&run_id) else {
+                continue;
+            };
+            if a.sched.attempt(&node_id) != Some(attempt) {
+                continue;
+            }
+            let Some(n) = a.sched.run.nodes.get_mut(&node_id) else {
+                continue;
+            };
+            if n.status != NodeStatus::Running || n.session_id.as_deref() != Some(&session) {
+                continue;
+            }
+            let next = WaitingYou::next(n.waiting_you.as_ref(), asked, now);
+            if n.waiting_you != next {
+                n.waiting_you = next;
+                if !changed.contains(&run_id) {
+                    changed.push(run_id);
+                }
+            }
+        }
+        for run_id in changed {
+            self.publish_current(&run_id);
+        }
+    }
+
     fn hosted_agent_ended(&self, session: &str) {
         let Some((run_id, node_id, _)) = self.terminals.lock().get(session).cloned() else {
             return;
@@ -2184,7 +2244,10 @@ impl<H: RunHost> Runs<H> {
             .get_mut(&run_id)
             .and_then(|a| a.sched.run.nodes.get_mut(&node_id))
             .filter(|n| n.session_id.as_deref() == Some(session))
-            .is_some_and(|n| n.hosted_agent.take().is_some());
+            .is_some_and(|n| {
+                let waited = n.waiting_you.take().is_some();
+                n.hosted_agent.take().is_some() || waited
+            });
         if changed {
             self.publish_current(&run_id);
         }
@@ -3469,14 +3532,16 @@ impl<H: RunHost> Runs<H> {
                 return;
             }
             let at = now();
+            // Também com o nó já fechado: a sessão viva pode pedir permissão
+            // (o vigia só avisa enquanto ela vive).
             let waited = match a.sched.run.nodes.get_mut(node_id) {
-                Some(n) if n.status == NodeStatus::Running => {
+                Some(n) => {
                     let next = WaitingYou::next(n.waiting_you.as_ref(), attention, at);
                     let changed = n.waiting_you != next;
                     n.waiting_you = next;
                     changed
                 }
-                _ => false,
+                None => false,
             };
             let session = a
                 .sched
@@ -5412,12 +5477,19 @@ impl<H: RunHost> Runs<H> {
     /// Run já fechado: o retrato guardado é republicado só por isso.
     fn agent_exited(&self, run_id: &str, node_id: &str, holds: bool, attempt: u32) {
         {
-            let active = self.active.lock();
-            if !active.contains_key(run_id) {
+            let mut active = self.active.lock();
+            let Some(a) = active.get_mut(run_id) else {
+                drop(active);
                 if let Some(run) = self.stored_closed(run_id) {
                     self.publish(run);
                 }
                 return;
+            };
+            // A sessão saiu: não espera mais o dono.
+            if a.sched.attempt(node_id) == Some(attempt) {
+                if let Some(n) = a.sched.run.nodes.get_mut(node_id) {
+                    n.waiting_you = None;
+                }
             }
         }
         if holds {
@@ -8088,8 +8160,85 @@ mod tests {
         assert!(r.nodes.values().all(|n| n.waiting_you.is_none()));
     }
 
+    /// Agente vivo com o nó já fechado (o criado que fechou o 1º turno):
+    /// pedindo permissão, entra na fila; o run não assenta; a saída da
+    /// sessão o tira.
+    #[cfg(unix)]
     #[test]
-    fn waiting_you_keeps_its_start_and_the_queue_skips_what_does_not_run() {
+    fn a_closed_node_with_a_live_session_still_waits_for_you() {
+        use serde_json::json;
+        let dir = tempfile::tempdir().unwrap();
+        let (runs, host, _app) = pty_runs(dir.path().join("runs"));
+        runs.settle_ms
+            .store(50, std::sync::atomic::Ordering::Relaxed);
+        let run = runs
+            .start_now(graph(vec![orchestrator("o")], vec![]), vec![])
+            .unwrap();
+        wait_orchestrating(&runs, &run.id, "o");
+        let child = tools_of(&host, "o")
+            .call(
+                "orbit_create_agent",
+                &json!({"title": "filho", "runner": "claude", "prompt": "x", "dir": dir.path()}),
+            )
+            .unwrap()["node_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let r = wait_status(&runs, &run.id, &child, NodeStatus::Done);
+        let session = r.nodes[&child].session_id.clone().unwrap();
+        host.set_state("o", PeerState::Ready);
+        host.set_permission("filho", "bun test");
+        let r = runs.get(&run.id).unwrap();
+        assert_eq!(r.nodes[&child].status, NodeStatus::Done);
+        assert!(r.nodes[&child].waiting_you.is_some(), "{r:?}");
+        assert_eq!(r.waiting_you, vec![child.clone()]);
+        std::thread::sleep(Duration::from_millis(120));
+        host.set_state("o", PeerState::Ready);
+        host.set_permission("filho", "bun test");
+        assert!(!runs.get(&run.id).unwrap().settled);
+        host.exit_agent(&session);
+        let r = wait_until(&runs, &run.id, "a sessão saiu", |r| {
+            r.nodes[&child].waiting_you.is_none()
+        });
+        assert!(r.waiting_you.is_empty());
+    }
+
+    /// Pedido novo recomeça o relógio: outro resumo, ou a sessão saiu do
+    /// pedido entre os dois.
+    #[test]
+    fn a_new_request_restarts_the_waiting_clock() {
+        use crate::orbit::agent::{Attention, WaitReason};
+        let ask = |hint: &str| {
+            Some(Attention {
+                reason: WaitReason::Permission,
+                hint: Some(hint.into()),
+            })
+        };
+        let first = WaitingYou::next(None, ask("bun test"), 10).unwrap();
+        assert_eq!(
+            WaitingYou::next(Some(&first), ask("bun test"), 50)
+                .unwrap()
+                .since,
+            10
+        );
+        assert_eq!(
+            WaitingYou::next(Some(&first), ask("rm -rf dist"), 50)
+                .unwrap()
+                .since,
+            50
+        );
+        let left = WaitingYou::next(Some(&first), None, 30);
+        assert_eq!(left, None);
+        assert_eq!(
+            WaitingYou::next(left.as_ref(), ask("bun test"), 60)
+                .unwrap()
+                .since,
+            60
+        );
+    }
+
+    #[test]
+    fn waiting_you_keeps_its_start_and_the_queue_is_oldest_first() {
         use crate::orbit::agent::{Attention, WaitReason};
         let ask = || {
             Some(Attention {
@@ -8108,7 +8257,7 @@ mod tests {
             ("y", NodeStatus::Running, Some(1)),
             ("x", NodeStatus::Running, Some(5)),
             ("w", NodeStatus::Running, None),
-            ("v", NodeStatus::Done, Some(0)),
+            ("v", NodeStatus::Done, Some(3)),
         ] {
             let mut n = NodeRun::waiting();
             n.status = status;
@@ -8119,7 +8268,8 @@ mod tests {
             });
             nodes.insert(id.to_string(), n);
         }
-        assert_eq!(waiting_queue(&nodes), vec!["y", "x", "z"]);
+        // O nó fechado com a sessão viva conta; quem limpa é o retrato.
+        assert_eq!(waiting_queue(&nodes), vec!["y", "v", "x", "z"]);
     }
 
     /// O run assenta quando todo agente fecha o turno há um tempo e nada mais
@@ -12139,6 +12289,58 @@ mod tests {
         // A marca do shell morto também não fica.
         runs.hosted_agent_tick(&|_| false, 200_000 + HOSTED_GRACE_MS);
         assert!(runs.hosted.lock().is_empty());
+    }
+
+    /// O claude digitado no Terminal pede permissão na sessão do shell: o nó
+    /// Terminal entra em "esperando você" e sai como o agente de nó. Shell
+    /// que não é de Terminal aberto não conta.
+    #[test]
+    fn terminal_waits_for_you_when_its_typed_agent_asks_permission() {
+        use crate::orbit::agent::{Attention, WaitReason};
+        let dir = tempfile::tempdir().unwrap();
+        let (runs, _host, _app) = pty_runs(dir.path().join("runs"));
+        let g = graph(vec![terminal("t", dir.path())], vec![]);
+        let run = runs.open_terminal_now(g, "t").unwrap();
+        let shell = terminal_session(&runs, &run.id, "t");
+        let ask = |hint: &str| {
+            let (shell, hint) = (shell.clone(), hint.to_string());
+            move |s: &str| {
+                (s == shell).then(|| Attention {
+                    reason: WaitReason::Permission,
+                    hint: Some(hint.clone()),
+                })
+            }
+        };
+        runs.terminal_attention(&ask("git status"), 1_000);
+        let r = runs.get(&run.id).unwrap();
+        assert_eq!(r.nodes["t"].waiting_you.as_ref().unwrap().since, 1_000);
+        assert_eq!(r.waiting_you, vec!["t".to_string()]);
+        // O mesmo pedido no tick seguinte: o começo fica.
+        runs.terminal_attention(&ask("git status"), 3_000);
+        assert_eq!(
+            runs.get(&run.id).unwrap().nodes["t"]
+                .waiting_you
+                .as_ref()
+                .unwrap()
+                .since,
+            1_000
+        );
+        // Respondeu: sai.
+        runs.terminal_attention(&|_| None, 4_000);
+        let r = runs.get(&run.id).unwrap();
+        assert!(r.nodes["t"].waiting_you.is_none());
+        assert!(r.waiting_you.is_empty());
+        // O agente saiu com o pedido aberto: a marca do hospedado leva junto.
+        runs.hosted_agent_started(&shell, "claude", 5_000);
+        runs.terminal_attention(&ask("rm -rf dist"), 6_000);
+        runs.hosted_agent_tick(&|_| false, 6_000 + HOSTED_GRACE_MS);
+        assert!(runs.get(&run.id).unwrap().nodes["t"].waiting_you.is_none());
+        // Fechado: nada mais entra.
+        runs.close_terminal("g-1", "t").unwrap();
+        runs.terminal_attention(&ask("ls"), 9_000);
+        let r = runs.get(&run.id).unwrap();
+        assert!(r.nodes["t"].waiting_you.is_none());
+        assert!(r.waiting_you.is_empty());
     }
 
     /// Só o shell de um Terminal aberto acende: shell da grade (qualquer

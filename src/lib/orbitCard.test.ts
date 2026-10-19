@@ -360,7 +360,7 @@ describe("esperando você (quadro OrbitEsperando)", () => {
     hint,
   });
 
-  test("só o nó rodando com o pedido aberto espera; anel âmbar, abaixo do pedido do gate", () => {
+  test("o nó com o pedido aberto espera (também fechado com a sessão viva); anel âmbar, abaixo do gate", () => {
     const waiting = nodeRun({ waitingYou: permission(10, "bun test src/api") });
     expect(waitingYouOf(waiting)).toEqual(permission(10, "bun test src/api"));
     expect(ringState(waiting, false)).toBe("you");
@@ -368,10 +368,14 @@ describe("esperando você (quadro OrbitEsperando)", () => {
     expect(ringState(waiting, true)).toBe("owner");
     // Agente que só terminou o turno, processo que caiu, retrato velho: não.
     expect(waitingYouOf(nodeRun({}))).toBeNull();
-    expect(waitingYouOf(nodeRun({ status: "failed", waitingYou: permission(1) }))).toBeNull();
-    expect(waitingYouOf(nodeRun({ status: "done", waitingYou: permission(1) }))).toBeNull();
+    expect(waitingYouOf(nodeRun({ status: "failed" }))).toBeNull();
+    expect(waitingYouOf(nodeRun({ status: "stopped", waitingYou: permission(1) }))).toBeNull();
+    expect(waitingYouOf(nodeRun({ status: "skipped", waitingYou: permission(1) }))).toBeNull();
+    expect(waitingYouOf(nodeRun({ status: "waiting", waitingYou: permission(1) }))).toBeNull();
     expect(waitingYouOf(undefined)).toBeNull();
-    expect(ringState(nodeRun({ status: "done", waitingYou: permission(1) }), false)).toBe("done");
+    // Nó já fechado com a sessão viva pedindo: espera (o core só põe nesse caso).
+    expect(waitingYouOf(nodeRun({ status: "done", waitingYou: permission(1) }))).toEqual(permission(1));
+    expect(ringState(nodeRun({ status: "failed", waitingYou: permission(1) }), false)).toBe("you");
   });
 
   test("tempo: cabeçalho \"40 s\" / \"2 min\", linha da execução \"40s\" / \"2m\"", () => {

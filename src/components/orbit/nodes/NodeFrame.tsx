@@ -1054,8 +1054,12 @@ export function NodeFrame({
   // O agente espera o dono no prompt dele: contorno âmbar e o chip; o
   // pedido do gate (Permitir/Negar) tem a cápsula inteira e vem antes.
   const waiting = request === null ? waitingYouOf(nodeRun) : null;
+  // O Terminal aberto tem anel próprio, menos quando o agente digitado nele
+  // espera o dono.
   const ring =
-    request === null && ringOverride ? ringOverride : ringState(nodeRun, request !== null, run?.settled);
+    request === null && ringOverride && !waiting
+      ? ringOverride
+      : ringState(nodeRun, request !== null, run?.settled);
   const failed = ring === "failed";
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(false);
