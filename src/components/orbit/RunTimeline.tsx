@@ -1,4 +1,4 @@
-import { Fragment } from "react";
+import { Fragment, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { CaretRight, Warning } from "@phosphor-icons/react";
 
@@ -16,6 +16,8 @@ import {
   type Graph,
   type Run,
 } from "@/lib/orbit";
+import { waitedFor, waitingQueue, waitingYouOf } from "@/lib/orbitCard";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { STATUS_TONE } from "./nodes/NodeFrame";
 
 /**
@@ -28,19 +30,36 @@ export function RunTimeline({
   run,
   number,
   now,
+  onOpen,
 }: {
   graph: Pick<Graph, "nodes" | "edges">;
   run: Run | null;
   number: number;
   now: number;
+  /** "Abrir" na fila de atenção: foca e abre o nó. */
+  onOpen: (nodeId: string) => void;
 }) {
   const { t, i18n } = useTranslation();
+  const queue = waitingQueue(run, graph.nodes);
+  const [queueOpen, setQueueOpen] = useState(false);
   const pair = concurrentAgents(graph);
   const steps = timelineSteps(graph);
   const title = (id: string) => graph.nodes.find((n) => n.id === id)?.title ?? id;
 
   const step = (id: string) => {
     const n = run?.nodes[id];
+    // Quadro OrbitEsperando: "rev ● esperando você 2m", ponto âmbar.
+    const waiting = waitingYouOf(n);
+    if (waiting) {
+      return (
+        <span key={id} className="flex items-center gap-2 text-[11.5px] whitespace-nowrap">
+          <span className="text-tyba-text">{title(id)}</span>
+          <i className="size-[7px] shrink-0 rounded-full bg-tyba-amber" />
+          <span className="text-tyba-amber">{t("orbitWaitingYouStep")}</span>
+          <span className="text-tyba-text-faint">{waitedFor(now - waiting.since, true)}</span>
+        </span>
+      );
+    }
     const label = run ? nodeStatusLabel(graph, run, id) : null;
     const elapsed = nodeElapsed(n, now, run);
     const tone = n ? STATUS_TONE[shownStatus(run, n)] : null;
@@ -134,6 +153,64 @@ export function RunTimeline({
         </>
       ) : (
         <span className="flex-1 text-[12px] text-tyba-text-faint">{t("orbitRunNone")}</span>
+      )}
+      {queue.length > 0 && (
+        <Popover open={queueOpen} onOpenChange={setQueueOpen}>
+          <PopoverTrigger asChild>
+            <button
+              type="button"
+              className="shrink-0 rounded-[8px] border border-tyba-amber/50 bg-tyba-surface px-[11px] py-[5px] text-[11.5px] whitespace-nowrap text-tyba-amber hover:bg-tyba-raised"
+            >
+              {t("orbitWaitingYouCount", { count: queue.length })}
+            </button>
+          </PopoverTrigger>
+          <PopoverContent
+            side="top"
+            align="end"
+            sideOffset={8}
+            className="w-[420px] overflow-hidden rounded-[14px] p-0 font-mono"
+          >
+            <div className="flex items-center justify-between px-3.5 py-3">
+              <span className="font-sans text-[13px] font-semibold">{t("orbitWaitingYouTitle")}</span>
+              <span className="text-[11px] text-tyba-text-faint">
+                {t("orbitWaitingYouOrder", { n: number })}
+              </span>
+            </div>
+            {queue.map((row) => (
+              <div
+                key={row.id}
+                className="grid grid-cols-[10px_1fr_auto] items-center gap-2.5 border-t border-tyba-border px-3.5 py-2.5 text-[12px]"
+              >
+                <i className="size-2 rounded-full bg-tyba-amber" />
+                <span className="min-w-0 truncate">
+                  <span className="text-tyba-text">{row.title}</span>{" "}
+                  <span className="text-tyba-text-muted">
+                    ·{" "}
+                    {row.hint
+                      ? t("orbitWaitingYouReasonHint", {
+                          reason: t(`orbitWaitReason_${row.reason}`),
+                          hint: row.hint,
+                        })
+                      : t(`orbitWaitReason_${row.reason}`)}
+                  </span>
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setQueueOpen(false);
+                    onOpen(row.id);
+                  }}
+                  className="rounded-[8px] border border-tyba-border bg-tyba-surface px-[11px] py-[5px] text-[11.5px] text-tyba-text hover:bg-tyba-raised"
+                >
+                  {t("orbitWaitingYouOpen")}
+                </button>
+              </div>
+            ))}
+            <div className="border-t border-tyba-border px-3.5 py-2.5 text-[11px] text-tyba-text-faint">
+              {t("orbitWaitingYouLeaves")}
+            </div>
+          </PopoverContent>
+        </Popover>
       )}
       {pair && (
         <span

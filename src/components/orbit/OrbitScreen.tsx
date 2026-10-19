@@ -1503,6 +1503,13 @@ function OrbitInner({
             run={run}
             number={run ? runNumber(runView, run.id) : 0}
             now={now}
+            onOpen={(nodeId) => {
+              // "Abrir" na fila de atenção: o nó selecionado, enquadrado e
+              // aberto (o mesmo do ir à sessão), para responder no prompt.
+              setFocusNode(nodeId);
+              setNodes((ns) => ns.map((n) => ({ ...n, selected: n.id === nodeId })));
+              void fitView({ nodes: [{ id: nodeId }], padding: 0.2, maxZoom: 1, duration: 200 });
+            }}
           />
         )}
       </div>

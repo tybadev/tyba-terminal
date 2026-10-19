@@ -10,10 +10,12 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use serde::{Deserialize, Serialize};
+
 use super::talk::PeerState;
 use super::{EdgeKind, Runner};
 use crate::agent::session::{SharedTurnTail, TurnTail};
-use crate::session::{AgentRunnerKind, SessionStatus};
+use crate::session::{AgentRunnerKind, AwaitingReason, SessionStatus};
 
 /// Teto do texto do turno que vira `context.md`.
 const CONTEXT_MAX_CHARS: usize = 32_000;
@@ -173,7 +175,7 @@ pub fn watch_first_turn(
     tail: SharedTurnTail,
     on_turn: Box<dyn FnOnce(AgentTurn) + Send>,
     on_exit: Option<Box<dyn FnOnce() + Send>>,
-    on_state: Box<dyn Fn(PeerState) + Send>,
+    on_state: OnState,
 ) {
     std::thread::spawn(move || {
         loop {
@@ -181,7 +183,7 @@ pub fn watch_first_turn(
             match turn_state(status.as_ref()) {
                 TurnState::Pending => {
                     if let Some(s) = peer_state(status.as_ref()) {
-                        on_state(s);
+                        on_state(s, waiting_you(status.as_ref()));
                     }
                     std::thread::sleep(TURN_POLL)
                 }
@@ -201,12 +203,50 @@ pub fn watch_first_turn(
                 break;
             }
             if let Some(s) = peer_state(status.as_ref()) {
-                on_state(s);
+                on_state(s, waiting_you(status.as_ref()));
             }
             std::thread::sleep(TURN_POLL);
         }
         on_exit();
     });
+}
+
+/// O que o vigia da sessão avisa a cada poll: o estado para a conversa e,
+/// quando o agente espera o dono, o pedido (quadro OrbitEsperando).
+pub type OnState = Box<dyn Fn(PeerState, Option<Attention>) + Send>;
+
+/// Por que o agente espera o dono. Só a permissão: o turno fechado com
+/// pergunta o core não distingue do turno que só terminou (o `idle_prompt`
+/// do Claude chega nos dois e não muda mais o status), então não entra.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WaitReason {
+    Permission,
+}
+
+/// O agente parado esperando o dono, com o que ele pede (o resumo da
+/// chamada que o status da sessão já traz, redigido no `set_status`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Attention {
+    pub reason: WaitReason,
+    pub hint: Option<String>,
+}
+
+/// O pedido de permissão aberto na sessão: o prompt nativo do Claude
+/// (`PermissionRequest`) ou a aprovação do gate (`Approval`). A resposta é
+/// no terminal do agente; o TYBA não aprova nada daqui. Esperando resposta
+/// (`Reply`), trabalhando, turno fechado ou sessão morta: nada.
+pub fn waiting_you(status: Option<&SessionStatus>) -> Option<Attention> {
+    match status? {
+        SessionStatus::AwaitingInput {
+            hint,
+            reason: AwaitingReason::NativePrompt | AwaitingReason::Approval,
+        } => Some(Attention {
+            reason: WaitReason::Permission,
+            hint: hint.clone().filter(|h| !h.trim().is_empty()),
+        }),
+        _ => None,
+    }
 }
 
 /// O estado da sessão para a conversa: `Idle` é o turno fechado.
@@ -317,6 +357,43 @@ pub fn diff_since(snap: &Snapshot) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Só o pedido de permissão (prompt nativo do Claude, aprovação do gate)
+    /// é "esperando você"; resposta, trabalho, turno fechado e sessão morta,
+    /// não.
+    #[test]
+    fn waiting_you_is_only_the_permission_request() {
+        use crate::session::AwaitingReason as R;
+        let ask = |reason, hint: Option<&str>| SessionStatus::AwaitingInput {
+            hint: hint.map(String::from),
+            reason,
+        };
+        for reason in [R::NativePrompt, R::Approval] {
+            assert_eq!(
+                waiting_you(Some(&ask(reason, Some("bun test src/api")))),
+                Some(Attention {
+                    reason: WaitReason::Permission,
+                    hint: Some("bun test src/api".into()),
+                })
+            );
+        }
+        assert_eq!(
+            waiting_you(Some(&ask(R::NativePrompt, Some("  "))))
+                .unwrap()
+                .hint,
+            None
+        );
+        for other in [
+            ask(R::Reply, Some("e agora?")),
+            SessionStatus::Running,
+            SessionStatus::Idle { summary: None },
+            SessionStatus::Exited { code: 0 },
+            SessionStatus::Failed { reason: "x".into() },
+        ] {
+            assert_eq!(waiting_you(Some(&other)), None, "{other:?}");
+        }
+        assert_eq!(waiting_you(None), None);
+    }
 
     #[test]
     fn prompt_lists_each_input_in_one_line() {
@@ -452,7 +529,7 @@ mod tests {
             Arc::new(Mutex::new(TurnTail::default())),
             Box::new(move |turn| turn_tx.send(format!("{turn:?}")).unwrap()),
             Some(Box::new(move || tx.send("saiu".into()).unwrap())),
-            Box::new(|_| {}),
+            Box::new(|_, _| {}),
         );
         let wait = Duration::from_secs(10);
         assert!(rx.recv_timeout(wait).unwrap().starts_with("Done"));

@@ -724,6 +724,20 @@ export interface NodeRun {
   hostedAgent?: Runner | null;
   /** O log da sessão do nó neste run (o ⋯ do card), do mais velho ao mais novo. */
   events?: NodeEvent[];
+  /**
+   * Agente parado esperando o dono (espelha `run::WaitingYou`): o pedido de
+   * permissão aberto no terminal dele, desde quando (ms) e o resumo redigido.
+   */
+  waitingYou?: WaitingYou | null;
+}
+
+/** Por que o agente espera o dono (espelha `agent::WaitReason`). */
+export type WaitReason = "permission";
+
+export interface WaitingYou {
+  reason: WaitReason;
+  since: number;
+  hint?: string | null;
 }
 
 /** Quem fez (espelha `Actor` do core): o dono, ou o agente pelo nome. */
@@ -808,6 +822,8 @@ export interface Run {
    * (`orbit_terminal_open`). Ausente/null no run do ▶.
    */
   terminal?: string | null;
+  /** A fila de atenção do core: ids dos nós que esperam o dono, o mais antigo primeiro. */
+  waitingYou?: string[];
 }
 
 /** Estado de um passo do plano (espelha `orchestrator::StepState`). */

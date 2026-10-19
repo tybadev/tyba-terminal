@@ -58,6 +58,7 @@ import {
   type Integration,
   type OrbitNode,
   type NodeRun,
+  type WaitingYou,
   type NodeStatus,
   type Run,
 } from "@/lib/orbit";
@@ -68,6 +69,8 @@ import {
   headerActions,
   ringState,
   sessionLog,
+  waitedFor,
+  waitingYouOf,
   type LogTone,
   type AgentTelemetry,
   type RingState,
@@ -318,6 +321,7 @@ const RING_STROKE: Record<FrameRing, { stroke: string; dash?: string }> = {
   done: { stroke: "var(--tyba-green)" },
   waiting: { stroke: "color-mix(in srgb, var(--tyba-text) 18%, transparent)", dash: "3 3" },
   owner: { stroke: "var(--tyba-text-inverse)", dash: "4 3" },
+  you: { stroke: "var(--tyba-amber)" },
   failed: { stroke: "var(--tyba-red)" },
   user: { stroke: "var(--tyba-cyan)" },
 };
@@ -420,6 +424,25 @@ function CapsuleStatus({ nodeId, nodeRun }: { nodeId: string; nodeRun: NodeRun }
         ...(label.params?.kind ? { kind: t(`orbitEdge_${label.params.kind}`) } : {}),
       })}
     </span>
+  );
+}
+
+/**
+ * "esperando você · permissão" e há quanto tempo, no cabeçalho (quadro
+ * OrbitEsperando). Sem botão: a resposta é no prompt do agente.
+ */
+function WaitingYouChip({ waiting }: { waiting: WaitingYou }) {
+  const { t } = useTranslation();
+  const now = useClock();
+  return (
+    <>
+      <span className="shrink-0 rounded-full bg-tyba-amber/14 px-[9px] py-[2px] text-[11.5px] whitespace-nowrap text-tyba-amber">
+        {t("orbitWaitingYou", { reason: t(`orbitWaitReason_${waiting.reason}`) })}
+      </span>
+      <span className="shrink-0 text-[11.5px] whitespace-nowrap text-tyba-text-muted">
+        {waitedFor(now - waiting.since)}
+      </span>
+    </>
   );
 }
 
@@ -1028,6 +1051,9 @@ export function NodeFrame({
   const { controls, header } = actions;
   const again = controls.restart || controls.rerun;
   const request = approvals.get(id) ?? null;
+  // O agente espera o dono no prompt dele: contorno âmbar e o chip; o
+  // pedido do gate (Permitir/Negar) tem a cápsula inteira e vem antes.
+  const waiting = request === null ? waitingYouOf(nodeRun) : null;
   const ring =
     request === null && ringOverride ? ringOverride : ringState(nodeRun, request !== null, run?.settled);
   const failed = ring === "failed";
@@ -1084,7 +1110,9 @@ export function NodeFrame({
           ? "border-tyba-red/70"
           : dragging || editing
             ? "border-tyba-violet/60"
-            : created
+            : waiting
+              ? "border-tyba-amber/55"
+              : created
               ? "border-dashed border-tyba-violet/80"
               : failed
                 ? "border-tyba-red/60"
@@ -1106,7 +1134,9 @@ export function NodeFrame({
           ? "border-tyba-violet shadow-[0_0_0_1px_var(--tyba-violet)]"
           : request
             ? "border-tyba-amber/40"
-            : created
+            : waiting
+              ? "border-tyba-amber/45"
+              : created
               ? "border-dashed border-tyba-violet/50"
               : failed
                 ? "border-tyba-red/35"
@@ -1210,7 +1240,11 @@ export function NodeFrame({
           </>
         ) : (
           <>
-            {status ?? (nodeRun && <CapsuleStatus nodeId={id} nodeRun={nodeRun} />)}
+            {waiting ? (
+              <WaitingYouChip waiting={waiting} />
+            ) : (
+              (status ?? (nodeRun && <CapsuleStatus nodeId={id} nodeRun={nodeRun} />))
+            )}
             {nodeRun?.stale && again && (
               <button
                 type="button"
@@ -1258,6 +1292,10 @@ export function NodeFrame({
           </div>
         ) : request ? (
           <ApprovalFooter node={node} request={request} />
+        ) : waiting ? (
+          <div className="shrink-0 truncate px-3.5 pt-1 pb-2 text-[11px] text-tyba-text-faint">
+            {t("orbitWaitingYouHint")}
+          </div>
         ) : (
           (fail || badge || meta) && (
             <div

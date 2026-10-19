@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import type { ApprovalRequest } from "./ipc";
-import type { NodeRun } from "./orbit";
+import { newNode, type NodeRun, type Run } from "./orbit";
 import {
   agentDetailRows,
   agentName,
@@ -15,6 +15,9 @@ import {
   nodeApproval,
   ringState,
   visibleCardApprovalIds,
+  waitedFor,
+  waitingQueue,
+  waitingYouOf,
 } from "./orbitCard";
 
 // Fixtures sintéticas: nada aqui veio de sessão real.
@@ -347,5 +350,64 @@ describe("closesFocus", () => {
     expect(closesFocus("stop", "terminal")).toBe(true);
     expect(closesFocus("stop", "process")).toBe(false);
     expect(closesFocus("stop", "agent")).toBe(false);
+  });
+});
+
+describe("esperando você (quadro OrbitEsperando)", () => {
+  const permission = (since: number, hint: string | null = null) => ({
+    reason: "permission" as const,
+    since,
+    hint,
+  });
+
+  test("só o nó rodando com o pedido aberto espera; anel âmbar, abaixo do pedido do gate", () => {
+    const waiting = nodeRun({ waitingYou: permission(10, "bun test src/api") });
+    expect(waitingYouOf(waiting)).toEqual(permission(10, "bun test src/api"));
+    expect(ringState(waiting, false)).toBe("you");
+    // Permitir/Negar do gate vem antes (cápsula inteira âmbar).
+    expect(ringState(waiting, true)).toBe("owner");
+    // Agente que só terminou o turno, processo que caiu, retrato velho: não.
+    expect(waitingYouOf(nodeRun({}))).toBeNull();
+    expect(waitingYouOf(nodeRun({ status: "failed", waitingYou: permission(1) }))).toBeNull();
+    expect(waitingYouOf(nodeRun({ status: "done", waitingYou: permission(1) }))).toBeNull();
+    expect(waitingYouOf(undefined)).toBeNull();
+    expect(ringState(nodeRun({ status: "done", waitingYou: permission(1) }), false)).toBe("done");
+  });
+
+  test("tempo: cabeçalho \"40 s\" / \"2 min\", linha da execução \"40s\" / \"2m\"", () => {
+    expect(waitedFor(40_400)).toBe("40 s");
+    expect(waitedFor(125_000)).toBe("2 min");
+    expect(waitedFor(3 * 3_600_000 + 5)).toBe("3 h");
+    expect(waitedFor(40_400, true)).toBe("40s");
+    expect(waitedFor(125_000, true)).toBe("2m");
+    expect(waitedFor(-5, true)).toBe("0s");
+  });
+
+  test("a fila segue a ordem do core e só mostra quem ainda espera no run aberto", () => {
+    const agent = (id: string, title: string) =>
+      newNode(id, title, { type: "agent", runner: "claude", role: "", prompt: "", dir: "" }, { x: 0, y: 0 });
+    const nodes = [agent("rev", "rev · revisor"), agent("front", "front · codex")];
+    const run: Run = {
+      id: "r",
+      graphId: "g",
+      startedAt: 0,
+      finishedAt: null,
+      status: "running",
+      nodes: {
+        rev: nodeRun({ waitingYou: permission(1, "bun test src/api") }),
+        front: nodeRun({ waitingYou: permission(5, " ") }),
+        // Saiu da fila no retrato de agora (voltou a trabalhar).
+        gone: nodeRun({}),
+      },
+      waitingYou: ["rev", "front", "gone"],
+    };
+    expect(waitingQueue(run, nodes)).toEqual([
+      { id: "rev", title: "rev · revisor", reason: "permission", hint: "bun test src/api", since: 1 },
+      { id: "front", title: "front · codex", reason: "permission", hint: null, since: 5 },
+    ]);
+    // Execução fechada (histórico) ou sem fila: nada.
+    expect(waitingQueue({ ...run, status: "stopped" }, nodes)).toEqual([]);
+    expect(waitingQueue({ ...run, waitingYou: undefined }, nodes)).toEqual([]);
+    expect(waitingQueue(null, nodes)).toEqual([]);
   });
 });

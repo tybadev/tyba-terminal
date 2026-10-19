@@ -105,6 +105,11 @@ pub struct Run {
     /// sai ou o dono o fecha ([`Runs::open_terminal`]). `None` no run do ▶.
     #[serde(default)]
     pub terminal: Option<String>,
+    /// A fila de atenção (quadro OrbitEsperando): os nós que esperam o dono
+    /// agora ([`NodeRun::waiting_you`]), o mais antigo primeiro. Refeita a
+    /// cada retrato ([`Sched::snapshot`]).
+    #[serde(default)]
+    pub waiting_you: Vec<String>,
 }
 
 /// Como fecha um run sem nada rodando: falhou se algum nó falhou.
@@ -239,6 +244,54 @@ pub struct NodeRun {
     /// [`MAX_NODE_EVENTS`]. Grava junto com o run; o comando vai redigido.
     #[serde(default)]
     pub events: Vec<NodeEvent>,
+    /// Agente parado esperando o dono (pedido de permissão aberto no
+    /// terminal dele), desde quando. Sai quando ele volta a trabalhar, fecha
+    /// o turno ou o nó deixa de rodar. O TYBA não responde por ele.
+    #[serde(default)]
+    pub waiting_you: Option<WaitingYou>,
+}
+
+/// O agente esperando o dono: o motivo, desde quando (ms) e o resumo do
+/// pedido (redigido), como a fila de atenção mostra.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WaitingYou {
+    pub reason: super::agent::WaitReason,
+    pub since: u64,
+    #[serde(default)]
+    pub hint: Option<String>,
+}
+
+impl WaitingYou {
+    /// O próximo estado dado o que a sessão diz agora. O mesmo motivo
+    /// guarda o começo (o relógio da fila não recomeça a cada poll).
+    fn next(
+        current: Option<&WaitingYou>,
+        attention: Option<super::agent::Attention>,
+        at: u64,
+    ) -> Option<WaitingYou> {
+        let a = attention?;
+        let since = current
+            .filter(|c| c.reason == a.reason)
+            .map_or(at, |c| c.since);
+        Some(WaitingYou {
+            reason: a.reason,
+            since,
+            hint: a.hint,
+        })
+    }
+}
+
+/// A fila de atenção: nós rodando que esperam o dono, o mais antigo
+/// primeiro (empate: pelo id, para a ordem não pular entre retratos).
+fn waiting_queue(nodes: &HashMap<String, NodeRun>) -> Vec<String> {
+    let mut queue: Vec<(&String, u64)> = nodes
+        .iter()
+        .filter(|(_, n)| n.status == NodeStatus::Running)
+        .filter_map(|(id, n)| n.waiting_you.as_ref().map(|w| (id, w.since)))
+        .collect();
+    queue.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(b.0)));
+    queue.into_iter().map(|(id, _)| id.clone()).collect()
 }
 
 /// Teto do log da sessão de cada nó: passou, sai o mais velho.
@@ -379,6 +432,7 @@ impl NodeRun {
             stale_reason: None,
             hosted_agent: None,
             events: Vec::new(),
+            waiting_you: None,
         }
     }
 
@@ -516,6 +570,7 @@ impl Scheduler {
             plans: Vec::new(),
             number: 0,
             terminal: None,
+            waiting_you: Vec::new(),
         };
         if run.nodes.is_empty() {
             run.status = RunStatus::Done;
@@ -644,12 +699,15 @@ impl Scheduler {
     /// Retrato para publicar, com versão nova. Tirado com o lock na mão, a
     /// ordem das versões é a ordem dos estados.
     pub fn snapshot(&mut self) -> Run {
-        // Shell que parou (fechar, ■ Parar, `exit`) leva o agente junto.
+        // Shell que parou (fechar, ■ Parar, `exit`) leva o agente junto; e
+        // quem não roda mais não espera o dono (caiu, terminou, parou).
         for n in self.run.nodes.values_mut() {
             if n.status != NodeStatus::Running {
                 n.hosted_agent = None;
+                n.waiting_you = None;
             }
         }
+        self.run.waiting_you = waiting_queue(&self.run.nodes);
         self.run.version += 1;
         self.run.clone()
     }
@@ -1638,7 +1696,7 @@ pub trait RunHost: Send + Sync + 'static {
         launch: AgentLaunch,
         on_turn: Box<dyn FnOnce(AgentTurn) + Send>,
         on_exit: Option<Box<dyn FnOnce() + Send>>,
-        on_state: Box<dyn Fn(PeerState) + Send>,
+        on_state: super::agent::OnState,
     ) -> Result<String, String>;
     /// Escreve `text` no terminal do agente e envia, pela estratégia do
     /// runner (colagem e Enter), como o input rico do dono.
@@ -2921,11 +2979,11 @@ impl<H: RunHost> Runs<H> {
                 }
             })
         };
-        let on_state: Box<dyn Fn(PeerState) + Send> = {
+        let on_state: super::agent::OnState = {
             let (me, run, node) = (me.clone(), run.clone(), node.clone());
-            Box::new(move |state| {
+            Box::new(move |state, attention| {
                 if let Some(runs) = me.upgrade() {
-                    runs.agent_state(&run, &node, attempt, state);
+                    runs.agent_state(&run, &node, attempt, state, attention);
                 }
             })
         };
@@ -3388,7 +3446,18 @@ impl<H: RunHost> Runs<H> {
     ///
     /// Sem entrega, é também o relógio do assentado: o watcher avisa o
     /// estado a cada poll, e o run assenta (ou volta) por aqui.
-    fn agent_state(&self, run_id: &str, node_id: &str, attempt: u32, state: PeerState) {
+    ///
+    /// E a fila de atenção: com o pedido de permissão aberto (`attention`),
+    /// o nó entra em "esperando você" (o começo fica enquanto o motivo é o
+    /// mesmo); sem ele, sai.
+    fn agent_state(
+        &self,
+        run_id: &str,
+        node_id: &str,
+        attempt: u32,
+        state: PeerState,
+        attention: Option<super::agent::Attention>,
+    ) {
         let live = self.live_agents(run_id);
         let (session, delivery) = {
             let mut active = self.active.lock();
@@ -3399,19 +3468,28 @@ impl<H: RunHost> Runs<H> {
             if a.sched.attempt(node_id) != Some(attempt) {
                 return;
             }
+            let at = now();
+            let waited = match a.sched.run.nodes.get_mut(node_id) {
+                Some(n) if n.status == NodeStatus::Running => {
+                    let next = WaitingYou::next(n.waiting_you.as_ref(), attention, at);
+                    let changed = n.waiting_you != next;
+                    n.waiting_you = next;
+                    changed
+                }
+                _ => false,
+            };
             let session = a
                 .sched
                 .run
                 .nodes
                 .get(node_id)
                 .and_then(|n| n.session_id.clone());
-            let at = now();
             let quiet = state != PeerState::Ready
                 || session
                     .as_deref()
                     .is_none_or(|s| self.host.owner_keys(s).quiet(at));
             let Some(delivery) = a.talk.on_state(node_id, state, at, quiet) else {
-                let changed = refresh_settled(a, &live, at, self.settle_ms());
+                let changed = refresh_settled(a, &live, at, self.settle_ms()) || waited;
                 drop(active);
                 if changed {
                     self.publish_current(run_id);
@@ -5980,7 +6058,7 @@ impl RunHost for TauriHost {
         launch: AgentLaunch,
         on_turn: Box<dyn FnOnce(AgentTurn) + Send>,
         on_exit: Option<Box<dyn FnOnce() + Send>>,
-        on_state: Box<dyn Fn(PeerState) + Send>,
+        on_state: super::agent::OnState,
     ) -> Result<String, String> {
         use tauri::Manager;
         let state = self.app.state::<crate::AppState>();
@@ -6039,7 +6117,7 @@ impl RunHost for TauriHost {
         _launch: AgentLaunch,
         _on_turn: Box<dyn FnOnce(AgentTurn) + Send>,
         _on_exit: Option<Box<dyn FnOnce() + Send>>,
-        _on_state: Box<dyn Fn(PeerState) + Send>,
+        _on_state: super::agent::OnState,
     ) -> Result<String, String> {
         Err("o nó de agente ainda não roda neste sistema".into())
     }
@@ -6565,7 +6643,7 @@ mod tests {
         /// Sessões de agente que saíram sozinhas.
         gone: Mutex<Vec<String>>,
         /// O `on_state` de cada sessão de agente, com o título do nó.
-        states: Mutex<HashMap<String, (String, Box<dyn Fn(PeerState) + Send>)>>,
+        states: Mutex<HashMap<String, (String, crate::orbit::agent::OnState)>>,
         /// O que o core escreveu no terminal de cada agente (`send_input`).
         inputs: Mutex<Vec<(String, String)>>,
         /// Quando presente, o `send_input` falha com este motivo.
@@ -6589,7 +6667,24 @@ mod tests {
                 .values()
                 .find(|(t, _)| t == title)
                 .expect("agente subiu");
-            on_state(state);
+            on_state(state, None);
+        }
+
+        /// A sessão do agente de título `title` abre o pedido de permissão
+        /// (`AwaitingInput{NativePrompt}`, o que o watcher real avisa).
+        fn set_permission(&self, title: &str, hint: &str) {
+            let states = self.states.lock();
+            let (_, on_state) = states
+                .values()
+                .find(|(t, _)| t == title)
+                .expect("agente subiu");
+            on_state(
+                PeerState::Waiting,
+                Some(crate::orbit::agent::Attention {
+                    reason: crate::orbit::agent::WaitReason::Permission,
+                    hint: Some(hint.into()),
+                }),
+            );
         }
 
         /// A sessão do agente sai (o dono fechou o claude): o mesmo aviso
@@ -6616,7 +6711,7 @@ mod tests {
             launch: AgentLaunch,
             on_turn: Box<dyn FnOnce(AgentTurn) + Send>,
             on_exit: Option<Box<dyn FnOnce() + Send>>,
-            on_state: Box<dyn Fn(PeerState) + Send>,
+            on_state: crate::orbit::agent::OnState,
         ) -> Result<String, String> {
             self.agents.lock().push(launch.clone());
             let title = launch.title.clone();
@@ -7923,6 +8018,108 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(20));
         }
+    }
+
+    /// Fila de atenção (quadro OrbitEsperando): o agente com o pedido de
+    /// permissão aberto entra em "esperando você" com o começo; o poll que
+    /// repete o pedido não recomeça o relógio; a fila vem do mais antigo; sai
+    /// quando ele volta a trabalhar, fecha o turno ou a sessão sai. Processo
+    /// nunca entra, nem agente que só terminou.
+    #[cfg(unix)]
+    #[test]
+    fn waiting_you_queue_enters_leaves_and_keeps_the_oldest_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let (runs, host, _app) = pty_runs(dir.path().join("runs"));
+        let mut a = orchestrator("a");
+        a.title = "Front".into();
+        let mut b = orchestrator("b");
+        b.title = "Revisor".into();
+        let g = graph(vec![a, b, process("p", "exit 3")], vec![]);
+        let run = runs.start_now(g, vec![]).unwrap();
+        for id in ["a", "b"] {
+            wait_orchestrating(&runs, &run.id, id);
+        }
+        wait_status(&runs, &run.id, "p", NodeStatus::Failed);
+        let r = runs.get(&run.id).unwrap();
+        assert!(r.waiting_you.is_empty(), "{:?}", r.waiting_you);
+        // Turno fechado (pronto) não é esperar o dono.
+        host.set_state("Front", PeerState::Ready);
+        assert!(runs.get(&run.id).unwrap().nodes["a"].waiting_you.is_none());
+
+        host.set_permission("Revisor", "bun test src/api");
+        let r = runs.get(&run.id).unwrap();
+        let w = r.nodes["b"].waiting_you.clone().expect("esperando");
+        assert_eq!(w.reason, crate::orbit::agent::WaitReason::Permission);
+        assert_eq!(w.hint.as_deref(), Some("bun test src/api"));
+        assert_eq!(r.waiting_you, vec!["b".to_string()]);
+        std::thread::sleep(Duration::from_millis(5));
+        host.set_permission("Front", "rm -rf dist");
+        // O poll repete o pedido: o começo fica.
+        std::thread::sleep(Duration::from_millis(5));
+        host.set_permission("Revisor", "bun test src/api");
+        let r = runs.get(&run.id).unwrap();
+        assert_eq!(r.nodes["b"].waiting_you.as_ref().unwrap().since, w.since);
+        assert_eq!(r.waiting_you, vec!["b".to_string(), "a".to_string()]);
+        // O retrato publicado leva a mesma fila.
+        let last = host.runs.lock().last().cloned().unwrap();
+        assert_eq!(last.waiting_you, vec!["b".to_string(), "a".to_string()]);
+
+        // O dono respondeu: o agente volta a trabalhar e sai da fila.
+        host.set_state("Revisor", PeerState::Working);
+        let r = runs.get(&run.id).unwrap();
+        assert!(r.nodes["b"].waiting_you.is_none());
+        assert_eq!(r.waiting_you, vec!["a".to_string()]);
+        // Pediu de novo: entra com começo novo, atrás de quem já esperava.
+        host.set_permission("Revisor", "bun test");
+        let r = runs.get(&run.id).unwrap();
+        assert!(r.nodes["b"].waiting_you.as_ref().unwrap().since > w.since);
+        assert_eq!(r.waiting_you, vec!["a".to_string(), "b".to_string()]);
+
+        // A sessão saiu com o pedido aberto: não espera mais ninguém.
+        let session = r.nodes["a"].session_id.clone().unwrap();
+        host.exit_agent(&session);
+        let r = wait_status(&runs, &run.id, "a", NodeStatus::Done);
+        assert!(r.nodes["a"].waiting_you.is_none(), "{r:?}");
+        assert_eq!(r.waiting_you, vec!["b".to_string()]);
+        assert!(r.nodes["p"].waiting_you.is_none());
+        runs.stop(&run.id).unwrap();
+        let r = wait_finished(&runs, &run.id);
+        assert!(r.waiting_you.is_empty(), "{:?}", r.waiting_you);
+        assert!(r.nodes.values().all(|n| n.waiting_you.is_none()));
+    }
+
+    #[test]
+    fn waiting_you_keeps_its_start_and_the_queue_skips_what_does_not_run() {
+        use crate::orbit::agent::{Attention, WaitReason};
+        let ask = || {
+            Some(Attention {
+                reason: WaitReason::Permission,
+                hint: None,
+            })
+        };
+        let first = WaitingYou::next(None, ask(), 10).unwrap();
+        assert_eq!(first.since, 10);
+        assert_eq!(WaitingYou::next(Some(&first), ask(), 99).unwrap().since, 10);
+        assert_eq!(WaitingYou::next(Some(&first), None, 99), None);
+
+        let mut nodes = HashMap::new();
+        for (id, status, since) in [
+            ("z", NodeStatus::Running, Some(5)),
+            ("y", NodeStatus::Running, Some(1)),
+            ("x", NodeStatus::Running, Some(5)),
+            ("w", NodeStatus::Running, None),
+            ("v", NodeStatus::Done, Some(0)),
+        ] {
+            let mut n = NodeRun::waiting();
+            n.status = status;
+            n.waiting_you = since.map(|since| WaitingYou {
+                reason: WaitReason::Permission,
+                since,
+                hint: None,
+            });
+            nodes.insert(id.to_string(), n);
+        }
+        assert_eq!(waiting_queue(&nodes), vec!["y", "x", "z"]);
     }
 
     /// O run assenta quando todo agente fecha o turno há um tempo e nada mais

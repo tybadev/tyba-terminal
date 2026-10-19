@@ -174,6 +174,7 @@ mod tests {
             stale_reason: None,
             hosted_agent: None,
             events: Vec::new(),
+            waiting_you: None,
         };
         if started {
             n.status = NodeStatus::Done;
@@ -195,6 +196,7 @@ mod tests {
             plans: Vec::new(),
             number: 0,
             terminal: None,
+            waiting_you: Vec::new(),
         }
     }
 

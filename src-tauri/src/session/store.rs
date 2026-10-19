@@ -5373,6 +5373,7 @@ mod tests {
             stale_reason: None,
             hosted_agent: None,
             events: Vec::new(),
+            waiting_you: None,
         };
         let path = dir.path().join("tyba.db");
         let graph = Graph {
@@ -5419,6 +5420,7 @@ mod tests {
             plans: Vec::new(),
             number: 0,
             terminal: None,
+            waiting_you: Vec::new(),
         };
         {
             // Grava pelo caminho normal e devolve as tabelas ao nome antigo:
@@ -7798,6 +7800,7 @@ mod tests {
             plans: Vec::new(),
             number: 0,
             terminal: None,
+            waiting_you: Vec::new(),
         };
         for i in 0..5u64 {
             store
@@ -7848,6 +7851,7 @@ mod tests {
             plans: Vec::new(),
             number: 0,
             terminal: None,
+            waiting_you: Vec::new(),
         };
         store.save_orbit_run(&snap(1, RunStatus::Running)).unwrap();
         store.save_orbit_run(&snap(3, RunStatus::Done)).unwrap();
@@ -7878,6 +7882,7 @@ mod tests {
             plans: Vec::new(),
             number: 0,
             terminal: None,
+            waiting_you: Vec::new(),
         };
         // r0 é o mais velho e está ativo; depois dele, 3 testes e 2 runs.
         store.save_orbit_run(&run("r0", 0, false)).unwrap();

@@ -10,7 +10,11 @@ import {
   type NodeEvent,
   type NodeKind,
   type NodeRun,
+  type OrbitNode,
+  type Run,
   type Runner,
+  type WaitReason,
+  type WaitingYou,
 } from "./orbit";
 
 /**
@@ -21,9 +25,19 @@ import {
  * - `owner`: tracejado escuro sobre a cápsula âmbar (precisa do dono);
  * - `failed`: vermelho; `done`: verde cheio (também o agente parado numa
  *   execução assentada, `settled`);
+ * - `you`: âmbar cheio, o agente espera o dono no prompt dele (quadro
+ *   OrbitEsperando; a resposta é no terminal, o TYBA não aprova);
  * - `idle`: apagado (fora de execução, parado, pulado).
  */
-export type RingState = "idle" | "working" | "live" | "waiting" | "owner" | "failed" | "done";
+export type RingState =
+  | "idle"
+  | "working"
+  | "live"
+  | "waiting"
+  | "owner"
+  | "you"
+  | "failed"
+  | "done";
 
 export function ringState(
   nodeRun: NodeRun | undefined,
@@ -31,6 +45,7 @@ export function ringState(
   settled = false,
 ): RingState {
   if (needsOwner) return "owner";
+  if (waitingYouOf(nodeRun)) return "you";
   // Agente parado numa execução assentada: pronto, o anel não gira.
   if (settled && nodeRun?.status === "running" && nodeRun.orchestrating) return "done";
   switch (nodeRun?.status) {
@@ -352,4 +367,55 @@ export function sessionLog(events: readonly NodeEvent[] | undefined, kind: NodeK
           : line("faint", "orbitLog_discardedAgent", { agent: what.by.agent });
     }
   });
+}
+
+/**
+ * "Esperando você" no nó (quadro OrbitEsperando): só rodando e com o pedido
+ * aberto. O core já limpa o de quem deixou de rodar; a tela não desenha
+ * âmbar por retrato velho (execução do histórico, nó parado).
+ */
+export function waitingYouOf(n: NodeRun | undefined): WaitingYou | null {
+  return n?.status === "running" && n.waitingYou ? n.waitingYou : null;
+}
+
+/**
+ * Há quanto tempo espera, como o quadro escreve: no cabeçalho do nó
+ * "40 s", "2 min", "1 h"; na linha da execução (`compact`) "40s", "2m", "1h".
+ */
+export function waitedFor(ms: number, compact = false): string {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  if (s < 60) return compact ? `${s}s` : `${s} s`;
+  if (s < 3600) return compact ? `${Math.floor(s / 60)}m` : `${Math.floor(s / 60)} min`;
+  return compact ? `${Math.floor(s / 3600)}h` : `${Math.floor(s / 3600)} h`;
+}
+
+/** Uma linha da fila "Esperando você". */
+export interface WaitingRow {
+  id: string;
+  title: string;
+  reason: WaitReason;
+  hint: string | null;
+  since: number;
+}
+
+/**
+ * A fila de atenção da execução à vista: a ordem do core (o mais antigo
+ * primeiro), só quem ainda espera agora. Agente que só terminou e processo
+ * que caiu nunca estão nela (o core só põe o pedido de permissão).
+ */
+export function waitingQueue(run: Run | null, nodes: readonly OrbitNode[]): WaitingRow[] {
+  if (!run || run.status !== "running") return [];
+  const rows: WaitingRow[] = [];
+  for (const id of run.waitingYou ?? []) {
+    const w = waitingYouOf(run.nodes[id]);
+    if (!w) continue;
+    rows.push({
+      id,
+      title: nodes.find((n) => n.id === id)?.title ?? id,
+      reason: w.reason,
+      hint: w.hint?.trim() ? w.hint : null,
+      since: w.since,
+    });
+  }
+  return rows;
 }
