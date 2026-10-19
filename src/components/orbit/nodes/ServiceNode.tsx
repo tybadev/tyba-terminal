@@ -169,7 +169,10 @@ function useContainerLog(containerId: string | null): { lines: ServiceLogLine[];
  */
 export function ServiceNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
   const { t } = useTranslation();
-  const { updateNode, run, graphId } = useOrbit();
+  const { updateNode, run, graphId, createdIds, reportContainer } = useOrbit();
+  // Criado pelo agente e ainda não mantido: o "Subir" lê o grafo salvo, onde
+  // ele não está — sem botão.
+  const created = createdIds.has(id);
   const node = data.node;
   const { source } = node.kind as ServiceKind;
   const nodeRun = run?.nodes[id];
@@ -206,7 +209,7 @@ export function ServiceNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
     // `setSource` é refeito a cada render: só o id novo dispara.
   }, [drifted?.type === "container" ? drifted.containerId : null]);
   const label = serviceLiveLabel(live);
-  const canStart = !!live && live.state !== "up" && live.canStart;
+  const canStart = !created && !!live && live.state !== "up" && live.canStart;
   const start = () => {
     setStarting(true);
     setStartError(null);
@@ -222,6 +225,11 @@ export function ServiceNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
   const containerId =
     target.type === "container" && target.containerId ? target.containerId : null;
   const log = useContainerLog(containerId);
+  // O log ao vivo só segue o contêiner que algum card mostra.
+  useEffect(() => {
+    reportContainer(id, containerId);
+    return () => reportContainer(id, null);
+  }, [id, containerId, reportContainer]);
   // Rola só a caixa do log (`scrollIntoView` rolaria o canvas junto).
   const logBox = useRef<HTMLDivElement>(null);
   useEffect(() => {

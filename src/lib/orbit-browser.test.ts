@@ -21,6 +21,7 @@ import {
   nodeStatusLabel,
   produces,
   serviceContainers,
+  retainedContainers,
   urlPort,
   type OrbitEdge,
   type NodeRun,
@@ -149,6 +150,17 @@ describe("navegador e serviço no grafo", () => {
   test("contêineres a manter e navegador já ligado", () => {
     const edges: OrbitEdge[] = [{ id: "e", from: "p", to: "b", kind: "url" }];
     expect(serviceContainers([dev, nav, api, api])).toEqual(["abc123def456"]);
+    // Criado pelo agente só pelo nome: entra o id vivo que o card achou;
+    // nó do grafo não depende do vivo, e id repetido sai uma vez.
+    const live = new Map([
+      ["svc-criado", "fedcba987654"],
+      ["api", "abc123def456"],
+      ["outro", "999999999999"],
+    ]);
+    expect(retainedContainers([dev, nav, api], new Set(["svc-criado", "api"]), live)).toEqual([
+      "abc123def456",
+      "fedcba987654",
+    ]);
     expect(browserFed({ nodes: [dev, nav], edges }, "p")?.id).toBe("b");
     expect(browserFed({ nodes: [dev, nav], edges: [] }, "p")).toBeNull();
   });

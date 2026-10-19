@@ -3352,16 +3352,22 @@ impl<H: RunHost> Runs<H> {
                     "status": n.status,
                     "failed": true,
                     "reason": n.reason,
-                    "next": "o TYBA não sobe serviço: só mostra o que já roda. Suba-o \
-                             (orbit_create_process, ou peça ao dono), pare este nó com \
-                             orbit_stop_node e crie o serviço de novo",
+                    "next": service_failed_next(n.reason.as_deref()),
                 });
             }
-            if n.status.is_terminal() || std::time::Instant::now() >= deadline {
+            if n.status.is_terminal() {
                 return serde_json::json!({
                     "node_id": id,
                     "status": n.status,
                     "url": n.url,
+                });
+            }
+            if std::time::Instant::now() >= deadline {
+                return serde_json::json!({
+                    "node_id": id,
+                    "status": n.status,
+                    "next": "ainda resolvendo o serviço; use orbit_wait (until: exit) \
+                             ou orbit_node_status com este node_id",
                 });
             }
             std::thread::sleep(std::time::Duration::from_millis(50));
@@ -5585,6 +5591,26 @@ impl<H: RunHost> Runs<H> {
 /// antes de responder: erro de subida (porta ocupada, módulo faltando) sai
 /// nisso.
 const PROCESS_SETTLE: std::time::Duration = std::time::Duration::from_secs(3);
+/// O que o agente faz com o serviço criado que falhou. Achado mas fora do
+/// ar (contêiner parado, porta sem ninguém): o TYBA não sobe, quem sobe é
+/// ele ou o dono. Não achado ou ambíguo: o alvo está errado — conferir com
+/// `docker ps`, nunca subir outro.
+fn service_failed_next(reason: Option<&str>) -> &'static str {
+    let reason = reason.unwrap_or_default();
+    let down = ["não está rodando", "nada escuta", "não está escutando"]
+        .iter()
+        .any(|m| reason.contains(m));
+    if down {
+        "o TYBA não sobe serviço: só mostra o que já roda. Suba-o \
+         (orbit_create_process, ou peça ao dono), pare este nó com \
+         orbit_stop_node e crie o serviço de novo"
+    } else {
+        "confira o nome ou o id com `docker ps` (nome do contêiner, id, ou o \
+         serviço do compose) ou a porta, pare este nó com orbit_stop_node e \
+         crie o serviço de novo com o alvo certo"
+    }
+}
+
 /// Quanto o `orbit_create_service` espera o serviço ser achado: o primeiro
 /// lote do `docker logs` (até 5 s) com folga.
 const SERVICE_SETTLE: std::time::Duration = std::time::Duration::from_secs(7);
@@ -8506,6 +8532,19 @@ mod tests {
         assert_eq!(res["failed"], true, "{res}");
         assert_eq!(res["reason"], "contêiner db não está rodando (exited)");
         assert!(res["next"].as_str().unwrap().contains("não sobe"), "{res}");
+        // Não achado: conferir com `docker ps`, nunca "suba".
+        *host.service.lock() = Err("contêiner pg não encontrado".into());
+        let res = tools
+            .call(
+                "orbit_create_service",
+                &json!({"title": "pg", "container": "pg"}),
+            )
+            .unwrap();
+        let next = res["next"].as_str().unwrap();
+        assert!(
+            next.contains("docker ps") && !next.contains("Suba"),
+            "{res}"
+        );
 
         // Url que não é local não vira url do nó (a régua do salvar).
         *host.service.lock() = Ok(ServiceReady {
@@ -8523,7 +8562,7 @@ mod tests {
 
         // Teto de 30 criados por execução, somando os serviços.
         *host.service.lock() = Err("nada escuta".into());
-        for i in 3..MAX_CREATED {
+        for i in 4..MAX_CREATED {
             tools
                 .call(
                     "orbit_create_service",

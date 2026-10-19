@@ -1760,6 +1760,24 @@ export const serviceContainers = (nodes: readonly OrbitNode[]): string[] => [
   ),
 ];
 
+/**
+ * Os contêineres cujo log ao vivo fica (`serviceLogsRetain`): os dos nós de
+ * serviço à vista e, nos criados pelo agente no run (que podem não ter id
+ * gravado, só o nome), o id vivo que o card achou — senão o log congela.
+ */
+export function retainedContainers(
+  nodes: readonly OrbitNode[],
+  createdIds: ReadonlySet<string>,
+  live: ReadonlyMap<string, string>,
+): string[] {
+  const ids = serviceContainers(nodes);
+  for (const id of createdIds) {
+    const c = live.get(id);
+    if (c) ids.push(c);
+  }
+  return [...new Set(ids)];
+}
+
 /** Nó de navegador que já recebe a url deste nó, se houver. */
 export const browserFed = (
   graph: Pick<Graph, "nodes" | "edges">,

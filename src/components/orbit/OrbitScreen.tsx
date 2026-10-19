@@ -56,7 +56,7 @@ import {
   NEW_IN_HANDLE,
   OUT_HANDLE,
   isLocalUrl,
-  serviceContainers,
+  retainedContainers,
   serviceLogsRetain,
   emptyGraph,
   exportFileName,
@@ -870,7 +870,18 @@ function OrbitInner({
   }, [graph, integrations, t]);
 
   // Log ao vivo dos serviços: só o seguidor de contêiner que um nó mostra fica.
-  const containers = serviceContainers(graph.nodes).join(",");
+  // Os criados pelo agente entram pelo id vivo que o card achou.
+  const [liveContainers, setLiveContainers] = useState<ReadonlyMap<string, string>>(new Map());
+  const reportContainer = useCallback((nodeId: string, containerId: string | null) => {
+    setLiveContainers((m) => {
+      if ((m.get(nodeId) ?? null) === containerId) return m;
+      const next = new Map(m);
+      if (containerId) next.set(nodeId, containerId);
+      else next.delete(nodeId);
+      return next;
+    });
+  }, []);
+  const containers = retainedContainers(viewGraph.nodes, createdIds, liveContainers).join(",");
   useEffect(() => {
     void serviceLogsRetain(containers ? containers.split(",") : []).catch(() => {});
   }, [containers]);
@@ -965,6 +976,7 @@ function OrbitInner({
         ),
       openTerminal,
       closeTerminal,
+      reportContainer,
     }),
     [
       integrations,
@@ -977,6 +989,7 @@ function OrbitInner({
       openInBrowser,
       openTerminal,
       closeTerminal,
+      reportContainer,
       t,
     ],
   );

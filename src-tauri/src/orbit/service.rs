@@ -99,7 +99,8 @@ impl ServiceSource {
 
 /// Acha o contêiner do nó na lista do docker (`ps -a`): pelo serviço do
 /// compose, depois pelo nome, depois pelo id gravado. Entre vários do mesmo
-/// serviço (escala), o que roda.
+/// serviço (escala), o que roda. Ambíguo conta como não achado (ver
+/// [`lookup_container`]).
 pub fn find_container<'a>(
     list: &'a [crate::docker::ContainerInfo],
     container_id: &str,
@@ -107,6 +108,28 @@ pub fn find_container<'a>(
     project: &str,
     service: &str,
 ) -> Option<&'a crate::docker::ContainerInfo> {
+    lookup_container(list, container_id, name, project, service)
+        .ok()
+        .flatten()
+}
+
+/// [`find_container`] com o motivo da ambiguidade. Depois do compose
+/// (`project` + `service`), do nome exato e do id exato, o que o agente
+/// escreveu no `orbit_create_service` ainda pode ser:
+/// - o id curto (12+ hex): casa pelo **prefixo** do id completo do
+///   `ps --no-trunc`; mais de um → `Err`;
+/// - o nome do serviço do compose (`db` para `<projeto>-db-1`), pelo label
+///   `com.docker.compose.service`; mais de um → `Err` com os nomes desse
+///   serviço, nada além.
+///
+/// `Ok(None)`: não há.
+pub fn lookup_container<'a>(
+    list: &'a [crate::docker::ContainerInfo],
+    container_id: &str,
+    name: &str,
+    project: &str,
+    service: &str,
+) -> Result<Option<&'a crate::docker::ContainerInfo>, String> {
     let pick = |hits: Vec<&'a crate::docker::ContainerInfo>| {
         hits.iter()
             .find(|c| c.state == "running")
@@ -122,16 +145,52 @@ pub fn find_container<'a>(
             })
             .collect();
         if let Some(c) = pick(hits) {
-            return Some(c);
+            return Ok(Some(c));
         }
     }
     if !name.is_empty() {
         if let Some(c) = list.iter().find(|c| c.name == name) {
-            return Some(c);
+            return Ok(Some(c));
         }
     }
-    list.iter()
-        .find(|c| !container_id.is_empty() && c.id == container_id)
+    if container_id.is_empty() {
+        // Só o nome: pode ser o serviço do compose.
+    } else if let Some(c) = list.iter().find(|c| c.id == container_id) {
+        return Ok(Some(c));
+    } else if container_id.len() >= 12 {
+        let hits: Vec<_> = list
+            .iter()
+            .filter(|c| c.id.starts_with(container_id))
+            .collect();
+        match hits.as_slice() {
+            [one] => return Ok(Some(one)),
+            [] => {}
+            many => {
+                return Err(format!(
+                    "id {container_id} é ambíguo: casa com {} contêineres (use mais caracteres ou o nome)",
+                    many.len()
+                ))
+            }
+        }
+    }
+    if !name.is_empty() && project.is_empty() {
+        let hits: Vec<_> = list
+            .iter()
+            .filter(|c| c.service.as_deref() == Some(name))
+            .collect();
+        match hits.as_slice() {
+            [one] => return Ok(Some(one)),
+            [] => {}
+            many => {
+                let names: Vec<&str> = many.iter().map(|c| c.name.as_str()).collect();
+                return Err(format!(
+                    "serviço {name} tem mais de um contêiner ({}): escolha pelo nome",
+                    names.join(", ")
+                ));
+            }
+        }
+    }
+    Ok(None)
 }
 
 /// O estado vivo do serviço no card.
@@ -384,7 +443,7 @@ pub fn resolve(app: &tauri::AppHandle, source: &ServiceSource) -> Result<Service
                 .docker
                 .list(None, true, None)
                 .map_err(|e| format!("ler os contêineres: {e}"))?;
-            let container_id = &find_container(&list, container_id, name, project, service)
+            let container_id = &lookup_container(&list, container_id, name, project, service)?
                 .ok_or_else(|| format!("contêiner {label} não encontrado"))?
                 .id;
             let detail = state
@@ -540,11 +599,12 @@ pub fn probe(app: &tauri::AppHandle, source: &ServiceSource) -> ServiceLive {
                 return ServiceLive::new(LiveState::Stopped, None);
             }
             match state.docker.list(None, true, None) {
-                Ok(list) => match find_container(&list, container_id, name, project, service) {
-                    Some(c) => container_live(c),
-                    None => {
+                Ok(list) => match lookup_container(&list, container_id, name, project, service) {
+                    Ok(Some(c)) => container_live(c),
+                    Ok(None) => {
                         ServiceLive::new(LiveState::Down, Some("contêiner não existe mais".into()))
                     }
+                    Err(reason) => ServiceLive::new(LiveState::Down, Some(reason)),
                 },
                 Err(e) => ServiceLive::new(LiveState::Down, Some(format!("docker: {e}"))),
             }
@@ -847,6 +907,80 @@ mod tests {
         );
         assert_eq!(id(find_container(&list, "old", "sumiu", "", "")), None);
         assert_eq!(id(find_container(&list, "", "", "outro", "api")), None);
+    }
+
+    /// O que o agente escreve no `orbit_create_service`: id curto por
+    /// prefixo (ambíguo falha), nome com cara de hex tenta nome e id, e o
+    /// nome do serviço do compose acha `<projeto>-db-1` (mais de um falha
+    /// listando só os desse serviço).
+    #[test]
+    fn created_service_finds_short_id_hex_name_and_compose_service() {
+        let full = |p: &str| format!("{p}{}", "0".repeat(64 - p.len()));
+        let list = vec![
+            info(
+                &full("abc123def4567"),
+                "muriki-db-1",
+                "running",
+                "Up",
+                Some(("muriki", "db")),
+            ),
+            info(
+                &full("abc123def4568"),
+                "cafe12345678",
+                "running",
+                "Up",
+                None,
+            ),
+            info(
+                &full("fff000111222"),
+                "a-web-1",
+                "running",
+                "Up",
+                Some(("a", "web")),
+            ),
+            info(
+                &full("eee000111222"),
+                "b-web-1",
+                "running",
+                "Up",
+                Some(("b", "web")),
+            ),
+            info(
+                &full("ddd000111222"),
+                "outro",
+                "running",
+                "Up",
+                Some(("c", "cache")),
+            ),
+        ];
+        let find = |id: &str, name: &str| {
+            lookup_container(&list, id, name, "", "").map(|c| c.map(|c| c.name.clone()))
+        };
+        // Id curto: prefixo único.
+        assert_eq!(find("abc123def4567", ""), Ok(Some("muriki-db-1".into())));
+        assert_eq!(find(&full("fff000111222"), ""), Ok(Some("a-web-1".into())));
+        // Prefixo de dois: falha com o motivo.
+        let err = find("abc123def456", "").unwrap_err();
+        assert!(err.contains("ambíguo") && err.contains('2'), "{err}");
+        // Nome que parece hex: o nome primeiro, o id depois.
+        assert_eq!(
+            find("cafe12345678", "cafe12345678"),
+            Ok(Some("cafe12345678".into()))
+        );
+        assert_eq!(
+            find("fff000111222", "fff000111222"),
+            Ok(Some("a-web-1".into()))
+        );
+        // Serviço do compose.
+        assert_eq!(find("", "db"), Ok(Some("muriki-db-1".into())));
+        let err = find("", "web").unwrap_err();
+        assert!(err.contains("a-web-1") && err.contains("b-web-1"), "{err}");
+        assert!(!err.contains("outro") && !err.contains("muriki"), "{err}");
+        // Não há.
+        assert_eq!(find("", "sumiu"), Ok(None));
+        assert_eq!(find("999999999999", ""), Ok(None));
+        // Id curto demais não casa por prefixo.
+        assert_eq!(find("abc12", ""), Ok(None));
     }
 
     #[test]

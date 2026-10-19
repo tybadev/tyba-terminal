@@ -599,13 +599,14 @@ pub fn parse_call(tool: &str, value: &Value) -> Result<ToolCall, String> {
                 },
                 (None, Some(c)) => {
                     text("container", &c)?;
-                    // Id na forma do docker vai como id; senão é o nome. Nos
-                    // dois casos o core só acha o que já existe (`docker ps`)
-                    // e nunca sobe nada: parado, o nó falha com o motivo.
+                    // Com cara de id (hex, 12+) vai como id E como nome: o
+                    // core tenta o nome, o id e o prefixo do id. Senão é o
+                    // nome (ou o serviço do compose). O core só acha o que
+                    // já existe (`docker ps`) e nunca sobe nada.
                     if crate::docker::is_valid_container_id(&c) {
                         service::ServiceSource::Container {
-                            container_id: c,
-                            name: String::new(),
+                            container_id: c.clone(),
+                            name: c,
                             project: String::new(),
                             service: String::new(),
                         }
@@ -1237,7 +1238,7 @@ mod tests {
         assert!(matches!(
             kind(json!({"title": "pg", "container": id})).unwrap(),
             service::ServiceSource::Container { container_id, name, .. }
-                if container_id == id && name.is_empty()
+                if container_id == id && name == id
         ));
         assert!(matches!(
             kind(json!({"title": "pg", "container": " muriki-db-1 "})).unwrap(),

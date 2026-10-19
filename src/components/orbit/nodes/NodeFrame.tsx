@@ -113,6 +113,8 @@ export interface CanvasActions {
   openTerminal: (nodeId: string) => Promise<void>;
   /** ⋯ → Fechar do Terminal: o core mata o shell e fecha a sessão ao vivo. */
   closeTerminal: (nodeId: string) => void;
+  /** O id vivo do contêiner que o card do serviço mostra (`null`: saiu). */
+  reportContainer: (nodeId: string, containerId: string | null) => void;
 }
 
 export interface CanvasState {
@@ -159,6 +161,7 @@ export const CanvasActionsContext = createContext<CanvasActions>({
   answerApproval: () => {},
   openTerminal: async () => {},
   closeTerminal: () => {},
+  reportContainer: () => {},
 });
 
 export const CanvasStateContext = createContext<CanvasState>({
