@@ -62,20 +62,30 @@ fn guard_rail_at(
     current_branch: &dyn Fn(&Path) -> Option<String>,
     depth: usize,
 ) -> Option<&'static str> {
+    guard_rail_in(command, &mut Some(cwd.to_path_buf()), current_branch, depth)
+}
+
+/// Como [`guard_rail_at`], a partir de uma pasta que pode ser desconhecida
+/// (`None`: um `cd` para caminho não literal).
+fn guard_rail_in(
+    command: &str,
+    dir: &mut Option<PathBuf>,
+    current_branch: &dyn Fn(&Path) -> Option<String>,
+    depth: usize,
+) -> Option<&'static str> {
     if depth > MAX_NESTING {
         return None;
     }
     let src: Vec<char> = command.chars().collect();
     let pieces = scan(&src, &mut 0, depth, false);
-    check(&pieces, cwd, &mut cwd.to_path_buf(), current_branch, depth)
+    check(&pieces, dir, current_branch, depth)
 }
 
 /// Avalia os pedaços em ordem. `dir` é a pasta corrente do script (muda com
-/// `cd`); `start` é para onde um `cd` desconhecido volta.
+/// `cd`/`pushd`); `None` quando ela deixou de ser conhecida.
 fn check(
     pieces: &[Piece],
-    start: &Path,
-    dir: &mut PathBuf,
+    dir: &mut Option<PathBuf>,
     current_branch: &dyn Fn(&Path) -> Option<String>,
     depth: usize,
 ) -> Option<&'static str> {
@@ -85,11 +95,8 @@ fn check(
     for piece in pieces {
         let verdict = match piece {
             // Substituição roda num subshell: `cd` lá dentro não vaza.
-            Piece::Nested(inner) => {
-                let here = dir.clone();
-                check(inner, &here, &mut here.clone(), current_branch, depth + 1)
-            }
-            Piece::Command(words) => command_verdict(words, start, dir, current_branch, depth),
+            Piece::Nested(inner) => check(inner, &mut dir.clone(), current_branch, depth + 1),
+            Piece::Command(words) => command_verdict(words, dir, current_branch, depth),
         };
         if verdict.is_some() {
             return verdict;
@@ -98,37 +105,148 @@ fn check(
     None
 }
 
+/// Palavra que é um caminho literal: sem expansão de shell (`$`, crase, `~`,
+/// chaves, curingas) e sem ser opção. Aspas já saíram no scan, então `'$x'`
+/// também conta como não literal — na dúvida, desconhecido.
+fn is_literal(word: &str) -> bool {
+    !word.is_empty()
+        && !word.starts_with('-')
+        && !word.contains(['$', '`', '~', '{', '}', '*', '?', '[', ']', '%'])
+}
+
+/// O caminho de `target` a partir de `dir`; `None` se ele não é literal ou se
+/// a pasta de partida já é desconhecida (e o alvo é relativo). No Windows,
+/// `/c/Users/...` do Git Bash vira `C:\Users\...`.
+fn resolve(dir: &Option<PathBuf>, target: &str) -> Option<PathBuf> {
+    if !is_literal(target) {
+        return None;
+    }
+    let path = git_bash_path(target);
+    if path.is_absolute() {
+        Some(path)
+    } else {
+        dir.as_ref().map(|d| d.join(path))
+    }
+}
+
+#[cfg(windows)]
+fn git_bash_path(target: &str) -> PathBuf {
+    let bytes = target.as_bytes();
+    if bytes.len() >= 2
+        && bytes[0] == b'/'
+        && bytes[1].is_ascii_alphabetic()
+        && (bytes.len() == 2 || bytes[2] == b'/')
+    {
+        let drive = (bytes[1] as char).to_ascii_uppercase();
+        let rest = target.get(3..).unwrap_or("").replace('/', "\\");
+        return PathBuf::from(format!("{drive}:\\{rest}"));
+    }
+    PathBuf::from(target)
+}
+
+#[cfg(not(windows))]
+fn git_bash_path(target: &str) -> PathBuf {
+    PathBuf::from(target)
+}
+
+const SHELLS: &[&str] = &["sh", "bash", "zsh", "dash", "ksh", "fish"];
+
 fn command_verdict(
     words: &[String],
-    start: &Path,
-    dir: &mut PathBuf,
+    dir: &mut Option<PathBuf>,
     current_branch: &dyn Fn(&Path) -> Option<String>,
     depth: usize,
 ) -> Option<&'static str> {
-    let words = canonical_words(words);
-    let (program, args) = words.split_first()?;
-    match basename(program) {
-        "cd" => {
+    let canonical = canonical_words(words);
+    // `GIT_DIR=x git push`: a branch é a do repositório apontado.
+    let mut here = dir.clone();
+    for word in &words[..words.len() - canonical.len()] {
+        if let Some(v) = word.strip_prefix("GIT_DIR=") {
+            here = resolve(dir, v);
+        } else if let Some(v) = word.strip_prefix("GIT_WORK_TREE=") {
+            if !is_literal(v) {
+                here = None;
+            }
+        }
+    }
+    let (program, args) = canonical.split_first()?;
+    match program_name(program).as_str() {
+        "cd" | "pushd" => {
             let target = args.iter().find(|a| !a.starts_with('-') || *a == "-");
-            *dir = match target.map(String::as_str) {
-                Some(t) if t != "-" && !t.starts_with(['~', '$']) => dir.join(t),
-                _ => start.to_path_buf(),
-            };
+            *dir = target.and_then(|t| resolve(dir, t));
             None
         }
-        "sh" | "bash" | "zsh" | "dash" | "ksh" => {
-            shell_script(args).and_then(|s| guard_rail_at(s, dir, current_branch, depth + 1))
+        "popd" => {
+            *dir = None;
+            None
         }
-        "eval" => guard_rail_at(&args.join(" "), dir, current_branch, depth + 1),
-        "git" => git_push_verdict(args, dir, current_branch),
-        "gh" if gh_subcommand(args).starts_with(&["pr".into(), "merge".into()]) => {
-            Some(PR_MERGE_MESSAGE)
+        "export" => {
+            for a in args {
+                if let Some(v) = a.strip_prefix("GIT_DIR=") {
+                    *dir = resolve(dir, v);
+                } else if let Some(v) = a.strip_prefix("GIT_WORK_TREE=") {
+                    if !is_literal(v) {
+                        *dir = None;
+                    }
+                }
+            }
+            None
         }
-        "glab" if gh_subcommand(args).starts_with(&["mr".into(), "merge".into()]) => {
-            Some(PR_MERGE_MESSAGE)
+        name if SHELLS.contains(&name) => {
+            shell_script(args).and_then(|s| guard_rail_in(s, &mut here, current_branch, depth + 1))
         }
+        "cmd" => {
+            let at = args.iter().position(|a| {
+                let a = a.to_ascii_lowercase();
+                a == "/c" || a == "/k"
+            })?;
+            guard_rail_in(
+                &args[at + 1..].join(" "),
+                &mut here,
+                current_branch,
+                depth + 1,
+            )
+        }
+        "pwsh" | "powershell" => {
+            let at = args.iter().position(|a| {
+                matches!(
+                    a.to_ascii_lowercase().as_str(),
+                    "-c" | "-command" | "/c" | "/command"
+                )
+            })?;
+            guard_rail_in(
+                &args[at + 1..].join(" "),
+                &mut here,
+                current_branch,
+                depth + 1,
+            )
+        }
+        "eval" => guard_rail_in(&args.join(" "), &mut here, current_branch, depth + 1),
+        "git" => git_verdict(args, &here, current_branch, depth),
+        "gh" => gh_verdict(args),
+        "glab" => {
+            let args = without_repo_flag(args);
+            if args.first().is_some_and(|a| a == "api") {
+                return api_merge_verdict(&args[1..]);
+            }
+            subcommand_is(&args, "mr", "merge").then_some(PR_MERGE_MESSAGE)
+        }
+        "curl" | "wget" | "http" | "https" | "xh" => api_merge_verdict(args),
         _ => None,
     }
+}
+
+/// O nome do programa: o último pedaço do caminho (`/` ou `\`), em
+/// minúsculas, sem `.exe`/`.cmd`/`.bat` (`git.exe`, `C:\...\cmd.exe`).
+fn program_name(program: &str) -> String {
+    let base = program.rsplit(['/', '\\']).next().unwrap_or("");
+    let lower = base.to_ascii_lowercase();
+    for ext in [".exe", ".cmd", ".bat"] {
+        if let Some(stem) = lower.strip_suffix(ext) {
+            return stem.to_string();
+        }
+    }
+    lower
 }
 
 fn basename(program: &str) -> &str {
@@ -151,6 +269,8 @@ enum Next {
     Arg,
     /// Alvo de redirecionamento: sai do argv.
     Target,
+    /// O texto de um `<<<`: script, se o comando for um shell sem `-c`.
+    HereString,
     /// Delimitador de heredoc (`<<-` tira os tabs do começo das linhas).
     Delim {
         strip_tabs: bool,
@@ -175,6 +295,7 @@ struct Builder {
     quoted: bool,
     next: Next,
     heredocs: Vec<Heredoc>,
+    herestrings: Vec<String>,
 }
 
 impl Builder {
@@ -186,6 +307,7 @@ impl Builder {
         match std::mem::replace(&mut self.next, Next::Arg) {
             Next::Arg => self.words.push(word),
             Next::Target => {}
+            Next::HereString => self.herestrings.push(word),
             Next::Delim { strip_tabs } => self.heredocs.push(Heredoc {
                 delim: word,
                 strip_tabs,
@@ -196,11 +318,21 @@ impl Builder {
         self.quoted = false;
     }
 
-    fn end_command(&mut self, pieces: &mut Vec<Piece>) {
+    fn end_command(&mut self, pieces: &mut Vec<Piece>, depth: usize) {
         self.end_word();
         self.next = Next::Arg;
+        let strings = std::mem::take(&mut self.herestrings);
         if !self.words.is_empty() {
-            pieces.push(Piece::Command(std::mem::take(&mut self.words)));
+            let words = std::mem::take(&mut self.words);
+            // `bash <<< 'git push ...'`: o texto é o script.
+            let script_in = reads_script_from_stdin(&words) && depth < MAX_NESTING;
+            pieces.push(Piece::Command(words));
+            if script_in {
+                for text in strings {
+                    let src: Vec<char> = text.chars().collect();
+                    pieces.push(Piece::Nested(scan(&src, &mut 0, depth + 1, false)));
+                }
+            }
         }
     }
 }
@@ -219,6 +351,7 @@ fn scan(src: &[char], i: &mut usize, depth: usize, until_paren: bool) -> Vec<Pie
         quoted: false,
         next: Next::Arg,
         heredocs: Vec::new(),
+        herestrings: Vec::new(),
     };
     let mut parens = 0usize;
     while let Some(&c) = src.get(*i) {
@@ -259,10 +392,24 @@ fn scan(src: &[char], i: &mut usize, depth: usize, until_paren: bool) -> Vec<Pie
             }
             ' ' | '\t' => b.end_word(),
             '\n' => {
-                b.end_command(&mut pieces);
+                // O comando dono dos heredocs: um shell sem `-c` lê o corpo
+                // como script (`bash <<EOF`).
+                let owner_is_shell = {
+                    let mut words = b.words.clone();
+                    if b.in_word {
+                        words.push(b.word.clone());
+                    }
+                    reads_script_from_stdin(&words)
+                };
+                b.end_command(&mut pieces, depth);
                 for doc in std::mem::take(&mut b.heredocs) {
                     let body = heredoc_body(src, i, &doc);
-                    if doc.expands && depth < MAX_NESTING {
+                    if depth >= MAX_NESTING {
+                        continue;
+                    }
+                    if owner_is_shell {
+                        pieces.push(Piece::Nested(scan(&body, &mut 0, depth + 1, false)));
+                    } else if doc.expands {
                         pieces.extend(substitutions(&body, depth + 1));
                     }
                 }
@@ -288,7 +435,10 @@ fn scan(src: &[char], i: &mut usize, depth: usize, until_paren: bool) -> Vec<Pie
                 if c == '<' && peek == Some('<') {
                     *i += 1;
                     match src.get(*i) {
-                        Some('<') => *i += 1,
+                        Some('<') => {
+                            *i += 1;
+                            b.next = Next::HereString;
+                        }
                         next => {
                             let strip_tabs = next == Some(&'-');
                             if strip_tabs {
@@ -307,20 +457,30 @@ fn scan(src: &[char], i: &mut usize, depth: usize, until_paren: bool) -> Vec<Pie
             ')' if until_paren && parens == 0 => break,
             '(' => {
                 parens += 1;
-                b.end_command(&mut pieces);
+                b.end_command(&mut pieces, depth);
             }
             ')' => {
                 parens = parens.saturating_sub(1);
-                b.end_command(&mut pieces);
+                b.end_command(&mut pieces, depth);
             }
-            ';' | '&' | '|' | '`' => b.end_command(&mut pieces),
+            // Crase fora de aspas: o conteúdo roda, e a palavra onde ela está
+            // deixa de ser literal (o `` ` `` fica nela de marcador).
+            '`' => {
+                let inner = backtick_body(src, i);
+                if depth < MAX_NESTING {
+                    pieces.push(Piece::Nested(scan(&inner, &mut 0, depth + 1, false)));
+                }
+                b.in_word = true;
+                b.word.push('`');
+            }
+            ';' | '&' | '|' => b.end_command(&mut pieces, depth),
             _ => {
                 b.in_word = true;
                 b.word.push(c);
             }
         }
     }
-    b.end_command(&mut pieces);
+    b.end_command(&mut pieces, depth);
     pieces
 }
 
@@ -376,8 +536,8 @@ fn backtick_body(src: &[char], i: &mut usize) -> Vec<char> {
     inner
 }
 
-/// Consome as linhas do corpo até a linha igual ao delimitador (inclusive).
-/// Devolve o corpo só se ele expande — senão nada nele importa.
+/// Consome as linhas do corpo até a linha igual ao delimitador (inclusive) e
+/// devolve o corpo.
 fn heredoc_body(src: &[char], i: &mut usize, doc: &Heredoc) -> Vec<char> {
     let mut body = Vec::new();
     while *i < src.len() {
@@ -396,10 +556,8 @@ fn heredoc_body(src: &[char], i: &mut usize, doc: &Heredoc) -> Vec<char> {
         if line.iter().copied().eq(doc.delim.chars()) {
             break;
         }
-        if doc.expands {
-            body.extend_from_slice(line);
-            body.push('\n');
-        }
+        body.extend_from_slice(line);
+        body.push('\n');
     }
     body
 }
@@ -535,68 +693,229 @@ fn skip_options<'a>(mut rest: &'a [String], short: &str, long: &[&str]) -> &'a [
     rest
 }
 
-/// Os argumentos de `gh`/`glab` depois da opção global de repositório
-/// (`-R dono/repo`, `--repo dono/repo`, `--repo=dono/repo`).
-fn gh_subcommand(mut args: &[String]) -> &[String] {
-    while let Some(a) = args.first() {
-        args = match a.as_str() {
-            "-R" | "--repo" => args.get(2..).unwrap_or(&[]),
-            _ if a.starts_with("--repo=") || (a.starts_with("-R") && a.len() > 2) => &args[1..],
-            _ => break,
-        };
+/// Os argumentos de `gh`/`glab` sem a opção de repositório, onde quer que ela
+/// esteja (`-R dono/repo`, `--repo dono/repo`, `--repo=dono/repo`, `-Rdono/repo`).
+fn without_repo_flag(args: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = args.iter();
+    while let Some(a) = rest.next() {
+        match a.as_str() {
+            "-R" | "--repo" => {
+                rest.next();
+            }
+            _ if a.starts_with("--repo=") || (a.starts_with("-R") && a.len() > 2) => {}
+            _ => out.push(a.clone()),
+        }
     }
-    args
+    out
 }
 
-/// O script de `sh -c '...'` (também `-lc`, `-ec`...).
+/// `gh pr merge`, `glab mr merge`: o grupo e, depois das opções, a ação.
+fn subcommand_is(args: &[String], group: &str, action: &str) -> bool {
+    args.first().is_some_and(|g| g == group)
+        && args[1..]
+            .iter()
+            .find(|a| !a.starts_with('-'))
+            .is_some_and(|a| a == action)
+}
+
+/// `gh`: `pr merge` (com `-R` em qualquer lugar) e `gh api` que faz merge.
+fn gh_verdict(args: &[String]) -> Option<&'static str> {
+    let args = without_repo_flag(args);
+    if subcommand_is(&args, "pr", "merge") {
+        return Some(PR_MERGE_MESSAGE);
+    }
+    if args.first().is_some_and(|a| a == "api") {
+        return api_merge_verdict(&args[1..]);
+    }
+    None
+}
+
+/// Merge e escrita na main por API (`gh api`, `curl`, `wget`, `http`): merge
+/// de PR/MR (`pulls/<n>/merge`, `merge_requests/<n>/merge`, a mutation
+/// `mergePullRequest`/`enablePullRequestAutoMerge`), mover a ref da main
+/// (`git/refs/heads/main` sem ser `GET`) e `merges` com base na main.
+fn api_merge_verdict(args: &[String]) -> Option<&'static str> {
+    let joined = args.join(" ");
+    let is_merge_path = |a: &str| {
+        let a = a.split('?').next().unwrap_or(a);
+        (a.contains("pulls/") || a.contains("merge_requests/")) && a.ends_with("/merge")
+    };
+    if args.iter().any(|a| is_merge_path(a))
+        || joined.contains("mergePullRequest")
+        || joined.contains("enablePullRequestAutoMerge")
+    {
+        return Some(PR_MERGE_MESSAGE);
+    }
+    // O método: `-X`/`--method`/`--request`, colado ou não. Sem ele, dado no
+    // corpo (`-f`, `-F`, `--field`, `--input`, `-d`, `--data*`, `--json`) faz
+    // a chamada escrever.
+    let mut method: Option<String> = None;
+    let mut writes = false;
+    let mut rest = args.iter();
+    while let Some(a) = rest.next() {
+        match a.as_str() {
+            "-X" | "--method" | "--request" => method = rest.next().map(|m| m.to_uppercase()),
+            _ if a.starts_with("-X") && a.len() > 2 => method = Some(a[2..].to_uppercase()),
+            _ if a.starts_with("--method=") || a.starts_with("--request=") => {
+                method = a.split_once('=').map(|(_, m)| m.to_uppercase())
+            }
+            "-f" | "-F" | "--field" | "--raw-field" | "--input" | "-d" | "--json" => writes = true,
+            _ if a.starts_with("--data") || a.starts_with("--field=") => writes = true,
+            _ => {}
+        }
+    }
+    let writes = match method.as_deref() {
+        Some("GET") | Some("HEAD") => false,
+        Some(_) => true,
+        None => writes,
+    };
+    if !writes {
+        return None;
+    }
+    let main_ref = args.iter().any(|a| {
+        let a = a.trim_end_matches('/');
+        a.ends_with("git/refs/heads/main") || a.ends_with("git/refs/heads/master")
+    });
+    let merges_into_main = args
+        .iter()
+        .any(|a| a.trim_end_matches('/').ends_with("/merges"))
+        && [
+            "base=main",
+            "base=master",
+            "\"base\":\"main\"",
+            "\"base\":\"master\"",
+        ]
+        .iter()
+        .any(|b| joined.contains(b));
+    (main_ref || merges_into_main).then_some(PUSH_MAIN_MESSAGE)
+}
+
+/// O script de `sh -c '...'` (também `-lc`, `-ec`, `bash -c -- '...'`).
 fn shell_script(args: &[String]) -> Option<&str> {
     let flag = args
         .iter()
         .position(|a| a.starts_with('-') && !a.starts_with("--") && a.contains('c'))?;
-    args.get(flag + 1).map(String::as_str)
+    let mut at = flag + 1;
+    if args.get(at).is_some_and(|a| a == "--") {
+        at += 1;
+    }
+    args.get(at).map(String::as_str)
+}
+
+/// Shell que lê o script da entrada (`bash <<EOF`, `sh <<< '...'`): sem `-c`.
+fn reads_script_from_stdin(words: &[String]) -> bool {
+    let words = canonical_words(words);
+    words.split_first().is_some_and(|(program, args)| {
+        SHELLS.contains(&program_name(program).as_str()) && shell_script(args).is_none()
+    })
 }
 
 fn is_main_ref(name: &str) -> bool {
-    matches!(
-        name.strip_prefix("refs/heads/").unwrap_or(name),
-        "main" | "master"
-    )
+    let name = name
+        .strip_prefix("refs/heads/")
+        .or_else(|| name.strip_prefix("heads/"))
+        .unwrap_or(name);
+    matches!(name, "main" | "master")
 }
 
-/// `git [opções globais] push ...` cujo destino é main/master: refspec
-/// explícita (`main`, `+main`, `HEAD:main`, `x:refs/heads/main`), `--all`/
-/// `--mirror`, ou sem refspec (ou `HEAD`/`@`) com a branch atual sendo main.
-/// Não empurram branch nenhuma: `--dry-run`/`-n`, e `--tags` sem refspec.
-///
-/// Falha FECHADO: sem refspec (ou com `HEAD`/`@`) e a branch atual ilegível
-/// (git que não responde, HEAD destacado, pasta sem repo), recusa com
-/// [`BRANCH_UNKNOWN_MESSAGE`] — o destino pode ser a main.
-fn git_push_verdict(
+/// `git [opções globais] <subcomando>`: só o `push` (direto ou por alias
+/// `-c alias.x=push`) importa. `-C`, `--git-dir` e `--work-tree` mudam onde a
+/// branch é lida; caminho não literal a torna desconhecida.
+fn git_verdict(
     args: &[String],
-    cwd: &Path,
+    dir: &Option<PathBuf>,
     current_branch: &dyn Fn(&Path) -> Option<String>,
+    depth: usize,
 ) -> Option<&'static str> {
-    let mut dir = cwd.to_path_buf();
+    let mut here = dir.clone();
+    let mut matching = false;
+    let mut aliases: Vec<(String, String)> = Vec::new();
     let mut i = 0;
     while let Some(a) = args.get(i) {
+        let value = |i: usize| args.get(i + 1).map(String::as_str).unwrap_or("");
         match a.as_str() {
             "-C" => {
-                if let Some(d) = args.get(i + 1) {
-                    dir = dir.join(d);
+                here = resolve(&here, value(i));
+                i += 2;
+            }
+            "-c" => {
+                if let Some((key, val)) = value(i).split_once('=') {
+                    let key = key.to_ascii_lowercase();
+                    if key == "push.default" && val.eq_ignore_ascii_case("matching") {
+                        matching = true;
+                    } else if let Some(name) = key.strip_prefix("alias.") {
+                        aliases.push((name.to_string(), val.to_string()));
+                    }
                 }
                 i += 2;
             }
-            "-c" | "--git-dir" | "--work-tree" | "--namespace" | "--config-env" => i += 2,
+            "--git-dir" => {
+                here = resolve(dir, value(i));
+                i += 2;
+            }
+            "--work-tree" => {
+                if !is_literal(value(i)) {
+                    here = None;
+                }
+                i += 2;
+            }
+            _ if a.starts_with("--git-dir=") => {
+                here = resolve(dir, &a["--git-dir=".len()..]);
+                i += 1;
+            }
+            _ if a.starts_with("--work-tree=") => {
+                if !is_literal(&a["--work-tree=".len()..]) {
+                    here = None;
+                }
+                i += 1;
+            }
+            "--namespace" | "--config-env" | "--exec-path" => i += 2,
             _ if a.starts_with('-') => i += 1,
             _ => break,
         }
     }
-    if args.get(i).map(String::as_str) != Some("push") {
+    let sub = args.get(i)?;
+    let rest = &args[i + 1..];
+    if sub == "push" {
+        return push_verdict(rest, &here, matching, current_branch);
+    }
+    let (_, alias) = aliases.iter().rev().find(|(name, _)| name == sub)?;
+    if let Some(script) = alias.strip_prefix('!') {
+        let mut line = script.to_string();
+        for a in rest {
+            line.push(' ');
+            line.push_str(a);
+        }
+        return guard_rail_in(&line, &mut here, current_branch, depth + 1);
+    }
+    let mut words: Vec<String> = alias.split_whitespace().map(str::to_string).collect();
+    if words.first().map(String::as_str) != Some("push") {
         return None;
     }
+    words.remove(0);
+    words.extend(rest.iter().cloned());
+    push_verdict(&words, &here, matching, current_branch)
+}
+
+/// O `git push`: destino main/master por refspec explícita (`main`, `+main`,
+/// `HEAD:main`, `heads/main`, `refs/heads/main`), `--all`/`--mirror`, `:`
+/// (matching), curinga, destino com expansão de shell, `push.default=matching`
+/// sem refspec, ou sem refspec (ou `HEAD`/`@`) com a branch atual sendo main.
+/// Não empurram branch nenhuma: `--dry-run`/`-n`, e `--tags` sem refspec.
+///
+/// Falha FECHADO: sem refspec (ou com `HEAD`/`@`) e a branch atual ilegível
+/// (git que não responde, HEAD destacado, pasta sem repo ou desconhecida),
+/// recusa com [`BRANCH_UNKNOWN_MESSAGE`] — o destino pode ser a main.
+fn push_verdict(
+    args: &[String],
+    dir: &Option<PathBuf>,
+    matching: bool,
+    current_branch: &dyn Fn(&Path) -> Option<String>,
+) -> Option<&'static str> {
     let mut positional = Vec::new();
     let (mut all, mut tags, mut dry_run) = (false, false, false);
-    let mut rest = args[i + 1..].iter();
+    let mut rest = args.iter();
     while let Some(a) = rest.next() {
         match a.as_str() {
             "--all" | "--mirror" | "--branches" => all = true,
@@ -616,19 +935,31 @@ fn git_push_verdict(
     if all {
         return Some(PUSH_MAIN_MESSAGE);
     }
-    let current = || match current_branch(&dir) {
+    let current = || match dir.as_deref().and_then(current_branch) {
         Some(b) if is_main_ref(&b) => Some(PUSH_MAIN_MESSAGE),
         Some(_) => None,
         None => Some(BRANCH_UNKNOWN_MESSAGE),
     };
     let refspecs = positional.get(1..).unwrap_or(&[]);
     if refspecs.is_empty() {
-        return if tags { None } else { current() };
+        if tags {
+            return None;
+        }
+        if matching {
+            return Some(PUSH_MAIN_MESSAGE);
+        }
+        return current();
     }
     refspecs.iter().find_map(|spec| {
         let spec = spec.trim_start_matches('+');
+        // Expansão, curinga ou `:` (matching): o destino pode ser a main.
+        if !is_literal(spec) && spec != ":" && !spec.starts_with(':') {
+            return Some(PUSH_MAIN_MESSAGE);
+        }
         let dst = spec.rsplit_once(':').map_or(spec, |(_, d)| d);
-        if dst == "HEAD" || dst == "@" {
+        if dst.is_empty() || !is_literal(dst) {
+            Some(PUSH_MAIN_MESSAGE)
+        } else if dst == "HEAD" || dst == "@" {
             current()
         } else {
             is_main_ref(dst).then_some(PUSH_MAIN_MESSAGE)
@@ -636,21 +967,54 @@ fn git_push_verdict(
     })
 }
 
-/// O que o hook imprime no stdout para o Claude. Só o `PreToolUse` do `Bash`
-/// que bate no guarda-corpo tem algo a dizer (`deny` com motivo); qualquer
-/// outro caso é `None` — stdout vazio e saída 0, que para o Claude Code é
-/// "sem decisão": o fluxo de permissão normal dele segue.
+/// Ferramentas de shell do Claude Code e do Codex: o guarda-corpo vale para
+/// todas (`PowerShell` no Windows).
+const SHELL_TOOLS: &[&str] = &[
+    "Bash",
+    "PowerShell",
+    "shell",
+    "local_shell",
+    "exec_command",
+    "unified_exec",
+];
+
+/// O comando de uma ferramenta de shell: texto (`command`/`cmd`) ou argv
+/// (lista), que vira texto com cada palavra entre aspas simples.
+fn tool_command(input: &Value) -> Option<String> {
+    let field = input.get("command").or_else(|| input.get("cmd"))?;
+    if let Some(text) = field.as_str() {
+        return Some(text.to_string());
+    }
+    let words = field.as_array()?;
+    let quoted: Vec<String> = words
+        .iter()
+        .map(|w| {
+            w.as_str()
+                .map(|w| format!("'{}'", w.replace('\'', "'\\''")))
+        })
+        .collect::<Option<_>>()?;
+    Some(quoted.join(" "))
+}
+
+/// O que o hook imprime no stdout. Só o `PreToolUse` de uma ferramenta de
+/// shell que bate no guarda-corpo tem algo a dizer (`deny` com motivo);
+/// qualquer outro caso é `None` — stdout vazio e saída 0, que para o Claude
+/// Code e o Codex é "sem decisão": o fluxo de permissão normal deles segue.
 pub fn hook_output(
     payload: &Value,
     current_branch: &dyn Fn(&Path) -> Option<String>,
 ) -> Option<String> {
     let field = |k: &str| payload.get(k).and_then(Value::as_str);
-    if field("hook_event_name")? != "PreToolUse" || field("tool_name")? != "Bash" {
+    if field("hook_event_name")? != "PreToolUse" || !SHELL_TOOLS.contains(&field("tool_name")?) {
         return None;
     }
-    let command = payload.get("tool_input")?.get("command")?.as_str()?;
+    let mut command = tool_command(payload.get("tool_input")?)?;
+    // No PowerShell `\` é caractere de caminho, não escape.
+    if field("tool_name") == Some("PowerShell") {
+        command = command.replace('\\', "/");
+    }
     let cwd = PathBuf::from(field("cwd").filter(|c| !c.is_empty()).unwrap_or("."));
-    let reason = guard_rail(command, &cwd, current_branch)?;
+    let reason = guard_rail(&command, &cwd, current_branch)?;
     Some(
         json!({
             "hookSpecificOutput": {
@@ -663,24 +1027,29 @@ pub fn hook_output(
     )
 }
 
-/// [`hook_output`] com a branch lida do git de verdade: o guarda-corpo que o
-/// hook do claude digitado (`tyba _hook --observe`) aplica — a mesma decisão
-/// e as mesmas mensagens do plugin.
+/// [`hook_output`] com a branch lida do repositório de verdade: o
+/// guarda-corpo que o hook do agente (`tyba _hook --observe`) e o plugin
+/// aplicam.
 pub fn guard_rail_output(payload: &Value) -> Option<String> {
     hook_output(payload, &current_branch)
 }
 
-/// A branch atual de `dir`, lida do `HEAD` do repositório — sem rodar git:
-/// nenhum filtro, `fsmonitor` ou jaula (Linux sem userns) no caminho, e o
-/// mesmo código no Windows. Sobe as pastas até achar o `.git` (pasta, ou o
-/// arquivo `gitdir:` de um worktree). Também responde numa branch ainda sem
-/// commit. `None` (sem repo, HEAD destacado, leitura falhou) faz o push que
-/// depende dela ser recusado. Só roda para `git push` sem refspec.
+/// A branch atual de `dir`, lida do `HEAD` do repositório — sem rodar git
+/// no caso comum: nenhum filtro, `fsmonitor` ou jaula no caminho, e o mesmo
+/// código no Windows. Sobe as pastas até achar o repositório: a própria pasta
+/// se ela é um git dir (`--git-dir`, `GIT_DIR`, repo bare), ou o `.git`
+/// (pasta, ou o arquivo `gitdir:` de um worktree). Também responde numa
+/// branch ainda sem commit. Repositório reftable (HEAD `.invalid`, ou
+/// `extensions.refStorage` no config) pergunta ao git
+/// (`symbolic-ref --short -q HEAD`). `None` (sem repo, HEAD destacado,
+/// leitura falhou) faz o push que depende dela ser recusado.
 fn current_branch(dir: &Path) -> Option<String> {
     let mut at = Some(dir);
     while let Some(here) = at {
         let dotgit = here.join(".git");
-        let git_dir = if dotgit.is_dir() {
+        let git_dir = if here.join("HEAD").is_file() && here.join("objects").is_dir() {
+            here.to_path_buf()
+        } else if dotgit.is_dir() {
             dotgit
         } else if dotgit.is_file() {
             let text = std::fs::read_to_string(&dotgit).ok()?;
@@ -695,13 +1064,43 @@ fn current_branch(dir: &Path) -> Option<String> {
             continue;
         };
         let head = std::fs::read_to_string(git_dir.join("HEAD")).ok()?;
-        return head
-            .trim()
-            .strip_prefix("ref: refs/heads/")
-            .filter(|b| !b.is_empty())
-            .map(str::to_string);
+        let branch = head.trim().strip_prefix("ref: refs/heads/")?;
+        if branch == ".invalid" || uses_reftable(&git_dir) {
+            return symbolic_ref(here);
+        }
+        return (!branch.is_empty()).then(|| branch.to_string());
     }
     None
+}
+
+/// O repositório guarda as refs em reftable: o `HEAD` em arquivo é só um
+/// marcador. Olha o config do git dir e, num worktree, o do repo principal.
+fn uses_reftable(git_dir: &Path) -> bool {
+    let mut dirs = vec![git_dir.to_path_buf()];
+    if let Ok(common) = std::fs::read_to_string(git_dir.join("commondir")) {
+        let common = PathBuf::from(common.trim());
+        dirs.push(if common.is_absolute() {
+            common
+        } else {
+            git_dir.join(common)
+        });
+    }
+    dirs.iter().any(|d| {
+        std::fs::read_to_string(d.join("config"))
+            .is_ok_and(|c| c.to_ascii_lowercase().contains("refstorage"))
+    })
+}
+
+/// A branch pelo git (reftable), sem jaula aninhada e com as defesas de
+/// [`crate::worktree::git_in`]: fsmonitor, hooks e pager desligados, env de
+/// git do processo limpo. Falhou: `None` — recusa.
+fn symbolic_ref(dir: &Path) -> Option<String> {
+    let out = crate::worktree::git_in_unjailed(dir)
+        .args(["symbolic-ref", "--short", "-q", "HEAD"])
+        .output()
+        .ok()?;
+    let branch = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (out.status.success() && !branch.is_empty()).then_some(branch)
 }
 
 #[cfg(test)]
@@ -1074,11 +1473,41 @@ mod tests {
         );
         assert_eq!(on_main("cd /repo/feat && git push"), None);
         assert_eq!(on_main("cd ../feat && git push -u origin"), None);
-        // Pasta desconhecida volta para a da sessão.
-        assert_eq!(guard("cd /repo/main && cd - && git push"), None);
-        assert_eq!(guard("cd /repo/main && cd && git push"), None);
-        assert_eq!(on_main("cd ~/x && git push"), Some(PUSH_MAIN_MESSAGE));
-        assert_eq!(on_main("cd $REPO && git push"), Some(PUSH_MAIN_MESSAGE));
+        // Pasta não literal: a branch fica desconhecida — falha fechado.
+        for cmd in [
+            "cd /repo/main && cd - && git push",
+            "cd /repo/main && cd && git push",
+            "cd ~/x && git push",
+            "cd $REPO && git push",
+            "cd \"$(dirname x)\" && git push",
+            "pushd ~/x && git push",
+            "pushd /repo/feat; popd; git push",
+            "git -C ~/x push",
+            "git -C $D push origin",
+            "git --git-dir=$G push",
+            "git --git-dir ~/x/.git push",
+            "git --work-tree=$W push",
+            "GIT_DIR=$G git push",
+            "export GIT_DIR=~/r/.git; git push",
+        ] {
+            assert_eq!(guard(cmd), Some(BRANCH_UNKNOWN_MESSAGE), "{cmd}");
+        }
+        // Caminho literal: lê a branch de lá.
+        assert_eq!(
+            guard("pushd /repo/main && git push"),
+            Some(PUSH_MAIN_MESSAGE)
+        );
+        assert_eq!(
+            guard("GIT_DIR=/repo/main/.git git push"),
+            Some(PUSH_MAIN_MESSAGE)
+        );
+        assert_eq!(
+            guard("git --git-dir=/repo/main/.git push"),
+            Some(PUSH_MAIN_MESSAGE)
+        );
+        assert_eq!(on_main("git -C /repo/feat push"), None);
+        // Destino explícito que não é a main não depende da pasta.
+        assert_eq!(guard("cd $X && git push origin feat/x"), None);
         // `cd` dentro de `$(...)` não vaza para fora.
         assert_eq!(guard("X=\"$(cd /repo/main)\"; git push"), None);
         assert_eq!(
@@ -1196,6 +1625,175 @@ mod tests {
         assert_eq!(
             guard_rail("git push", &repo, &current_branch),
             Some(BRANCH_UNKNOWN_MESSAGE)
+        );
+    }
+
+    /// Destinos que podem ser a main: `heads/main`, `:` (matching), curinga,
+    /// expansão de shell, `push.default=matching`.
+    #[test]
+    fn guard_rail_denies_destinations_that_may_be_main() {
+        for cmd in [
+            "git push origin heads/main",
+            "git push origin refs/heads/master",
+            "git push origin HEAD:heads/main",
+            "git push origin :",
+            "git push origin ':'",
+            "git push origin 'refs/heads/*:refs/heads/*'",
+            "git push origin 'feat/*'",
+            "git push origin $b",
+            "git push origin \"$BRANCH\"",
+            "git push origin ${B:-main}",
+            "git push origin HEAD:$b",
+            "git push origin {main,dev}",
+            "git push origin \"$(git rev-parse --abbrev-ref HEAD)\"",
+            "git push origin `echo main`",
+            "git -c push.default=matching push",
+            "git -c push.default=matching push origin",
+        ] {
+            assert_eq!(guard(cmd), Some(PUSH_MAIN_MESSAGE), "{cmd}");
+        }
+        // `push.default=current|upstream` com a branch ilegível: recusa.
+        let unknown = |cmd| guard_rail(cmd, Path::new("/x"), &|_: &Path| None);
+        for cmd in [
+            "git -c push.default=current push",
+            "git -c push.default=upstream push origin",
+        ] {
+            assert_eq!(unknown(cmd), Some(BRANCH_UNKNOWN_MESSAGE), "{cmd}");
+        }
+        assert_eq!(guard("git -c push.default=current push"), None);
+        assert_eq!(guard("git push origin heads/feat"), None);
+    }
+
+    /// Windows e afins: `git.exe`, `cmd /c`, `pwsh -c`, `powershell -Command`.
+    #[test]
+    fn guard_rail_reads_windows_programs_and_shells() {
+        for cmd in [
+            "git.exe push origin main",
+            "'C:\\Git\\bin\\git.exe' push origin main",
+            "GIT push origin main",
+            "cmd /c git push origin main",
+            "cmd.exe /C \"git push origin main\"",
+            "pwsh -c 'git push origin main'",
+            "powershell -Command \"git push origin main\"",
+            "pwsh.exe -NoProfile -Command git push origin main",
+            "fish -c 'git push origin main'",
+        ] {
+            assert_eq!(guard(cmd), Some(PUSH_MAIN_MESSAGE), "{cmd}");
+        }
+        assert_eq!(guard("cmd /c gh pr merge 3"), Some(PR_MERGE_MESSAGE));
+        assert_eq!(guard("pwsh -c 'git status'"), None);
+    }
+
+    /// Merge e escrita na main por API.
+    #[test]
+    fn guard_rail_denies_merges_through_the_api() {
+        for cmd in [
+            "gh api -X PUT repos/o/r/pulls/12/merge",
+            "gh api repos/o/r/pulls/12/merge -X PUT",
+            "gh api --method PUT /repos/o/r/pulls/12/merge",
+            "gh api graphql -f query='mutation { mergePullRequest(input:{pullRequestId:\"x\"}) { clientMutationId } }'",
+            "gh api graphql -f query='mutation { enablePullRequestAutoMerge(input:{}) { clientMutationId } }'",
+            "gh pr -R o/r merge 3",
+            "gh pr merge -R o/r 3",
+            "curl -X PUT -H 'Authorization: token x' https://api.github.com/repos/o/r/pulls/12/merge",
+            "curl https://gitlab.com/api/v4/projects/1/merge_requests/7/merge -X PUT",
+            "glab api -X PUT projects/1/merge_requests/7/merge",
+        ] {
+            assert_eq!(guard(cmd), Some(PR_MERGE_MESSAGE), "{cmd}");
+        }
+        for cmd in [
+            "gh api -X PATCH repos/o/r/git/refs/heads/main -f sha=abc",
+            "gh api repos/o/r/git/refs/heads/master -f sha=abc -F force=true",
+            "curl -X PATCH https://api.github.com/repos/o/r/git/refs/heads/main -d '{\"sha\":\"x\"}'",
+            "gh api repos/o/r/merges -f base=main -f head=feat",
+        ] {
+            assert_eq!(guard(cmd), Some(PUSH_MAIN_MESSAGE), "{cmd}");
+        }
+        for cmd in [
+            "gh api repos/o/r/pulls/12",
+            "gh api repos/o/r/git/refs/heads/main",
+            "gh api -X GET repos/o/r/git/refs/heads/main",
+            "gh api repos/o/r/merges -f base=feat -f head=x",
+            "curl https://api.github.com/repos/o/r/pulls/12",
+            "gh pr view -R o/r 3 --json mergeable",
+        ] {
+            assert_eq!(guard(cmd), None, "{cmd}");
+        }
+    }
+
+    /// `bash -c -- '...'`, `bash <<EOF`, `bash <<< '...'` e alias de push.
+    #[test]
+    fn guard_rail_opens_more_shell_forms_and_git_aliases() {
+        for cmd in [
+            "bash -c -- 'git push origin main'",
+            "bash <<EOF\ngit push origin main\nEOF",
+            "sh <<'EOF'\ncd x && git push origin main\nEOF",
+            "bash <<< 'git push origin main'",
+            "git -c alias.p=push p origin main",
+            "git -c alias.ship='push origin main' ship",
+            "git -c alias.x='!git push origin main' x",
+        ] {
+            assert_eq!(guard(cmd), Some(PUSH_MAIN_MESSAGE), "{cmd}");
+        }
+        for cmd in [
+            "cat <<EOF\ngit push origin main\nEOF",
+            "bash -c -- 'git push origin feat/x'",
+            "git -c alias.st=status st",
+            "git -c alias.p=push p origin feat/x",
+        ] {
+            assert_eq!(guard(cmd), None, "{cmd}");
+        }
+    }
+
+    /// Ferramentas de shell além do `Bash`: `PowerShell` e as do Codex (com o
+    /// comando em argv).
+    #[test]
+    fn hook_output_covers_powershell_and_codex_shell_tools() {
+        for (tool, input) in [
+            ("PowerShell", json!({"command": "git push origin main"})),
+            (
+                "shell",
+                json!({"command": ["bash", "-lc", "git push origin main"]}),
+            ),
+            (
+                "local_shell",
+                json!({"command": ["git", "push", "origin", "main"]}),
+            ),
+            ("exec_command", json!({"cmd": "git push origin main"})),
+        ] {
+            let out = hook_output(&pre_tool_use(tool, input), &fake_branch);
+            assert!(out.is_some_and(|o| o.contains(PUSH_MAIN_MESSAGE)), "{tool}");
+        }
+        assert_eq!(
+            hook_output(
+                &pre_tool_use("PowerShell", json!({"command": "git status"})),
+                &fake_branch
+            ),
+            None
+        );
+    }
+
+    /// Reftable: o `HEAD` em arquivo é `.invalid`; a branch vem do git.
+    #[test]
+    fn current_branch_asks_git_in_a_reftable_repo() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("rt");
+        std::fs::create_dir_all(&repo).unwrap();
+        let ok = std::process::Command::new("git")
+            .args(["init", "-q", "--ref-format=reftable", "-b", "main"])
+            .current_dir(&repo)
+            .status()
+            .is_ok_and(|s| s.success());
+        if !ok {
+            eprintln!("git local sem reftable: teste pulado");
+            return;
+        }
+        let head = std::fs::read_to_string(repo.join(".git/HEAD")).unwrap();
+        assert!(head.contains(".invalid"), "{head}");
+        assert_eq!(current_branch(&repo).as_deref(), Some("main"));
+        assert_eq!(
+            guard_rail("git push", &repo, &current_branch),
+            Some(PUSH_MAIN_MESSAGE)
         );
     }
 
