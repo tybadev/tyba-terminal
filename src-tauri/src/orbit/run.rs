@@ -1061,6 +1061,19 @@ pub fn startable(stored: Stored<Graph>) -> Result<Graph, String> {
     Ok(stored.value)
 }
 
+/// O tipo do nó como as ferramentas o mostram (o `type` do arquivo).
+fn kind_name(kind: &NodeKind) -> &'static str {
+    match kind {
+        NodeKind::Agent { .. } => "agent",
+        NodeKind::Process { .. } => "process",
+        NodeKind::Note { .. } => "note",
+        NodeKind::Integration { .. } => "integration",
+        NodeKind::Browser { .. } => "browser",
+        NodeKind::Service { .. } => "service",
+        NodeKind::Terminal { .. } => "terminal",
+    }
+}
+
 /// [`node_label`] de um nó do run ativo (o criado por agente inclusive).
 fn active_label(a: &Active, id: &str) -> String {
     a.graph
@@ -2852,6 +2865,8 @@ impl<H: RunHost> Runs<H> {
                 Ok(serde_json::json!({ "node_id": node_id, "stopped": true }))
             }
             ToolCall::Restart { node } => self.restart_by_agent(run_id, orchestrator, &node),
+            ToolCall::ListNodes => self.list_nodes(run_id, orchestrator),
+            ToolCall::ReadLog { node, lines } => self.read_log(run_id, orchestrator, &node, lines),
             ToolCall::Plan { steps } => {
                 let id = self.write_plan(run_id, orchestrator, steps)?;
                 Ok(serde_json::json!({ "note_id": id }))
@@ -3989,17 +4004,159 @@ impl<H: RunHost> Runs<H> {
             let authority = u.split("://").nth(1)?.split(['/', '?', '#']).next()?;
             authority.rsplit_once(':')?.1.parse::<u16>().ok()
         });
+        let node = self.node_of(run_id, &run, node_id);
+        let kind = node.as_ref().map(|n| kind_name(&n.kind));
+        let agent = matches!(kind, Some("agent"));
+        let turn_state = self
+            .active
+            .lock()
+            .get(run_id)
+            .and_then(|a| a.talk.state(node_id));
+        let files: Option<Vec<serde_json::Value>> = diff
+            .as_ref()
+            .and_then(|d| d["files"].as_array())
+            .map(|f| f.iter().map(|x| x["path"].clone()).collect());
+        // O que o core não sabe, dito: o agente lê isto e não adivinha.
+        let mut unknown: Vec<&str> = Vec::new();
+        if agent {
+            if n.outputs.contains_key(&EdgeKind::Context) {
+                unknown.push(
+                    "text e diff são do primeiro turno do agente; os turnos seguintes o \
+                     TYBA não guarda (peça o resumo a ele por orbit_send, se houver conversa)",
+                );
+                if diff.is_none() {
+                    unknown.push("sem diff: a pasta do agente não é um repositório git");
+                }
+            } else {
+                unknown.push("o agente ainda não fechou o primeiro turno: sem text nem diff");
+            }
+            unknown.push("log: o nó de agente não grava log de processo");
+        } else if log.is_none() && n.started_at.is_some() {
+            unknown.push("log: este nó não grava log.txt");
+        }
         Ok(serde_json::json!({
             "node_id": node_id,
+            "title": node.as_ref().map(|n| n.title.clone()),
+            "kind": kind,
             "status": n.status,
+            "turn": turn_state,
+            "attempt": n.attempt,
+            "stale": n.stale,
             "url": n.url,
             "port": port,
             "exit_code": n.exit_code,
             "reason": n.reason,
+            "started_at": n.started_at,
+            "finished_at": n.finished_at,
             "log": log,
             "text": turn.as_ref().map(|(t, _)| t),
             "text_truncated": turn.as_ref().is_some_and(|(_, cut)| *cut),
             "diff": diff,
+            "files": files,
+            "unknown": unknown,
+        }))
+    }
+
+    /// O nó `id` do run: do grafo do run ativo (o do dono e os criados) ou,
+    /// fechado, dos criados e do grafo salvo.
+    fn node_of(&self, run_id: &str, run: &Run, id: &str) -> Option<Node> {
+        if let Some(a) = self.active.lock().get(run_id) {
+            return a.graph.nodes.iter().find(|n| n.id == id).cloned();
+        }
+        if let Some(c) = run.created.iter().find(|c| c.node.id == id) {
+            return Some(c.node.clone());
+        }
+        self.saved_graph(&run.graph_id)
+            .ok()
+            .flatten()
+            .and_then(|g| g.nodes.into_iter().find(|n| n.id == id))
+    }
+
+    /// `orbit_list_nodes`: os nós do run (o do dono e os criados), cada um
+    /// com o estado, de quem é e as ligações de agora com quem pergunta. Os
+    /// detalhes (log, fala, diff) só por `orbit_node_status`, com a régua dela.
+    fn list_nodes(&self, run_id: &str, caller: &str) -> Result<serde_json::Value, String> {
+        let run = self.get(run_id).ok_or("execução não encontrada")?;
+        let saved = self.saved_graph(&run.graph_id)?;
+        let edges = current_edges(saved.as_ref(), &run.created);
+        let nodes: Vec<Node> = match self.active.lock().get(run_id) {
+            Some(a) => a.graph.nodes.clone(),
+            None => saved
+                .map(|g| g.nodes)
+                .unwrap_or_default()
+                .into_iter()
+                .chain(run.created.iter().map(|c| c.node.clone()))
+                .filter(|n| run.nodes.contains_key(&n.id))
+                .collect(),
+        };
+        let list: Vec<serde_json::Value> = nodes
+            .iter()
+            .filter_map(|node| {
+                let n = run.nodes.get(&node.id)?;
+                let mine = run
+                    .created
+                    .iter()
+                    .any(|c| c.node.id == node.id && c.created_by == caller);
+                let links: Vec<EdgeKind> = edges
+                    .iter()
+                    .filter(|e| {
+                        (e.from == caller && e.to == node.id)
+                            || (e.to == caller && e.from == node.id)
+                    })
+                    .map(|e| e.kind)
+                    .collect();
+                Some(serde_json::json!({
+                    "id": node.id,
+                    "title": node.title,
+                    "kind": kind_name(&node.kind),
+                    "status": n.status,
+                    "you": node.id == caller,
+                    "created_by_you": mine,
+                    "links": links,
+                    "url": (mine || !links.is_empty()).then(|| n.url.clone()).flatten(),
+                }))
+            })
+            .collect();
+        Ok(serde_json::json!({ "you": caller, "nodes": list }))
+    }
+
+    /// `orbit_read_log`: o fim do log do processo de um nó, a régua do
+    /// `orbit_node_status` (ligado ou criado), sem cor e redigido.
+    fn read_log(
+        &self,
+        run_id: &str,
+        caller: &str,
+        node_id: &str,
+        lines: usize,
+    ) -> Result<serde_json::Value, String> {
+        let run = self.get(run_id).ok_or("execução não encontrada")?;
+        if !run.nodes.contains_key(node_id) {
+            return Err(format!("nó não existe neste run: {node_id}"));
+        }
+        if !self.reaches(&run, caller, node_id)? {
+            return Err(format!(
+                "{node_id} não está ligado a você nem foi criado por você: só lê o log \
+                 de nó ligado a você no canvas ou que você criou"
+            ));
+        }
+        let root = self.root.as_ref().ok_or("sem pasta para as execuções")?;
+        let path = root.join(run_id).join(node_id).join("out").join("log.txt");
+        let Some((text, cut_before)) =
+            super::log::read_whole(&path, orchestrator::READ_LOG_MAX_BYTES)
+        else {
+            return Ok(serde_json::json!({
+                "node_id": node_id,
+                "log": null,
+                "unknown": "este nó não tem log de processo (agente, nota, navegador, ou \
+                            ainda não começou): use orbit_node_status",
+            }));
+        };
+        let (log, cut) = orchestrator::log_window(&text, lines, orchestrator::READ_LOG_MAX_CHARS);
+        Ok(serde_json::json!({
+            "node_id": node_id,
+            "lines": log.lines().count(),
+            "cut": cut || cut_before,
+            "log": log,
         }))
     }
 
@@ -7469,6 +7626,12 @@ mod tests {
             st["diff"]["files"],
             json!([{"path": "revisor.txt", "added": 1, "removed": 0}])
         );
+        // Os caminhos tocados, o tipo, e o que o core não sabe, dito.
+        assert_eq!(st["files"], json!(["revisor.txt"]));
+        assert_eq!(st["kind"], "agent");
+        assert_eq!(st["title"], "revisor");
+        let unknown = st["unknown"].to_string();
+        assert!(unknown.contains("primeiro turno"), "{st}");
         // Nenhum caminho para saída crua (patch, log, nota) sai da ferramenta.
         assert!(st.get("paths").is_none(), "{st}");
         let out = dir.path().join("runs");
@@ -8721,6 +8884,72 @@ mod tests {
         front
             .call("orbit_node_status", &json!({"node_id": "solto"}))
             .unwrap();
+        runs.stop(&run.id).unwrap();
+    }
+
+    /// `orbit_list_nodes` mostra todos os nós e o que liga cada um a quem
+    /// pergunta; `orbit_read_log` lê o fim do log, redigido, só de nó ligado
+    /// ou criado; `orbit_node_status` diz tipo, título e o que não sabe.
+    #[cfg(unix)]
+    #[test]
+    fn list_nodes_read_log_and_full_status() {
+        use serde_json::json;
+        let dir = tempfile::tempdir().unwrap();
+        let (runs, host, _app) = pty_runs(dir.path().join("runs"));
+        let mut a = orchestrator("a");
+        a.title = "Front".into();
+        let command = format!("printf 'l1\\nl2\\nl3 {}\\n'; sleep 30", fake_key());
+        let mut p = process("p", &command);
+        p.title = "api".into();
+        let g = graph(
+            vec![a, p, process("solto", "sleep 30")],
+            vec![edge("d1", "a", "p", EdgeKind::Diff)],
+        );
+        runs.store.save_orbit_graph(&g, true, None).unwrap();
+        let run = runs.start_now(g, vec![]).unwrap();
+        wait_orchestrating(&runs, &run.id, "a");
+        wait_status(&runs, &run.id, "p", NodeStatus::Running);
+        let front = tools_of(&host, "Front");
+
+        let list = front.call("orbit_list_nodes", &json!({})).unwrap();
+        assert_eq!(list["you"], "a");
+        let nodes = list["nodes"].as_array().unwrap();
+        assert_eq!(nodes.len(), 3, "{list}");
+        let by = |id: &str| nodes.iter().find(|n| n["id"] == id).unwrap().clone();
+        assert_eq!(by("a")["you"], true);
+        assert_eq!(by("p")["links"], json!(["diff"]));
+        assert_eq!(by("p")["kind"], "process");
+        assert_eq!(by("p")["title"], "api");
+        assert_eq!(by("solto")["links"], json!([]));
+        assert_eq!(by("solto")["created_by_you"], false);
+
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let out = loop {
+            let out = front
+                .call("orbit_read_log", &json!({"node": "p", "lines": 2}))
+                .unwrap();
+            if out["log"].as_str().is_some_and(|l| l.contains("l3")) {
+                break out;
+            }
+            assert!(Instant::now() < deadline, "{out}");
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        let log = out["log"].as_str().unwrap();
+        assert!(log.starts_with("l2\nl3"), "{log}");
+        assert!(!log.contains(&fake_key()), "redigido: {log}");
+        assert_eq!(out["cut"], true);
+        let err = front
+            .call("orbit_read_log", &json!({"node": "solto"}))
+            .unwrap_err();
+        assert!(err.contains("não está ligado"), "{err}");
+
+        let status = front
+            .call("orbit_node_status", &json!({"node_id": "p"}))
+            .unwrap();
+        assert_eq!(status["kind"], "process");
+        assert_eq!(status["title"], "api");
+        assert_eq!(status["attempt"], 0);
+        assert_eq!(status["unknown"], json!([]));
         runs.stop(&run.id).unwrap();
     }
 

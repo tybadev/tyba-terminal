@@ -106,6 +106,13 @@ pub enum ToolCall {
     Restart {
         node: String,
     },
+    /// Os nós do run, com o que liga cada um a quem pergunta.
+    ListNodes,
+    /// O fim do log do processo de um nó ligado ou criado, redigido.
+    ReadLog {
+        node: String,
+        lines: usize,
+    },
     /// O plano inteiro, já validado e redigido.
     Plan {
         steps: Vec<PlanStep>,
@@ -324,6 +331,42 @@ struct NodeArgs {
     node_id: String,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReadLogArgs {
+    node: String,
+    #[serde(default)]
+    lines: Option<usize>,
+}
+
+/// Linhas do `orbit_read_log` sem `lines`.
+pub const READ_LOG_LINES: usize = 200;
+/// Teto de linhas do `orbit_read_log`.
+pub const READ_LOG_MAX_LINES: usize = 2_000;
+/// Teto, em caracteres, do texto do `orbit_read_log` (o fim fica).
+pub const READ_LOG_MAX_CHARS: usize = 60_000;
+/// Quanto do fim do log (o rotacionado inclusive) o `orbit_read_log` lê.
+pub const READ_LOG_MAX_BYTES: u64 = 512 * 1024;
+
+/// As últimas `lines` linhas de `text`, até `max_chars` caracteres do fim
+/// (a linha cortada no meio sai). `true` quando ficou algo de fora.
+pub fn log_window(text: &str, lines: usize, max_chars: usize) -> (String, bool) {
+    let all: Vec<&str> = text.lines().collect();
+    let from = all.len().saturating_sub(lines);
+    let mut out = all[from..].join("\n");
+    let mut cut = from > 0;
+    let n = out.chars().count();
+    if n > max_chars {
+        let skip = n - max_chars;
+        let tail: String = out.chars().skip(skip).collect();
+        out = tail
+            .split_once('\n')
+            .map_or(tail.clone(), |(_, rest)| rest.to_string());
+        cut = true;
+    }
+    (out, cut)
+}
+
 fn args<T: serde::de::DeserializeOwned>(tool: &str, value: &Value) -> Result<T, String> {
     serde_json::from_value(value.clone()).map_err(|e| format!("{tool}: argumentos inválidos: {e}"))
 }
@@ -445,6 +488,22 @@ pub fn parse_call(tool: &str, value: &Value) -> Result<ToolCall, String> {
             let a: NoteReadArgs = args(tool, value)?;
             required("node", &a.node)?;
             Ok(ToolCall::Restart { node: a.node })
+        }
+        "orbit_list_nodes" => {
+            let _: EmptyArgs = args(tool, value)?;
+            Ok(ToolCall::ListNodes)
+        }
+        "orbit_read_log" => {
+            let a: ReadLogArgs = args(tool, value)?;
+            required("node", &a.node)?;
+            let lines = a.lines.unwrap_or(READ_LOG_LINES);
+            if lines == 0 || lines > READ_LOG_MAX_LINES {
+                return Err(format!("lines: de 1 a {READ_LOG_MAX_LINES}"));
+            }
+            Ok(ToolCall::ReadLog {
+                node: a.node,
+                lines,
+            })
         }
         "orbit_browser_open" => {
             let a: BrowserOpenArgs = args(tool, value)?;
@@ -1663,5 +1722,52 @@ Binary files a/logo.png and b/logo.png differ
                 locked: false,
             }
         );
+    }
+
+    #[test]
+    fn list_nodes_and_read_log_parse() {
+        assert_eq!(
+            parse_call("orbit_list_nodes", &json!({})).unwrap(),
+            ToolCall::ListNodes
+        );
+        assert!(parse_call("orbit_list_nodes", &json!({"x": 1})).is_err());
+        assert_eq!(
+            parse_call("orbit_read_log", &json!({"node": "p"})).unwrap(),
+            ToolCall::ReadLog {
+                node: "p".into(),
+                lines: READ_LOG_LINES
+            }
+        );
+        assert_eq!(
+            parse_call("orbit_read_log", &json!({"node": "p", "lines": 5})).unwrap(),
+            ToolCall::ReadLog {
+                node: "p".into(),
+                lines: 5
+            }
+        );
+        for bad in [
+            json!({"node": "p", "lines": 0}),
+            json!({"node": "p", "lines": READ_LOG_MAX_LINES + 1}),
+            json!({"node": " "}),
+            json!({"node_id": "p"}),
+            json!({"node": "p", "lines": -1}),
+        ] {
+            assert!(parse_call("orbit_read_log", &bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn log_window_keeps_the_end_by_lines_and_chars() {
+        let text = "a\nb\nc\nd";
+        assert_eq!(log_window(text, 10, 100), ("a\nb\nc\nd".into(), false));
+        assert_eq!(log_window(text, 2, 100), ("c\nd".into(), true));
+        assert_eq!(log_window("", 5, 100), (String::new(), false));
+        // Corte por caractere: a linha que ficaria pela metade sai.
+        let long = format!("{}\nfim", "x".repeat(50));
+        assert_eq!(log_window(&long, 10, 10), ("fim".into(), true));
+        // Multibyte não quebra no meio do caractere.
+        let (out, cut) = log_window("ção\nnão", 10, 4);
+        assert!(cut);
+        assert_eq!(out, "não");
     }
 }
