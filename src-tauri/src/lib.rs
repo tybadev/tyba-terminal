@@ -8819,6 +8819,19 @@ fn run_boot(
         eprintln!("[tyba] worktree órfão removido: {}", removed.display());
     }
 
+    // Uma vez por banco: o que versões antigas gravaram sem a redação de hoje.
+    // Depois do dreno (que já redige o que monta) e antes do truncate, que leva
+    // embora do WAL o que o `VACUUM` deixou lá.
+    let span = boot::Span::start("store.redact_legacy");
+    match store.redact_legacy_once() {
+        Ok(Some(n)) => span.end_with(format!("{n} linhas reescritas")),
+        Ok(None) => span.end(),
+        Err(e) => {
+            span.end();
+            eprintln!("tyba: redação do legado falhou, repete no próximo boot: {e}");
+        }
+    }
+
     store.checkpoint_truncate();
 }
 

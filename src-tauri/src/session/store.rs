@@ -1172,6 +1172,112 @@ struct CheckpointBody {
     truncated: usize,
 }
 
+/// Marca em `settings` de que [`Store::redact_legacy_once`] já rodou neste
+/// banco. Fora do prefixo `pref.`, então não vai para o front.
+const LEGACY_REDACTION_KEY: &str = "meta.legacy_redaction_v2";
+
+/// Colunas de texto que vieram do terminal ou do agente. As linhas de bloco e
+/// de checkpoint são JSON e têm passada própria.
+const LEGACY_TEXT_COLUMNS: &[(&str, &str)] = &[
+    ("block", "command"),
+    ("block", "cwd"),
+    ("block_checkpoint", "command"),
+    ("command_history", "command"),
+    ("command_history", "cwd"),
+    ("approval_history", "command"),
+    ("approval_history", "cwd"),
+    ("notification", "session_title"),
+    ("notification", "command"),
+    ("notification", "detail"),
+];
+
+/// `redact` numa coluna inteira; reescreve só a linha que muda.
+fn redact_text_column(conn: &Connection, table: &str, column: &str) -> Result<usize, StoreError> {
+    // `table` e `column` vêm de constante do próprio código.
+    let rows: Vec<(i64, String)> = {
+        let mut stmt = conn.prepare(&format!(
+            "SELECT rowid, {column} FROM {table} WHERE {column} IS NOT NULL"
+        ))?;
+        let mapped = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+        mapped
+    };
+    let mut changed = 0;
+    for (rowid, text) in rows {
+        let redacted = redact(&text);
+        if redacted != text {
+            conn.execute(
+                &format!("UPDATE {table} SET {column} = ?2 WHERE rowid = ?1"),
+                params![rowid, redacted.as_ref()],
+            )?;
+            changed += 1;
+        }
+    }
+    Ok(changed)
+}
+
+/// `blocks::redact_lines` em cada bloco, um redator por bloco. Linha que não
+/// desserializa fica como está: `list_blocks` já não a mostra, e reescrevê-la
+/// exigiria adivinhar o formato.
+fn redact_block_lines(conn: &Connection) -> Result<usize, StoreError> {
+    let rows: Vec<(i64, String)> = {
+        let mut stmt = conn.prepare("SELECT id, lines FROM block")?;
+        let mapped = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+        mapped
+    };
+    let mut changed = 0;
+    for (id, json) in rows {
+        let Ok(lines) = serde_json::from_str::<Vec<crate::blocks::LogicalLine>>(&json) else {
+            continue;
+        };
+        let redacted = crate::blocks::redact_lines(lines.clone());
+        if redacted != lines {
+            // Mesma serialização e mesma conta de `bytes` do `insert_block`.
+            let json = serde_json::to_string(&redacted)?;
+            conn.execute(
+                "UPDATE block SET lines = ?2, bytes = ?3 WHERE id = ?1",
+                params![id, json, json.len() as i64],
+            )?;
+            changed += 1;
+        }
+    }
+    Ok(changed)
+}
+
+/// O mesmo nas linhas de checkpoint. O byte cru do formato antigo é do dreno,
+/// que roda antes no boot e redige ao montar o bloco.
+fn redact_checkpoint_lines(conn: &Connection) -> Result<usize, StoreError> {
+    let rows: Vec<(String, Vec<u8>)> = {
+        let mut stmt = conn.prepare("SELECT session_id, bytes FROM block_checkpoint")?;
+        let mapped = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+        mapped
+    };
+    let mut changed = 0;
+    for (session_id, bytes) in rows {
+        let Ok(body) = serde_json::from_slice::<CheckpointBody>(&bytes) else {
+            continue;
+        };
+        let redacted = crate::blocks::redact_lines(body.lines.clone());
+        if redacted != body.lines {
+            let bytes = serde_json::to_vec(&CheckpointBody {
+                lines: redacted,
+                truncated: body.truncated,
+            })?;
+            conn.execute(
+                "UPDATE block_checkpoint SET bytes = ?2 WHERE session_id = ?1",
+                params![session_id, bytes],
+            )?;
+            changed += 1;
+        }
+    }
+    Ok(changed)
+}
+
 pub struct Store {
     conn: Mutex<Connection>,
     /// Ver [`Store::degraded`].
@@ -2762,6 +2868,53 @@ impl Store {
             self.clear_checkpoint(&session_id)?;
         }
         Ok(count)
+    }
+
+    /// Repassa a redação de hoje no que versões antigas já gravaram, uma vez.
+    ///
+    /// O dreno antigo montava bloco sem redação, e o `redact` ganhou padrões
+    /// depois: o que está no banco não passa pelo caminho de gravação de novo.
+    /// Esta passada reescreve só as linhas que mudam, e depois roda `VACUUM`:
+    /// antes do `secure_delete`, todo checkpoint apagado deixava o byte cru do
+    /// PTY em página livre — o que torna o `VACUUM` necessário mesmo quando
+    /// nenhuma linha muda.
+    ///
+    /// Uma vez por banco, marcada em `settings` ([`LEGACY_REDACTION_KEY`]), e não
+    /// por degrau de `migrate`: degrau é número disputado entre branches, e a
+    /// passada não muda schema. A marca só entra depois do `VACUUM`; se ele
+    /// falhar, tudo é repetido no boot seguinte (a redação é idempotente).
+    ///
+    /// Devolve `None` se já tinha rodado, ou quantas linhas reescreveu.
+    pub fn redact_legacy_once(&self) -> Result<Option<usize>, StoreError> {
+        use rusqlite::OptionalExtension;
+        let mut conn = self.conn.lock();
+        let done: Option<String> = conn
+            .query_row(
+                "SELECT value FROM settings WHERE key = ?1",
+                params![LEGACY_REDACTION_KEY],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if done.is_some() {
+            return Ok(None);
+        }
+
+        let tx = conn.transaction()?;
+        let mut changed = 0;
+        for (table, column) in LEGACY_TEXT_COLUMNS {
+            changed += redact_text_column(&tx, table, column)?;
+        }
+        changed += redact_block_lines(&tx)?;
+        changed += redact_checkpoint_lines(&tx)?;
+        tx.commit()?;
+
+        conn.execute_batch("VACUUM")?;
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?1, '1')
+             ON CONFLICT(key) DO UPDATE SET value = '1'",
+            params![LEGACY_REDACTION_KEY],
+        )?;
+        Ok(Some(changed))
     }
 
     pub fn list_snippets(&self) -> Result<Vec<crate::snippet::Snippet>, StoreError> {
@@ -6605,6 +6758,121 @@ mod tests {
             .query_row("PRAGMA secure_delete", [], |row| row.get(0))
             .unwrap();
         assert_eq!(on, 1);
+    }
+
+    /// Algum arquivo do diretório (banco, WAL, SHM) contém `needle`?
+    fn dir_contains(dir: &Path, needle: &str) -> bool {
+        std::fs::read_dir(dir).unwrap().any(|entry| {
+            let bytes = std::fs::read(entry.unwrap().path()).unwrap_or_default();
+            bytes.windows(needle.len()).any(|w| w == needle.as_bytes())
+        })
+    }
+
+    /// Banco gravado por uma versão antiga: bloco com segredo em claro no
+    /// comando e nas linhas (chave PEM linha a linha), histórico idem, e o byte
+    /// cru de um checkpoint apagado antes do `secure_delete`. Tudo sintético,
+    /// montado em runtime.
+    #[test]
+    fn legacy_redaction_scrubs_rows_and_file_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tyba.db");
+        let sk = format!("sk-{}", "FAKE0".repeat(5));
+        let akia = format!("AKIA{}", "FAKE".repeat(4));
+        let ghp = format!("ghp_{}", "FAKE0".repeat(5));
+        let body = "TYBAfakeKEYbody0".repeat(4);
+        let begin = format!("-----BEGIN {}-----", "RSA PRIVATE KEY");
+        let end = format!("-----END {}-----", "RSA PRIVATE KEY");
+        let colored = crate::blocks::LogicalLine {
+            text: "Compiling".into(),
+            runs: vec![crate::blocks::StyleRun {
+                start_utf16: 0,
+                end_utf16: 9,
+                fg: crate::blocks::Color::Idx(2),
+                bg: crate::blocks::Color::Default,
+                bold: true,
+                italic: false,
+                underline: false,
+            }],
+        };
+        let mut lines = vec![colored.clone()];
+        lines.extend(text(&[
+            &format!("token: {akia}"),
+            &begin,
+            &body,
+            &body,
+            &end,
+            "ok",
+        ]));
+
+        {
+            let store = Store::open(&path).unwrap();
+            {
+                let conn = store.conn.lock();
+                // O que versões antigas faziam: DELETE sem zerar.
+                conn.pragma_update(None, "secure_delete", "OFF").unwrap();
+                conn.execute(
+                    "INSERT INTO block_checkpoint
+                         (session_id, command, started_at_ms, cols, rows, bytes)
+                     VALUES ('s0', 'env', 10, 80, 24, ?1)",
+                    params![format!("GH={ghp}\r\n").as_bytes()],
+                )
+                .unwrap();
+                conn.execute("DELETE FROM block_checkpoint", []).unwrap();
+                conn.pragma_update(None, "secure_delete", "ON").unwrap();
+                conn.execute(
+                    "INSERT INTO command_history (command, started_at_ms)
+                     VALUES (?1, 1)",
+                    params![format!("export OPENAI={sk}")],
+                )
+                .unwrap();
+            }
+            // `insert_block` não redige (quem redige é o `build`): é o
+            // formato exato que o dreno antigo gravava.
+            store
+                .insert_block(&crate::blocks::Block {
+                    id: 0,
+                    session_id: "s1".into(),
+                    command: format!("OPENAI={sk} ./deploy.sh"),
+                    exit_code: None,
+                    cwd: None,
+                    started_at_ms: 10,
+                    finished_at_ms: 10,
+                    lines: lines.clone(),
+                    truncated: 0,
+                    alt_screen: false,
+                })
+                .unwrap();
+            store.checkpoint_truncate();
+            for secret in [&sk, &akia, &ghp, &body] {
+                assert!(dir_contains(dir.path(), secret), "pré-condição: {secret}");
+            }
+
+            assert_eq!(store.redact_legacy_once().unwrap(), Some(3));
+            store.checkpoint_truncate();
+
+            let found = store.list_blocks("s1", 10).unwrap();
+            assert_eq!(found.len(), 1, "o bloco continua legível");
+            assert!(!found[0].command.contains(&sk), "{}", found[0].command);
+            assert_eq!(found[0].lines.len(), lines.len());
+            assert_eq!(found[0].lines[0], colored, "linha limpa mantém a cor");
+            assert_eq!(found[0].lines[6].text, "ok");
+            for line in &found[0].lines {
+                assert!(!line.text.contains(&akia), "{}", line.text);
+                assert!(!line.text.contains(&body), "{}", line.text);
+            }
+            for secret in [&sk, &akia, &ghp, &body] {
+                assert!(!dir_contains(dir.path(), secret), "ficou no arquivo");
+            }
+            assert!(dir_contains(dir.path(), "Compiling"));
+
+            assert_eq!(store.redact_legacy_once().unwrap(), None);
+        }
+        let store = Store::open(&path).unwrap();
+        assert_eq!(
+            store.redact_legacy_once().unwrap(),
+            None,
+            "uma vez por banco"
+        );
     }
 
     #[test]
