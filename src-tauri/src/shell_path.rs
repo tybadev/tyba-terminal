@@ -21,7 +21,8 @@
 
 use std::path::Path;
 use std::process::Command;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 const RESOLVE_TIMEOUT: Duration = Duration::from_secs(3);
@@ -44,8 +45,12 @@ pub struct LoginEnv {
 /// Só o sucesso fica em cache. Falha ou prazo estourado tentam de novo depois
 /// de [`RETRY_AFTER`] — na próxima sessão, não a cada chamada (o PATH é lido a
 /// toda hora).
-static RESOLVED: Mutex<Option<LoginEnv>> = Mutex::new(None);
+static RESOLVED: OnceLock<LoginEnv> = OnceLock::new();
 static LAST_FAILURE: Mutex<Option<Instant>> = Mutex::new(None);
+/// Uma resolução por vez; quem pode esperar espera aqui.
+static RESOLVING: Mutex<()> = Mutex::new(());
+/// Já há uma nova tentativa rodando em segundo plano.
+static RETRYING: AtomicBool = AtomicBool::new(false);
 const RETRY_AFTER: Duration = Duration::from_secs(60);
 
 /// Variáveis do login shell que não vão para o agente: a pasta onde o rc
@@ -59,13 +64,26 @@ pub fn agent_path() -> String {
         .unwrap_or_else(|| std::env::var("PATH").unwrap_or_default())
 }
 
-/// O mesmo PATH de [`agent_path`], mas só se já foi resolvido — nunca dispara
-/// o `$SHELL -lic` (até 3 s). Para quem não pode esperar, como o spawn de um
-/// pane.
+fn last_failure() -> Option<Instant> {
+    *LAST_FAILURE.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// O mesmo PATH de [`agent_path`], mas sem nunca esperar: nunca dispara o
+/// `$SHELL -lic` (até 3 s) nem espera uma resolução em andamento. Para o spawn
+/// de um pane. Sem resolução ainda: `None`. Depois de uma falha: o PATH do
+/// processo, e a nova tentativa vai para segundo plano.
 pub fn agent_path_if_resolved() -> Option<String> {
-    let tried = RESOLVED.lock().map(|r| r.is_some()).unwrap_or(false)
-        || LAST_FAILURE.lock().map(|f| f.is_some()).unwrap_or(false);
-    tried.then(agent_path)
+    if let Some(env) = RESOLVED.get() {
+        return with_process_fallback(Some(env.clone()), |n| std::env::var(n).ok()).path;
+    }
+    let failure = last_failure()?;
+    if should_retry(Some(failure), Instant::now()) && !RETRYING.swap(true, Ordering::SeqCst) {
+        std::thread::spawn(|| {
+            let _ = resolved();
+            RETRYING.store(false, Ordering::SeqCst);
+        });
+    }
+    Some(std::env::var("PATH").unwrap_or_default())
 }
 
 /// Tenta resolver de novo agora? Só passado [`RETRY_AFTER`] da última falha.
@@ -74,23 +92,26 @@ fn should_retry(last_failure: Option<Instant>, now: Instant) -> bool {
 }
 
 /// O env do login shell: do cache, ou resolvido agora (sem cache se falhar).
+/// Pode esperar até 3 s: nunca no spawn do pane.
 fn resolved() -> Option<LoginEnv> {
-    let mut cached = RESOLVED.lock().unwrap_or_else(|e| e.into_inner());
-    if cached.is_some() {
-        return cached.clone();
+    if let Some(env) = RESOLVED.get() {
+        return Some(env.clone());
     }
-    let mut failure = LAST_FAILURE.lock().unwrap_or_else(|e| e.into_inner());
-    if !should_retry(*failure, Instant::now()) {
+    let _one_at_a_time = RESOLVING.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(env) = RESOLVED.get() {
+        return Some(env.clone());
+    }
+    if !should_retry(last_failure(), Instant::now()) {
         return None;
     }
     match resolve_login_env() {
         Some(env) => {
-            *cached = Some(env.clone());
-            *failure = None;
+            let _ = RESOLVED.set(env.clone());
+            *LAST_FAILURE.lock().unwrap_or_else(|e| e.into_inner()) = None;
             Some(env)
         }
         None => {
-            *failure = Some(Instant::now());
+            *LAST_FAILURE.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
             None
         }
     }
@@ -307,6 +328,20 @@ e linha'\n\
         let env = resolve_login_env_with(&shell, Duration::from_secs(5)).expect("resolveu");
         let vars: std::collections::HashMap<_, _> = env.vars.expect("env").into_iter().collect();
         assert_eq!(vars["BIG"].len(), 200_000);
+    }
+
+    /// O spawn do pane nunca espera: nem uma resolução em andamento (aqui,
+    /// o lock segurado pelo teste), nem o `$SHELL -lic`.
+    #[test]
+    fn agent_path_if_resolved_never_waits() {
+        let held = RESOLVING.lock().unwrap_or_else(|e| e.into_inner());
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(agent_path_if_resolved());
+        });
+        let answered = rx.recv_timeout(Duration::from_millis(500));
+        drop(held);
+        assert!(answered.is_ok(), "agent_path_if_resolved esperou");
     }
 
     #[test]

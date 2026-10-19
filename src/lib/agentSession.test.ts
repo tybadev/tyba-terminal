@@ -5,6 +5,7 @@ import {
   applyConsentDecision,
   buildAgentSessionOpts,
   needsConsentPrompt,
+  repoDefaultRunner,
   runnerFromCommand,
   runnerFromDefault,
 } from "./agentSession";
@@ -40,6 +41,18 @@ describe("needsConsentPrompt", () => {
         config({ default_agent: null, snippets: [], env_allow: ["DB_URL"] }),
       ),
     ).toBe(false);
+  });
+});
+
+describe("repoDefaultRunner", () => {
+  test("sem consentimento, o agente do repo não vale", () => {
+    expect(repoDefaultRunner(config({ consent: null }))).toBeNull();
+    expect(repoDefaultRunner(config({ consent: false }))).toBeNull();
+    expect(repoDefaultRunner(null)).toBeNull();
+  });
+
+  test("consentido, vale", () => {
+    expect(repoDefaultRunner(config({ consent: true }))).toBe("codex");
   });
 });
 

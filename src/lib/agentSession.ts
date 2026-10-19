@@ -66,3 +66,11 @@ export function buildAgentSessionOpts(
     worktree_task: params.task,
   };
 }
+
+/** O agente padrão do repo, só depois do consentimento; antes dele vale o
+ * padrão do app (`null`). */
+export function repoDefaultRunner(
+  config: AgentRepoConfig | null,
+): AgentRunnerId | null {
+  return config?.consent === true ? runnerFromDefault(config.default_agent) : null;
+}
