@@ -84,6 +84,10 @@ pub struct Created {
     /// O dono clicou "Manter no grafo": o nó já está no grafo salvo.
     #[serde(default)]
     pub kept: bool,
+    /// O dono apagou o nó no canvas: some da vista e das ferramentas do
+    /// agente (nem lista, nem reinicia, nem liga, nem reatribui).
+    #[serde(default)]
+    pub discarded: bool,
 }
 
 /// Uma ferramenta pedida, já lida.
@@ -1687,6 +1691,7 @@ Binary files a/logo.png and b/logo.png differ
             created_at: 0,
             edges,
             kept: false,
+            discarded: false,
         };
         let web = made(note("web", 0.0, 0.0, 10.0, 10.0), vec![]);
         let page = made(
@@ -1749,6 +1754,7 @@ Binary files a/logo.png and b/logo.png differ
             created_at: 0,
             edges: vec![],
             kept: false,
+            discarded: false,
         };
         let all = vec![made("a1", "a"), made("b1", "b"), made("a2", "a")];
         let ids = |v: Vec<Created>| v.into_iter().map(|c| c.node.id).collect::<Vec<_>>();

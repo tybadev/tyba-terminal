@@ -303,6 +303,19 @@ describe("sessionLog", () => {
       "orbitLog_closedYou",
     ]);
   });
+  test("criado apagado pelo dono: você apagou", () => {
+    const lines = sessionLog(
+      [
+        { at: 1, what: { type: "created", by: "o" } },
+        { at: 2, what: { type: "discarded", by: "you" } },
+      ],
+      "process",
+    );
+    expect(lines.map((l) => [l.key, l.you])).toEqual([
+      ["orbitLog_created", false],
+      ["orbitLog_discardedYou", true],
+    ]);
+  });
   test("sem eventos (run gravado antes do log): vazio", () => {
     expect(sessionLog(undefined, "agent")).toEqual([]);
   });

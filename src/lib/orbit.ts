@@ -739,7 +739,8 @@ export type NodeEventKind =
   | { type: "stopped"; by: Actor }
   | { type: "exited"; ok: boolean; code: number | null }
   | { type: "closed"; by: Actor }
-  | { type: "agentStarted"; agent: string };
+  | { type: "agentStarted"; agent: string }
+  | { type: "discarded"; by: Actor };
 
 export interface NodeEvent {
   /** ms desde a época. */
@@ -831,6 +832,8 @@ export interface Created {
   edges: OrbitEdge[];
   /** O dono clicou "Manter no grafo": já é nó do grafo salvo. */
   kept: boolean;
+  /** O dono apagou o nó no canvas (`runDiscardNode`): some da vista. */
+  discarded?: boolean;
 }
 
 /**
@@ -1168,6 +1171,13 @@ export const runStop = (runId: string) => invoke<void>("orbit_run_stop", { runId
 /** Parar ou apagar um nó rodando: o core para só ele (e o agente vivo depois do turno). */
 export const runStopNode = (runId: string, nodeId: string) =>
   invoke<void>("orbit_run_stop_node", { runId, nodeId });
+
+/**
+ * Apagar um nó criado por agente: o core o marca descartado, registra "você
+ * apagou" (o agente que o criou fica sabendo) e o para se ainda vive.
+ */
+export const runDiscardNode = (runId: string, nodeId: string) =>
+  invoke<void>("orbit_run_discard_node", { runId, nodeId });
 
 /**
  * ↻ do nó: o core reinicia o que roda ou roda de novo o que terminou, falhou

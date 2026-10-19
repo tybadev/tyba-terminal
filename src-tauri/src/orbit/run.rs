@@ -277,6 +277,8 @@ pub enum NodeEventKind {
     Closed { by: Actor },
     /// `claude`/`codex` com as ferramentas do Orbit no shell do Terminal.
     AgentStarted { agent: String },
+    /// O dono apagou do canvas o nó que um agente criou.
+    Discarded { by: Actor },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -450,6 +452,7 @@ impl OwnerNotice {
             NodeEventKind::Restarted { rerun: false, .. } => "reiniciado",
             NodeEventKind::Restarted { rerun: true, .. } => "rodado de novo",
             NodeEventKind::Closed { .. } => "fechado",
+            NodeEventKind::Discarded { .. } => "apagado",
             _ => "parado",
         };
         format!(
@@ -556,6 +559,7 @@ impl Scheduler {
             NodeEventKind::Restarted { by: Actor::You, .. }
                 | NodeEventKind::Stopped { by: Actor::You }
                 | NodeEventKind::Closed { by: Actor::You }
+                | NodeEventKind::Discarded { by: Actor::You }
         );
         let created = self.run.created.iter().find(|c| c.node.id == id);
         if let (true, Some(c)) = (by_owner, created) {
@@ -4041,6 +4045,7 @@ impl<H: RunHost> Runs<H> {
             created_at: now(),
             edges: vec![edge],
             kept: false,
+            discarded: false,
         });
         drop(active);
         self.advance(run_id);
@@ -4129,6 +4134,7 @@ impl<H: RunHost> Runs<H> {
                 created_at: now(),
                 edges,
                 kept: false,
+                discarded: false,
             });
         }
         self.publish_current(run_id);
@@ -4271,6 +4277,13 @@ impl<H: RunHost> Runs<H> {
             .iter()
             .filter_map(|node| {
                 let n = run.nodes.get(&node.id)?;
+                if run
+                    .created
+                    .iter()
+                    .any(|c| c.node.id == node.id && c.discarded)
+                {
+                    return None;
+                }
                 let mine = run
                     .created
                     .iter()
@@ -4625,6 +4638,13 @@ impl<H: RunHost> Runs<H> {
             );
         }
         let run = self.get(run_id).ok_or("execução não encontrada")?;
+        if run
+            .created
+            .iter()
+            .any(|c| c.node.id == node_id && c.discarded)
+        {
+            return Err(format!("o dono apagou {node_id} do canvas: não o reinicie"));
+        }
         let process = match run.nodes.get(node_id) {
             None => return Err(format!("nó não existe neste run: {node_id}")),
             Some(_) => self.node_kind(run_id, node_id).is_some_and(|k| {
@@ -4719,13 +4739,63 @@ impl<H: RunHost> Runs<H> {
     /// esperando vira `skipped`, como o `orbit_stop_node`) e mata a sessão
     /// dele — também a do agente que segue vivo depois do turno, com o run já
     /// fechado. O front só tira o nó do grafo depois disto. Nó sem nada vivo:
-    /// não faz nada.
+    /// não faz nada. Sessão morta pelo dono fica no log como "você parou"
+    /// (e vira aviso ao agente que criou o nó), mesmo a do agente criado
+    /// que já estava pronto.
     pub fn stop_one(&self, run_id: &str, node_id: &str) -> Result<(), String> {
-        let (was_active, mut kill) = {
+        self.stop_one_as(run_id, node_id, false)
+    }
+
+    /// Apagar no canvas um nó que um agente criou: marca descartado (some do
+    /// `orbit_list_nodes`; o agente não o reinicia, liga nem reatribui),
+    /// registra "você apagou" (e o aviso "apagado por você" ao agente) e o
+    /// para se ainda vive. Nó mantido é do dono: recusa.
+    pub fn discard_created(&self, run_id: &str, node_id: &str) -> Result<(), String> {
+        let mark = |created: &mut Vec<Created>| -> Result<(), String> {
+            let c = created
+                .iter_mut()
+                .find(|c| c.node.id == node_id)
+                .ok_or_else(|| format!("{node_id} não é nó criado por agente neste run"))?;
+            if c.kept {
+                return Err("nó mantido no grafo é do dono: apague pelo grafo".into());
+            }
+            c.discarded = true;
+            Ok(())
+        };
+        {
+            let mut active = self.active.lock();
+            if let Some(a) = active.get_mut(run_id) {
+                mark(&mut a.sched.run.created)?;
+            } else {
+                drop(active);
+                let mut run = self
+                    .stored_closed(run_id)
+                    .ok_or("execução não encontrada")?;
+                mark(&mut run.created)?;
+                self.publish(run);
+            }
+        }
+        self.stop_one_as(run_id, node_id, true)
+    }
+
+    fn stop_one_as(&self, run_id: &str, node_id: &str, discard: bool) -> Result<(), String> {
+        let at = now();
+        let (was_active, mut kill, logged) = {
             let mut active = self.active.lock();
             match active.get_mut(run_id) {
-                Some(a) => (true, a.sched.stop_node_by(node_id, now(), Actor::You)),
-                None => (false, None),
+                Some(a) if discard => {
+                    a.sched
+                        .log(node_id, at, NodeEventKind::Discarded { by: Actor::You });
+                    (true, a.sched.stop_node(node_id, at), true)
+                }
+                Some(a) => {
+                    let live = matches!(
+                        a.sched.status(node_id),
+                        Some(NodeStatus::Running | NodeStatus::Waiting)
+                    );
+                    (true, a.sched.stop_node_by(node_id, at, Actor::You), live)
+                }
+                None => (false, None, false),
             }
         };
         let session = match self.get(run_id) {
@@ -4743,6 +4813,13 @@ impl<H: RunHost> Runs<H> {
                 if a.sessions.len() != before {
                     kill = Some(session);
                 }
+            }
+        }
+        // O agente pronto com a sessão viva: o ■ do dono a matou.
+        if kill.is_some() && !logged {
+            if let Some(a) = self.active.lock().get_mut(run_id) {
+                a.sched
+                    .log(node_id, at, NodeEventKind::Stopped { by: Actor::You });
             }
         }
         if let Some(session) = &kill {
@@ -5003,7 +5080,11 @@ impl<H: RunHost> Runs<H> {
     /// também os deixa manter.
     pub fn created_to_keep(&self, run_id: &str) -> Result<Vec<Created>, String> {
         let run = self.get(run_id).ok_or("execução não encontrada")?;
-        Ok(run.created.into_iter().filter(|c| !c.kept).collect())
+        Ok(run
+            .created
+            .into_iter()
+            .filter(|c| !c.kept && !c.discarded)
+            .collect())
     }
 
     /// Marca como mantidos (já gravados no grafo) e avisa o front. Run fechado:
@@ -5205,7 +5286,7 @@ const PROCESS_SETTLE: std::time::Duration = std::time::Duration::from_secs(3);
 fn own_nodes<'a>(created: &'a [Created], caller: &str) -> Vec<&'a str> {
     created
         .iter()
-        .filter(|c| c.created_by == caller && !c.kept)
+        .filter(|c| c.created_by == caller && !c.kept && !c.discarded)
         .map(|c| c.node.id.as_str())
         .collect()
 }
@@ -9837,6 +9918,7 @@ mod tests {
                 created_at: 0,
                 edges: Vec::new(),
                 kept: true,
+                discarded: false,
             },
             Created {
                 node: process("q", "x"),
@@ -9844,6 +9926,7 @@ mod tests {
                 created_at: 0,
                 edges: Vec::new(),
                 kept: false,
+                discarded: false,
             },
             Created {
                 node: process("z", "x"),
@@ -9851,6 +9934,7 @@ mod tests {
                 created_at: 0,
                 edges: Vec::new(),
                 kept: false,
+                discarded: false,
             },
         ];
         assert_eq!(own_nodes(&created, "o"), vec!["q"]);
@@ -9871,6 +9955,7 @@ mod tests {
             created_at: 0,
             edges: Vec::new(),
             kept: false,
+            discarded: false,
         });
         s.log(
             "api",
@@ -10066,6 +10151,101 @@ mod tests {
             .call("orbit_reassign", &json!({"node": r, "prompt": "x"}))
             .unwrap_err();
         assert!(err.contains("não manteve"), "{err}");
+        runs.stop(&run.id).unwrap();
+    }
+
+    /// ■ do dono no agente criado que já ficou pronto (sessão viva): "você
+    /// parou" no log e aviso ao criador. Apagar um criado: "você apagou",
+    /// aviso "apagado por você", o nó para e some das ferramentas do agente.
+    #[cfg(unix)]
+    #[test]
+    fn owner_stop_of_a_done_agent_and_discard_reach_the_creator() {
+        use serde_json::json;
+        let dir = tempfile::tempdir().unwrap();
+        let work = dir.path().join("w");
+        std::fs::create_dir(&work).unwrap();
+        let (runs, host, _app) = pty_runs(dir.path().join("runs"));
+        let g = graph(vec![orchestrator("o"), process("dono", "sleep 30")], vec![]);
+        runs.store.save_orbit_graph(&g, true, None).unwrap();
+        let run = runs.start_now(g, vec![]).unwrap();
+        wait_orchestrating(&runs, &run.id, "o");
+        let tools = tools_of(&host, "o");
+        let rev = tools
+            .call(
+                "orbit_create_agent",
+                &json!({"title": "rev", "runner": "claude", "prompt": "revise", "dir": work}),
+            )
+            .unwrap()["node_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let r = wait_status(&runs, &run.id, &rev, NodeStatus::Done);
+        let session = r.nodes[&rev].session_id.clone().unwrap();
+        runs.stop_one(&run.id, &rev).unwrap();
+        assert!(host.killed.lock().contains(&session));
+        let r = runs.get(&run.id).unwrap();
+        assert!(
+            event_kinds(&r.nodes[&rev]).contains(&NodeEventKind::Stopped { by: Actor::You }),
+            "{r:?}"
+        );
+        let out = tools.call("orbit_list_nodes", &json!({})).unwrap();
+        assert!(
+            out["since_your_last_call"][0]
+                .as_str()
+                .unwrap()
+                .contains("parado por você"),
+            "{out}"
+        );
+
+        let api = tools
+            .call(
+                "orbit_create_process",
+                &json!({"title": "api", "command": "sleep 30", "dir": work}),
+            )
+            .unwrap()["node_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        wait_status(&runs, &run.id, &api, NodeStatus::Running);
+        runs.discard_created(&run.id, &api).unwrap();
+        let r = runs.get(&run.id).unwrap();
+        assert_eq!(r.nodes[&api].status, NodeStatus::Stopped, "{r:?}");
+        assert!(event_kinds(&r.nodes[&api]).contains(&NodeEventKind::Discarded { by: Actor::You }));
+        assert!(r.created.iter().any(|c| c.node.id == api && c.discarded));
+        let out = tools.call("orbit_list_nodes", &json!({})).unwrap();
+        assert!(
+            out["since_your_last_call"][0]
+                .as_str()
+                .unwrap()
+                .contains("apagado por você"),
+            "{out}"
+        );
+        assert!(
+            !out["nodes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|n| n["id"] == api.as_str()),
+            "{out}"
+        );
+        let err = tools
+            .call("orbit_restart_node", &json!({"node": api}))
+            .unwrap_err();
+        assert!(err.contains("apagou"), "{err}");
+        let err = tools
+            .call(
+                "orbit_connect",
+                &json!({"from": "o", "to": api, "kind": "context"}),
+            )
+            .unwrap_err();
+        assert!(err.contains("só liga"), "{err}");
+        assert!(runs
+            .created_to_keep(&run.id)
+            .unwrap()
+            .iter()
+            .all(|c| c.node.id != api));
+        // Nó do dono não se descarta por aqui.
+        assert!(runs.discard_created(&run.id, "dono").is_err());
         runs.stop(&run.id).unwrap();
     }
 

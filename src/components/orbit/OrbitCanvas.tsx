@@ -95,6 +95,7 @@ import {
   rememberDir,
   routeNodeChanges,
   runStopNode,
+  runDiscardNode,
   type EdgeKind,
   type FlowEdgeData,
   type Integration,
@@ -485,7 +486,8 @@ export function OrbitCanvas({
   useEffect(() => setDiscarded(new Set()), [runId]);
   const created = useMemo(() => {
     const flow = createdFlow(run, models);
-    const shown = (id: string) => !discarded.has(id);
+    const gone = new Set(run?.created?.filter((c) => c.discarded).map((c) => c.node.id));
+    const shown = (id: string) => !discarded.has(id) && !gone.has(id);
     const ns: OrbitFlowNode[] = flow.nodes.filter((n) => shown(n.id)).map((n) => {
       const view = createdView[n.id];
       const width = view?.width ?? n.width;
@@ -704,8 +706,8 @@ export function OrbitCanvas({
 
   // Quadro OrbitManuseio 4 e 5: nó parado some na hora (com as ligações e o
   // aviso de desfazer); rodando, a cápsula pergunta e o core para o nó antes
-  // de ele sair. Criado pelo orquestrador: some só da vista do run (o core
-  // não tem descartar; o que não é mantido já fica fora do grafo).
+  // de ele sair. Criado pelo orquestrador: o core o descarta (para se vive,
+  // registra "você apagou" e avisa o agente) e ele some da vista do run.
   const [asking, setAsking] = useState<string | null>(null);
   const removeNow = useCallback(
     (ids: ReadonlySet<string>) => {
@@ -732,6 +734,17 @@ export function OrbitCanvas({
     (id: string) => (run ? runStopNode(run.id, id) : Promise.resolve()),
     [run],
   );
+  const discardNode = useCallback(
+    (id: string) => (run ? runDiscardNode(run.id, id) : Promise.resolve()),
+    [run],
+  );
+  // Apagar: o criado é descartado no core (mesmo parado); o resto só para
+  // quando o plano pede.
+  const endNode = useCallback(
+    (id: string, stop: boolean) =>
+      created.nodeIds.has(id) ? discardNode(id) : stop ? stopNode(id) : Promise.resolve(),
+    [created.nodeIds, discardNode, stopNode],
+  );
   const nodeDelete = useMemo<NodeDelete>(
     () => ({
       asking,
@@ -739,18 +752,18 @@ export function OrbitCanvas({
         const plan = planOf(id);
         if (!plan) return;
         if (plan.ask) return setAsking(id);
-        if (plan.stop) void stopNode(id).catch(() => {});
+        void endNode(id, plan.stop).catch(() => {});
         removeNow(new Set([id]));
       },
       confirm: (id) => {
         setAsking(null);
-        stopNode(id)
+        endNode(id, true)
           .then(() => removeNow(new Set([id])))
           .catch((e) => toastError(String(e)));
       },
       cancel: () => setAsking(null),
     }),
-    [asking, planOf, stopNode, removeNow],
+    [asking, planOf, endNode, removeNow],
   );
   // O nó que perguntava saiu da vista (desfazer, outro run): sem pergunta.
   useEffect(() => {
@@ -784,7 +797,7 @@ export function OrbitCanvas({
           setAsking((a) => a ?? n.id);
         } else if (created.nodeIds.has(n.id)) {
           held.add(n.id);
-          if (plan.stop) void stopNode(n.id).catch(() => {});
+          void discardNode(n.id).catch(() => {});
           setDiscarded((d) => new Set([...d, n.id]));
         } else if (plan.stop) {
           void stopNode(n.id).catch(() => {});
@@ -795,7 +808,7 @@ export function OrbitCanvas({
         edges: es.filter((e) => !held.has(e.source) && !held.has(e.target)),
       };
     },
-    [planOf, stopNode, created.nodeIds],
+    [planOf, stopNode, discardNode, created.nodeIds],
   );
 
   const model = useMemo(

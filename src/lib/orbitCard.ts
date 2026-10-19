@@ -346,6 +346,10 @@ export function sessionLog(events: readonly NodeEvent[] | undefined, kind: NodeK
           : line("faint", "orbitLog_closedAgent", { agent: what.by.agent });
       case "agentStarted":
         return line("amber", "orbitLog_agentStarted", { agent: what.agent });
+      case "discarded":
+        return what.by === "you"
+          ? line("faint", "orbitLog_discardedYou", {}, true)
+          : line("faint", "orbitLog_discardedAgent", { agent: what.by.agent });
     }
   });
 }

@@ -8988,6 +8988,18 @@ fn orbit_run_stop_node(
     runs.stop_one(&run_id, &node_id)
 }
 
+/// Apagar no canvas um nó criado por agente: o core o marca descartado,
+/// registra "você apagou" (o agente que o criou fica sabendo) e o para se
+/// ainda vive.
+#[tauri::command]
+fn orbit_run_discard_node(
+    runs: State<'_, orbit::run::SharedRuns>,
+    run_id: String,
+    node_id: String,
+) -> Result<(), String> {
+    runs.discard_created(&run_id, &node_id)
+}
+
 /// ↻ do nó: reiniciar o que roda ou rodar de novo o que terminou, falhou ou
 /// parou, sem ■ Parar tudo. Só com a execução aberta (rodando ou assentada).
 /// Fora da main thread: matar a sessão velha e subir a nova (git, PTY,
@@ -10402,6 +10414,7 @@ pub fn run() {
             orbit_integration_test,
             orbit_run_stop,
             orbit_run_stop_node,
+            orbit_run_discard_node,
             orbit_run_restart_node,
             orbit_run_get,
             orbit_node_log,
