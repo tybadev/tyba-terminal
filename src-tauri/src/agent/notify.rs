@@ -163,9 +163,75 @@ pub fn resolve(
     NotifyPolicy { enabled, sound }
 }
 
+/// Agente livre, fatia 5: o aviso de quando o agente pede algo. Diz só quem
+/// pede e onde — a pergunta está no prompt do próprio agente, e é lá que se
+/// responde. Nada aqui aprova coisa nenhuma.
+pub fn asking_body(agent: &str, project: Option<&str>, branch: Option<&str>) -> String {
+    let mut body = format!("O {agent} está pedindo algo");
+    for part in [project, branch].into_iter().flatten() {
+        if !part.is_empty() {
+            body.push_str(" · ");
+            body.push_str(part);
+        }
+    }
+    body
+}
+
+/// Quanto tempo depois do aviso a volta ao TYBA ainda conta como o clique
+/// nele. O plugin de notificação do Tauri não entrega o clique; no macOS ele
+/// só traz o app para a frente, então "a janela ganhou foco logo depois de um
+/// aviso" é o sinal que existe.
+pub const FOCUS_WINDOW: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+/// A sessão que a janela deve focar ao voltar, se o aviso ainda é recente.
+pub fn focus_target<T: Copy>(
+    pending: Option<(T, std::time::Instant)>,
+    now: std::time::Instant,
+) -> Option<T> {
+    pending
+        .filter(|(_, at)| now.saturating_duration_since(*at) <= FOCUS_WINDOW)
+        .map(|(id, _)| id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pedido_diz_quem_projeto_e_branch() {
+        assert_eq!(
+            asking_body("Claude", Some("muriki-api"), Some("feat/x")),
+            "O Claude está pedindo algo · muriki-api · feat/x"
+        );
+        assert_eq!(
+            asking_body("Claude", Some("notas"), None),
+            "O Claude está pedindo algo · notas"
+        );
+        assert_eq!(
+            asking_body("Claude", None, None),
+            "O Claude está pedindo algo"
+        );
+        assert_eq!(
+            asking_body("Codex", Some(""), Some("main")),
+            "O Codex está pedindo algo · main"
+        );
+    }
+
+    #[test]
+    fn foco_so_vale_logo_depois_do_aviso() {
+        use std::time::{Duration, Instant};
+        let at = Instant::now();
+        assert_eq!(
+            focus_target(Some((7, at)), at + Duration::from_secs(30)),
+            Some(7)
+        );
+        assert_eq!(focus_target(Some((7, at)), at + FOCUS_WINDOW), Some(7));
+        assert_eq!(
+            focus_target(Some((7, at)), at + FOCUS_WINDOW + Duration::from_secs(1)),
+            None
+        );
+        assert_eq!(focus_target::<u8>(None, at), None);
+    }
 
     #[test]
     fn ouvir_so_toca_som_da_lista() {

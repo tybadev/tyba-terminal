@@ -171,6 +171,76 @@ fn notify_suppressed(window_focused: bool, viewed: Option<SessionId>, id: Sessio
     window_focused && viewed == Some(id)
 }
 
+/// Fatia 5: a sessão do último aviso que saiu com a janela fora de foco. A
+/// janela que volta ao foco logo depois (o clique no aviso traz o app para a
+/// frente) foca o pane dela — ver [`take_focus_target`].
+static PENDING_FOCUS: std::sync::Mutex<Option<(SessionId, std::time::Instant)>> =
+    std::sync::Mutex::new(None);
+
+/// A sessão a focar agora que a janela voltou, consumida: só a primeira volta
+/// depois do aviso conta.
+pub(crate) fn take_focus_target() -> Option<SessionId> {
+    let pending = PENDING_FOCUS.lock().ok()?.take();
+    notify::focus_target(pending, std::time::Instant::now())
+}
+
+/// Nome do agente nos avisos.
+fn agent_display_name(runner: &AgentRunnerKind) -> String {
+    match runner {
+        AgentRunnerKind::ClaudeCode => "Claude".to_string(),
+        AgentRunnerKind::Codex => "Codex".to_string(),
+        other => crate::agent::runner_binary(other)
+            .unwrap_or("agente")
+            .to_string(),
+    }
+}
+
+/// Projeto (pasta do repositório, ou a pasta mesmo fora de git) e branch da
+/// sessão, lidos do cwd do processo do pane no kernel — nunca do payload do
+/// hook.
+fn session_place(app: &AppHandle, id: SessionId) -> (Option<String>, Option<String>) {
+    let Some(cwd) = app
+        .try_state::<crate::AppState>()
+        .and_then(|state| state.pty_pool.leader_pid(id))
+        .and_then(crate::repo::process_cwd)
+    else {
+        return (None, None);
+    };
+    let root = crate::repo::toplevel(&cwd);
+    let project = root
+        .as_deref()
+        .unwrap_or(&cwd)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned());
+    let branch = root.as_deref().and_then(crate::repo::branch);
+    (project, branch)
+}
+
+/// Fatia 5: "o Claude está pedindo algo · projeto · branch". Sai pela mesma
+/// política do pedido; a resposta é no prompt do próprio agente.
+pub(crate) fn notify_asking(
+    app: &AppHandle,
+    sessions: &SharedSessionManager,
+    store: &Store,
+    runner: &AgentRunnerKind,
+    id: SessionId,
+) {
+    let (project, branch) = session_place(app, id);
+    let body = notify::asking_body(
+        &agent_display_name(runner),
+        project.as_deref(),
+        branch.as_deref(),
+    );
+    notify_native(
+        app,
+        sessions,
+        store,
+        notify::NotifyKind::NativePrompt,
+        id,
+        &body,
+    );
+}
+
 /// O aviso do sistema, com a política já resolvida.
 ///
 /// `pub(crate)` porque o palpite de tela também sai por aqui: são fontes
@@ -215,9 +285,18 @@ pub(crate) fn notify_native(
         builder = builder.sound(sound);
     }
     match builder.show() {
-        Ok(()) => eprintln!(
-            "[tyba] aviso {kind:?} de {id} enviado (janela em foco: {focused}, na tela: {viewed:?})"
-        ),
+        Ok(()) => {
+            // Com a janela em foco não há clique a esperar: a volta ao TYBA
+            // não viria deste aviso.
+            if !focused {
+                if let Ok(mut pending) = PENDING_FOCUS.lock() {
+                    *pending = Some((id, std::time::Instant::now()));
+                }
+            }
+            eprintln!(
+                "[tyba] aviso {kind:?} de {id} enviado (janela em foco: {focused}, na tela: {viewed:?})"
+            )
+        }
         Err(e) => eprintln!("[tyba] aviso {kind:?} de {id} falhou: {e}"),
     }
 }
@@ -706,18 +785,13 @@ fn on_native_prompt(ctx: &HandlerCtx, event: &HookEvent) -> HookAction {
     .summary();
     let hint = (!summary.trim().is_empty()).then_some(summary);
     ctx.sessions
-        .set_status(&ctx.app, ctx.session_id, native_prompt_status(hint.clone()));
-    let body = match hint {
-        Some(summary) => format!("Pede permissão no terminal: {summary}"),
-        None => "Pede permissão no terminal".to_string(),
-    };
-    notify_native(
+        .set_status(&ctx.app, ctx.session_id, native_prompt_status(hint));
+    notify_asking(
         &ctx.app,
         &ctx.sessions,
         &ctx.store,
-        notify::NotifyKind::NativePrompt,
+        &ctx.runner_kind,
         ctx.session_id,
-        &body,
     );
     HookAction::Ack
 }
@@ -1089,7 +1163,13 @@ fn handle_event(ctx: &HandlerCtx, event: HookEvent) -> HookAction {
                     };
                     if let Some(next) = next {
                         ctx.sessions.set_status(&ctx.app, ctx.session_id, next);
-                        notify_awaiting_input(ctx, "Agente aguardando sua resposta");
+                        notify_asking(
+                            &ctx.app,
+                            &ctx.sessions,
+                            &ctx.store,
+                            &ctx.runner_kind,
+                            ctx.session_id,
+                        );
                     }
                 }
                 Some(SessionStatus::Idle { .. }) => {

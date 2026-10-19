@@ -1043,6 +1043,37 @@ pub fn resolve_plugin_event(
     (peer_session == Some(session)).then_some(session)
 }
 
+/// Fatia 5: eventos do plugin que viram "o Claude está pedindo algo".
+pub fn asks_for_attention(event: &str) -> bool {
+    matches!(event, "PermissionRequest" | "Notification")
+}
+
+/// O mesmo prompt dispara `PermissionRequest` e `Notification` quase juntos:
+/// um aviso só por pane dentro desta janela.
+pub const ASK_DEBOUNCE: std::time::Duration = std::time::Duration::from_secs(10);
+
+pub fn ask_due(last: Option<std::time::Instant>, now: std::time::Instant) -> bool {
+    last.is_none_or(|at| now.saturating_duration_since(at) >= ASK_DEBOUNCE)
+}
+
+type AskLog = std::collections::HashMap<crate::session::SessionId, std::time::Instant>;
+
+static LAST_ASK: std::sync::Mutex<Option<AskLog>> = std::sync::Mutex::new(None);
+
+/// Reserva o aviso deste pane, se já passou a janela do último.
+pub fn take_ask_slot(session: crate::session::SessionId, now: std::time::Instant) -> bool {
+    let Ok(mut guard) = LAST_ASK.lock() else {
+        return true;
+    };
+    let log = guard.get_or_insert_with(Default::default);
+    if !ask_due(log.get(&session).copied(), now) {
+        return false;
+    }
+    log.retain(|_, at| now.saturating_duration_since(*at) < ASK_DEBOUNCE);
+    log.insert(session, now);
+    true
+}
+
 /// Comparação em tempo constante para o token — não vaza por tempo quantos
 /// caracteres batem.
 pub fn token_eq(a: &str, b: &str) -> bool {
@@ -1716,6 +1747,26 @@ mod tests {
             None
         ));
         assert!(suggest_in(&claude_config_dir(None, home.path()), None));
+    }
+
+    #[test]
+    fn permission_and_notification_ask_once_per_window() {
+        use std::time::{Duration, Instant};
+        assert!(asks_for_attention("PermissionRequest"));
+        assert!(asks_for_attention("Notification"));
+        assert!(!asks_for_attention("Stop"));
+        assert!(!asks_for_attention("SessionStart"));
+        let at = Instant::now();
+        assert!(ask_due(None, at));
+        assert!(!ask_due(Some(at), at + Duration::from_secs(2)));
+        assert!(ask_due(Some(at), at + ASK_DEBOUNCE));
+
+        let pane = crate::session::SessionId::new_v4();
+        let other = crate::session::SessionId::new_v4();
+        assert!(take_ask_slot(pane, at));
+        assert!(!take_ask_slot(pane, at + Duration::from_secs(1)));
+        assert!(take_ask_slot(other, at + Duration::from_secs(1)));
+        assert!(take_ask_slot(pane, at + ASK_DEBOUNCE));
     }
 
     #[test]

@@ -567,12 +567,28 @@ fn handle_plugin_event(
         .collect();
     let rows = agent::process_probe::snapshot();
     let peer_session = agent::process_probe::find_owning_session(peer_pid, &shells, &rows);
-    if agent::claude_plugin::resolve_plugin_event(token, peer_session, |t| {
+    let Some(session) = agent::claude_plugin::resolve_plugin_event(token, peer_session, |t| {
         state.sessions.session_for_pane_token(t)
-    })
-    .is_none()
-    {
+    }) else {
         return refused;
+    };
+    // Fatia 5: o claude cru pedindo algo vira aviso. Fora da thread do canal:
+    // o hook não espera, e o aviso lê git.
+    let event = request.event.as_deref().unwrap_or("");
+    if agent::claude_plugin::asks_for_attention(event)
+        && agent::claude_plugin::take_ask_slot(session, std::time::Instant::now())
+    {
+        let app = app.clone();
+        std::thread::spawn(move || {
+            let state = app.state::<AppState>();
+            agent::session::notify_asking(
+                &app,
+                &state.sessions,
+                &state.store,
+                &crate::session::AgentRunnerKind::ClaudeCode,
+                session,
+            );
+        });
     }
     ChannelResponse::Plugin
 }
@@ -9080,6 +9096,16 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .on_window_event(|window, event| {
+            // Agente livre, fatia 5: o clique no aviso traz o app para a
+            // frente; a volta logo depois de um aviso foca o pane dele.
+            if matches!(event, tauri::WindowEvent::Focused(true)) && window.label() == "main" {
+                if let Some(id) = agent::session::take_focus_target() {
+                    let state = window.state::<AppState>();
+                    if state.layout.focus_session(id).unwrap_or(false) {
+                        emit_layout(window.app_handle(), &state);
+                    }
+                }
+            }
             if matches!(event, tauri::WindowEvent::Destroyed) {
                 if let Some(state) = window.try_state::<AppState>() {
                     state.pty_pool.drop_window_attachers(window.label());
