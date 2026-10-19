@@ -8,6 +8,7 @@ import {
   approvalLine,
   diffSummary,
   failureFooter,
+  headerActions,
   showsEndLog,
   nodeApproval,
   ringState,
@@ -207,5 +208,53 @@ describe("showsEndLog", () => {
     expect(showsEndLog(process, nodeRun({ status: "running" }))).toBe(false);
     expect(showsEndLog(process, nodeRun({ status: "skipped", sessionId: null }))).toBe(false);
     expect(showsEndLog(process, undefined)).toBe(false);
+  });
+});
+
+describe("headerActions", () => {
+  const none = { stop: false, restart: false, rerun: false };
+  test("processo rodando: abre, reinicia e para", () => {
+    const a = headerActions("process", {
+      session: true,
+      controls: { stop: true, restart: true, rerun: false },
+      terminalOpen: false,
+    });
+    expect(a.open).toEqual({ enabled: true, hint: "orbitOpenHint" });
+    expect(a.again).toEqual({ enabled: true, rerun: false, hint: "orbitRestart" });
+    expect(a.stop).toEqual({ enabled: true, hint: "orbitStopNode" });
+  });
+  test("processo que terminou: rodar de novo, abrir e parar apagados com o motivo", () => {
+    const a = headerActions("process", {
+      session: false,
+      controls: { stop: false, restart: false, rerun: true },
+      terminalOpen: false,
+    });
+    expect(a.open).toEqual({ enabled: false, hint: "orbitOpenNoSession" });
+    expect(a.again).toEqual({ enabled: true, rerun: true, hint: "orbitRerun" });
+    expect(a.stop).toEqual({ enabled: false, hint: "orbitStopNothing" });
+  });
+  test("execução fechada: reiniciar apagado pede o ▶", () => {
+    const a = headerActions("agent", { session: false, controls: none, terminalOpen: false });
+    expect(a.again).toEqual({ enabled: false, rerun: false, hint: "orbitRestartNeedsRun" });
+  });
+  test("terminal: abre e o ■ fecha o shell; não reinicia", () => {
+    const open = headerActions("terminal", { session: true, controls: none, terminalOpen: true });
+    expect(open.open?.enabled).toBe(true);
+    expect(open.again).toBeNull();
+    expect(open.stop).toEqual({ enabled: true, hint: "orbitTerminalCloseHint" });
+    const closed = headerActions("terminal", { session: false, controls: none, terminalOpen: false });
+    expect(closed.stop).toEqual({ enabled: false, hint: "orbitTerminalClosed" });
+  });
+  test("nota não tem ações; navegador só recarrega", () => {
+    const note = headerActions("note", { session: false, controls: none, terminalOpen: false });
+    expect(note).toEqual({ open: null, again: null, stop: null });
+    const browser = headerActions("browser", {
+      session: false,
+      controls: { stop: false, restart: true, rerun: false },
+      terminalOpen: false,
+    });
+    expect(browser.open).toBeNull();
+    expect(browser.stop).toBeNull();
+    expect(browser.again?.enabled).toBe(true);
   });
 });

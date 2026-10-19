@@ -47,6 +47,7 @@ import {
   runCreated,
   shownSession,
   shownStatus,
+  terminalRun,
   nodeDir,
   rememberDir,
   shortDir,
@@ -63,6 +64,7 @@ import type { ApprovalDecision, ApprovalRequest, SubagentRun } from "@/lib/ipc";
 import {
   approvalLine,
   failureFooter,
+  headerActions,
   ringState,
   type AgentTelemetry,
   type RingState,
@@ -609,8 +611,10 @@ function CapsuleTitle({
   if (!editing) {
     return (
       <span
-        onDoubleClick={() => {
+        onDoubleClick={(e) => {
           if (locked) return;
+          // Renomear é do nome: o duplo clique no resto do cabeçalho abre.
+          e.stopPropagation();
           closed.current = false;
           setDraft(title);
           setEditing(true);
@@ -650,6 +654,45 @@ function CapsuleTitle({
 }
 
 /**
+ * Ícone do cabeçalho (quadro OrbitAcoesLog, A): redondo, sem fundo, com a
+ * dica no hover. Apagado quando a ação não vale agora, com o motivo na dica.
+ */
+function HeaderButton({
+  action,
+  label,
+  pressed,
+  onClick,
+  children,
+}: {
+  action: { enabled: boolean; hint: string };
+  label: string;
+  pressed?: boolean;
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  const { t } = useTranslation();
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      aria-disabled={action.enabled ? undefined : true}
+      aria-pressed={pressed}
+      title={t(action.hint)}
+      onClick={() => action.enabled && onClick()}
+      className={`nodrag flex size-[26px] shrink-0 items-center justify-center rounded-full ${
+        !action.enabled
+          ? soonClass
+          : pressed
+            ? "bg-tyba-text/[.10] text-tyba-text"
+            : "text-tyba-text-muted hover:bg-tyba-text/[.08] hover:text-tyba-text"
+      }`}
+    >
+      {children}
+    </button>
+  );
+}
+
+/**
  * Moldura comum dos nós (quadro OrbitCardsD, "ilha"): a cápsula do
  * cabeçalho flutua sobre a janela sem moldura. Na cápsula, o anel da marca
  * com o estado, o nome, o estado curto, a ação do nó e o ⋯ (a grade de
@@ -673,7 +716,6 @@ export function NodeFrame({
   inUse = false,
   clearData,
   ring: ringOverride,
-  actions,
   children,
 }: {
   id: string;
@@ -700,8 +742,6 @@ export function NodeFrame({
   clearData?: () => void;
   /** Toma o lugar do anel do estado (o Terminal aberto: verde cheio, sem girar). */
   ring?: FrameRing;
-  /** Botões do nó na grade do ⋯, antes do Apagar (o Fechar do Terminal). */
-  actions?: (close: () => void) => ReactNode;
   children: ReactNode;
 }) {
   const { t } = useTranslation();
@@ -711,6 +751,7 @@ export function NodeFrame({
     keepCreated,
     stopNode,
     restartNode,
+    closeTerminal,
     graph,
     run,
     runs,
@@ -730,6 +771,23 @@ export function NodeFrame({
   const session = shownSession(node.kind, run, runs, id, live);
   const controls = nodeControls(node.kind, run, id, live);
   const again = controls.restart || controls.rerun;
+  // Os ícones do cabeçalho (quadro OrbitAcoesLog, A).
+  const header = headerActions(node.kind.type, {
+    session: session !== null,
+    controls,
+    terminalOpen: node.kind.type === "terminal" && terminalRun(runs, id) !== null,
+  });
+  const openNode = () => {
+    if (header.open?.enabled) setFocusNode(id);
+  };
+  const againNode = () => {
+    if (header.again?.enabled) restartNode(id);
+  };
+  const stopIt = () => {
+    if (!header.stop?.enabled) return;
+    if (node.kind.type === "terminal") closeTerminal(id);
+    else stopNode(id);
+  };
   const request = approvals.get(id) ?? null;
   const ring =
     request === null && ringOverride ? ringOverride : ringState(nodeRun, request !== null, run?.settled);
@@ -858,6 +916,11 @@ export function NodeFrame({
             : "cursor-grab shadow-[var(--tyba-shadow-md)]"
         } ${capsule}`}
         title={request ? request.command : undefined}
+        onDoubleClick={(e) => {
+          // Duplo clique no cabeçalho abre (o mesmo do ⤢); nos botões, não.
+          if (request || asking || (e.target as Element).closest("button, input")) return;
+          openNode();
+        }}
       >
         <NodeRing
           state={asking ? "failed" : inUse && !request ? "user" : ring}
@@ -926,29 +989,57 @@ export function NodeFrame({
             {extra}
             {!dragging && (
               <>
-                <button
-                  type="button"
-                  aria-label={t("orbitTrash")}
-                  title={t("orbitTrash")}
-                  onClick={() => del.request(id)}
-                  className="nodrag flex size-[26px] shrink-0 items-center justify-center rounded-full bg-tyba-text/[.06] text-tyba-text-muted opacity-0 group-hover:opacity-100 hover:text-tyba-text focus-visible:opacity-100"
-                >
-                  <Trash size={14} />
-                </button>
-                <button
-                  type="button"
-                  aria-label={t("orbitNodeDetails")}
-                  aria-pressed={open}
-                  title={t("orbitNodeDetails")}
-                  onClick={() => setOpen((v) => !v)}
-                  className={`nodrag flex shrink-0 items-center rounded-full px-1.5 py-0.5 ${
-                    open
-                      ? "bg-tyba-text/[.08] text-tyba-text"
-                      : "text-tyba-text-faint hover:text-tyba-text"
-                  }`}
-                >
-                  <DotsThree size={16} weight="bold" />
-                </button>
+                <span aria-hidden className="h-4 w-px shrink-0 bg-tyba-text/10" />
+                <span className="flex shrink-0 items-center gap-0.5">
+                  {header.open && (
+                    <HeaderButton
+                      action={header.open}
+                      label={t("orbitOpen")}
+                      onClick={openNode}
+                    >
+                      <ArrowsOut size={14} />
+                    </HeaderButton>
+                  )}
+                  {header.again && (
+                    <HeaderButton
+                      action={header.again}
+                      label={t(header.again.rerun ? "orbitRerun" : "orbitRestart")}
+                      onClick={againNode}
+                    >
+                      <ArrowClockwise size={14} />
+                    </HeaderButton>
+                  )}
+                  {header.stop && (
+                    <HeaderButton
+                      action={header.stop}
+                      label={t(
+                        node.kind.type === "terminal" ? "orbitTerminalClose" : "orbitStopNode",
+                      )}
+                      onClick={stopIt}
+                    >
+                      <Stop size={13} weight="fill" />
+                    </HeaderButton>
+                  )}
+                  <HeaderButton
+                    action={{ enabled: true, hint: "orbitDeleteNode" }}
+                    label={t("orbitDeleteNode")}
+                    onClick={() => {
+                      setOpen(false);
+                      setClearing(false);
+                      del.request(id);
+                    }}
+                  >
+                    <Trash size={14} />
+                  </HeaderButton>
+                  <HeaderButton
+                    action={{ enabled: true, hint: "orbitNodeDetails" }}
+                    label={t("orbitNodeDetails")}
+                    pressed={open}
+                    onClick={() => setOpen((v) => !v)}
+                  >
+                    <DotsThree size={16} weight="bold" />
+                  </HeaderButton>
+                </span>
               </>
             )}
           </>
@@ -1039,49 +1130,6 @@ export function NodeFrame({
               ))}
             </div>
             <div className="flex flex-wrap gap-2 pt-3">
-              {/* Quadro: ⤢ Abrir · ↻ Reiniciar · Trocar papel. O que o core
-                  ainda não faz fica no lugar, sem ação, com a dica. */}
-              {(session || agent) && (
-                <button
-                  type="button"
-                  aria-disabled={session ? undefined : true}
-                  title={session ? undefined : t("orbitOpenNoSession")}
-                  onClick={() => session && setFocusNode(id)}
-                  className={`${detailBtn} ${session ? "text-tyba-text hover:bg-tyba-text/[.12]" : soonClass}`}
-                >
-                  <ArrowsOut size={12} />
-                  {t("orbitOpen")}
-                </button>
-              )}
-              {(agent || again) && (
-                <button
-                  type="button"
-                  aria-disabled={again ? undefined : true}
-                  title={again ? undefined : t("orbitRestartNeedsRun")}
-                  onClick={() => {
-                    if (!again) return;
-                    setOpen(false);
-                    restartNode(id);
-                  }}
-                  className={`${detailBtn} ${again ? "text-tyba-text hover:bg-tyba-text/[.12]" : soonClass}`}
-                >
-                  <ArrowClockwise size={12} />
-                  {t(controls.rerun ? "orbitRerun" : "orbitRestart")}
-                </button>
-              )}
-              {controls.stop && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setOpen(false);
-                    stopNode(id);
-                  }}
-                  className={`${detailBtn} text-tyba-text hover:bg-tyba-text/[.12]`}
-                >
-                  <Stop size={12} />
-                  {t("orbitStopNode")}
-                </button>
-              )}
               {agent && (
                 <button
                   type="button"
@@ -1102,7 +1150,6 @@ export function NodeFrame({
                   {t("orbitKeepAll")}
                 </button>
               )}
-              {actions?.(() => setOpen(false))}
               {clearData && (
                 <button
                   type="button"
@@ -1116,18 +1163,6 @@ export function NodeFrame({
                   {t("orbitBrowserClearData")}
                 </button>
               )}
-              <button
-                type="button"
-                onClick={() => {
-                  setOpen(false);
-                  setClearing(false);
-                  del.request(id);
-                }}
-                className={`${detailBtn} text-tyba-text hover:text-tyba-red`}
-              >
-                <Trash size={12} />
-                {t("orbitDeleteNode")}
-              </button>
             </div>
           </div>
         )}

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Terminal, X } from "@phosphor-icons/react";
+import { Terminal } from "@phosphor-icons/react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 
 import { OpenAIIcon } from "@/components/icons/OpenAIIcon";
@@ -13,7 +13,7 @@ import {
   terminalRun,
   type NodeKind,
 } from "@/lib/orbit";
-import { NodeDir, NodeFrame, detailBtn, useOrbit, type OrbitFlowNode } from "./NodeFrame";
+import { NodeDir, NodeFrame, useOrbit, type OrbitFlowNode } from "./NodeFrame";
 import { NodeTerminal } from "./NodeTerminal";
 
 type TerminalKind = Extract<NodeKind, { type: "terminal" }>;
@@ -27,7 +27,7 @@ const hidden = { opacity: 0, width: 1, height: 1, minWidth: 0, minHeight: 0, bor
  */
 export function TerminalNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
   const { t } = useTranslation();
-  const { run, runs, live, graphDir, openTerminal, closeTerminal } = useOrbit();
+  const { run, runs, live, graphDir, openTerminal } = useOrbit();
   const node = data.node;
   const kind = node.kind as TerminalKind;
   // Aberto pela sessão ao vivo que o segura, não pelo run à vista.
@@ -75,21 +75,6 @@ export function TerminalNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
       }
       meta={open && dir ? shortDir(dir) : undefined}
       details={[{ label: t("orbitDetailDir"), value: dir ? shortDir(dir) : "" }]}
-      actions={(close) =>
-        open && (
-          <button
-            type="button"
-            onClick={() => {
-              close();
-              closeTerminal(id);
-            }}
-            className={`${detailBtn} text-tyba-text hover:bg-tyba-text/[.12]`}
-          >
-            <X size={12} />
-            {t("orbitTerminalClose")}
-          </button>
-        )
-      }
     >
       {/* Saída invisível das ligações tracejadas até os nós que o claude/codex digitado criou. */}
       <Handle

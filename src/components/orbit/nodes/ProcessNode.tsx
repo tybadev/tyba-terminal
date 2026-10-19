@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ArrowClockwise, TerminalWindow } from "@phosphor-icons/react";
+import { TerminalWindow } from "@phosphor-icons/react";
 import type { NodeProps } from "@xyflow/react";
 
 import {
@@ -13,7 +13,6 @@ import {
 import { Select } from "@/components/ui/select";
 import {
   OUTPUT_KINDS,
-  nodeControls,
   nodeDir,
   nodeLog,
   nodeLogWhole,
@@ -29,7 +28,6 @@ import {
   NodeDir,
   NodeFrame,
   fieldClass,
-  soonClass,
   termClass,
   useOrbit,
   type OrbitFlowNode,
@@ -41,7 +39,7 @@ type ProcessKind = Extract<NodeKind, { type: "process" }>;
 /** Nó de processo: um comando na pasta do nó e o tipo da saída. */
 export function ProcessNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
   const { t } = useTranslation();
-  const { updateNode, run, live, openInBrowser, graphDir, restartNode } = useOrbit();
+  const { updateNode, run, live, openInBrowser, graphDir } = useOrbit();
   const node = data.node;
   const kind = node.kind as ProcessKind;
   const session = nodeSession(kind, run, id, live);
@@ -53,8 +51,6 @@ export function ProcessNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
   const dir = nodeDir(kind, graphDir);
   const command = firstLine(kind.command);
   const failed = run?.nodes[id]?.status === "failed";
-  // O ↻ roda de novo só com a execução aberta; fechada, fica com a dica.
-  const rerun = nodeControls(kind, run, id, live).rerun;
   // Acabou (caiu, terminou, parado): a saída fica no card, sem o terminal.
   const endLog = run && showsEndLog(kind, run.nodes[id]) ? run.id : null;
 
@@ -65,23 +61,10 @@ export function ProcessNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
       selected={selected}
       mark={<TerminalWindow size={13} weight="bold" />}
       markTone="text-tyba-text-muted"
-      // Quadro: falhou, a cápsula leva só o ↻ (o anel vermelho já diz).
+      // Quadro: falhou, a cápsula leva só o ↻ do cabeçalho (o anel vermelho já diz).
       status={failed ? false : undefined}
       extra={
-        failed ? (
-          <button
-            type="button"
-            aria-disabled={rerun ? undefined : true}
-            aria-label={t("orbitRerun")}
-            title={rerun ? t("orbitRerun") : t("orbitRestartNeedsRun")}
-            onClick={() => rerun && restartNode(id)}
-            className={`nodrag shrink-0 rounded-full bg-tyba-text/[.08] px-2.5 py-[3px] ${
-              rerun ? "text-tyba-text hover:bg-tyba-text/[.12]" : soonClass
-            }`}
-          >
-            <ArrowClockwise size={12} />
-          </button>
-        ) : url && port !== null ? (
+        !failed && url && port !== null ? (
           <button
             type="button"
             title={t("orbitOpenInBrowser")}

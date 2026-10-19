@@ -3,7 +3,7 @@
 // estado do nó no run, os pedidos de aprovação); aqui só se escolhe o desenho.
 
 import type { ApprovalRequest } from "./ipc";
-import { formatDuration, type NodeKind, type NodeRun, type Runner } from "./orbit";
+import { formatDuration, type NodeControls, type NodeKind, type NodeRun, type Runner } from "./orbit";
 
 /**
  * Anel em volta do ícone:
@@ -201,4 +201,60 @@ export function showsEndLog(kind: NodeKind, nodeRun: NodeRun | undefined): boole
   const ended =
     nodeRun?.status === "failed" || nodeRun?.status === "done" || nodeRun?.status === "stopped";
   return kind.type === "process" && ended && !!nodeRun?.sessionId;
+}
+
+/** Um ícone do cabeçalho: apagado quando não vale agora, com o motivo na dica (chave i18n). */
+export interface HeaderAction {
+  enabled: boolean;
+  hint: string;
+}
+
+/**
+ * As ações no cabeçalho do nó (quadro OrbitAcoesLog, A): ⤢ abrir, ↻
+ * reiniciar (ou rodar de novo), ■ parar. `null`: o tipo de nó não tem a
+ * ação e o ícone não aparece. As regras de valer são as do ⋯ de antes
+ * (`nodeControls` e a sessão viva); no Terminal, o ■ é o Fechar do shell.
+ */
+export interface HeaderActions {
+  open: HeaderAction | null;
+  again: (HeaderAction & { rerun: boolean }) | null;
+  stop: HeaderAction | null;
+}
+
+/** Tipos com terminal para abrir em tela grande. */
+const OPENS: readonly NodeKind["type"][] = ["agent", "process", "integration", "terminal"];
+/** Tipos que reiniciam (o navegador recarrega). */
+const RESTARTS: readonly NodeKind["type"][] = ["agent", "process", "service", "integration", "browser"];
+/** Tipos que param (o navegador não tem o que parar). */
+const STOPS: readonly NodeKind["type"][] = ["agent", "process", "service", "integration"];
+
+export function headerActions(
+  kind: NodeKind["type"],
+  p: { session: boolean; controls: NodeControls; terminalOpen: boolean },
+): HeaderActions {
+  const again = p.controls.restart || p.controls.rerun;
+  return {
+    open: OPENS.includes(kind)
+      ? { enabled: p.session, hint: p.session ? "orbitOpenHint" : "orbitOpenNoSession" }
+      : null,
+    again: RESTARTS.includes(kind)
+      ? {
+          enabled: again,
+          rerun: p.controls.rerun,
+          hint: !again ? "orbitRestartNeedsRun" : p.controls.rerun ? "orbitRerun" : "orbitRestart",
+        }
+      : null,
+    stop:
+      kind === "terminal"
+        ? {
+            enabled: p.terminalOpen,
+            hint: p.terminalOpen ? "orbitTerminalCloseHint" : "orbitTerminalClosed",
+          }
+        : STOPS.includes(kind)
+          ? {
+              enabled: p.controls.stop,
+              hint: p.controls.stop ? "orbitStopNode" : "orbitStopNothing",
+            }
+          : null,
+  };
 }
