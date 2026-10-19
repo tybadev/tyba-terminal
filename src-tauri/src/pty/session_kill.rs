@@ -5,7 +5,9 @@
 //! `killpg` do grupo do shell. Todos continuam na sessão (SID) que o
 //! portable-pty abriu com `setsid` no spawn — é por ela que se acha cada grupo.
 //!
-//! Só para sessão efêmera (nó do Orbit, ver [`super::PtyPool::set_ephemeral`]).
+//! Só para sessão efêmera (nó do Orbit, ver [`super::PtyPool::set_ephemeral`]),
+//! em dois caminhos: o kill (Fechar, apagar, ■, ⌘Q) e o `exit` do próprio
+//! shell, que só avisa o core pelo EOF do PTY (`sweep_after_exit`).
 //! A aba da grade segue com o `killpg` do líder: job com `nohup` sobreviver a
 //! uma aba fechada é decisão de produto à parte.
 //!
@@ -26,6 +28,60 @@ pub(super) fn session_of_leader(leader_pid: u32) -> Option<u32> {
 #[cfg(not(unix))]
 pub(super) fn session_of_leader(_leader_pid: u32) -> Option<u32> {
     None
+}
+
+/// Onde está o líder (filho direto do app) do ponto de vista do `wait`.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum Leader {
+    Running,
+    /// Saiu e segue zumbi, sem `wait`: enquanto não é colhido, o número dele
+    /// — que é o SID — não volta para processo nenhum, então quem ainda
+    /// carrega aquele SID é da sessão que abrimos.
+    ExitedUnreaped,
+    /// Já colhido (ECHILD) ou não é filho nosso: o número pode ter voltado.
+    Gone,
+}
+
+/// Pergunta sem colher (`WNOWAIT`): quem colhe continua sendo o `child.kill`.
+#[cfg(unix)]
+pub(super) fn leader_state(leader_pid: u32) -> Leader {
+    let Ok(pid) = libc::pid_t::try_from(leader_pid) else {
+        return Leader::Gone;
+    };
+    if pid <= 1 {
+        return Leader::Gone;
+    }
+    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    let rc = unsafe {
+        libc::waitid(
+            libc::P_PID,
+            pid as libc::id_t,
+            &mut info,
+            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+        )
+    };
+    match (rc, unsafe { info.si_pid() }) {
+        (0, p) if p == pid => Leader::ExitedUnreaped,
+        (0, _) => Leader::Running,
+        _ => Leader::Gone,
+    }
+}
+
+#[cfg(not(unix))]
+pub(super) fn leader_state(_leader_pid: u32) -> Leader {
+    Leader::Gone
+}
+
+/// Os processos vivos que ainda carregam o SID `sid`.
+#[cfg(all(test, unix))]
+pub(super) fn pids_in_session(sid: u32) -> Vec<libc::pid_t> {
+    let Ok(sid) = libc::pid_t::try_from(sid) else {
+        return Vec::new();
+    };
+    all_pids()
+        .into_iter()
+        .filter(|pid| unsafe { libc::getsid(*pid) } == sid)
+        .collect()
 }
 
 /// SIGKILL em cada process group da sessão `sid`, o do líder por último.

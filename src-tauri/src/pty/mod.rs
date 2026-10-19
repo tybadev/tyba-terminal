@@ -476,6 +476,10 @@ struct PtyHandle {
     /// Sessão efêmera ([`PtyPool::set_ephemeral`]): o SID cujos process
     /// groups o kill derruba todos, além do grupo do líder. `None` na grade.
     sweep_session: Option<u32>,
+    /// Quem colhe o líder (`child.kill`) segura isto, e a varredura do
+    /// `exit` também: o líder não é colhido no meio dela, então o SID não
+    /// pode voltar para outro processo enquanto ela roda.
+    reap: Arc<Mutex<()>>,
 }
 
 impl PtyHandle {
@@ -1203,6 +1207,8 @@ impl PtyPool {
         let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(CHANNEL_CAPACITY);
         let tx = std::sync::Arc::new(tx);
         let nudge = std::sync::Arc::downgrade(&tx);
+        let reap = Arc::new(Mutex::new(()));
+        let exit_reap = Arc::clone(&reap);
 
         self.ptys.lock().insert(
             session_id,
@@ -1218,6 +1224,7 @@ impl PtyPool {
                 transport,
                 control,
                 sweep_session,
+                reap,
             },
         );
 
@@ -1516,6 +1523,12 @@ impl PtyPool {
                 // cresce por toda sessão aberta na vida do app, e o alias de um
                 // worktree fechado continuaria sendo sugerido em outro.
                 crate::completion::binary::forget_reported(&session_id.to_string());
+                // Sessão efêmera cujo shell saiu sozinho (`exit`): os jobs de
+                // fundo, cada um no próprio grupo, ficariam órfãos com a porta
+                // presa — o kill do nó nunca vem (princípio #9).
+                if let Some(sid) = sweep_session {
+                    sweep_after_exit(sid, &exit_reap);
+                }
                 let _ = app.emit(&exit_event, PtyExitPayload { code: None });
                 on_exit();
             })
@@ -1813,6 +1826,7 @@ impl PtyPool {
         if let Some(pid) = handle.leader_pid {
             let _ = kill_process_group(pid);
         }
+        let _reaping = handle.reap.lock();
         let _ = handle.child.kill();
         Ok(())
     }
@@ -1861,7 +1875,26 @@ fn kill_handle(mut handle: PtyHandle) {
     if let Some(pid) = handle.leader_pid {
         let _ = kill_process_group(pid);
     }
+    let _reaping = handle.reap.lock();
     let _ = handle.child.kill();
+}
+
+/// A varredura do `exit` de sessão efêmera. O EOF do PTY pode chegar um
+/// instante antes de o líder virar zumbi (o macOS revoga o tty no meio do
+/// `exit`), daí a espera curta. Só varre com o líder morto e ainda não
+/// colhido: o SID é o pid dele, e esse número só fica preso enquanto o zumbi
+/// existe — ver [`session_kill::Leader`]. Líder vivo (fechou o tty mas segue
+/// rodando) ou já colhido pelo kill, que varreu antes: não varre nada.
+fn sweep_after_exit(sid: u32, reap: &Mutex<()>) {
+    use session_kill::{leader_state, Leader};
+    let deadline = Instant::now() + Duration::from_millis(500);
+    while leader_state(sid) == Leader::Running && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let _reaping = reap.lock();
+    if leader_state(sid) == Leader::ExitedUnreaped {
+        session_kill::kill_session(sid);
+    }
 }
 
 #[cfg(unix)]
@@ -3466,6 +3499,7 @@ mod tests {
             transport: super::Transport::Raw,
             control: None,
             sweep_session: None,
+            reap: Arc::default(),
         };
         pool.ptys.lock().insert(uuid::Uuid::new_v4(), handle);
 
@@ -3505,6 +3539,7 @@ mod tests {
             transport: super::Transport::Raw,
             control: None,
             sweep_session: None,
+            reap: Arc::default(),
         };
         pool.ptys.lock().insert(id, handle);
         id
@@ -3808,6 +3843,109 @@ mod ephemeral_tests {
         unsafe { libc::kill(job, libc::SIGKILL) };
 
         assert!(survived, "a grade mudou de comportamento");
+    }
+
+    /// O shell que dá `exit` com um job de fundo vivo (o bug do nó Terminal):
+    /// devolve o pid do job depois que o `on_exit` da sessão rodou.
+    #[cfg(unix)]
+    fn shell_exits_leaving_a_job(pool: &PtyPool, id: PtyId, ephemeral: bool) -> i32 {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pid_file = dir.path().join("job.pid");
+        let mut cmd = CommandBuilder::new("/bin/sh");
+        cmd.arg("-c");
+        cmd.arg(format!(
+            "set -m; sleep 300 & echo $! > '{}'; exit 0",
+            pid_file.display()
+        ));
+        if ephemeral {
+            pool.set_ephemeral(id);
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let app = tauri::test::mock_app();
+        pool.spawn(
+            app.handle().clone(),
+            id,
+            cmd,
+            None,
+            None,
+            80,
+            24,
+            &SessionKind::Shell,
+            Box::new(move || {
+                let _ = tx.send(());
+            }),
+        )
+        .expect("spawn");
+        rx.recv_timeout(Duration::from_secs(10))
+            .expect("o shell saiu e o on_exit nunca rodou");
+        std::fs::read_to_string(&pid_file)
+            .ok()
+            .and_then(|s| s.trim().parse::<i32>().ok())
+            .expect("o job nunca subiu")
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn exit_na_sessao_efemera_mata_os_jobs_do_shell() {
+        let pool = PtyPool::new();
+        let id = PtyId::new_v4();
+        let job = shell_exits_leaving_a_job(&pool, id, true);
+        let sid = pool.ptys.lock()[&id].sweep_session.expect("SID gravado");
+
+        let died = wait_dead(job, Duration::from_secs(3));
+        unsafe { libc::kill(job, libc::SIGKILL) };
+
+        assert!(died, "o job sobreviveu ao exit do shell efêmero: {job}");
+        assert!(
+            super::session_kill::pids_in_session(sid).is_empty(),
+            "sobrou processo na sessão {sid}"
+        );
+        let _ = pool.kill(id);
+    }
+
+    /// A aba da grade fica como terminal comum: o job que o shell não
+    /// derrubou no `exit` segue vivo (decisão de produto à parte).
+    #[cfg(unix)]
+    #[test]
+    fn exit_na_aba_da_grade_deixa_o_job_vivo() {
+        let pool = PtyPool::new();
+        let id = PtyId::new_v4();
+        let job = shell_exits_leaving_a_job(&pool, id, false);
+        std::thread::sleep(Duration::from_millis(300));
+        let survived = alive(job);
+        unsafe { libc::kill(job, libc::SIGKILL) };
+        let _ = pool.kill(id);
+
+        assert!(survived, "a grade mudou de comportamento no exit");
+    }
+
+    /// A guarda contra SID reusado: só um filho que já saiu e AINDA não foi
+    /// colhido segura o número. Colhido, processo alheio ou vivo: não varre.
+    #[cfg(unix)]
+    #[test]
+    fn so_varre_lider_morto_e_ainda_nao_colhido() {
+        use super::session_kill::{leader_state, Leader};
+        let leader_exited_unreaped = |pid: u32| leader_state(pid) == Leader::ExitedUnreaped;
+        let mut child = std::process::Command::new("/bin/sleep")
+            .arg("300")
+            .spawn()
+            .expect("spawn");
+        let pid = child.id();
+        assert_eq!(leader_state(pid), Leader::Running);
+        child.kill().expect("kill");
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !leader_exited_unreaped(pid) {
+            assert!(Instant::now() < deadline, "o zumbi nunca apareceu");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        child.wait().expect("reap");
+        assert_eq!(
+            leader_state(pid),
+            Leader::Gone,
+            "colhido não segura o número"
+        );
+        assert_eq!(leader_state(1), Leader::Gone, "processo alheio");
+        assert_eq!(leader_state(std::process::id()), Leader::Gone, "o app");
     }
 
     #[cfg(unix)]
