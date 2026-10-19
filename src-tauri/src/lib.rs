@@ -1195,6 +1195,14 @@ fn teardown_agent_session(app: &AppHandle, state: &AppState, id: SessionId) {
             request.requested_at_ms,
         );
     }
+    // Pedido do plugin (claude cru) ainda aberto: fecha sem veredito e tira
+    // a marca do pane — o plugin não sabe se foi aprovado.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    if let Some(Some((row, key))) = agent::claude_plugin::take_plugin_ask(id) {
+        if agent::session::settle_plugin_inferred(&state.store, id, &key) {
+            notifications::record(app, |n| n.native_prompt_settled(row));
+        }
+    }
     // Prompt nativo do Claude ainda aberto quando a sessão acaba: a chamada
     // não rodou. Fecha como negado (deduzido) em vez de deixar `pending` para
     // sempre, fora de toda contagem.

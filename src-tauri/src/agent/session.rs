@@ -1021,7 +1021,11 @@ enum InferredStep {
 /// fechando como negado algo que o usuário ainda vai aprovar. Quem chega depois
 /// de toda negação é o `UserPromptSubmit` da próxima mensagem.
 fn inferred_step(runner: &AgentRunnerKind, hook_event_name: &str) -> InferredStep {
-    if hook_route(runner, hook_event_name) == HookRoute::NativePrompt {
+    // O prompt nativo abriu: o do Claude sempre; o do Codex agora que ele roda
+    // livre (o `PermissionRequest` dele é o mesmo aviso, e o histórico também).
+    let native = hook_route(runner, hook_event_name) == HookRoute::NativePrompt
+        || (runs_free(runner) && hook_event_name == "PermissionRequest");
+    if native {
         return InferredStep::Open;
     }
     match hook_event_name {
@@ -1588,7 +1592,15 @@ fn runs_free(runner: &AgentRunnerKind) -> bool {
 
 /// O que sai do env do agente livre: o que desligaria os hooks do
 /// `--settings` (e com eles o guarda-corpo) e o marcador de versões antigas.
-const FREE_ENV_REMOVE: &[&str] = &["CLAUDE_CODE_SIMPLE", "CLAUDE_CODE_SAFE_MODE", "TYBA_SHIM"];
+/// `PWD`/`OLDPWD` também: a pasta é a do agente (o cwd do spawn), não a de
+/// onde o TYBA ou o login shell rodaram.
+const FREE_ENV_REMOVE: &[&str] = &[
+    "CLAUDE_CODE_SIMPLE",
+    "CLAUDE_CODE_SAFE_MODE",
+    "TYBA_SHIM",
+    "PWD",
+    "OLDPWD",
+];
 
 /// Links clicáveis no terminal (OSC 8) para todo agente (decisão do dono,
 /// 2026-10-19): o claude e o codex só os emitem com isto.
@@ -2775,6 +2787,8 @@ mod free_session_tests {
             ("CLAUDE_CODE_SIMPLE", "1"),
             ("CLAUDE_CODE_SAFE_MODE", "1"),
             ("TYBA_SHIM", "fallback"),
+            ("PWD", "/onde/o/tyba/rodou"),
+            ("OLDPWD", "/antes"),
         ]
         .into_iter()
         .map(|(k, v)| (k.to_string(), v.to_string()))
@@ -3469,8 +3483,9 @@ mod inferred_history_tests {
         for name in ["Stop", "Notification", "SessionStart", "SubagentStop"] {
             assert_eq!(inferred_step(&CLAUDE, name), InferredStep::None, "{name}");
         }
-        // O `PermissionRequest` do Codex vai ao gate, que grava a linha `tyba`.
-        assert_ne!(
+        // Codex livre: o `PermissionRequest` dele entra no histórico como o do
+        // Claude.
+        assert_eq!(
             inferred_step(&AgentRunnerKind::Codex, "PermissionRequest"),
             InferredStep::Open
         );
@@ -3637,9 +3652,10 @@ mod inferred_history_tests {
         assert!(decisions.iter().all(|d| !d.2));
     }
 
-    /// Codex não abre linha deduzida: o `PermissionRequest` dele é o gate.
+    /// Codex livre: o `PermissionRequest` dele abre a linha deduzida, como o
+    /// do Claude.
     #[test]
-    fn codex_nao_grava_linha_deduzida() {
+    fn codex_livre_grava_linha_deduzida() {
         let store = Store::open_in_memory().unwrap();
         let session = SessionId::new_v4();
         record_inferred(
@@ -3650,6 +3666,6 @@ mod inferred_history_tests {
             &event(permission_request("p1", "cargo test")),
             1_000,
         );
-        assert!(decisions(&store, session).is_empty());
+        assert_eq!(decisions(&store, session).len(), 1);
     }
 }

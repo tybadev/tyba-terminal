@@ -21,8 +21,8 @@
 
 use std::path::Path;
 use std::process::Command;
-use std::sync::OnceLock;
-use std::time::Duration;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 const RESOLVE_TIMEOUT: Duration = Duration::from_secs(3);
 const MARKER: &str = "__TYBA_PATH__";
@@ -41,7 +41,16 @@ pub struct LoginEnv {
     pub vars: Option<Vec<(String, String)>>,
 }
 
-static RESOLVED: OnceLock<Option<LoginEnv>> = OnceLock::new();
+/// Só o sucesso fica em cache. Falha ou prazo estourado tentam de novo depois
+/// de [`RETRY_AFTER`] — na próxima sessão, não a cada chamada (o PATH é lido a
+/// toda hora).
+static RESOLVED: Mutex<Option<LoginEnv>> = Mutex::new(None);
+static LAST_FAILURE: Mutex<Option<Instant>> = Mutex::new(None);
+const RETRY_AFTER: Duration = Duration::from_secs(60);
+
+/// Variáveis do login shell que não vão para o agente: a pasta onde o rc
+/// rodou não é a do agente.
+const NOT_FOR_AGENT: &[&str] = &["PWD", "OLDPWD"];
 
 /// O PATH a usar para achar e spawnar binários de agente.
 pub fn agent_path() -> String {
@@ -54,28 +63,53 @@ pub fn agent_path() -> String {
 /// o `$SHELL -lic` (até 3 s). Para quem não pode esperar, como o spawn de um
 /// pane.
 pub fn agent_path_if_resolved() -> Option<String> {
-    RESOLVED.get().map(|_| agent_path())
+    let tried = RESOLVED.lock().map(|r| r.is_some()).unwrap_or(false)
+        || LAST_FAILURE.lock().map(|f| f.is_some()).unwrap_or(false);
+    tried.then(agent_path)
+}
+
+/// Tenta resolver de novo agora? Só passado [`RETRY_AFTER`] da última falha.
+fn should_retry(last_failure: Option<Instant>, now: Instant) -> bool {
+    last_failure.is_none_or(|at| now.saturating_duration_since(at) >= RETRY_AFTER)
+}
+
+/// O env do login shell: do cache, ou resolvido agora (sem cache se falhar).
+fn resolved() -> Option<LoginEnv> {
+    let mut cached = RESOLVED.lock().unwrap_or_else(|e| e.into_inner());
+    if cached.is_some() {
+        return cached.clone();
+    }
+    let mut failure = LAST_FAILURE.lock().unwrap_or_else(|e| e.into_inner());
+    if !should_retry(*failure, Instant::now()) {
+        return None;
+    }
+    match resolve_login_env() {
+        Some(env) => {
+            *cached = Some(env.clone());
+            *failure = None;
+            Some(env)
+        }
+        None => {
+            *failure = Some(Instant::now());
+            None
+        }
+    }
 }
 
 /// O env completo do shell de login, resolvido uma vez (até 3 s, com cache).
 /// `None` quando o shell não respondeu: quem chama cai no env do processo.
 pub fn login_shell_vars() -> Option<std::collections::HashMap<String, String>> {
-    let vars = RESOLVED
-        .get_or_init(resolve_login_env)
-        .as_ref()?
-        .vars
-        .clone()?;
+    let vars = resolved()?.vars?;
     Some(
         vars.into_iter()
-            .filter(|(k, _)| k != RESOLVING_VAR)
+            .filter(|(k, _)| k != RESOLVING_VAR && !NOT_FOR_AGENT.contains(&k.as_str()))
             .collect(),
     )
 }
 
 /// Resolvido uma vez. Variável que o login shell não trouxe cai na do processo.
 pub fn login_env() -> LoginEnv {
-    let resolved = RESOLVED.get_or_init(resolve_login_env).clone();
-    with_process_fallback(resolved, |name| std::env::var(name).ok())
+    with_process_fallback(resolved(), |name| std::env::var(name).ok())
 }
 
 fn with_process_fallback(
@@ -114,22 +148,23 @@ fn resolve_login_env_with(shell: &Path, timeout: Duration) -> Option<LoginEnv> {
         .spawn()
         .ok()?;
 
-    let deadline = std::time::Instant::now() + timeout;
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => break,
-            Ok(None) if std::time::Instant::now() >= deadline => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
-            }
-            Ok(None) => std::thread::sleep(Duration::from_millis(25)),
-            Err(_) => return None,
-        }
-    }
-
-    let out = child.wait_with_output().ok()?;
-    let stdout = String::from_utf8_lossy(&out.stdout);
+    // Lê a saída enquanto espera: com o env inteiro passando de 64 KB, o
+    // pipe enche e o shell trava escrevendo se ninguém lê.
+    let mut pipe = child.stdout.take()?;
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        use std::io::Read;
+        let mut out = Vec::new();
+        let _ = pipe.read_to_end(&mut out);
+        let _ = tx.send(out);
+    });
+    let Ok(out) = rx.recv_timeout(timeout) else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return None;
+    };
+    let _ = child.wait();
+    let stdout = String::from_utf8_lossy(&out);
     let path = parse_marked_path(&stdout)?;
     Some(LoginEnv {
         path: Some(path),
@@ -256,6 +291,30 @@ e linha'\n\
             Some("/private/tmp/launchd/Listeners"),
             "login shell sem agente não apaga o agente do processo"
         );
+    }
+
+    /// Env grande (> 64 KB) não trava a leitura.
+    #[cfg(unix)]
+    #[test]
+    fn env_grande_nao_trava_o_login_shell() {
+        let dir = tempfile::tempdir().unwrap();
+        let shell = fake_login_shell(
+            dir.path(),
+            "BIG=$(head -c 200000 /dev/zero | tr '\\0' x)\n\
+             export BIG\n\
+             eval \"$2\"",
+        );
+        let env = resolve_login_env_with(&shell, Duration::from_secs(5)).expect("resolveu");
+        let vars: std::collections::HashMap<_, _> = env.vars.expect("env").into_iter().collect();
+        assert_eq!(vars["BIG"].len(), 200_000);
+    }
+
+    #[test]
+    fn falha_nao_fica_em_cache_mas_espera_um_pouco_para_tentar_de_novo() {
+        let now = Instant::now();
+        assert!(should_retry(None, now));
+        assert!(!should_retry(Some(now), now + Duration::from_secs(5)));
+        assert!(should_retry(Some(now), now + RETRY_AFTER));
     }
 
     #[test]
