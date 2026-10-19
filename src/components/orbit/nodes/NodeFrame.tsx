@@ -44,6 +44,7 @@ import {
   nodeStatusLabel,
   pickConnection,
   produces,
+  creatorBadge,
   runCreated,
   shownSession,
   shownStatus,
@@ -1018,6 +1019,8 @@ export function NodeFrame({
   // a lixeira descarta (some da vista do run).
   const creator = createdBy.get(id);
   const created = creator !== undefined;
+  // Mantido, o nó é do dono: o rodapé perde o selo (a origem fica no ⋯).
+  const badge = creatorBadge(run, id);
   const locked = createdIds.has(id);
   const orchestrates = !created && isOrchestrator(node.kind);
   // Os ícones do cabeçalho (quadro OrbitAcoesLog, A).
@@ -1064,7 +1067,7 @@ export function NodeFrame({
     updateInternals(id);
   }, [id, handleKey, updateInternals]);
 
-  const creatorTitle = creator ? graph.nodes.find((n) => n.id === creator)?.title : undefined;
+  const creatorTitle = badge ? graph.nodes.find((n) => n.id === badge)?.title : undefined;
   const fail = failureFooter(node.kind, nodeRun);
   const failure = fail
     ? [
@@ -1256,10 +1259,10 @@ export function NodeFrame({
         ) : request ? (
           <ApprovalFooter node={node} request={request} />
         ) : (
-          (fail || created || meta) && (
+          (fail || badge || meta) && (
             <div
               className={`shrink-0 truncate px-3.5 pt-1 pb-2 text-[11px] ${
-                fail ? "text-tyba-red" : created ? "text-tyba-violet" : "text-tyba-text-faint"
+                fail ? "text-tyba-red" : badge ? "text-tyba-violet" : "text-tyba-text-faint"
               }`}
             >
               {fail ? (
@@ -1279,7 +1282,7 @@ export function NodeFrame({
                     </>
                   )}
                 </>
-              ) : created ? (
+              ) : badge ? (
                 <>
                   {t("orbitCreatedByNode", { node: creatorTitle ?? t("orbitAnotherAgent") })}
                   {locked && (

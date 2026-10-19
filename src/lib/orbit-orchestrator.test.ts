@@ -5,6 +5,7 @@ import {
   ORCHESTRATOR_HANDLE,
   createdByOf,
   createdFlow,
+  creatorBadge,
   ephemeralCreated,
   importItems,
   newNode,
@@ -114,6 +115,16 @@ describe("orquestrador: marca e ligação dos criados no canvas", () => {
       ["o", "orq-3"],
     ]);
     expect(createdByOf(r).has("orq-2")).toBe(true);
+  });
+
+  test("selo 'criado pelo X' só enquanto não mantido; mantido é do dono", () => {
+    const r = run("running", [agent("orq-1"), agent("orq-2", { kept: true })]);
+    expect(creatorBadge(r, "orq-1")).toBe("o");
+    expect(creatorBadge(r, "orq-2")).toBeUndefined();
+    // Fechado o run, o mantido segue sem selo; nó do grafo nunca teve.
+    expect(creatorBadge(run("done", [agent("orq-2", { kept: true })]), "orq-2")).toBeUndefined();
+    expect(creatorBadge(r, "o")).toBeUndefined();
+    expect(creatorBadge(null, "orq-1")).toBeUndefined();
   });
 
   test("sem tracejada quando o criador não está no grafo ou o criado não está desenhado", () => {

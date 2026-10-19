@@ -8559,6 +8559,17 @@ mod tests {
         // Já mantidos: nada mais a manter.
         assert!(runs.created_to_keep(&run.id).unwrap().is_empty());
         runs.stop(&run.id).unwrap();
+        // O cartão do mantido perde o selo; a origem fica no log da sessão,
+        // que sobrevive ao Manter e ao ■ Parar no run gravado (o que o app
+        // reaberto lê).
+        let stored = runs.store.get_orbit_run(&run.id).unwrap().unwrap();
+        for id in [&web, &page] {
+            assert!(
+                event_kinds(&stored.nodes[id.as_str()])
+                    .contains(&NodeEventKind::Created { by: "o".into() }),
+                "{stored:?}"
+            );
+        }
     }
 
     /// "Manter no grafo" depois do ■ Parar: o retrato guardado ainda tem os

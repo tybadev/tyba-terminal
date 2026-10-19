@@ -855,6 +855,16 @@ export function createdByOf(run: Run | null): Map<string, string> {
   return new Map((run?.created ?? []).map((c) => [c.node.id, c.createdBy]));
 }
 
+/**
+ * O selo "criado pelo X · Manter" do rodapé: só enquanto o nó não foi
+ * mantido. Mantido, o nó é do dono e o cartão perde o selo; a origem fica
+ * no log da sessão do nó (o ⋯, "X criou o nó"). Devolve o id do criador.
+ */
+export function creatorBadge(run: Run | null, id: string): string | undefined {
+  const c = (run?.created ?? []).find((c) => c.node.id === id);
+  return c && !c.kept ? c.createdBy : undefined;
+}
+
 /** O que o canvas desenha a partir dos criados do run à vista (sem DOM, testável). */
 export interface CreatedFlow {
   /** Os efêmeros: fora do grafo salvo, montados a cada render. */
