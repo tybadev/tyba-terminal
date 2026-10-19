@@ -417,7 +417,61 @@ pub struct Scheduler {
     dependents: HashMap<String, Vec<String>>,
     /// Integrações manuais: esperam o ▶ do dono mesmo com as entradas prontas.
     held: HashSet<String>,
+    /// O que o dono fez (↻, ■, fechar) em nós criados por um agente, para o
+    /// agente saber ([`Scheduler::take_notices`]). Teto de [`MAX_NOTICES`].
+    notices: Vec<OwnerNotice>,
+    /// O número do próximo aviso (cresce sempre, nunca repete no run).
+    next_notice: u64,
+    /// Até que aviso cada agente já recebeu.
+    notice_seen: HashMap<String, u64>,
 }
+
+/// Teto dos avisos do dono guardados por run: passou, sai o mais velho.
+const MAX_NOTICES: usize = 200;
+
+/// Uma ação do dono num nó que um agente criou, à espera de chegar a ele.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OwnerNotice {
+    pub seq: u64,
+    /// O nó em que o dono mexeu.
+    pub node: String,
+    /// Título do nó, como o canvas o mostra.
+    pub title: String,
+    /// Quem criou o nó: o agente que fica sabendo.
+    pub creator: String,
+    pub at: u64,
+    pub what: NodeEventKind,
+}
+
+impl OwnerNotice {
+    /// A linha que o agente lê: `"api" (orq-1) reiniciado por você às 09:20`.
+    pub fn line(&self, hhmm: &str) -> String {
+        let verb = match &self.what {
+            NodeEventKind::Restarted { rerun: false, .. } => "reiniciado",
+            NodeEventKind::Restarted { rerun: true, .. } => "rodado de novo",
+            NodeEventKind::Closed { .. } => "fechado",
+            _ => "parado",
+        };
+        format!(
+            "\"{}\" ({}) {verb} por você às {hhmm}",
+            talk::clean_title(&self.title),
+            self.node
+        )
+    }
+}
+
+/// `HH:MM` local de um instante em ms.
+fn local_hhmm(at: u64) -> String {
+    use chrono::TimeZone;
+    chrono::Local
+        .timestamp_millis_opt(at as i64)
+        .single()
+        .map(|t| t.format("%H:%M").to_string())
+        .unwrap_or_default()
+}
+
+/// O cabeçalho dos avisos na resposta das ferramentas.
+pub const NOTICES_HEADER: &str = "desde a sua última chamada";
 
 impl Scheduler {
     pub fn new(graph: &Graph, run_id: String, now: u64) -> Self {
@@ -465,6 +519,9 @@ impl Scheduler {
             sources,
             dependents,
             held: HashSet::new(),
+            notices: Vec::new(),
+            next_notice: 1,
+            notice_seen: HashMap::new(),
         }
     }
 
@@ -490,11 +547,58 @@ impl Scheduler {
         &self.run
     }
 
-    /// Uma linha no log da sessão do nó (ver [`NodeRun::events`]).
+    /// Uma linha no log da sessão do nó (ver [`NodeRun::events`]). Ação do
+    /// dono (↻, ■, fechar) num nó criado por um agente vira também aviso
+    /// para esse agente ([`Scheduler::take_notices`]).
     pub fn log(&mut self, id: &str, at: u64, what: NodeEventKind) {
+        let by_owner = matches!(
+            &what,
+            NodeEventKind::Restarted { by: Actor::You, .. }
+                | NodeEventKind::Stopped { by: Actor::You }
+                | NodeEventKind::Closed { by: Actor::You }
+        );
+        let created = self.run.created.iter().find(|c| c.node.id == id);
+        if let (true, Some(c)) = (by_owner, created) {
+            if self.notices.len() >= MAX_NOTICES {
+                self.notices.remove(0);
+            }
+            self.notices.push(OwnerNotice {
+                seq: self.next_notice,
+                node: id.to_string(),
+                title: c.node.title.clone(),
+                creator: c.created_by.clone(),
+                at,
+                what: what.clone(),
+            });
+            self.next_notice += 1;
+        }
         if let Some(n) = self.run.nodes.get_mut(id) {
             n.log(at, what);
         }
+    }
+
+    /// Há aviso do dono que `agent` ainda não recebeu.
+    pub fn has_notices(&self, agent: &str) -> bool {
+        let seen = self.notice_seen.get(agent).copied().unwrap_or(0);
+        self.notices
+            .iter()
+            .any(|n| n.creator == agent && n.seq > seen)
+    }
+
+    /// Os avisos do dono que `agent` ainda não recebeu, do mais velho ao mais
+    /// novo; cada um sai uma vez só por agente.
+    pub fn take_notices(&mut self, agent: &str) -> Vec<OwnerNotice> {
+        let seen = self.notice_seen.get(agent).copied().unwrap_or(0);
+        let fresh: Vec<OwnerNotice> = self
+            .notices
+            .iter()
+            .filter(|n| n.creator == agent && n.seq > seen)
+            .cloned()
+            .collect();
+        if let Some(last) = fresh.last() {
+            self.notice_seen.insert(agent.to_string(), last.seq);
+        }
+        fresh
     }
 
     /// Retrato para publicar, com versão nova. Tirado com o lock na mão, a
@@ -2812,9 +2916,45 @@ impl<H: RunHost> Runs<H> {
         ToolHandler {
             call: Arc::new(move |tool, args| {
                 let runs = me.upgrade().ok_or("o TYBA está fechando")?;
-                runs.orchestrator_call(&run, &node, tool, args)
+                let result = runs.orchestrator_call(&run, &node, tool, args);
+                runs.with_notices(&run, &node, result)
             }),
             can_create,
+        }
+    }
+
+    /// A resposta de uma ferramenta com o que o dono fez nos nós que `agent`
+    /// criou desde a chamada anterior dele (↻, ■, fechar): objeto ganha
+    /// `since_your_last_call`; texto e erro ganham o bloco
+    /// "desde a sua última chamada: …". Cada aviso sai uma vez.
+    fn with_notices(
+        &self,
+        run_id: &str,
+        agent: &str,
+        result: Result<serde_json::Value, String>,
+    ) -> Result<serde_json::Value, String> {
+        let notices = match self.active.lock().get_mut(run_id) {
+            Some(a) => a.sched.take_notices(agent),
+            None => return result,
+        };
+        if notices.is_empty() {
+            return result;
+        }
+        let lines: Vec<String> = notices.iter().map(|n| n.line(&local_hhmm(n.at))).collect();
+        let block = format!("{NOTICES_HEADER}: {}", lines.join("; "));
+        match result {
+            Ok(serde_json::Value::Object(mut map)) => {
+                map.insert("since_your_last_call".into(), serde_json::json!(lines));
+                Ok(serde_json::Value::Object(map))
+            }
+            Ok(serde_json::Value::String(text)) => {
+                Ok(serde_json::Value::String(format!("{block}\n\n{text}")))
+            }
+            Ok(other) => Ok(serde_json::json!({
+                "result": other,
+                "since_your_last_call": lines,
+            })),
+            Err(reason) => Err(format!("{reason}\n\n{block}")),
         }
     }
 
@@ -4228,13 +4368,22 @@ impl<H: RunHost> Runs<H> {
                 }
             };
             let timed_out = check == WaitCheck::Pending && started.elapsed() >= timeout;
-            if check != WaitCheck::Pending || timed_out {
+            // O dono mexeu num nó deste agente: volta já, com o aviso
+            // (`with_notices`), para ele não seguir sobre estado velho.
+            let owner_acted = check == WaitCheck::Pending
+                && self
+                    .active
+                    .lock()
+                    .get(run_id)
+                    .is_some_and(|a| a.sched.has_notices(caller));
+            if check != WaitCheck::Pending || timed_out || owner_acted {
                 return Ok(serde_json::json!({
                     "node_id": node_id,
                     "until": until,
                     "reached": check == WaitCheck::Reached,
                     "ended": check == WaitCheck::Ended,
                     "timed_out": timed_out,
+                    "owner_acted": owner_acted,
                     "waited_ms": started.elapsed().as_millis() as u64,
                     "status": n.status,
                     "turn": turn,
@@ -9340,6 +9489,154 @@ mod tests {
         v.as_object_mut().unwrap().remove("events");
         let n: NodeRun = serde_json::from_value(v).unwrap();
         assert!(n.events.is_empty());
+    }
+
+    /// Ação do dono num nó criado por um agente vira aviso para esse agente,
+    /// entregue uma vez; a do agente e a em nó do dono, não.
+    #[test]
+    fn owner_actions_on_created_nodes_become_notices_once() {
+        let g = graph(vec![orchestrator("o"), process("p", "x")], vec![]);
+        let mut s = Scheduler::new(&g, "r".into(), 0);
+        let mut api = process("api", "bun dev");
+        api.title = "api".into();
+        s.add_node("api", &[]).unwrap();
+        s.run.created.push(Created {
+            node: api,
+            created_by: "o".into(),
+            created_at: 0,
+            edges: Vec::new(),
+            kept: false,
+        });
+        s.log(
+            "api",
+            1,
+            NodeEventKind::Stopped {
+                by: Actor::Agent("o".into()),
+            },
+        );
+        s.log("p", 2, NodeEventKind::Stopped { by: Actor::You });
+        assert!(!s.has_notices("o"));
+        s.log(
+            "api",
+            3,
+            NodeEventKind::Restarted {
+                by: Actor::You,
+                rerun: false,
+            },
+        );
+        s.log("api", 4, NodeEventKind::Stopped { by: Actor::You });
+        assert!(s.has_notices("o"));
+        assert!(!s.has_notices("outro"));
+        let got = s.take_notices("o");
+        assert_eq!(
+            got.iter().map(|n| n.line("09:20")).collect::<Vec<_>>(),
+            vec![
+                "\"api\" (api) reiniciado por você às 09:20",
+                "\"api\" (api) parado por você às 09:20",
+            ]
+        );
+        assert!(s.take_notices("o").is_empty(), "uma vez só");
+        assert!(!s.has_notices("o"));
+        s.log(
+            "api",
+            5,
+            NodeEventKind::Restarted {
+                by: Actor::You,
+                rerun: true,
+            },
+        );
+        let got = s.take_notices("o");
+        assert_eq!(got.len(), 1);
+        assert_eq!(
+            got[0].line("10:00"),
+            "\"api\" (api) rodado de novo por você às 10:00"
+        );
+        // O log da sessão segue com tudo.
+        assert_eq!(s.run().nodes["api"].events.len(), 4);
+    }
+
+    /// O ↻/■ do dono num nó que o agente criou chega na próxima chamada de
+    /// qualquer ferramenta (uma vez) e acorda o `orbit_wait`.
+    #[cfg(unix)]
+    #[test]
+    fn agent_learns_what_the_owner_did_to_its_nodes() {
+        use serde_json::json;
+        let dir = tempfile::tempdir().unwrap();
+        let work = dir.path().join("w");
+        std::fs::create_dir(&work).unwrap();
+        let (runs, host, _app) = pty_runs(dir.path().join("runs"));
+        let g = graph(vec![orchestrator("o")], vec![]);
+        runs.store.save_orbit_graph(&g, true, None).unwrap();
+        let run = runs.start_now(g, vec![]).unwrap();
+        wait_orchestrating(&runs, &run.id, "o");
+        let tools = tools_of(&host, "o");
+        let api = tools
+            .call(
+                "orbit_create_process",
+                &json!({"title": "api", "command": "sleep 30", "dir": work}),
+            )
+            .unwrap()["node_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        wait_status(&runs, &run.id, &api, NodeStatus::Running);
+        let quiet = tools.call("orbit_list_nodes", &json!({})).unwrap();
+        assert!(quiet.get("since_your_last_call").is_none(), "{quiet}");
+
+        runs.restart_node(&run.id, &api).unwrap();
+        let out = tools.call("orbit_list_nodes", &json!({})).unwrap();
+        let lines = out["since_your_last_call"].as_array().unwrap();
+        assert_eq!(lines.len(), 1, "{out}");
+        let line = lines[0].as_str().unwrap();
+        assert!(
+            line.starts_with(&format!("\"api\" ({api}) reiniciado por você às ")),
+            "{line}"
+        );
+        let again = tools.call("orbit_list_nodes", &json!({})).unwrap();
+        assert!(again.get("since_your_last_call").is_none(), "{again}");
+
+        // Erro também leva o aviso, no bloco de texto.
+        wait_attempt(&runs, &run.id, &api, 1, NodeStatus::Running);
+        runs.restart_node(&run.id, &api).unwrap();
+        let err = tools
+            .call("orbit_read_log", &json!({"node": "nada"}))
+            .unwrap_err();
+        assert!(err.contains("desde a sua última chamada: \"api\""), "{err}");
+
+        // O `orbit_wait` acorda com a ação do dono, sem esperar o timeout.
+        wait_attempt(&runs, &run.id, &api, 2, NodeStatus::Running);
+        let waiter = {
+            let tools = tools.clone();
+            let api = api.clone();
+            std::thread::spawn(move || {
+                tools.call(
+                    "orbit_wait",
+                    &json!({"node": api, "until": "port", "timeout_s": 20}),
+                )
+            })
+        };
+        std::thread::sleep(Duration::from_millis(300));
+        runs.restart_node(&run.id, &api).unwrap();
+        let out = waiter.join().unwrap().unwrap();
+        assert!(out["waited_ms"].as_u64().unwrap() < 10_000, "{out}");
+        assert_eq!(out["reached"], false, "{out}");
+        assert_eq!(out["owner_acted"], true, "{out}");
+        let lines = out["since_your_last_call"].as_array().unwrap();
+        assert!(
+            lines[0].as_str().unwrap().contains("reiniciado por você"),
+            "{out}"
+        );
+        // O ■ do dono também chega.
+        runs.stop_one(&run.id, &api).unwrap();
+        let out = tools.call("orbit_list_nodes", &json!({})).unwrap();
+        assert!(
+            out["since_your_last_call"][0]
+                .as_str()
+                .unwrap()
+                .contains("parado por você"),
+            "{out}"
+        );
+        runs.stop(&run.id).unwrap();
     }
 
     #[test]

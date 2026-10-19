@@ -1025,6 +1025,9 @@ Para reiniciar um nó ligado a você ou que você criou (o processo que caiu, o 
 precisa subir de novo), use orbit_restart_node: o que roda sobe de novo com a mesma config, \
 o que terminou ou falhou roda de novo; quem já usou a saída antiga fica marcado para \
 aplicar e não reinicia sozinho. \
+Se a resposta de uma ferramenta orbit_* trouxer since_your_last_call (ou o bloco \
+\"desde a sua última chamada\"), é o que o dono fez nos nós que você criou (reiniciou, rodou de \
+novo, parou, fechou): leve isso em conta antes de seguir, sem desfazer o que ele fez. \
 Comandos curtos de leitura (ls, cat, git status) podem rodar no seu shell. \
 Quando o dono disser que acabou, ou o trabalho estiver feito e nada mais rodando, \
 você pode chamar orbit_finish: ela fecha a sua sessão (só a sua) quando o turno terminar.";
