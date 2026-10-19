@@ -1365,6 +1365,7 @@ impl PtyPool {
                                             command: snapshot.command,
                                             started_at_ms: snapshot.started_at_ms,
                                             bytes: snapshot.bytes,
+                                            dropped: snapshot.dropped,
                                             cols,
                                             rows,
                                         },
