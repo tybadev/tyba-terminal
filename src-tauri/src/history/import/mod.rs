@@ -66,6 +66,18 @@ pub fn import_key(source: ImportSource, redacted_command: &str, started_at_ms: i
     format!("{}:{:x}", source.key(), hasher.finalize())
 }
 
+/// A chave de uma linha já gravada, recalculada sobre o comando redigido de
+/// novo. A chave antiga é hash do texto antigo — com a senha dentro, e um
+/// dicionário offline a recupera. `None` quando o prefixo não é de fonte
+/// conhecida.
+pub fn rekey(old_key: &str, redacted_command: &str, started_at_ms: i64) -> Option<String> {
+    let (prefix, _) = old_key.split_once(':')?;
+    let source = [ImportSource::Zsh, ImportSource::Bash, ImportSource::Fish]
+        .into_iter()
+        .find(|s| s.key() == prefix)?;
+    Some(import_key(source, redacted_command, started_at_ms))
+}
+
 /// O que aconteceu com uma fonte. Sem texto de comando: este relatório atravessa
 /// o IPC e aparece na tela.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
