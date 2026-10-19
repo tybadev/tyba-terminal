@@ -1042,12 +1042,6 @@ export const previewNotifySound = (name: string) =>
 /** Ajustes do Sistema → Notificações (macOS). */
 export const openNotificationSettings = () => invoke<void>("open_notification_settings");
 
-/** Pastas extras de leitura da jaula dos agentes (`[sandbox] read_allow`). */
-export interface SandboxOverview {
-  read_allow: string[];
-  error: string | null;
-}
-export const sandboxOverview = () => invoke<SandboxOverview>("sandbox_overview");
 
 /** Onde mora o `config.toml` do usuário; `null` se a pasta foi recusada. */
 export const userConfigPath = () => invoke<string | null>("user_config_path");
