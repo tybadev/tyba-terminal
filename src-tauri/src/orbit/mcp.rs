@@ -110,18 +110,18 @@ pub const TOOLS: [&str; 23] = [
     "orbit_finish",
 ];
 
-/// As ferramentas que o CLI do agente roda sem pedir permissão ao dono: ler
-/// (estado, lista, log), esperar, abrir navegador local (o core só aceita url
-/// local) e parar nó que o próprio agente criou (o core recusa outro). Nada
-/// que roda comando, mexe em nó do dono ou fala com outro agente: essas
-/// seguem pedindo, como o Bash. `orbit_restart_node` fica de fora porque
-/// também alcança nó do dono ligado ao agente.
-pub const SAFE_TOOLS: [&str; 6] = [
+/// As ferramentas que o CLI do agente de nó do Orbit roda sem pedir
+/// permissão ao dono: ler (estado, lista, log), esperar e parar nó que o
+/// próprio agente criou (o core recusa outro). Nada que roda comando, abre
+/// página (um GET local passa por túnel ou proxy e pode ter efeito: rede é
+/// vermelho), mexe em nó do dono ou fala com outro agente: essas seguem
+/// pedindo, como o Bash. `orbit_restart_node` fica de fora porque também
+/// alcança nó do dono ligado ao agente.
+pub const SAFE_TOOLS: [&str; 5] = [
     "orbit_node_status",
     "orbit_list_nodes",
     "orbit_wait",
     "orbit_read_log",
-    "orbit_create_browser",
     "orbit_stop_node",
 ];
 
@@ -1011,8 +1011,9 @@ fn args_for(
                 format!("{key}.tool_timeout_sec={CODEX_TOOL_TIMEOUT_S}"),
             ])
             // Medido no codex-cli 0.144.1: `tools.<nome>.approval_mode`
-            // aceita auto, prompt, writes e approve.
-            .chain(SAFE_TOOLS.iter().flat_map(|tool| {
+            // aceita auto, prompt, writes e approve. O codex digitado no
+            // Terminal é do dono: a aprovação dele fica como ele deixou.
+            .chain(safe_tools(caller).iter().flat_map(|tool| {
                 [
                     "--config".to_string(),
                     format!("{key}.tools.{tool}.approval_mode=\"approve\""),
@@ -1021,18 +1022,32 @@ fn args_for(
             .collect()
         }
         // Numa peça só, como o --mcp-config: a opção é variádica.
-        _ => vec![
-            format!("--mcp-config={}", claude_config_path.to_string_lossy()),
-            format!("--append-system-prompt={prompt}"),
-            format!(
-                "--allowedTools={}",
-                SAFE_TOOLS
-                    .iter()
-                    .map(|t| format!("mcp__{SERVER_NAME}__{t}"))
-                    .collect::<Vec<_>>()
-                    .join(",")
-            ),
-        ],
+        _ => {
+            let mut args = vec![
+                format!("--mcp-config={}", claude_config_path.to_string_lossy()),
+                format!("--append-system-prompt={prompt}"),
+            ];
+            let safe = safe_tools(caller);
+            if !safe.is_empty() {
+                args.push(format!(
+                    "--allowedTools={}",
+                    safe.iter()
+                        .map(|t| format!("mcp__{SERVER_NAME}__{t}"))
+                        .collect::<Vec<_>>()
+                        .join(",")
+                ));
+            }
+            args
+        }
+    }
+}
+
+/// As [`SAFE_TOOLS`] que o CLI de `caller` libera: nenhuma no agente
+/// digitado no Terminal, cuja aprovação é do dono (o TYBA não mexe nela).
+fn safe_tools(caller: Caller) -> &'static [&'static str] {
+    match caller {
+        Caller::Terminal => &[],
+        Caller::Node | Caller::Created => &SAFE_TOOLS,
     }
 }
 
@@ -1597,8 +1612,7 @@ mod tests {
         assert_eq!(
             claude[2],
             "--allowedTools=mcp__orbit__orbit_node_status,mcp__orbit__orbit_list_nodes,\
-             mcp__orbit__orbit_wait,mcp__orbit__orbit_read_log,mcp__orbit__orbit_create_browser,\
-             mcp__orbit__orbit_stop_node"
+             mcp__orbit__orbit_wait,mcp__orbit__orbit_read_log,mcp__orbit__orbit_stop_node"
         );
         assert_eq!(claude.len(), 3);
         let config = claude_config(exe, socket, true);
@@ -1698,6 +1712,8 @@ mod tests {
         for risky in [
             "orbit_create_process",
             "orbit_create_agent",
+            "orbit_create_browser",
+            "orbit_browser_open",
             "orbit_restart_node",
             "orbit_connect",
             "orbit_reassign",
@@ -1763,5 +1779,21 @@ mod tests {
             Path::new("/tmp/orbit-mcp.json"),
         );
         assert_eq!(claude[1], format!("--append-system-prompt={prompt}"));
+        // O agente digitado é do dono: nada de liberar ferramenta por ele.
+        assert_eq!(claude.len(), 2, "{claude:?}");
+        let codex = terminal_agent_args(
+            &crate::session::AgentRunnerKind::Codex,
+            exe,
+            socket,
+            Path::new(""),
+        );
+        assert!(
+            !codex.iter().any(|a| a.contains("approval_mode")),
+            "{codex:?}"
+        );
+        assert!(
+            codex.iter().any(|a| a.contains("tool_timeout_sec")),
+            "{codex:?}"
+        );
     }
 }
