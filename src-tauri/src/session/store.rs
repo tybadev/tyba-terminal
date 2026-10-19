@@ -2712,10 +2712,13 @@ impl Store {
         let count = rows.len();
         for (session_id, command, started_at_ms, cols, rows_n, bytes) in rows {
             let (lines, truncated) = crate::blocks::extract_lines(&bytes, cols, rows_n);
+            // A mesma redação do `blocks::build`: o dreno monta o bloco por
+            // fora dele, e sem isto o segredo chegava em claro à tabela.
+            let lines = lines.into_iter().map(crate::blocks::redact_line).collect();
             let block = crate::blocks::Block {
                 id: 0,
                 session_id: session_id.clone(),
-                command,
+                command: redact(&command).into_owned(),
                 exit_code: None,
                 // Checkpoint só existe fora de tela alternada, e não carrega
                 // cwd: quem o gravou é a thread emitter, no meio do comando.
@@ -6427,6 +6430,29 @@ mod tests {
         // Consumido: reabrir de novo não duplica o bloco.
         assert_eq!(store.drain_checkpoints().unwrap(), 0);
         assert_eq!(store.list_blocks("s1", 10).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn drained_checkpoint_redacts_secrets_like_a_finished_block() {
+        // Sintético: só tem a forma de uma chave. O dreno monta o bloco sem
+        // passar pelo `build`, e era por aí que o segredo chegava em claro à
+        // tabela `block` (princípio #10).
+        let secret = format!("sk-{}", "FAKE0".repeat(5));
+        let command = format!("OPENAI_KEY={secret} ./deploy.sh");
+        let bytes = format!("token: \x1b[31m{secret}\x1b[0m\r\nok\r\n");
+        let store = Store::open_in_memory().unwrap();
+        store
+            .save_checkpoint("s1", &command, 10, 80, 24, bytes.as_bytes())
+            .unwrap();
+
+        assert_eq!(store.drain_checkpoints().unwrap(), 1);
+        let found = store.list_blocks("s1", 10).unwrap();
+        assert_eq!(found.len(), 1);
+        assert!(!found[0].command.contains(&secret), "{}", found[0].command);
+        for line in &found[0].lines {
+            assert!(!line.text.contains(&secret), "{}", line.text);
+        }
+        assert_eq!(found[0].lines[1].text, "ok", "o resto da saída fica");
     }
 
     #[test]

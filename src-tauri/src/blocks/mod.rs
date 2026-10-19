@@ -879,13 +879,14 @@ pub fn install(app: tauri::AppHandle, store: std::sync::Arc<crate::session::stor
                         let _ = store.clear_checkpoint(&session);
                     }
                     Work::Save(cp) => {
+                        let (bytes, command) = for_disk(&cp);
                         let _ = store.save_checkpoint(
                             &cp.session_id,
-                            &cp.command,
+                            &command,
                             cp.started_at_ms,
                             cp.cols,
                             cp.rows,
-                            &cp.bytes,
+                            &bytes,
                         );
                     }
                     Work::Clear(session) => {
@@ -922,7 +923,7 @@ pub fn install(app: tauri::AppHandle, store: std::sync::Arc<crate::session::stor
 ///
 /// `Cow::Borrowed` é a prova de que a regex não achou nada. É o caminho comum e
 /// não paga nada: nem cópia do texto, nem perda de cor.
-fn redact_line(line: LogicalLine) -> LogicalLine {
+pub(crate) fn redact_line(line: LogicalLine) -> LogicalLine {
     let redacted = match crate::session::redact::redact(&line.text) {
         std::borrow::Cow::Borrowed(_) => None,
         std::borrow::Cow::Owned(text) => Some(text),
@@ -934,6 +935,34 @@ fn redact_line(line: LogicalLine) -> LogicalLine {
             runs: Vec::new(),
         },
     }
+}
+
+/// O checkpoint como vai para o disco: sem segredo (princípio #10).
+///
+/// Redigir o byte cru não basta: uma cor ou um `\r` no meio da chave a parte
+/// em pedaços que a regex não vê, e só a linha lógica — depois do parser — junta
+/// as metades. Então o checkpoint passa pelo mesmo `extract_lines` do bloco.
+///
+/// Sem segredo, os bytes vão como vieram e a recuperação mantém a cor. Com
+/// segredo, vão as linhas já redigidas, em texto puro: a recuperação perde a
+/// cor e a contagem de linhas cortadas daquele checkpoint, mas o segredo não
+/// toca o disco. O dreno redige de novo de qualquer forma — checkpoint gravado
+/// por uma versão anterior ainda pode estar lá.
+fn for_disk(cp: &Checkpoint) -> (std::borrow::Cow<'_, [u8]>, std::borrow::Cow<'_, str>) {
+    let command = crate::session::redact::redact(&cp.command);
+    let (lines, _) = extract_lines(&cp.bytes, cp.cols, cp.rows);
+    if !lines
+        .iter()
+        .any(|line| crate::session::redact::contains_secret(&line.text))
+    {
+        return (std::borrow::Cow::Borrowed(&cp.bytes), command);
+    }
+    let text = lines
+        .into_iter()
+        .map(|line| redact_line(line).text)
+        .collect::<Vec<_>>()
+        .join("\r\n");
+    (std::borrow::Cow::Owned(text.into_bytes()), command)
 }
 
 fn build(finished: Finished) -> Block {
@@ -1100,6 +1129,46 @@ mod tests {
             parts.push((cut(cursor, units.len()), false));
         }
         parts
+    }
+
+    fn checkpoint(bytes: &[u8], command: &str) -> Checkpoint {
+        Checkpoint {
+            session_id: "s1".into(),
+            command: command.into(),
+            started_at_ms: 1,
+            bytes: bytes.to_vec(),
+            cols: 20,
+            rows: 5,
+        }
+    }
+
+    #[test]
+    fn a_checkpoint_never_reaches_the_disk_with_a_secret() {
+        // A cor parte a chave ao meio NOS BYTES: regex sobre o byte cru não a
+        // veria. Só a linha lógica junta as duas metades.
+        let bytes = "linha longa que quebra na largura\r\nkey=AKIAIOSF\x1b[1mODNN7EXAMPLE\x1b[0m\r\nfim\r\n";
+        assert!(!bytes.contains(FAKE_AWS_KEY), "a fixture parte a chave");
+        let cp = checkpoint(bytes.as_bytes(), &format!("echo {FAKE_AWS_KEY}"));
+
+        let (on_disk, command) = for_disk(&cp);
+        assert!(!command.contains(FAKE_AWS_KEY), "{command}");
+        let (lines, _) = extract_lines(&on_disk, cp.cols, cp.rows);
+        let texts: Vec<&str> = lines.iter().map(|l| l.text.as_str()).collect();
+        assert_eq!(
+            texts,
+            vec!["linha longa que quebra na largura", "key=[REDACTED]", "fim"],
+            "a recuperação ainda reconstrói a saída, só que sem o segredo"
+        );
+    }
+
+    #[test]
+    fn a_checkpoint_without_secrets_is_saved_byte_for_byte() {
+        // O caminho comum não perde a cor: os bytes vão como vieram.
+        let bytes = b"\x1b[32mCompiling\x1b[0m tyba\r\n";
+        let cp = checkpoint(bytes, "cargo build");
+        let (on_disk, command) = for_disk(&cp);
+        assert_eq!(&*on_disk, bytes);
+        assert_eq!(command, "cargo build");
     }
 
     /// `export AWS_KEY=<segredo em vermelho> ok`.
