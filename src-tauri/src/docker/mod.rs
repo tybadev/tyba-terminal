@@ -820,6 +820,17 @@ fn pump_lines(
 /// Roda o compose até o fim (ou o teto) mandando a saída em lotes para
 /// `on_lines` a cada `COMPOSE_FLUSH`. Falha vira `Failed(última linha do
 /// stderr)`; o teto mata o process group inteiro.
+/// Um lote da saída do compose, redigido pelo redator da execução.
+fn redact_compose_lines(
+    redactor: &mut crate::session::redact::LineRedactor,
+    lines: &[String],
+) -> Vec<String> {
+    lines
+        .iter()
+        .map(|l| redactor.line(l).into_owned())
+        .collect()
+}
+
 fn stream_compose(
     mut cmd: Command,
     timeout: Duration,
@@ -1535,13 +1546,13 @@ impl DockerManager {
             // Credential helper (`docker-credential-desktop`) e plugins moram no
             // PATH do login: sem ele, o pull do `up` falha no app aberto pelo Dock.
             .env("PATH", crate::shell_path::agent_path());
+        // Um redator por execução: o corpo de uma chave chega em linhas (e
+        // lotes) separados do BEGIN.
+        let mut redactor = crate::session::redact::LineRedactor::default();
         stream_compose(cmd, COMPOSE_TIMEOUT, |lines| {
             // Segredo nunca sai do core em claro (princípio #10), nem para a
             // memória da tela.
-            let lines = lines
-                .iter()
-                .map(|l| crate::session::redact::redact(l).into_owned())
-                .collect();
+            let lines = redact_compose_lines(&mut redactor, &lines);
             if let Some(batch) = self.compose_runs.lock().append(project, lines) {
                 emit(batch);
             }
@@ -1813,6 +1824,27 @@ mod tests {
         assert_eq!(poc.output.len(), COMPOSE_OUTPUT_CAP);
         assert_eq!(poc.output[0], "5");
         assert_eq!(poc.total, COMPOSE_OUTPUT_CAP + 5);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn compose_output_never_carries_a_pem_body() {
+        // Sintética: só tem a forma de uma chave.
+        let body = "Zm9vYmFy".repeat(8);
+        let script = format!(
+            "printf '%s\\n' '-----BEGIN {k}-----' {body} {body} '-----END {k}-----' fim",
+            k = "RSA PRIVATE KEY"
+        );
+        let mut cmd = Command::new("/bin/sh");
+        cmd.args(["-c", &script]);
+        let mut redactor = crate::session::redact::LineRedactor::default();
+        let mut got = Vec::new();
+        stream_compose(cmd, Duration::from_secs(10), |lines| {
+            got.extend(redact_compose_lines(&mut redactor, &lines))
+        })
+        .unwrap();
+        assert!(got.iter().all(|l| !l.contains(&body)), "{got:?}");
+        assert_eq!(got.last().map(String::as_str), Some("fim"));
     }
 
     #[cfg(unix)]
