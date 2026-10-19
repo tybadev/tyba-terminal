@@ -259,6 +259,28 @@ struct BrowserArgs {
     from_node: Option<String>,
 }
 
+/// `orbit_create_service`: o serviço que já roda, por porta local ou por
+/// contêiner (nome ou id). Um dos dois.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ServiceArgs {
+    title: String,
+    #[serde(default)]
+    port: Option<u16>,
+    #[serde(default)]
+    container: Option<String>,
+}
+
+/// Nome de contêiner como o docker aceita (`[a-zA-Z0-9][a-zA-Z0-9_.-]*`),
+/// até 128: nunca parece flag nem carrega controle.
+fn container_name_ok(name: &str) -> bool {
+    name.len() <= 128
+        && name.starts_with(|c: char| c.is_ascii_alphanumeric())
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct BrowserOpenArgs {
@@ -561,6 +583,48 @@ pub fn parse_call(tool: &str, value: &Value) -> Result<ToolCall, String> {
                 title: a.title,
                 kind: NodeKind::Browser { url },
                 from_node,
+            })
+        }
+        "orbit_create_service" => {
+            let a: ServiceArgs = args(tool, value)?;
+            node_title(&a.title)?;
+            let container = a.container.map(|c| c.trim().to_string());
+            let source = match (a.port, container) {
+                (Some(_), Some(_)) => return Err("informe port OU container, não os dois".into()),
+                (None, None) => return Err("informe port (local) ou container".into()),
+                (Some(0), None) => return Err("port: de 1 a 65535".into()),
+                (Some(port), None) => service::ServiceSource::Port {
+                    session_id: None,
+                    port,
+                },
+                (None, Some(c)) => {
+                    text("container", &c)?;
+                    // Id na forma do docker vai como id; senão é o nome. Nos
+                    // dois casos o core só acha o que já existe (`docker ps`)
+                    // e nunca sobe nada: parado, o nó falha com o motivo.
+                    if crate::docker::is_valid_container_id(&c) {
+                        service::ServiceSource::Container {
+                            container_id: c,
+                            name: String::new(),
+                            project: String::new(),
+                            service: String::new(),
+                        }
+                    } else if container_name_ok(&c) {
+                        service::ServiceSource::Container {
+                            container_id: String::new(),
+                            name: c,
+                            project: String::new(),
+                            service: String::new(),
+                        }
+                    } else {
+                        return Err(format!("container: nome ou id de contêiner inválido: {c}"));
+                    }
+                }
+            };
+            Ok(ToolCall::Create {
+                title: a.title,
+                kind: NodeKind::Service { source },
+                from_node: None,
             })
         }
         "orbit_node_status" => {
@@ -1147,6 +1211,69 @@ mod tests {
         }
     }
 
+    /// `orbit_create_service`: porta OU contêiner, nada de url, comando ou
+    /// sessão vindos do agente. Id na forma do docker vai como id; o resto
+    /// tem de ser nome de contêiner (nunca flag nem controle).
+    #[test]
+    fn create_service_takes_a_port_or_a_container() {
+        assert!(is_create_tool("orbit_create_service"));
+        let kind = |args: Value| match parse_call("orbit_create_service", &args) {
+            Ok(ToolCall::Create {
+                kind: NodeKind::Service { source },
+                from_node: None,
+                ..
+            }) => Ok(source),
+            Ok(other) => panic!("{other:?}"),
+            Err(e) => Err(e),
+        };
+        assert_eq!(
+            kind(json!({"title": "pg", "port": 5432})).unwrap(),
+            service::ServiceSource::Port {
+                session_id: None,
+                port: 5432
+            }
+        );
+        let id = "0123456789ab";
+        assert!(matches!(
+            kind(json!({"title": "pg", "container": id})).unwrap(),
+            service::ServiceSource::Container { container_id, name, .. }
+                if container_id == id && name.is_empty()
+        ));
+        assert!(matches!(
+            kind(json!({"title": "pg", "container": " muriki-db-1 "})).unwrap(),
+            service::ServiceSource::Container { container_id, name, .. }
+                if container_id.is_empty() && name == "muriki-db-1"
+        ));
+        for (args, want) in [
+            (json!({"title": "pg"}), "informe"),
+            (
+                json!({"title": "pg", "port": 5432, "container": "db"}),
+                "não os dois",
+            ),
+            (json!({"title": "pg", "port": 0}), "65535"),
+            (json!({"title": "pg", "port": 70000}), "inválidos"),
+            (
+                json!({"title": "pg", "container": "--privileged"}),
+                "inválido",
+            ),
+            (json!({"title": "pg", "container": "db\nx"}), "inválido"),
+            (json!({"title": "pg", "container": "db\u{1b}x"}), "controle"),
+            (json!({"title": "pg", "container": ""}), "inválido"),
+            (
+                json!({"title": "pg", "port": 1, "url": "http://localhost:1"}),
+                "inválidos",
+            ),
+            (
+                json!({"title": "pg", "port": 1, "session_id": "s"}),
+                "inválidos",
+            ),
+            (json!({"title": "", "port": 1}), "title"),
+        ] {
+            let err = kind(args.clone()).unwrap_err();
+            assert!(err.contains(want), "{args}: {err}");
+        }
+    }
+
     #[test]
     fn control_chars_and_empty_fields_are_refused() {
         let err = parse_call(
@@ -1220,7 +1347,8 @@ mod tests {
             [
                 "orbit_create_process",
                 "orbit_create_agent",
-                "orbit_create_browser"
+                "orbit_create_browser",
+                "orbit_create_service"
             ]
         );
     }

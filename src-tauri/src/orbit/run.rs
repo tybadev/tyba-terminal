@@ -3098,6 +3098,7 @@ impl<H: RunHost> Runs<H> {
                 from_node,
             } => {
                 let process = matches!(kind, NodeKind::Process { .. });
+                let service = matches!(kind, NodeKind::Service { .. });
                 // A url de um nó só chega a quem já o alcança: senão o
                 // navegador criado a passaria adiante (status, wait).
                 if let Some(from) = &from_node {
@@ -3112,6 +3113,9 @@ impl<H: RunHost> Runs<H> {
                 let id = self.create_node(run_id, orchestrator, title, kind, from_node)?;
                 if process {
                     return Ok(self.settle_process(run_id, &id));
+                }
+                if service {
+                    return Ok(self.settle_service(run_id, &id));
                 }
                 Ok(serde_json::json!({ "node_id": id }))
             }
@@ -3204,6 +3208,39 @@ impl<H: RunHost> Runs<H> {
                     "status": n.status,
                     "url": n.url,
                     "exit_code": n.exit_code,
+                });
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+
+    /// O serviço recém-posto no canvas: o core só acha o que já roda (porta
+    /// escutando, contêiner `running`), nunca sobe nada. Espera até
+    /// [`SERVICE_SETTLE`] (o primeiro lote do `docker logs` leva até 5 s) e
+    /// devolve a url (local, conferida no `service_outcome`) ou o motivo de
+    /// não ter achado.
+    fn settle_service(&self, run_id: &str, id: &str) -> serde_json::Value {
+        let deadline = std::time::Instant::now() + SERVICE_SETTLE;
+        loop {
+            let Some(n) = self.get(run_id).and_then(|r| r.nodes.get(id).cloned()) else {
+                return serde_json::json!({ "node_id": id });
+            };
+            if n.status == NodeStatus::Failed {
+                return serde_json::json!({
+                    "node_id": id,
+                    "status": n.status,
+                    "failed": true,
+                    "reason": n.reason,
+                    "next": "o TYBA não sobe serviço: só mostra o que já roda. Suba-o \
+                             (orbit_create_process, ou peça ao dono), pare este nó com \
+                             orbit_stop_node e crie o serviço de novo",
+                });
+            }
+            if n.status.is_terminal() || std::time::Instant::now() >= deadline {
+                return serde_json::json!({
+                    "node_id": id,
+                    "status": n.status,
+                    "url": n.url,
                 });
             }
             std::thread::sleep(std::time::Duration::from_millis(50));
@@ -5398,6 +5435,9 @@ impl<H: RunHost> Runs<H> {
 /// antes de responder: erro de subida (porta ocupada, módulo faltando) sai
 /// nisso.
 const PROCESS_SETTLE: std::time::Duration = std::time::Duration::from_secs(3);
+/// Quanto o `orbit_create_service` espera o serviço ser achado: o primeiro
+/// lote do `docker logs` (até 5 s) com folga.
+const SERVICE_SETTLE: std::time::Duration = std::time::Duration::from_secs(7);
 /// Os nós que `caller` criou neste run e o dono ainda não manteve: depois
 /// do "Manter" o nó é do dono (o próximo salvar desfaria a mudança).
 fn own_nodes<'a>(created: &'a [Created], caller: &str) -> Vec<&'a str> {
@@ -8055,6 +8095,102 @@ mod tests {
         let launches = host.agents.lock().clone();
         let launch = launches.iter().find(|l| l.title == title).unwrap();
         launch.tools.clone().expect("orquestrador sem ferramentas")
+    }
+
+    /// `orbit_create_service`: o serviço que já roda entra no canvas como nó
+    /// criado pelo agente (`created_by`, no `orbit_list_nodes`, no teto de
+    /// 30). O core só acha o alvo (`resolve_service`), nunca sobe: sem o
+    /// serviço no ar, o nó falha com o motivo e a resposta diz o que fazer.
+    #[cfg(unix)]
+    #[test]
+    fn created_service_shows_what_already_runs_and_counts_in_the_cap() {
+        use serde_json::json;
+        let dir = tempfile::tempdir().unwrap();
+        let (runs, host, _app) = pty_runs(dir.path().join("runs"));
+        let run = runs
+            .start_now(graph(vec![orchestrator("o")], vec![]), vec![])
+            .unwrap();
+        wait_orchestrating(&runs, &run.id, "o");
+        let tools = tools_of(&host, "o");
+        *host.service.lock() = Ok(ServiceReady {
+            url: Some("http://localhost:5432".into()),
+            log: None,
+        });
+        let res = tools
+            .call(
+                "orbit_create_service",
+                &json!({"title": "postgres", "port": 5432}),
+            )
+            .unwrap();
+        let pg = res["node_id"].as_str().unwrap().to_string();
+        assert_eq!(res["url"], "http://localhost:5432", "{res}");
+        assert_eq!(res["status"], json!(NodeStatus::Done), "{res}");
+        let r = runs.get(&run.id).unwrap();
+        let c = r.created.iter().find(|c| c.node.id == pg).unwrap();
+        assert_eq!(c.created_by, "o");
+        assert_eq!(
+            c.node.kind,
+            NodeKind::Service {
+                source: ServiceSource::Port {
+                    session_id: None,
+                    port: 5432
+                }
+            }
+        );
+        let list = tools.call("orbit_list_nodes", &json!({})).unwrap();
+        let mine = list["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|n| n["id"] == pg.as_str())
+            .unwrap()
+            .clone();
+        assert_eq!(mine["kind"], "service", "{mine}");
+        assert_eq!(mine["created_by_you"], true, "{mine}");
+
+        // Contêiner parado: o core não sobe; o nó falha com o motivo.
+        *host.service.lock() = Err("contêiner db não está rodando (exited)".into());
+        let res = tools
+            .call(
+                "orbit_create_service",
+                &json!({"title": "db", "container": "db"}),
+            )
+            .unwrap();
+        assert_eq!(res["failed"], true, "{res}");
+        assert_eq!(res["reason"], "contêiner db não está rodando (exited)");
+        assert!(res["next"].as_str().unwrap().contains("não sobe"), "{res}");
+
+        // Url que não é local não vira url do nó (a régua do salvar).
+        *host.service.lock() = Ok(ServiceReady {
+            url: Some("http://example.com:80".into()),
+            log: None,
+        });
+        let res = tools
+            .call(
+                "orbit_create_service",
+                &json!({"title": "fora", "port": 80}),
+            )
+            .unwrap();
+        assert_eq!(res["failed"], true, "{res}");
+        assert!(res["url"].is_null(), "{res}");
+
+        // Teto de 30 criados por execução, somando os serviços.
+        *host.service.lock() = Err("nada escuta".into());
+        for i in 3..MAX_CREATED {
+            tools
+                .call(
+                    "orbit_create_service",
+                    &json!({"title": format!("s{i}"), "port": 1000 + i}),
+                )
+                .unwrap();
+        }
+        let err = tools
+            .call(
+                "orbit_create_service",
+                &json!({"title": "demais", "port": 9}),
+            )
+            .unwrap_err();
+        assert!(err.contains("teto"), "{err}");
     }
 
     #[cfg(unix)]

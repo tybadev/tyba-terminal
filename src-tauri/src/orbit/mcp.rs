@@ -84,11 +84,12 @@ const METHOD_NOT_FOUND: i64 = -32601;
 const INVALID_PARAMS: i64 = -32602;
 
 /// Nomes das ferramentas, na ordem do `tools/list`.
-pub const TOOLS: [&str; 23] = [
+pub const TOOLS: [&str; 24] = [
     "orbit_plan",
     "orbit_create_process",
     "orbit_create_agent",
     "orbit_create_browser",
+    "orbit_create_service",
     "orbit_browser_open",
     "orbit_browser_snapshot",
     "orbit_browser_click",
@@ -660,6 +661,36 @@ pub fn tool_list(caller: Caller) -> Vec<Value> {
                     ),
                     "from_node": string_prop(
                         "node_id of the Process or Service node that serves the page."
+                    )
+                },
+                "required": ["title"],
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "orbit_create_service",
+            "description": format!(
+                "Put a service that is ALREADY running on the canvas as a Service node: a \
+                 local port (e.g. Postgres on 5432) or a docker container (name or id). \
+                 TYBA never starts anything here: if nothing listens on the port or the \
+                 container is not running, the result has failed: true and the reason. \
+                 To start a server, use orbit_create_process. The node gives its address \
+                 (http on {}) to a Browser node linked with from_node. Returns the node_id, \
+                 the status and the url.",
+                super::service::LOCAL_HOSTS
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "title": string_prop("Short name shown on the node."),
+                    "port": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 65535,
+                        "description": "Local TCP port the service listens on."
+                    },
+                    "container": string_prop(
+                        "Name or id of a running docker container (instead of port)."
                     )
                 },
                 "required": ["title"],
@@ -1253,7 +1284,8 @@ você pode chamar orbit_finish: ela fecha a sua sessão (só a sua) quando o tur
 pub const CREATE_PROMPT: &str = "Para subir ou rodar um serviço, servidor de dev ou processo \
 longo, use orbit_create_process (um nó por serviço, na pasta do projeto) em vez de rodar no \
 seu próprio shell; para abrir ou mostrar uma página (inclusive domínios .test e .localhost), \
-use orbit_create_browser em vez de um navegador externo; se um processo que você criou falha \
+use orbit_create_browser em vez de um navegador externo; para mostrar no canvas um serviço que \
+já roda (Postgres na 5432, um contêiner docker), use orbit_create_service (ele não sobe nada); se um processo que você criou falha \
 (a resposta traz failed, o motivo e o fim do log), pare-o com orbit_stop_node e não deixe nó \
 quebrado ligado a navegador: corrija (outra porta, por exemplo), crie o novo e religue o \
 navegador a ele; para navegador, ligue ao nó que serve \
@@ -1898,6 +1930,7 @@ mod tests {
             "orbit_create_process",
             "orbit_create_agent",
             "orbit_create_browser",
+            "orbit_create_service",
             "orbit_browser_open",
             "orbit_restart_node",
             "orbit_connect",

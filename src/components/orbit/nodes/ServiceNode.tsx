@@ -216,8 +216,11 @@ export function ServiceNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
       .finally(() => setStarting(false));
   };
 
+  // O id de agora (`drifted`): o nó criado pelo agente só pelo nome não tem
+  // id e, efêmero, não grava o que o `setSource` manda.
+  const target = drifted ?? source;
   const containerId =
-    source.type === "container" && source.containerId ? source.containerId : null;
+    target.type === "container" && target.containerId ? target.containerId : null;
   const log = useContainerLog(containerId);
   // Rola só a caixa do log (`scrollIntoView` rolaria o canvas junto).
   const logBox = useRef<HTMLDivElement>(null);
