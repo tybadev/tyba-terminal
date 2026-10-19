@@ -2743,7 +2743,7 @@ impl Store {
             // A mesma redação do `blocks::build`: o dreno monta o bloco por
             // fora dele. As linhas novas já chegam redigidas; as do formato
             // antigo, não.
-            let lines = lines.into_iter().map(crate::blocks::redact_line).collect();
+            let lines = crate::blocks::redact_lines(lines);
             let block = crate::blocks::Block {
                 id: 0,
                 session_id: session_id.clone(),
@@ -6493,6 +6493,48 @@ mod tests {
                 runs: Vec::new(),
             })
             .collect()
+    }
+
+    /// `cat id_rsa` sintético: o corpo da chave chega em linhas próprias, e
+    /// nenhum dos dois formatos do dreno pode devolvê-lo ao bloco.
+    #[test]
+    fn drained_checkpoint_never_keeps_a_pem_body() {
+        let body = "Zm9vYmFy".repeat(8);
+        let begin = format!("-----BEGIN {}-----", "RSA PRIVATE KEY");
+        let raw = format!("{begin}\r\n{body}\r\n{body}\r\n");
+        let store = Store::open_in_memory().unwrap();
+        // Legado: byte cru do PTY.
+        store
+            .conn
+            .lock()
+            .execute(
+                "INSERT INTO block_checkpoint
+                     (session_id, command, started_at_ms, cols, rows, bytes)
+                 VALUES ('s1', 'cat id_rsa', 10, 80, 24, ?1)",
+                params![raw.as_bytes()],
+            )
+            .unwrap();
+        // JSON novo com linhas que (por hipótese) chegaram sem redação.
+        store
+            .save_checkpoint(
+                "s2",
+                "cat id_rsa",
+                10,
+                80,
+                24,
+                &text(&[&begin, &body, &body]),
+                0,
+            )
+            .unwrap();
+
+        assert_eq!(store.drain_checkpoints().unwrap(), 2);
+        for session in ["s1", "s2"] {
+            let found = store.list_blocks(session, 10).unwrap();
+            assert_eq!(found.len(), 1, "{session}");
+            for line in &found[0].lines {
+                assert!(!line.text.contains(&body), "{session}: {}", line.text);
+            }
+        }
     }
 
     #[test]

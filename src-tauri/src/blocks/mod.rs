@@ -926,8 +926,14 @@ pub fn install(app: tauri::AppHandle, store: std::sync::Arc<crate::session::stor
 ///
 /// `Cow::Borrowed` é a prova de que a regex não achou nada. É o caminho comum e
 /// não paga nada: nem cópia do texto, nem perda de cor.
-pub(crate) fn redact_line(line: LogicalLine) -> LogicalLine {
-    let redacted = match crate::session::redact::redact(&line.text) {
+///
+/// O `redactor` atravessa as linhas do bloco: o corpo de uma chave PEM vem em
+/// linhas próprias, sem nada que o denuncie fora do BEGIN que veio antes.
+fn redact_line(
+    redactor: &mut crate::session::redact::LineRedactor,
+    line: LogicalLine,
+) -> LogicalLine {
+    let redacted = match redactor.line(&line.text) {
         std::borrow::Cow::Borrowed(_) => None,
         std::borrow::Cow::Owned(text) => Some(text),
     };
@@ -938,6 +944,16 @@ pub(crate) fn redact_line(line: LogicalLine) -> LogicalLine {
             runs: Vec::new(),
         },
     }
+}
+
+/// As linhas de UM bloco (ou checkpoint), redigidas com um só
+/// [`LineRedactor`](crate::session::redact::LineRedactor) atravessando todas.
+pub(crate) fn redact_lines(lines: Vec<LogicalLine>) -> Vec<LogicalLine> {
+    let mut redactor = crate::session::redact::LineRedactor::default();
+    lines
+        .into_iter()
+        .map(|line| redact_line(&mut redactor, line))
+        .collect()
 }
 
 /// O checkpoint como vai para o disco: comando, linhas e cortadas.
@@ -954,7 +970,7 @@ pub(crate) fn redact_line(line: LogicalLine) -> LogicalLine {
 /// precisa dizer quanto faltou.
 fn for_disk(cp: &Checkpoint) -> (String, Vec<LogicalLine>, usize) {
     let (lines, truncated) = extract_lines(&cp.bytes, cp.cols, cp.rows);
-    let lines = lines.into_iter().map(redact_line).collect();
+    let lines = redact_lines(lines);
     let command = crate::session::redact::redact(&cp.command).into_owned();
     (command, lines, truncated + cp.dropped)
 }
@@ -967,7 +983,7 @@ fn build(finished: Finished) -> Block {
     } else {
         extract_lines(&finished.bytes, finished.cols, finished.rows)
     };
-    let lines = lines.into_iter().map(redact_line).collect();
+    let lines = redact_lines(lines);
     Block {
         id: next_id(),
         session_id: finished.session_id,
@@ -1274,6 +1290,38 @@ mod tests {
             js_slice(&block.lines[0].text, &block.lines[0].runs[0]),
             "ok"
         );
+    }
+
+    /// `cat id_rsa`: o BEGIN, o corpo e o END chegam como linhas separadas, e
+    /// o corpo — que é a chave — não pode sobrar em nenhuma delas.
+    #[test]
+    fn the_pem_body_never_survives_the_line_by_line_redaction() {
+        let body = "Zm9vYmFy".repeat(8);
+        let bytes = format!(
+            "ok\r\n-----BEGIN {k}-----\r\n{body}\r\n{body}\r\n-----END {k}-----\r\nfim\r\n",
+            k = "RSA PRIVATE KEY"
+        );
+        let block = build(finished(bytes.as_bytes()));
+        let texts: Vec<&str> = block.lines.iter().map(|l| l.text.as_str()).collect();
+        assert_eq!(texts.first(), Some(&"ok"));
+        assert_eq!(texts.last(), Some(&"fim"));
+        assert!(texts.iter().all(|t| !t.contains(&body)), "{texts:?}");
+    }
+
+    /// O mesmo `cat id_rsa`, mas pego no meio pelo checkpoint: o disco não
+    /// leva o corpo da chave.
+    #[test]
+    fn the_pem_body_never_reaches_the_disk_through_the_checkpoint() {
+        let body = "Zm9vYmFy".repeat(8);
+        let bytes = format!(
+            "-----BEGIN {k}-----\r\n{body}\r\n{body}\r\n",
+            k = "RSA PRIVATE KEY"
+        );
+        let mut cp = checkpoint(bytes.as_bytes(), "cat id_rsa");
+        cp.cols = 80;
+        let (_, lines, _) = for_disk(&cp);
+        let on_disk = serde_json::to_string(&lines).unwrap();
+        assert!(!on_disk.contains(&body), "{on_disk}");
     }
 
     /// Bloco gravado antes desta mudança guarda offset de BYTE sob as chaves
