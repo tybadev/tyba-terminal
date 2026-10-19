@@ -7,6 +7,7 @@ import { OpenAIIcon } from "@/components/icons/OpenAIIcon";
 import { Switch } from "@/components/ui/switch";
 import {
   ORCHESTRATOR_HANDLE,
+  createdInOpenRun,
   nodeDir,
   nodeSession,
   shortDir,
@@ -45,8 +46,8 @@ export function AgentNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
     updateNode(id, (n) => ({ ...n, kind: { ...(n.kind as AgentKind), ...patch } }));
   const claude = kind.runner === "claude";
   // Todo agente do grafo cria nós (porta das tracejadas); o criado por
-  // outro agente não (sem cascata).
-  const created = createdBy.has(id);
+  // outro agente não (sem cascata), nem depois do Manter, até a próxima ▶.
+  const created = createdBy.has(id) || createdInOpenRun(run, id);
   const hidden = { opacity: 0, width: 1, height: 1, minWidth: 0, minHeight: 0, border: 0 };
   const dir = nodeDir(kind, graphDir);
   const subTally =

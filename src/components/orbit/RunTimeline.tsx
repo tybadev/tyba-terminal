@@ -173,7 +173,10 @@ export function RunTimeline({
             <div className="flex items-center justify-between px-3.5 py-3">
               <span className="font-sans text-[13px] font-semibold">{t("orbitWaitingYouTitle")}</span>
               <span className="text-[11px] text-tyba-text-faint">
-                {t("orbitWaitingYouOrder", { n: number })}
+                {/* A sessão ao vivo do Terminal não tem número na barra. */}
+                {run && isLiveRun(run)
+                  ? t("orbitWaitingYouOrderLive")
+                  : t("orbitWaitingYouOrder", { n: number })}
               </span>
             </div>
             {queue.map((row) => (

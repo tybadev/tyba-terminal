@@ -45,6 +45,7 @@ import {
   pickConnection,
   produces,
   creatorBadge,
+  createdInOpenRun,
   runCreated,
   shownSession,
   shownStatus,
@@ -1048,7 +1049,9 @@ export function NodeFrame({
   // Mantido, o nó é do dono: o rodapé perde o selo (a origem fica no ⋯).
   const badge = creatorBadge(run, id);
   const locked = createdIds.has(id);
-  const orchestrates = !created && isOrchestrator(node.kind);
+  // O mantido no run em que nasceu ainda não cria (o core recusa até a
+  // próxima ▶): sem a porta de orquestrador.
+  const orchestrates = !created && !createdInOpenRun(run, id) && isOrchestrator(node.kind);
   // Os ícones do cabeçalho (quadro OrbitAcoesLog, A).
   const actions = useNodeHeader(id, node);
   const { controls, header } = actions;

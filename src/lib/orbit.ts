@@ -873,6 +873,19 @@ export function createdByOf(run: Run | null): Map<string, string> {
 }
 
 /**
+ * Criado por um agente no run aberto, mantido ou não. O core não deixa esse
+ * agente criar nós até a próxima ▶ (sem cascata, `is_created` não olha o
+ * Manter): a tela não mostra "Não criar nós" nem a porta de orquestrador
+ * enquanto isso vale. Na próxima ▶ ele é nó comum do grafo.
+ */
+export function createdInOpenRun(run: Run | null, id: string): boolean {
+  return (
+    run?.status === "running" &&
+    (run.created ?? []).some((c) => c.node.id === id && !c.discarded)
+  );
+}
+
+/**
  * O selo "criado pelo X · Manter" do rodapé: só enquanto o nó não foi
  * mantido. Mantido, o nó é do dono e o cartão perde o selo; a origem fica
  * no log da sessão do nó (o ⋯, "X criou o nó"). Devolve o id do criador.

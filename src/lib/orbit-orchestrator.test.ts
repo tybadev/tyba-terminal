@@ -5,6 +5,7 @@ import {
   ORCHESTRATOR_HANDLE,
   createdByOf,
   createdFlow,
+  createdInOpenRun,
   creatorBadge,
   ephemeralCreated,
   importItems,
@@ -124,6 +125,18 @@ describe("orquestrador: marca e ligação dos criados no canvas", () => {
     const flow = createdFlow(r, [orchestrator, kept.node]);
     expect(flow.byEdges.map((e) => [e.source, e.target])).toEqual([["o", "orq-1"]]);
     expect([...createdByOf(r).entries()]).toEqual([["orq-1", "o"]]);
+  });
+
+  test("criado no run aberto, mantido ou não, ainda não cria até a próxima ▶", () => {
+    const r = run("running", [agent("orq-1"), agent("orq-2", { kept: true })]);
+    expect(createdInOpenRun(r, "orq-1")).toBe(true);
+    expect(createdInOpenRun(r, "orq-2")).toBe(true);
+    expect(createdInOpenRun(r, "o")).toBe(false);
+    // Descartado não está mais na vista.
+    expect(createdInOpenRun(run("running", [agent("orq-3", { discarded: true })]), "orq-3")).toBe(false);
+    // Run fechado (a próxima ▶ é outro run): o mantido é agente comum.
+    expect(createdInOpenRun(run("done", [agent("orq-2", { kept: true })]), "orq-2")).toBe(false);
+    expect(createdInOpenRun(null, "orq-2")).toBe(false);
   });
 
   test("selo 'criado pelo X' só enquanto não mantido; mantido é do dono", () => {
