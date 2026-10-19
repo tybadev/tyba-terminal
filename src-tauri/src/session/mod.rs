@@ -595,6 +595,8 @@ impl SessionManager {
         // ferramentas é o core, pela árvore de processos.
         if owner == SessionOwner::Orbit {
             cmd.env(ORBIT_TERMINAL_ENV, "1");
+            // E só ele varre a sessão no `exit` do shell, não só no kill.
+            pty_pool.set_sweep_on_exit(id);
         }
 
         let title = opts

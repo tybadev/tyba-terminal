@@ -6,13 +6,22 @@
 //! portable-pty abriu com `setsid` no spawn — é por ela que se acha cada grupo.
 //!
 //! Só para sessão efêmera (nó do Orbit, ver [`super::PtyPool::set_ephemeral`]),
-//! em dois caminhos: o kill (Fechar, apagar, ■, ⌘Q) e o `exit` do próprio
-//! shell, que só avisa o core pelo EOF do PTY (`sweep_after_exit`).
+//! no kill (Fechar, apagar, ■, ⌘Q) de todo nó. No `exit` do próprio shell só
+//! o nó Terminal varre ([`super::PtyPool::set_sweep_on_exit`]): pelo EOF do
+//! PTY (`sweep_after_exit`, macOS) e por um vigia da saída do líder
+//! (`watch_leader_exit`, que é o que funciona no Linux).
 //! A aba da grade segue com o `killpg` do líder: job com `nohup` sobreviver a
 //! uma aba fechada é decisão de produto à parte.
 //!
-//! Windows: sem SID nem process group; fica como está (o `child.kill()` do
-//! líder). Ver `kill_handle`.
+//! Escapa da varredura: processo que sai da sessão (`setsid`, daemon que faz
+//! double-fork + `setsid`). Ele não carrega mais o SID e não há como achá-lo
+//! por ele — é a mesma fronteira de qualquer terminal.
+//!
+//! Windows: sem SID nem process group. O spawn do ConPTY (`conpty_jailed`)
+//! põe o líder num Job Object `KILL_ON_JOB_CLOSE`, e o kill faz
+//! `TerminateJobObject`: a árvore inteira cai no kill e quando o handle é
+//! solto. No `exit` do shell o Job segue aberto (o handle fica no mapa até o
+//! nó fechar), então os filhos vivem até lá.
 
 /// O SID a varrer no kill: o próprio pid do líder, só se ele É líder de
 /// sessão. Um líder que não abriu sessão própria está na sessão de outro — a
@@ -72,7 +81,43 @@ pub(super) fn leader_state(_leader_pid: u32) -> Leader {
     Leader::Gone
 }
 
-/// Os processos vivos que ainda carregam o SID `sid`.
+/// Bloqueia até o líder sair, sem colher (`WNOWAIT`). `true` quando saiu;
+/// `false` se ele não é (mais) filho nosso.
+#[cfg(unix)]
+pub(super) fn wait_leader_exit(leader_pid: u32) -> bool {
+    let Ok(pid) = libc::pid_t::try_from(leader_pid) else {
+        return false;
+    };
+    if pid <= 1 {
+        return false;
+    }
+    loop {
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        let rc = unsafe {
+            libc::waitid(
+                libc::P_PID,
+                pid as libc::id_t,
+                &mut info,
+                libc::WEXITED | libc::WNOWAIT,
+            )
+        };
+        if rc == 0 {
+            return unsafe { info.si_pid() } == pid;
+        }
+        if std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
+            return false;
+        }
+    }
+}
+
+#[cfg(not(unix))]
+pub(super) fn wait_leader_exit(_leader_pid: u32) -> bool {
+    false
+}
+
+/// Os processos vivos que ainda carregam o SID `sid`. Zumbi não conta: no
+/// Linux o líder não colhido (e o job morto à espera do `init`) segue em
+/// `/proc` com o SID.
 #[cfg(all(test, unix))]
 pub(super) fn pids_in_session(sid: u32) -> Vec<libc::pid_t> {
     let Ok(sid) = libc::pid_t::try_from(sid) else {
@@ -81,7 +126,22 @@ pub(super) fn pids_in_session(sid: u32) -> Vec<libc::pid_t> {
     all_pids()
         .into_iter()
         .filter(|pid| unsafe { libc::getsid(*pid) } == sid)
+        .filter(|pid| !is_zombie(*pid))
         .collect()
+}
+
+#[cfg(all(test, target_os = "linux"))]
+pub(super) fn is_zombie(pid: libc::pid_t) -> bool {
+    std::fs::read_to_string(format!("/proc/{pid}/stat"))
+        .ok()
+        .and_then(|stat| Some(stat.rsplit_once(')')?.1.split_whitespace().next()? == "Z"))
+        .unwrap_or(false)
+}
+
+/// No macOS o zumbi já não responde ao `getsid`.
+#[cfg(all(test, unix, not(target_os = "linux")))]
+pub(super) fn is_zombie(_pid: libc::pid_t) -> bool {
+    false
 }
 
 /// SIGKILL em cada process group da sessão `sid`, o do líder por último.
