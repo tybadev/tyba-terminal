@@ -672,7 +672,7 @@ export function NotificationToaster({
             />
             <div className="min-w-0 flex-1">
               <ToastTitle>{askingText(ask, t)}</ToastTitle>
-              <ToastDescription>{t("askingHelp")}</ToastDescription>
+              <ToastDescription>{t("askingHelp", { agent: ask.agent })}</ToastDescription>
               <div className="mt-2 flex flex-wrap gap-2">
                 {/* Botão comum, não `ToastAction`: aquele fecha o toast, e
                     fechar dispensa o pedido no core. "Ir" só troca de pane;

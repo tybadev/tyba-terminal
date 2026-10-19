@@ -12,10 +12,12 @@
 //!   chegam pelos hooks da sessão, e não podem chegar duas vezes.
 //! - Num claude cru dentro de um pane: `SessionStart`, `Notification`,
 //!   `PermissionRequest`, `Stop` e `Subagent*` só avisam o core — nenhum
-//!   responde nada ao Claude. O `PreToolUse` (só `Bash`) aplica o
-//!   guarda-corpo fixo: `git push` para main/master e merge de PR/MR são
-//!   recusados com motivo; todo o resto fica sem decisão, e o prompt nativo
-//!   do Claude decide.
+//!   responde nada ao Claude. O `PreToolUse` (só `Bash`) aplica a parte de
+//!   texto do guarda-corpo ([`crate::agent::guard_rail`]): merge e aprovação
+//!   de PR/MR e desligar o hook do git são recusados com motivo; todo o resto
+//!   fica sem decisão, e o prompt nativo do Claude decide. O hook `pre-push`
+//!   do git (push para main/master) não alcança este claude: ele vem do env
+//!   das sessões do TYBA, e o claude cru escapou delas.
 //!
 //! O guarda-corpo é texto de comando: pega engano, não agente determinado
 //! (script, alias contornam). Fronteira de verdade não mora aqui.
@@ -59,7 +61,7 @@ pub fn marketplace_json() -> Value {
         "plugins": [{
             "name": PLUGIN,
             "source": "./plugin",
-            "description": "Avisa o TYBA do que o claude faz num pane (início, pedido de permissão, fim) e recusa push para main/master e merge de PR.",
+            "description": "Avisa o TYBA do que o claude faz num pane (início, pedido de permissão, fim) e recusa merge e aprovação de PR.",
         }]
     })
 }
@@ -67,7 +69,7 @@ pub fn marketplace_json() -> Value {
 pub fn plugin_json() -> Value {
     json!({
         "name": PLUGIN,
-        "description": "Integração do TYBA: o claude num pane do TYBA avisa o app quando precisa de você, e push para main/master e merge de PR são recusados. Fora do TYBA não faz nada.",
+        "description": "Integração do TYBA: o claude num pane do TYBA avisa o app quando precisa de você, e merge e aprovação de PR são recusados. Fora do TYBA não faz nada.",
         "version": env!("CARGO_PKG_VERSION"),
         "author": { "name": "TYBA" },
     })
@@ -86,7 +88,7 @@ pub fn hooks_json() -> Value {
         }
         hooks.insert((*event).to_string(), json!([entry]));
     }
-    json!({ "description": "TYBA: observa o claude num pane e recusa push para main/master e merge de PR", "hooks": hooks })
+    json!({ "description": "TYBA: observa o claude num pane e recusa merge e aprovação de PR", "hooks": hooks })
 }
 
 pub fn hook_script() -> &'static str {

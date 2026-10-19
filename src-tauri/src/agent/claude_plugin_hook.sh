@@ -9,8 +9,8 @@
 # `--settings` da sessao ja falam com o TYBA. Nada de evento em dobro.
 [ -n "${TYBA_HOOK_SOCKET:-}" ] && exit 0
 [ "${TYBA_HOSTED:-}" = "1" ] && exit 0
-# Claude cru dentro de um pane: o TYBA observa e aplica o guarda-corpo
-# (push para main/master, merge de PR). Sem o binario (app movido ou
+# Claude cru dentro de um pane: o TYBA observa e aplica o guarda-corpo de
+# texto (merge e aprovacao de PR). Sem o binario (app movido ou
 # desinstalado), sai 0 — nunca trava o Claude.
 [ -n "${TYBA_BIN:-}" ] && [ -x "$TYBA_BIN" ] || exit 0
 exec "$TYBA_BIN" _plugin-hook
