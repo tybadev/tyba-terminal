@@ -2866,6 +2866,17 @@ impl<H: RunHost> Runs<H> {
             }
             ToolCall::Restart { node } => self.restart_by_agent(run_id, orchestrator, &node),
             ToolCall::ListNodes => self.list_nodes(run_id, orchestrator),
+            ToolCall::Wait {
+                node,
+                until,
+                timeout_s,
+            } => self.wait_node(
+                run_id,
+                orchestrator,
+                &node,
+                until,
+                std::time::Duration::from_secs(timeout_s),
+            ),
             ToolCall::ReadLog { node, lines } => self.read_log(run_id, orchestrator, &node, lines),
             ToolCall::Plan { steps } => {
                 let id = self.write_plan(run_id, orchestrator, steps)?;
@@ -4160,6 +4171,82 @@ impl<H: RunHost> Runs<H> {
         }))
     }
 
+    /// `orbit_wait`: espera `node_id` (ligado a quem chama ou criado por ele,
+    /// nunca o próprio) abrir porta, terminar ou fechar o turno, até
+    /// `timeout`. Olha o estado a cada [`WAIT_POLL`], sem lock entre uma
+    /// olhada e outra. Volta também quando o nó termina sem chegar lá.
+    fn wait_node(
+        &self,
+        run_id: &str,
+        caller: &str,
+        node_id: &str,
+        until: orchestrator::WaitFor,
+        timeout: std::time::Duration,
+    ) -> Result<serde_json::Value, String> {
+        if node_id == caller {
+            return Err("orbit_wait não espera o seu próprio nó".into());
+        }
+        let run = self.get(run_id).ok_or("execução não encontrada")?;
+        if !run.nodes.contains_key(node_id) {
+            return Err(format!("nó não existe neste run: {node_id}"));
+        }
+        if !self.reaches(&run, caller, node_id)? {
+            return Err(format!(
+                "{node_id} não está ligado a você nem foi criado por você: só espera nó \
+                 ligado a você no canvas ou que você criou"
+            ));
+        }
+        let agent = self
+            .node_of(run_id, &run, node_id)
+            .is_some_and(|n| matches!(n.kind, NodeKind::Agent { .. }));
+        if until == orchestrator::WaitFor::Turn && !agent {
+            return Err(format!(
+                "{node_id} não é agente: until turn só vale para nó de agente"
+            ));
+        }
+        let started = std::time::Instant::now();
+        loop {
+            let live = self.live_agents(run_id);
+            let seen = match self.active.lock().get(run_id) {
+                Some(a) => a.sched.run.nodes.get(node_id).map(|n| {
+                    let alive = n.session_id.as_ref().is_some_and(|s| live.contains(s));
+                    let turn = a.talk.state(node_id);
+                    let mail = a.talk.waiting(node_id) > 0 || a.talk.delivering(node_id);
+                    (wait_check(until, n, turn, mail, alive), n.clone(), turn)
+                }),
+                None => None,
+            };
+            // Run fechado: o retrato gravado é o fim.
+            let (check, n, turn) = match seen {
+                Some(seen) => seen,
+                None => {
+                    let n = self
+                        .get(run_id)
+                        .and_then(|r| r.nodes.get(node_id).cloned())
+                        .ok_or("execução não encontrada")?;
+                    (wait_check(until, &n, None, false, false), n, None)
+                }
+            };
+            let timed_out = check == WaitCheck::Pending && started.elapsed() >= timeout;
+            if check != WaitCheck::Pending || timed_out {
+                return Ok(serde_json::json!({
+                    "node_id": node_id,
+                    "until": until,
+                    "reached": check == WaitCheck::Reached,
+                    "ended": check == WaitCheck::Ended,
+                    "timed_out": timed_out,
+                    "waited_ms": started.elapsed().as_millis() as u64,
+                    "status": n.status,
+                    "turn": turn,
+                    "url": n.url,
+                    "exit_code": n.exit_code,
+                    "reason": n.reason,
+                }));
+            }
+            std::thread::sleep(WAIT_POLL);
+        }
+    }
+
     /// `caller` alcança `node_id`: criou o nó neste run, ou há ligação entre
     /// os dois (qualquer tipo, qualquer sentido) nas ligações de agora.
     fn reaches(&self, run: &Run, caller: &str, node_id: &str) -> Result<bool, String> {
@@ -4768,6 +4855,52 @@ impl<H: RunHost> Runs<H> {
 /// antes de responder: erro de subida (porta ocupada, módulo faltando) sai
 /// nisso.
 const PROCESS_SETTLE: std::time::Duration = std::time::Duration::from_secs(3);
+/// De quanto em quanto o `orbit_wait` olha o nó.
+const WAIT_POLL: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// O que o `orbit_wait` vê numa olhada.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WaitCheck {
+    /// Chegou: abriu porta, terminou, fechou o turno.
+    Reached,
+    /// O nó terminou (ou a sessão do agente saiu) sem chegar lá.
+    Ended,
+    /// Ainda não.
+    Pending,
+}
+
+/// Uma olhada do `orbit_wait`. `turn`: o último estado visto do agente;
+/// `mail`: há fila da conversa por entregar a ele (ou acabou de ser
+/// entregue, e o turno que ela abre não começou); `alive`: a sessão do
+/// agente segue viva (o criado fica `done` no primeiro turno e segue vivo).
+fn wait_check(
+    until: orchestrator::WaitFor,
+    n: &NodeRun,
+    turn: Option<PeerState>,
+    mail: bool,
+    alive: bool,
+) -> WaitCheck {
+    use orchestrator::WaitFor;
+    let ended = n.status.is_terminal();
+    let (reached, gone) = match until {
+        WaitFor::Port => (n.url.is_some(), ended),
+        WaitFor::Exit => (ended, false),
+        // A sessão que saiu deixa o último estado visto (`Ready`) para trás.
+        WaitFor::Turn => {
+            let gone = ended && !alive;
+            let ready = n.status != NodeStatus::Waiting && turn == Some(PeerState::Ready) && !mail;
+            (ready && !gone, gone)
+        }
+    };
+    if reached {
+        WaitCheck::Reached
+    } else if gone {
+        WaitCheck::Ended
+    } else {
+        WaitCheck::Pending
+    }
+}
+
 /// Quanto o `orbit_finish` espera o turno fechar antes de sair mesmo assim.
 const FINISH_TURN_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
 /// Quanto a sessão tem para sair depois do comando de sair, antes de morrer.
@@ -9207,6 +9340,140 @@ mod tests {
         v.as_object_mut().unwrap().remove("events");
         let n: NodeRun = serde_json::from_value(v).unwrap();
         assert!(n.events.is_empty());
+    }
+
+    #[test]
+    fn wait_check_by_what_it_waits_for() {
+        use orchestrator::WaitFor::{Exit, Port, Turn};
+        use PeerState::{Ready, Working};
+        let mut n = NodeRun::waiting();
+        assert_eq!(wait_check(Port, &n, None, false, false), WaitCheck::Pending);
+        assert_eq!(wait_check(Exit, &n, None, false, false), WaitCheck::Pending);
+        // Esperando, o `Ready` velho não conta.
+        assert_eq!(
+            wait_check(Turn, &n, Some(Ready), false, false),
+            WaitCheck::Pending
+        );
+        n.status = NodeStatus::Running;
+        assert_eq!(wait_check(Port, &n, None, false, false), WaitCheck::Pending);
+        n.url = Some("http://localhost:5173".into());
+        assert_eq!(wait_check(Port, &n, None, false, false), WaitCheck::Reached);
+        assert_eq!(
+            wait_check(Turn, &n, Some(Working), false, true),
+            WaitCheck::Pending
+        );
+        assert_eq!(
+            wait_check(Turn, &n, Some(Ready), false, true),
+            WaitCheck::Reached
+        );
+        // Fila por entregar (ou recém-entregue): o turno dela não começou.
+        assert_eq!(
+            wait_check(Turn, &n, Some(Ready), true, true),
+            WaitCheck::Pending
+        );
+        // Terminou com a url publicada: a porta abriu.
+        n.status = NodeStatus::Done;
+        assert_eq!(wait_check(Port, &n, None, false, false), WaitCheck::Reached);
+        assert_eq!(wait_check(Exit, &n, None, false, false), WaitCheck::Reached);
+        // O agente criado fica pronto no primeiro turno e segue vivo.
+        assert_eq!(
+            wait_check(Turn, &n, Some(Working), false, true),
+            WaitCheck::Pending
+        );
+        // A sessão saiu: o último `Ready` visto não vale.
+        assert_eq!(
+            wait_check(Turn, &n, Some(Ready), false, false),
+            WaitCheck::Ended
+        );
+        n.status = NodeStatus::Failed;
+        n.url = None;
+        assert_eq!(wait_check(Port, &n, None, false, false), WaitCheck::Ended);
+    }
+
+    /// `orbit_wait`: o processo terminar, a porta que nunca abre (timeout) e
+    /// o turno de um agente criado; só nó ligado ou criado.
+    #[cfg(unix)]
+    #[test]
+    fn wait_for_exit_port_and_turn() {
+        use serde_json::json;
+        let dir = tempfile::tempdir().unwrap();
+        let work = dir.path().join("w");
+        std::fs::create_dir(&work).unwrap();
+        let (runs, host, _app) = pty_runs(dir.path().join("runs"));
+        let mut a = orchestrator("a");
+        a.title = "Front".into();
+        let g = graph(
+            vec![
+                a,
+                process("p", "sleep 0.3"),
+                process("q", "sleep 30"),
+                process("solto", "sleep 30"),
+            ],
+            vec![
+                edge("d1", "a", "p", EdgeKind::Diff),
+                edge("d2", "a", "q", EdgeKind::Diff),
+            ],
+        );
+        runs.store.save_orbit_graph(&g, true, None).unwrap();
+        let run = runs.start_now(g, vec![]).unwrap();
+        wait_orchestrating(&runs, &run.id, "a");
+        let front = tools_of(&host, "Front");
+
+        let out = front
+            .call(
+                "orbit_wait",
+                &json!({"node": "p", "until": "exit", "timeout_s": 20}),
+            )
+            .unwrap();
+        assert_eq!(out["reached"], true, "{out}");
+        assert_eq!(out["status"], "done", "{out}");
+
+        let out = front
+            .call(
+                "orbit_wait",
+                &json!({"node": "q", "until": "port", "timeout_s": 1}),
+            )
+            .unwrap();
+        assert_eq!(out["reached"], false, "{out}");
+        assert_eq!(out["timed_out"], true, "{out}");
+        assert!(out["waited_ms"].as_u64().unwrap() >= 1000, "{out}");
+
+        for (args, why) in [
+            (json!({"node": "solto", "until": "exit"}), "não está ligado"),
+            (json!({"node": "a", "until": "exit"}), "próprio"),
+            (json!({"node": "q", "until": "turn"}), "não é agente"),
+        ] {
+            let err = front.call("orbit_wait", &args).unwrap_err();
+            assert!(err.contains(why), "{args}: {err}");
+        }
+
+        let rev = front
+            .call(
+                "orbit_create_agent",
+                &json!({"title": "rev", "runner": "claude", "prompt": "revise", "dir": work}),
+            )
+            .unwrap()["node_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        wait_status(&runs, &run.id, &rev, NodeStatus::Done);
+        host.set_state("rev", PeerState::Working);
+        let later = Arc::clone(&host);
+        let ready = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            later.set_state("rev", PeerState::Ready);
+        });
+        let out = front
+            .call(
+                "orbit_wait",
+                &json!({"node": rev, "until": "turn", "timeout_s": 20}),
+            )
+            .unwrap();
+        ready.join().unwrap();
+        assert_eq!(out["reached"], true, "{out}");
+        assert_eq!(out["turn"], "ready", "{out}");
+        assert!(out["waited_ms"].as_u64().unwrap() >= 250, "{out}");
+        runs.stop(&run.id).unwrap();
     }
 
     fn wait_attempt(

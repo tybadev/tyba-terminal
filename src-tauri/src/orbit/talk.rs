@@ -111,6 +111,12 @@ impl Mailbox {
         self.delivered.remove(node);
     }
 
+    /// A fila acabou de ser entregue a `node` e ele ainda não saiu do `Idle`:
+    /// o turno que ela abre não começou.
+    pub fn delivering(&self, node: &str) -> bool {
+        self.delivered.contains_key(node)
+    }
+
     /// Alguma mensagem esperando entrega, para qualquer agente do run.
     pub fn any_waiting(&self) -> bool {
         self.queues.values().any(|q| !q.is_empty())

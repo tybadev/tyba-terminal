@@ -108,6 +108,12 @@ pub enum ToolCall {
     },
     /// Os nós do run, com o que liga cada um a quem pergunta.
     ListNodes,
+    /// Esperar `node` abrir porta, terminar ou fechar o turno, até `timeout_s`.
+    Wait {
+        node: String,
+        until: WaitFor,
+        timeout_s: u64,
+    },
     /// O fim do log do processo de um nó ligado ou criado, redigido.
     ReadLog {
         node: String,
@@ -339,6 +345,32 @@ struct ReadLogArgs {
     lines: Option<usize>,
 }
 
+/// O que o `orbit_wait` espera.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WaitFor {
+    /// O nó publicar a url (abrir porta).
+    Port,
+    /// O nó terminar (pronto, falhou, parado ou pulado).
+    Exit,
+    /// O agente fechar o turno.
+    Turn,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WaitArgs {
+    node: String,
+    until: WaitFor,
+    #[serde(default)]
+    timeout_s: Option<u64>,
+}
+
+/// Espera do `orbit_wait` sem `timeout_s`.
+pub const WAIT_DEFAULT_S: u64 = 60;
+/// Teto da espera do `orbit_wait`.
+pub const WAIT_MAX_S: u64 = 300;
+
 /// Linhas do `orbit_read_log` sem `lines`.
 pub const READ_LOG_LINES: usize = 200;
 /// Teto de linhas do `orbit_read_log`.
@@ -492,6 +524,19 @@ pub fn parse_call(tool: &str, value: &Value) -> Result<ToolCall, String> {
         "orbit_list_nodes" => {
             let _: EmptyArgs = args(tool, value)?;
             Ok(ToolCall::ListNodes)
+        }
+        "orbit_wait" => {
+            let a: WaitArgs = args(tool, value)?;
+            required("node", &a.node)?;
+            let timeout_s = a.timeout_s.unwrap_or(WAIT_DEFAULT_S);
+            if timeout_s == 0 || timeout_s > WAIT_MAX_S {
+                return Err(format!("timeout_s: de 1 a {WAIT_MAX_S}"));
+            }
+            Ok(ToolCall::Wait {
+                node: a.node,
+                until: a.until,
+                timeout_s,
+            })
         }
         "orbit_read_log" => {
             let a: ReadLogArgs = args(tool, value)?;
@@ -1753,6 +1798,39 @@ Binary files a/logo.png and b/logo.png differ
             json!({"node": "p", "lines": -1}),
         ] {
             assert!(parse_call("orbit_read_log", &bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn wait_parses_until_and_bounds_the_timeout() {
+        assert_eq!(
+            parse_call("orbit_wait", &json!({"node": "p", "until": "port"})).unwrap(),
+            ToolCall::Wait {
+                node: "p".into(),
+                until: WaitFor::Port,
+                timeout_s: WAIT_DEFAULT_S
+            }
+        );
+        assert_eq!(
+            parse_call(
+                "orbit_wait",
+                &json!({"node": "a", "until": "turn", "timeout_s": WAIT_MAX_S})
+            )
+            .unwrap(),
+            ToolCall::Wait {
+                node: "a".into(),
+                until: WaitFor::Turn,
+                timeout_s: WAIT_MAX_S
+            }
+        );
+        for bad in [
+            json!({"node": "p", "until": "exit", "timeout_s": 0}),
+            json!({"node": "p", "until": "exit", "timeout_s": WAIT_MAX_S + 1}),
+            json!({"node": "p", "until": "forever"}),
+            json!({"node": "p"}),
+            json!({"node": "", "until": "exit"}),
+        ] {
+            assert!(parse_call("orbit_wait", &bad).is_err(), "{bad}");
         }
     }
 
