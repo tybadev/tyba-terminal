@@ -722,6 +722,29 @@ export interface NodeRun {
    * ferramentas do Orbit. `null` sem agente ou sem as ferramentas.
    */
   hostedAgent?: Runner | null;
+  /** O log da sessão do nó neste run (o ⋯ do card), do mais velho ao mais novo. */
+  events?: NodeEvent[];
+}
+
+/** Quem fez (espelha `Actor` do core): o dono, ou o agente pelo nome. */
+export type Actor = "you" | { agent: string };
+
+/** Um evento do log da sessão (espelha `NodeEventKind` do core). */
+export type NodeEventKind =
+  | { type: "created"; by: string }
+  | { type: "createdNode"; title: string }
+  | { type: "started"; command: string | null }
+  | { type: "url"; url: string }
+  | { type: "restarted"; by: Actor; rerun: boolean }
+  | { type: "stopped"; by: Actor }
+  | { type: "exited"; ok: boolean; code: number | null }
+  | { type: "closed"; by: Actor }
+  | { type: "agentStarted"; agent: string };
+
+export interface NodeEvent {
+  /** ms desde a época. */
+  at: number;
+  what: NodeEventKind;
 }
 
 /** Motivo do "↻ para aplicar": origem rodou de novo, config do nó, ligações ou variável. */

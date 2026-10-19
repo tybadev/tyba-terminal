@@ -173,6 +173,7 @@ mod tests {
             stale: false,
             stale_reason: None,
             hosted_agent: None,
+            events: Vec::new(),
         };
         if started {
             n.status = NodeStatus::Done;

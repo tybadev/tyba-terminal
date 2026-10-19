@@ -3,7 +3,15 @@
 // estado do nó no run, os pedidos de aprovação); aqui só se escolhe o desenho.
 
 import type { ApprovalRequest } from "./ipc";
-import { formatDuration, type NodeControls, type NodeKind, type NodeRun, type Runner } from "./orbit";
+import {
+  formatDuration,
+  urlPort,
+  type NodeControls,
+  type NodeEvent,
+  type NodeKind,
+  type NodeRun,
+  type Runner,
+} from "./orbit";
 
 /**
  * Anel em volta do ícone:
@@ -257,4 +265,78 @@ export function headerActions(
             }
           : null,
   };
+}
+
+/** Cor do ponto de cada linha do log da sessão (quadro OrbitAcoesLog, B). */
+export type LogTone = "violet" | "green" | "amber" | "blue" | "red" | "faint";
+
+/** Uma linha do log da sessão: o texto é a chave i18n com os parâmetros. */
+export interface LogLine {
+  at: number;
+  tone: LogTone;
+  key: string;
+  params: Record<string, string | number>;
+  /** O dono fez: a linha ganha o fundo de destaque. */
+  you: boolean;
+}
+
+/**
+ * O log da sessão do nó (o ⋯), do que veio do core: cada evento vira uma
+ * linha com a cor do ponto e o texto. Sem lógica de estado: só o desenho.
+ */
+export function sessionLog(events: readonly NodeEvent[] | undefined, kind: NodeKind["type"]): LogLine[] {
+  return (events ?? []).map(({ at, what }) => {
+    const line = (tone: LogTone, key: string, params: LogLine["params"] = {}, you = false): LogLine => ({
+      at,
+      tone,
+      key,
+      params,
+      you,
+    });
+    switch (what.type) {
+      case "created":
+        return line("violet", "orbitLog_created", { by: what.by });
+      case "createdNode":
+        return line("violet", "orbitLog_createdNode", { title: what.title });
+      case "started":
+        if (kind === "terminal") return line("green", "orbitLog_opened");
+        return what.command
+          ? line("green", "orbitLog_startedCommand", { command: what.command })
+          : line("green", "orbitLog_started");
+      case "url": {
+        const port = urlPort(what.url);
+        return port !== null
+          ? line("green", "orbitLog_port", { port })
+          : line("green", "orbitLog_url", { url: what.url });
+      }
+      case "restarted": {
+        const verb = what.rerun ? "rerun" : "restarted";
+        return what.by === "you"
+          ? line("blue", `orbitLog_${verb}You`, {}, true)
+          : line("blue", `orbitLog_${verb}Agent`, { agent: what.by.agent });
+      }
+      case "stopped":
+        return what.by === "you"
+          ? line("faint", "orbitLog_stoppedYou", {}, true)
+          : line("faint", "orbitLog_stoppedAgent", { agent: what.by.agent });
+      case "exited":
+        if (kind === "terminal" && what.ok && what.code === null) {
+          return line("faint", "orbitLog_shellExited");
+        }
+        if (what.ok) {
+          return what.code === null
+            ? line("green", "orbitLog_done")
+            : line("green", "orbitLog_exitedCode", { code: what.code });
+        }
+        return what.code === null
+          ? line("red", "orbitLog_failed")
+          : line("red", "orbitLog_failedCode", { code: what.code });
+      case "closed":
+        return what.by === "you"
+          ? line("faint", "orbitLog_closedYou", {}, true)
+          : line("faint", "orbitLog_closedAgent", { agent: what.by.agent });
+      case "agentStarted":
+        return line("amber", "orbitLog_agentStarted", { agent: what.agent });
+    }
+  });
 }

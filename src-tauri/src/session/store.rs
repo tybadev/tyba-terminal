@@ -5073,6 +5073,7 @@ mod tests {
             stale: false,
             stale_reason: None,
             hosted_agent: None,
+            events: Vec::new(),
         };
         let path = dir.path().join("tyba.db");
         let graph = Graph {

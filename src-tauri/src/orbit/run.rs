@@ -232,6 +232,69 @@ pub struct NodeRun {
     /// segue rodando; `None` sempre fora do Terminal.
     #[serde(default)]
     pub hosted_agent: Option<String>,
+    /// O log da sessão do nó neste run (o ⋯ do card): o que aconteceu com
+    /// ele e quem fez, do mais velho ao mais novo, com teto de
+    /// [`MAX_NODE_EVENTS`]. Grava junto com o run; o comando vai redigido.
+    #[serde(default)]
+    pub events: Vec<NodeEvent>,
+}
+
+/// Teto do log da sessão de cada nó: passou, sai o mais velho.
+pub const MAX_NODE_EVENTS: usize = 50;
+/// O comando no log vai cortado nisto (a primeira linha, redigida).
+const EVENT_COMMAND_MAX: usize = 160;
+
+/// Quem fez o que o log da sessão conta.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Actor {
+    /// O dono, pela tela.
+    You,
+    /// Um agente (o título do nó dele, ou o `claude`/`codex` do Terminal).
+    Agent(String),
+}
+
+/// Um evento do log da sessão do nó.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", tag = "type")]
+pub enum NodeEventKind {
+    /// Um agente criou este nó no run.
+    Created { by: String },
+    /// Este nó (orquestrador, Terminal) criou outro.
+    CreatedNode { title: String },
+    /// Começou: subiu o processo, abriu o shell. `command`: o do processo,
+    /// a primeira linha, redigida e cortada.
+    Started { command: Option<String> },
+    /// Publicou a url (a porta) com ele rodando.
+    Url { url: String },
+    /// ↻: reiniciou (rodava) ou rodou de novo (tinha acabado).
+    Restarted { by: Actor, rerun: bool },
+    /// Parado por alguém (o ■ do nó, o ■ Parar do run, `orbit_stop_node`).
+    Stopped { by: Actor },
+    /// Acabou sozinho: deu certo ou falhou, com o código quando há.
+    Exited { ok: bool, code: Option<i32> },
+    /// O Terminal fechou pelo ■ / Fechar.
+    Closed { by: Actor },
+    /// `claude`/`codex` com as ferramentas do Orbit no shell do Terminal.
+    AgentStarted { agent: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NodeEvent {
+    pub at: u64,
+    pub what: NodeEventKind,
+}
+
+/// O comando como vai para o log: a primeira linha, redigida, cortada.
+pub fn event_command(command: &str) -> Option<String> {
+    let line = command.lines().map(str::trim).find(|l| !l.is_empty())?;
+    let redacted = crate::session::redact::redact(line);
+    let mut out: String = redacted.chars().take(EVENT_COMMAND_MAX).collect();
+    if redacted.chars().count() > EVENT_COMMAND_MAX {
+        out.push('…');
+    }
+    Some(out)
 }
 
 /// O motivo do "↻ para aplicar".
@@ -311,7 +374,15 @@ impl NodeRun {
             stale: false,
             stale_reason: None,
             hosted_agent: None,
+            events: Vec::new(),
         }
+    }
+
+    fn log(&mut self, at: u64, what: NodeEventKind) {
+        if self.events.len() >= MAX_NODE_EVENTS {
+            self.events.remove(0);
+        }
+        self.events.push(NodeEvent { at, what });
     }
 }
 
@@ -417,6 +488,13 @@ impl Scheduler {
 
     pub fn run(&self) -> &Run {
         &self.run
+    }
+
+    /// Uma linha no log da sessão do nó (ver [`NodeRun::events`]).
+    pub fn log(&mut self, id: &str, at: u64, what: NodeEventKind) {
+        if let Some(n) = self.run.nodes.get_mut(id) {
+            n.log(at, what);
+        }
     }
 
     /// Retrato para publicar, com versão nova. Tirado com o lock na mão, a
@@ -572,6 +650,13 @@ impl Scheduler {
         if outcome.url.is_some() {
             n.url = outcome.url;
         }
+        n.log(
+            now,
+            NodeEventKind::Exited {
+                ok: outcome.ok,
+                code: outcome.exit_code,
+            },
+        );
         if !outcome.ok {
             self.skip_dependents(id);
         }
@@ -642,6 +727,19 @@ impl Scheduler {
         session
     }
 
+    /// [`Scheduler::stop_node`] com quem parou no log da sessão.
+    pub fn stop_node_by(&mut self, id: &str, now: u64, by: Actor) -> Option<String> {
+        let live = matches!(
+            self.status(id),
+            Some(NodeStatus::Running | NodeStatus::Waiting)
+        );
+        let session = self.stop_node(id, now);
+        if live {
+            self.log(id, now, NodeEventKind::Stopped { by });
+        }
+        session
+    }
+
     /// Quantas vezes o nó já foi reiniciado (ver [`NodeRun::attempt`]).
     pub fn attempt(&self, id: &str) -> Option<u32> {
         self.run.nodes.get(id).map(|n| n.attempt)
@@ -677,6 +775,8 @@ impl Scheduler {
         let session = n.session_id.take();
         let mut fresh = NodeRun::waiting();
         fresh.attempt = n.attempt + 1;
+        // O log da sessão é do nó no run, não da tentativa.
+        fresh.events = std::mem::take(&mut n.events);
         // A fila da conversa segue no core: a sessão nova a recebe.
         fresh.inbox = n.inbox;
         fresh.inbox_from = std::mem::take(&mut n.inbox_from);
@@ -691,6 +791,14 @@ impl Scheduler {
             }
         }
         self.unskip_dependents(id);
+        Ok(session)
+    }
+
+    /// [`Scheduler::rerun`] com quem reiniciou no log da sessão.
+    pub fn rerun_by(&mut self, id: &str, now: u64, by: Actor) -> Result<Option<String>, String> {
+        let rerun = self.status(id) != Some(NodeStatus::Running);
+        let session = self.rerun(id)?;
+        self.log(id, now, NodeEventKind::Restarted { by, rerun });
         Ok(session)
     }
 
@@ -960,6 +1068,41 @@ fn active_label(a: &Active, id: &str) -> String {
         .iter()
         .find(|n| n.id == id)
         .map_or_else(|| format!("nó {id}"), node_label)
+}
+
+/// Quem é o agente `id` no log da sessão: o `claude`/`codex` hospedado no
+/// Terminal, ou o título do nó (o id, sem título).
+fn actor_name(a: &Active, id: &str) -> String {
+    if let Some(agent) = a
+        .sched
+        .run
+        .nodes
+        .get(id)
+        .and_then(|n| n.hosted_agent.clone())
+    {
+        return agent;
+    }
+    a.graph
+        .nodes
+        .iter()
+        .find(|n| n.id == id)
+        .map(|n| n.title.trim().to_string())
+        .filter(|t| !t.is_empty())
+        .unwrap_or_else(|| id.to_string())
+}
+
+/// "X criou o nó" no log do criado e "criou Y" no de quem criou.
+fn log_created(a: &mut Active, creator: &str, id: &str, title: &str) {
+    let at = now();
+    let by = actor_name(a, creator);
+    a.sched.log(id, at, NodeEventKind::Created { by });
+    a.sched.log(
+        creator,
+        at,
+        NodeEventKind::CreatedNode {
+            title: title.to_string(),
+        },
+    );
 }
 
 /// O grafo da sessão ao vivo: só o nó Terminal, sem ligações (o mesmo
@@ -1668,7 +1811,13 @@ impl<H: RunHost> Runs<H> {
                 .then(|| id.clone())
         });
         match run_id {
-            Some(run_id) => self.close_live(&run_id),
+            Some(run_id) => {
+                if let Some(a) = self.active.lock().get_mut(&run_id) {
+                    a.sched
+                        .log(node_id, now(), NodeEventKind::Closed { by: Actor::You });
+                }
+                self.close_live(&run_id)
+            }
             None => Ok(()),
         }
     }
@@ -1691,8 +1840,17 @@ impl<H: RunHost> Runs<H> {
         let current = self
             .active
             .lock()
-            .get(run_id)
-            .is_some_and(|a| a.sched.attempt(node_id) == Some(attempt));
+            .get_mut(run_id)
+            .filter(|a| a.sched.attempt(node_id) == Some(attempt))
+            .map(|a| {
+                // O shell saiu sozinho (`exit`): o fechar pelo ■ já tirou o run.
+                let what = NodeEventKind::Exited {
+                    ok: true,
+                    code: None,
+                };
+                a.sched.log(node_id, now(), what);
+            })
+            .is_some();
         if current {
             let _ = self.close_live(run_id);
         }
@@ -1743,6 +1901,12 @@ impl<H: RunHost> Runs<H> {
                 return;
             }
             n.hosted_agent = Some(agent.to_string());
+            n.log(
+                now,
+                NodeEventKind::AgentStarted {
+                    agent: agent.to_string(),
+                },
+            );
             self.hosted.lock().insert(
                 session.to_string(),
                 HostedMark {
@@ -2000,7 +2164,21 @@ impl<H: RunHost> Runs<H> {
                 let kill = if closing {
                     a.sched.close_live(now())
                 } else {
-                    a.sched.stop(now())
+                    // O ■ Parar do run é do dono (o da tela, ou o ▶ de novo).
+                    let t = now();
+                    let running: Vec<String> = a
+                        .sched
+                        .run
+                        .nodes
+                        .iter()
+                        .filter(|(_, n)| n.status == NodeStatus::Running)
+                        .map(|(id, _)| id.clone())
+                        .collect();
+                    for id in running {
+                        a.sched
+                            .log(&id, t, NodeEventKind::Stopped { by: Actor::You });
+                    }
+                    a.sched.stop(t)
                 };
                 (a.sched.snapshot(), kill)
             });
@@ -2126,6 +2304,14 @@ impl<H: RunHost> Runs<H> {
                     .iter()
                     .filter_map(|id| {
                         a.sched.mark_running(id, t);
+                        let command = match a.graph.nodes.iter().find(|n| &n.id == id) {
+                            Some(Node {
+                                kind: NodeKind::Process { command, .. },
+                                ..
+                            }) => event_command(command),
+                            _ => None,
+                        };
+                        a.sched.log(id, t, NodeEventKind::Started { command });
                         // Variável que ficou sem valor depois do ▶ (o dono
                         // editou com o run aberto): falha com o motivo, em vez
                         // de rodar o comando com o buraco.
@@ -2386,12 +2572,16 @@ impl<H: RunHost> Runs<H> {
                     if a.sched.attempt(&node) != Some(attempt) {
                         return false;
                     }
-                    if from_scan {
-                        a.sched.replace_url(&node, url)
+                    let changed = if from_scan {
+                        a.sched.replace_url(&node, url.clone())
                     } else {
                         a.sched
-                            .publish_url(&node, path.to_string_lossy().into_owned(), url)
+                            .publish_url(&node, path.to_string_lossy().into_owned(), url.clone())
+                    };
+                    if changed {
+                        a.sched.log(&node, now(), NodeEventKind::Url { url });
                     }
+                    changed
                 });
                 if changed {
                     runs.publish_current(&run);
@@ -3648,8 +3838,10 @@ impl<H: RunHost> Runs<H> {
         }
         // `plan` não segura o alvo: a nota grava o texto e fica pronta.
         a.sched.add_node(&id, &[])?;
+        let title = note.title.clone();
         a.graph.nodes.push(note.clone());
         a.graph.edges.push(edge.clone());
+        log_created(a, agent, &id, &title);
         a.sched.run.created.push(Created {
             node: note,
             created_by: agent.to_string(),
@@ -3734,8 +3926,10 @@ impl<H: RunHost> Runs<H> {
             let sources: Vec<(String, EdgeKind)> =
                 edges.iter().map(|e| (e.from.clone(), e.kind)).collect();
             a.sched.add_node(&id, &sources)?;
+            let title = node.title.clone();
             a.graph.nodes.push(node.clone());
             a.graph.edges.extend(edges.iter().cloned());
+            log_created(a, orchestrator, &id, &title);
             a.sched.run.created.push(Created {
                 node,
                 created_by: orchestrator.to_string(),
@@ -3861,7 +4055,7 @@ impl<H: RunHost> Runs<H> {
                 "integração manual: só o dono roda — {node_id} espera o ▶ do dono no nó"
             ));
         }
-        self.restart_node(run_id, node_id)?;
+        self.restart_node_by(run_id, node_id, Some(caller))?;
         if process {
             return Ok(self.settle_process(run_id, node_id));
         }
@@ -3922,7 +4116,8 @@ impl<H: RunHost> Runs<H> {
                 .nodes
                 .get(node_id)
                 .and_then(|n| n.session_id.clone());
-            a.sched.stop_node(node_id, now()).or(alive_agent)
+            let by = Actor::Agent(actor_name(a, orchestrator));
+            a.sched.stop_node_by(node_id, now(), by).or(alive_agent)
         };
         self.publish_current(run_id);
         if let Some(session) = kill {
@@ -3940,7 +4135,7 @@ impl<H: RunHost> Runs<H> {
         let (was_active, mut kill) = {
             let mut active = self.active.lock();
             match active.get_mut(run_id) {
-                Some(a) => (true, a.sched.stop_node(node_id, now())),
+                Some(a) => (true, a.sched.stop_node_by(node_id, now(), Actor::You)),
                 None => (false, None),
             }
         };
@@ -3980,6 +4175,17 @@ impl<H: RunHost> Runs<H> {
     /// A `out/` da tentativa de antes é limpa antes de subir; quem depende
     /// do nó e já consumiu o valor antigo fica "↻ para aplicar".
     pub fn restart_node(&self, run_id: &str, node_id: &str) -> Result<(), String> {
+        self.restart_node_by(run_id, node_id, None)
+    }
+
+    /// [`Runs::restart_node`] com quem reiniciou: `None` é o dono, `Some`
+    /// o nó do agente (`orbit_restart_node`).
+    fn restart_node_by(
+        &self,
+        run_id: &str,
+        node_id: &str,
+        agent: Option<&str>,
+    ) -> Result<(), String> {
         let (session, node_dir) = {
             let mut active = self.active.lock();
             let a = active
@@ -3988,9 +4194,10 @@ impl<H: RunHost> Runs<H> {
             // O reinício usa as variáveis de agora: a que ficou sem valor
             // recusa antes de matar a sessão velha.
             active_missing_variable(a, node_id)?;
+            let by = agent.map_or(Actor::You, |id| Actor::Agent(actor_name(a, id)));
             let session = a
                 .sched
-                .rerun(node_id)
+                .rerun_by(node_id, now(), by)
                 .map_err(|e| format!("{}: {e}", active_label(a, node_id)))?;
             a.talk.reset_state(node_id);
             (session, a.dir.join(node_id))
@@ -6966,6 +7173,54 @@ mod tests {
         runs.stop(&run.id).unwrap();
     }
 
+    /// O log da sessão do criado e de quem criou: "o criou o nó", subiu,
+    /// "criou api" no orquestrador, e o `orbit_stop_node` é do agente.
+    #[cfg(unix)]
+    #[test]
+    fn session_log_of_created_nodes() {
+        use serde_json::json;
+        let dir = tempfile::tempdir().unwrap();
+        let work = dir.path().join("api");
+        std::fs::create_dir(&work).unwrap();
+        let (runs, host, _app) = pty_runs(dir.path().join("runs"));
+        let g = graph(vec![orchestrator("o")], vec![]);
+        runs.store.save_orbit_graph(&g, true, None).unwrap();
+        let run = runs.start_now(g, vec![]).unwrap();
+        wait_orchestrating(&runs, &run.id, "o");
+        let tools = tools_of(&host, "o");
+        let created = tools
+            .call(
+                "orbit_create_process",
+                &json!({"title": "api", "command": "sleep 30", "dir": work}),
+            )
+            .unwrap();
+        let api = created["node_id"].as_str().unwrap().to_string();
+        wait_status(&runs, &run.id, &api, NodeStatus::Running);
+        tools
+            .call("orbit_stop_node", &json!({"node_id": api}))
+            .unwrap();
+        let r = runs.get(&run.id).unwrap();
+        assert_eq!(
+            event_kinds(&r.nodes[&api]),
+            vec![
+                NodeEventKind::Created { by: "o".into() },
+                NodeEventKind::Started {
+                    command: Some("sleep 30".into())
+                },
+                NodeEventKind::Stopped {
+                    by: Actor::Agent("o".into())
+                },
+            ],
+            "{r:?}"
+        );
+        assert!(
+            event_kinds(&r.nodes["o"]).contains(&NodeEventKind::CreatedNode {
+                title: "api".into()
+            })
+        );
+        runs.stop(&run.id).unwrap();
+    }
+
     #[cfg(unix)]
     #[test]
     fn orchestrator_creates_nodes_in_the_active_run_and_stop_leaves_them_out() {
@@ -8585,6 +8840,145 @@ mod tests {
         assert!(s.rerun("b").unwrap_err().contains("já fechou"));
     }
 
+    fn event_kinds(n: &NodeRun) -> Vec<NodeEventKind> {
+        n.events.iter().map(|e| e.what.clone()).collect()
+    }
+
+    /// O log da sessão: o fim sai sozinho do `finish`; reiniciar e parar
+    /// dizem quem fez; o log atravessa o ↻ (é do nó no run, não da tentativa)
+    /// e parar o que já parou não repete a linha.
+    #[test]
+    fn session_log_records_who_did_what() {
+        let g = graph(vec![process("p", "x"), process("keep", "x")], vec![]);
+        let mut s = Scheduler::new(&g, "r".into(), 0);
+        // `keep` segura o run aberto (só assim o ↻ vale).
+        s.mark_running("keep", 1);
+        s.mark_running("p", 1);
+        s.finish(
+            "p",
+            Outcome {
+                exit_code: Some(3),
+                ..Outcome::failed("exit 3")
+            },
+            2,
+        );
+        s.rerun_by("p", 3, Actor::You).unwrap();
+        s.unhold("p");
+        s.mark_running("p", 4);
+        assert_eq!(s.stop_node_by("p", 5, Actor::Agent("orq".into())), None);
+        s.stop_node_by("p", 6, Actor::You);
+        let p = &s.run().nodes["p"];
+        assert_eq!(
+            event_kinds(p),
+            vec![
+                NodeEventKind::Exited {
+                    ok: false,
+                    code: Some(3)
+                },
+                NodeEventKind::Restarted {
+                    by: Actor::You,
+                    rerun: true
+                },
+                NodeEventKind::Stopped {
+                    by: Actor::Agent("orq".into())
+                },
+            ]
+        );
+        assert_eq!(p.events.iter().map(|e| e.at).collect::<Vec<_>>(), [2, 3, 5]);
+        assert_eq!(p.attempt, 1);
+    }
+
+    /// Reiniciar o que roda é "reiniciou", não "rodou de novo".
+    #[test]
+    fn session_log_tells_restart_from_rerun() {
+        let mut s = Scheduler::new(&graph(vec![process("p", "x")], vec![]), "r".into(), 0);
+        s.mark_running("p", 1);
+        s.rerun_by("p", 2, Actor::Agent("planner".into())).unwrap();
+        assert_eq!(
+            event_kinds(&s.run().nodes["p"]),
+            vec![NodeEventKind::Restarted {
+                by: Actor::Agent("planner".into()),
+                rerun: false
+            }]
+        );
+        // Recusado (esperando): sem linha no log.
+        assert!(s.rerun_by("p", 3, Actor::You).is_err());
+        assert_eq!(s.run().nodes["p"].events.len(), 1);
+    }
+
+    #[test]
+    fn session_log_keeps_the_newest_up_to_the_cap() {
+        let mut s = Scheduler::new(&graph(vec![process("p", "x")], vec![]), "r".into(), 0);
+        for at in 0..(MAX_NODE_EVENTS as u64 + 10) {
+            s.log(
+                "p",
+                at,
+                NodeEventKind::Url {
+                    url: format!("http://localhost:{at}"),
+                },
+            );
+        }
+        let events = &s.run().nodes["p"].events;
+        assert_eq!(events.len(), MAX_NODE_EVENTS);
+        assert_eq!(events[0].at, 10);
+        // Nó que não existe: nada.
+        s.log("x", 1, NodeEventKind::Started { command: None });
+        assert!(!s.run().nodes.contains_key("x"));
+    }
+
+    /// O comando vai para o banco e para a tela: a primeira linha, redigida
+    /// e cortada. Chave sintética.
+    #[test]
+    fn session_log_command_is_redacted_and_short() {
+        let key = "sk-abcdef1234567890ABCDEFghijkl";
+        let out = event_command(&format!("\n  OPENAI_KEY={key} bun server.ts\nsegunda")).unwrap();
+        assert!(!out.contains(key), "{out}");
+        assert!(
+            out.starts_with("OPENAI_KEY=[REDACTED] bun server.ts"),
+            "{out}"
+        );
+        assert!(!out.contains("segunda"));
+        let long = event_command(&"a".repeat(500)).unwrap();
+        assert_eq!(long.chars().count(), EVENT_COMMAND_MAX + 1);
+        assert!(long.ends_with('…'));
+        assert_eq!(event_command("  \n "), None);
+    }
+
+    /// O formato que o front lê: `what.type` em camelCase, quem fez como
+    /// `"you"` ou `{ "agent": nome }`.
+    #[test]
+    fn session_log_wire_format() {
+        let e = NodeEvent {
+            at: 7,
+            what: NodeEventKind::Stopped {
+                by: Actor::Agent("claude".into()),
+            },
+        };
+        assert_eq!(
+            serde_json::to_value(&e).unwrap(),
+            serde_json::json!({"at": 7, "what": {"type": "stopped", "by": {"agent": "claude"}}})
+        );
+        let e = NodeEvent {
+            at: 1,
+            what: NodeEventKind::CreatedNode {
+                title: "api".into(),
+            },
+        };
+        assert_eq!(
+            serde_json::to_value(&e).unwrap(),
+            serde_json::json!({"at": 1, "what": {"type": "createdNode", "title": "api"}})
+        );
+        assert_eq!(
+            serde_json::to_value(Actor::You).unwrap(),
+            serde_json::json!("you")
+        );
+        // Run gravado antes do log: lê sem `events`.
+        let mut v = serde_json::to_value(NodeRun::waiting()).unwrap();
+        v.as_object_mut().unwrap().remove("events");
+        let n: NodeRun = serde_json::from_value(v).unwrap();
+        assert!(n.events.is_empty());
+    }
+
     fn wait_attempt(
         runs: &Runs<Arc<PtyHost>>,
         run: &str,
@@ -8628,6 +9022,39 @@ mod tests {
         assert_eq!(r.status, RunStatus::Running);
         assert!(host.pool.is_alive(new.parse().unwrap()));
         runs.stop(&run.id).unwrap();
+    }
+
+    /// O log da sessão pelo caminho do app: subiu (com o comando), você
+    /// reiniciou, subiu de novo, você parou.
+    #[cfg(unix)]
+    #[test]
+    fn session_log_through_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let (runs, _host, _app) = pty_runs(dir.path().join("runs"));
+        let run = runs
+            .start_now(graph(vec![process("p", "sleep 30")], vec![]), vec![])
+            .unwrap();
+        runs.restart_node(&run.id, "p").unwrap();
+        wait_attempt(&runs, &run.id, "p", 1, NodeStatus::Running);
+        runs.stop_one(&run.id, "p").unwrap();
+        let r = runs.get(&run.id).unwrap();
+        let started = NodeEventKind::Started {
+            command: Some("sleep 30".into()),
+        };
+        assert_eq!(
+            event_kinds(&r.nodes["p"]),
+            vec![
+                started.clone(),
+                NodeEventKind::Restarted {
+                    by: Actor::You,
+                    rerun: false
+                },
+                started,
+                NodeEventKind::Stopped { by: Actor::You },
+            ],
+            "{r:?}"
+        );
+        let _ = runs.stop(&run.id);
     }
 
     /// Rodar de novo o processo que falhou, com a execução aberta: ele roda

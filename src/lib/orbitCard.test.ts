@@ -9,6 +9,7 @@ import {
   diffSummary,
   failureFooter,
   headerActions,
+  sessionLog,
   showsEndLog,
   nodeApproval,
   ringState,
@@ -256,5 +257,69 @@ describe("headerActions", () => {
     expect(browser.open).toBeNull();
     expect(browser.stop).toBeNull();
     expect(browser.again?.enabled).toBe(true);
+  });
+});
+
+describe("sessionLog", () => {
+  test("processo: criado pelo agente, subiu com o comando, porta, você reiniciou, saiu", () => {
+    const lines = sessionLog(
+      [
+        { at: 1, what: { type: "created", by: "claude" } },
+        { at: 2, what: { type: "started", command: "bun --hot server.ts" } },
+        { at: 3, what: { type: "url", url: "http://localhost:3000/" } },
+        { at: 4, what: { type: "restarted", by: "you", rerun: false } },
+        { at: 5, what: { type: "exited", ok: false, code: 3 } },
+        { at: 6, what: { type: "stopped", by: { agent: "claude" } } },
+      ],
+      "process",
+    );
+    expect(lines.map((l) => [l.tone, l.key, l.params, l.you])).toEqual([
+      ["violet", "orbitLog_created", { by: "claude" }, false],
+      ["green", "orbitLog_startedCommand", { command: "bun --hot server.ts" }, false],
+      ["green", "orbitLog_port", { port: 3000 }, false],
+      ["blue", "orbitLog_restartedYou", {}, true],
+      ["red", "orbitLog_failedCode", { code: 3 }, false],
+      ["faint", "orbitLog_stoppedAgent", { agent: "claude" }, false],
+    ]);
+    expect(lines.map((l) => l.at)).toEqual([1, 2, 3, 4, 5, 6]);
+  });
+  test("terminal: aberto, claude, criou, o shell saiu, fechado por você", () => {
+    const lines = sessionLog(
+      [
+        { at: 1, what: { type: "started", command: null } },
+        { at: 2, what: { type: "agentStarted", agent: "claude" } },
+        { at: 3, what: { type: "createdNode", title: "api" } },
+        { at: 4, what: { type: "exited", ok: true, code: null } },
+        { at: 5, what: { type: "closed", by: "you" } },
+      ],
+      "terminal",
+    );
+    expect(lines.map((l) => l.key)).toEqual([
+      "orbitLog_opened",
+      "orbitLog_agentStarted",
+      "orbitLog_createdNode",
+      "orbitLog_shellExited",
+      "orbitLog_closedYou",
+    ]);
+  });
+  test("sem eventos (run gravado antes do log): vazio", () => {
+    expect(sessionLog(undefined, "agent")).toEqual([]);
+  });
+  test("rodou de novo pelo agente; terminou sem código; url sem porta", () => {
+    const lines = sessionLog(
+      [
+        { at: 1, what: { type: "restarted", by: { agent: "planner" }, rerun: true } },
+        { at: 2, what: { type: "exited", ok: true, code: null } },
+        { at: 3, what: { type: "url", url: "file:///x" } },
+        { at: 4, what: { type: "started", command: null } },
+      ],
+      "agent",
+    );
+    expect(lines.map((l) => [l.key, l.params])).toEqual([
+      ["orbitLog_rerunAgent", { agent: "planner" }],
+      ["orbitLog_done", {}],
+      ["orbitLog_url", { url: "file:///x" }],
+      ["orbitLog_started", {}],
+    ]);
   });
 });

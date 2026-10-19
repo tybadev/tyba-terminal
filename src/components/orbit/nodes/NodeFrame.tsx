@@ -66,6 +66,8 @@ import {
   failureFooter,
   headerActions,
   ringState,
+  sessionLog,
+  type LogTone,
   type AgentTelemetry,
   type RingState,
 } from "@/lib/orbitCard";
@@ -653,6 +655,101 @@ function CapsuleTitle({
   );
 }
 
+/** Cor do ponto de cada linha do log (quadro OrbitAcoesLog, B). */
+const LOG_DOT: Record<LogTone, string> = {
+  violet: "bg-tyba-violet",
+  green: "bg-tyba-green",
+  amber: "bg-tyba-amber",
+  blue: "bg-tyba-blue",
+  red: "bg-tyba-red",
+  faint: "bg-tyba-text-faint",
+};
+
+const logClock = (at: number) =>
+  new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+
+/**
+ * O ⋯ do nó (quadro OrbitAcoesLog, B): o log da sessão — o que aconteceu
+ * com o nó nesta execução e quem fez, como o core registrou —, os detalhes
+ * que antes ficavam no ⋯ e, no rodapé, as ações que não cabem no cabeçalho.
+ * Esc fecha.
+ */
+function SessionLog({
+  id,
+  kind,
+  rows,
+  actions,
+  onClose,
+}: {
+  id: string;
+  kind: OrbitNode["kind"]["type"];
+  rows: NodeDetail[];
+  actions: ReactNode;
+  onClose: () => void;
+}) {
+  const { t } = useTranslation();
+  const { run, runs } = useOrbit();
+  // O Terminal guarda o log na sessão ao vivo que o segura.
+  const held = (kind === "terminal" && terminalRun(runs, id)) || run;
+  const lines = sessionLog(held?.nodes[id]?.events, kind);
+  useEffect(() => {
+    const key = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    window.addEventListener("keydown", key);
+    return () => window.removeEventListener("keydown", key);
+  }, [onClose]);
+  return (
+    <div
+      role="dialog"
+      aria-label={t("orbitSessionLog")}
+      className="nodrag nowheel absolute top-[50px] right-[18px] z-[4] w-[380px] max-w-[calc(100%-36px)] overflow-hidden rounded-[14px] border border-tyba-text/[.12] bg-tyba-surface font-mono shadow-[0_18px_48px_rgba(0,0,0,0.6)]"
+    >
+      <div className="flex items-center justify-between border-b border-tyba-text/[.07] px-3.5 py-3">
+        <span className="font-sans text-[13px] font-semibold text-tyba-text">{t("orbitSessionLog")}</span>
+        {held?.number ? (
+          <span className="text-[11px] text-tyba-text-faint">
+            {t("orbitSessionLogRun", { number: held.number })}
+          </span>
+        ) : null}
+      </div>
+      <div className="max-h-[220px] overflow-y-auto py-1.5">
+        {lines.length === 0 ? (
+          <div className="px-3.5 py-1.5 text-[11.5px] text-tyba-text-faint">
+            {t("orbitSessionLogEmpty")}
+          </div>
+        ) : (
+          lines.map((l, i) => (
+            <div
+              key={i}
+              className={`grid grid-cols-[44px_14px_1fr] gap-2 px-3.5 py-1.5 text-[11.5px] leading-[1.5] ${
+                l.you ? "bg-tyba-text/[.04] text-tyba-text" : "text-tyba-text-muted"
+              }`}
+            >
+              <span className="text-tyba-text-faint tabular-nums">{logClock(l.at)}</span>
+              <span className={`mt-[5px] size-[7px] rounded-full ${LOG_DOT[l.tone]}`} />
+              <span className="min-w-0 break-words">{t(l.key, l.params)}</span>
+            </div>
+          ))
+        )}
+      </div>
+      {rows.length > 0 && (
+        <div className="grid grid-cols-[auto_1fr_auto_1fr] gap-x-2.5 gap-y-1 border-t border-tyba-text/[.07] px-3.5 py-2.5 text-[11px]">
+          {rows.map((d) => (
+            <Fragment key={d.label}>
+              <span className="text-tyba-text-faint">{d.label}</span>
+              <span className="min-w-0 truncate text-tyba-text">{d.value || "—"}</span>
+            </Fragment>
+          ))}
+        </div>
+      )}
+      {actions && (
+        <div className="flex flex-wrap gap-2 border-t border-tyba-text/[.07] px-3.5 py-2.5">
+          {actions}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /**
  * Ícone do cabeçalho (quadro OrbitAcoesLog, A): redondo, sem fundo, com a
  * dica no hover. Apagado quando a ação não vale agora, com o motivo na dica.
@@ -1032,8 +1129,8 @@ export function NodeFrame({
                     <Trash size={14} />
                   </HeaderButton>
                   <HeaderButton
-                    action={{ enabled: true, hint: "orbitNodeDetails" }}
-                    label={t("orbitNodeDetails")}
+                    action={{ enabled: true, hint: "orbitSessionLog" }}
+                    label={t("orbitSessionLog")}
                     pressed={open}
                     onClick={() => setOpen((v) => !v)}
                   >
@@ -1106,66 +1203,6 @@ export function NodeFrame({
             </div>
           )
         )}
-        {open && (
-          <div className="nodrag nowheel absolute inset-0 overflow-y-auto bg-tyba-sunken px-4 pt-7 pb-3.5 text-[11px]">
-            <div className="grid grid-cols-[auto_1fr_auto_1fr] gap-x-3 gap-y-1.5">
-              {[
-                ...details,
-                ...(nodeRun && stateRows
-                  ? [
-                      {
-                        label: t("orbitDetailState"),
-                        value: t(`orbitStatus_${nodeRun.status}`),
-                      },
-                      ...(nodeRun.startedAt !== null
-                        ? [{ label: t("orbitDetailTime"), value: <Elapsed nodeRun={nodeRun} /> }]
-                        : []),
-                    ]
-                  : []),
-              ].map((d) => (
-                <Fragment key={d.label}>
-                  <span className="text-tyba-text-faint">{d.label}</span>
-                  <span className="min-w-0 truncate text-tyba-text">{d.value || "—"}</span>
-                </Fragment>
-              ))}
-            </div>
-            <div className="flex flex-wrap gap-2 pt-3">
-              {agent && (
-                <button
-                  type="button"
-                  aria-disabled
-                  title={t("orbitSwapRoleSoon")}
-                  className={`${detailBtn} ${soonClass}`}
-                >
-                  {t("orbitSwapRole")}
-                </button>
-              )}
-              {keepAll && (
-                <button
-                  type="button"
-                  title={t("orbitKeepAllHint")}
-                  onClick={() => keepCreated(null, id)}
-                  className={`${detailBtn} text-tyba-text hover:bg-tyba-text/[.12]`}
-                >
-                  {t("orbitKeepAll")}
-                </button>
-              )}
-              {clearData && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setOpen(false);
-                    setClearing(true);
-                  }}
-                  className={`${detailBtn} text-tyba-text hover:text-tyba-red`}
-                >
-                  <Broom size={12} />
-                  {t("orbitBrowserClearData")}
-                </button>
-              )}
-            </div>
-          </div>
-        )}
         {dropKind && (
           <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-[color-mix(in_srgb,var(--tyba-violet)_10%,transparent)]">
             <span className="rounded-full border border-tyba-violet/60 bg-tyba-surface px-3 py-1 text-[12px] text-tyba-text shadow-[var(--tyba-shadow-md)]">
@@ -1174,6 +1211,66 @@ export function NodeFrame({
           </div>
         )}
       </div>
+      {open && (
+        <SessionLog
+          id={id}
+          kind={node.kind.type}
+          onClose={() => setOpen(false)}
+          rows={[
+            ...details,
+            ...(nodeRun && stateRows
+              ? [
+                  {
+                    label: t("orbitDetailState"),
+                    value: t(`orbitStatus_${nodeRun.status}`),
+                  },
+                  ...(nodeRun.startedAt !== null
+                    ? [{ label: t("orbitDetailTime"), value: <Elapsed nodeRun={nodeRun} /> }]
+                    : []),
+                ]
+              : []),
+          ]}
+          actions={
+            (agent || keepAll || clearData) && (
+              <>
+                {agent && (
+                  <button
+                    type="button"
+                    aria-disabled
+                    title={t("orbitSwapRoleSoon")}
+                    className={`${detailBtn} ${soonClass}`}
+                  >
+                    {t("orbitSwapRole")}
+                  </button>
+                )}
+                {keepAll && (
+                  <button
+                    type="button"
+                    title={t("orbitKeepAllHint")}
+                    onClick={() => keepCreated(null, id)}
+                    className={`${detailBtn} text-tyba-text hover:bg-tyba-text/[.12]`}
+                  >
+                    {t("orbitKeepAll")}
+                  </button>
+                )}
+                {clearData && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setOpen(false);
+                      setClearing(true);
+                    }}
+                    className={`${detailBtn} text-tyba-text hover:text-tyba-red`}
+                  >
+                    <Broom size={12} />
+                    {t("orbitBrowserClearData")}
+                  </button>
+                )}
+              </>
+            )
+          }
+        />
+      )}
       {resizeSize && (
         <span className="pointer-events-none absolute right-[26px] -bottom-[26px] z-[2] rounded-full border border-tyba-violet/50 bg-tyba-surface px-[9px] py-0.5 text-[11px] whitespace-nowrap text-tyba-violet">
           {resizeSize}
