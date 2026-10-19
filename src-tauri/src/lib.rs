@@ -345,7 +345,6 @@ fn install_screen_observers(
                     &observed_sessions,
                     &observed_store,
                     id,
-                    true,
                 );
             }
             #[cfg(not(any(target_os = "linux", target_os = "macos")))]
@@ -590,14 +589,8 @@ fn handle_plugin_event(
                 );
             });
         }
-        agent::claude_plugin::PluginSignal::Settled { approved } => {
-            agent::session::plugin_ask_settled(
-                app,
-                &state.sessions,
-                &state.store,
-                session,
-                approved,
-            );
+        agent::claude_plugin::PluginSignal::Settled => {
+            agent::session::plugin_ask_settled(app, &state.sessions, &state.store, session);
         }
         agent::claude_plugin::PluginSignal::None => {}
     }

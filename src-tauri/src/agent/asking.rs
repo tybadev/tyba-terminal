@@ -15,11 +15,14 @@ use crate::session::{SessionId, SessionStatus};
 /// A lista inteira, mais antigo primeiro, a cada mudança.
 pub const EVENT_ASKS: &str = "agent://asks";
 
+/// Os campos do card; o texto é montado no front, com i18n. Nada do payload
+/// do hook: o agente, e projeto e branch lidos do cwd do processo.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Ask {
     pub session_id: SessionId,
-    /// Texto pronto do core, já redigido; nada do payload do hook.
-    pub body: String,
+    pub agent: String,
+    pub project: Option<String>,
+    pub branch: Option<String>,
 }
 
 #[derive(Default)]
@@ -30,16 +33,16 @@ pub struct AskBook {
 impl AskBook {
     /// Um pendente por sessão: pedido novo da mesma sessão só troca o texto e
     /// mantém o lugar na fila. Devolve se a lista mudou.
-    pub fn record(&self, session_id: SessionId, body: String) -> bool {
+    pub fn record(&self, ask: Ask) -> bool {
         let mut asks = self.asks.lock();
-        match asks.iter_mut().find(|a| a.session_id == session_id) {
-            Some(ask) if ask.body == body => false,
-            Some(ask) => {
-                ask.body = body;
+        match asks.iter_mut().find(|a| a.session_id == ask.session_id) {
+            Some(old) if *old == ask => false,
+            Some(old) => {
+                *old = ask;
                 true
             }
             None => {
-                asks.push(Ask { session_id, body });
+                asks.push(ask);
                 true
             }
         }
@@ -68,8 +71,8 @@ fn emit(app: &AppHandle) {
 }
 
 /// O agente abriu um pedido de permissão.
-pub fn record(app: &AppHandle, session_id: SessionId, body: String) {
-    if book().record(session_id, body) {
+pub fn record(app: &AppHandle, ask: Ask) {
+    if book().record(ask) {
         emit(app);
     }
 }
@@ -93,28 +96,25 @@ pub fn on_status(app: &AppHandle, session_id: SessionId, status: &SessionStatus)
 mod tests {
     use super::*;
 
+    fn ask(session_id: SessionId, branch: &str) -> Ask {
+        Ask {
+            session_id,
+            agent: "Claude".into(),
+            project: Some("api".into()),
+            branch: Some(branch.into()),
+        }
+    }
+
     #[test]
     fn one_pending_per_session_in_arrival_order() {
         let book = AskBook::default();
         let a = SessionId::new_v4();
         let b = SessionId::new_v4();
-        assert!(book.record(a, "A1".into()));
-        assert!(book.record(b, "B1".into()));
-        assert!(book.record(a, "A2".into()));
-        assert!(!book.record(a, "A2".into()));
-        assert_eq!(
-            book.list(),
-            vec![
-                Ask {
-                    session_id: a,
-                    body: "A2".into()
-                },
-                Ask {
-                    session_id: b,
-                    body: "B1".into()
-                },
-            ]
-        );
+        assert!(book.record(ask(a, "x")));
+        assert!(book.record(ask(b, "y")));
+        assert!(book.record(ask(a, "z")));
+        assert!(!book.record(ask(a, "z")));
+        assert_eq!(book.list(), vec![ask(a, "z"), ask(b, "y")]);
     }
 
     #[test]
@@ -122,8 +122,8 @@ mod tests {
         let book = AskBook::default();
         let a = SessionId::new_v4();
         let b = SessionId::new_v4();
-        book.record(a, "A".into());
-        book.record(b, "B".into());
+        book.record(ask(a, "x"));
+        book.record(ask(b, "y"));
         assert!(book.clear(a));
         assert!(!book.clear(a));
         assert_eq!(book.list().len(), 1);

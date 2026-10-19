@@ -923,11 +923,14 @@ export const onAgentAlert = (
 
 /** Agente livre, fatia 5: um pedido de permissão em aberto no prompt do
  * agente. O core guarda um por sessão e manda a lista inteira, mais antigo
- * primeiro; o texto vem pronto ("O Claude está pedindo algo · projeto ·
- * branch"). Nada aqui aprova. */
+ * primeiro, com os campos; o texto é montado aqui, com i18n. Nada aqui
+ * aprova. */
 export interface AgentAsk {
   session_id: SessionId;
-  body: string;
+  /** "Claude", "Codex". */
+  agent: string;
+  project: string | null;
+  branch: string | null;
 }
 
 export const onAgentAsks = (

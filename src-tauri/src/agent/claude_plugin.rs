@@ -395,12 +395,9 @@ pub fn resolve_plugin_event(
 pub enum PluginSignal {
     /// Pedido de permissão: marca e avisa.
     Asking,
-    /// O pedido não está mais aberto: o turno fechou (`Stop`, aprovado —
-    /// negar no prompt nativo não dispara `Stop`) ou a sessão recomeçou
-    /// (`SessionStart`, negado).
-    Settled {
-        approved: bool,
-    },
+    /// O pedido não está mais aberto: o turno fechou (`Stop`) ou a sessão
+    /// recomeçou (`SessionStart`). Sem veredito.
+    Settled,
     None,
 }
 
@@ -411,8 +408,7 @@ pub fn plugin_signal(event: &str, notification_type: Option<&str>) -> PluginSign
     match (event, notification_type) {
         ("PermissionRequest", _) => PluginSignal::Asking,
         ("Notification", Some("permission_prompt")) => PluginSignal::Asking,
-        ("Stop", _) => PluginSignal::Settled { approved: true },
-        ("SessionStart", _) => PluginSignal::Settled { approved: false },
+        ("Stop" | "SessionStart", _) => PluginSignal::Settled,
         _ => PluginSignal::None,
     }
 }
@@ -695,14 +691,8 @@ mod tests {
             PluginSignal::None
         );
         assert_eq!(plugin_signal("Notification", None), PluginSignal::None);
-        assert_eq!(
-            plugin_signal("Stop", None),
-            PluginSignal::Settled { approved: true }
-        );
-        assert_eq!(
-            plugin_signal("SessionStart", None),
-            PluginSignal::Settled { approved: false }
-        );
+        assert_eq!(plugin_signal("Stop", None), PluginSignal::Settled);
+        assert_eq!(plugin_signal("SessionStart", None), PluginSignal::Settled);
         assert_eq!(plugin_signal("SubagentStop", None), PluginSignal::None);
     }
 

@@ -683,7 +683,7 @@ const resources = {
       sshIntegrationEphemeral:
         "Sessão integrada, sem persistência: o servidor não tem tmux, e o que está aqui morre se a conexão cair ou se você fechar o TYBA.",
       sshRemoteAgentNotice:
-        "{{binary}} está rodando no servidor — sem jaula e sem inbox de aprovações.",
+        "{{binary}} está rodando no servidor — sem o guarda-corpo do TYBA (push na main, merge de PR) e sem observação: nenhum aviso de pedido, histórico ou monitor.",
       shimV2IntroToast:
         "Agora o TYBA acompanha o claude que você roda aqui — monitor, histórico e notificação —, sem jaula e sem perguntar nada. O guarda-corpo recusa push na main e merge de PR.",
       agentResumeNotice:
@@ -1086,6 +1086,7 @@ const resources = {
       nextAttentionSessionNav: "Próximo agente esperando",
       sessionTurnEndedTitle: "Concluído",
       askingGo: "Ir",
+      askingBody: "O {{agent}} está pedindo algo",
       askingHelp: "Responda no prompt do Claude.",
       sessionFailedTitle: "Falhou",
       openSessionShortcut: "abrir sessão",
@@ -2744,7 +2745,7 @@ const resources = {
       sshIntegrationEphemeral:
         "Integrated session, no persistence: the server has no tmux, so what is here dies if the connection drops or you close TYBA.",
       sshRemoteAgentNotice:
-        "{{binary}} is running on the server — no jail, no approval inbox.",
+        "{{binary}} is running on the server — without the TYBA guard rail (push to main, PR merge) and unobserved: no request notice, history or monitor.",
       shimV2IntroToast:
         "TYBA now follows the claude you run here — monitor, history and notifications — with no jail and no prompts. The guard rail refuses pushes to main and PR merges.",
       agentResumeNotice:
@@ -3145,6 +3146,7 @@ const resources = {
       nextAttentionSessionNav: "Next agent waiting",
       sessionTurnEndedTitle: "Finished",
       askingGo: "Go",
+      askingBody: "{{agent}} is asking for something",
       askingHelp: "Answer in Claude's prompt.",
       sessionFailedTitle: "Failed",
       openSessionShortcut: "open session",

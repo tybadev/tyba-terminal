@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ArrowRight, CheckCircle, Warning, XCircle } from "@phosphor-icons/react";
 
-import { visibleAsk } from "@/lib/asking";
+import { askingText, visibleAsk } from "@/lib/asking";
 
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -671,20 +671,21 @@ export function NotificationToaster({
               className="mt-0.5 shrink-0 text-tyba-amber"
             />
             <div className="min-w-0 flex-1">
-              <ToastTitle>{ask.body}</ToastTitle>
+              <ToastTitle>{askingText(ask, t)}</ToastTitle>
               <ToastDescription>{t("askingHelp")}</ToastDescription>
               <div className="mt-2 flex flex-wrap gap-2">
-                <ToastAction altText={t("askingGo")} asChild>
-                  <Button
-                    size="sm"
-                    onClick={() => {
-                      void focusSession(ask.session_id).catch(() => {});
-                    }}
-                    className="h-6 rounded-[4px] px-2.5 text-[11px]"
-                  >
-                    {t("askingGo")}
-                  </Button>
-                </ToastAction>
+                {/* Botão comum, não `ToastAction`: aquele fecha o toast, e
+                    fechar dispensa o pedido no core. "Ir" só troca de pane;
+                    quem dispensa é o X. */}
+                <Button
+                  size="sm"
+                  onClick={() => {
+                    void focusSession(ask.session_id).catch(() => {});
+                  }}
+                  className="h-6 rounded-[4px] px-2.5 text-[11px]"
+                >
+                  {t("askingGo")}
+                </Button>
               </div>
             </div>
           </div>

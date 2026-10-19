@@ -255,7 +255,15 @@ pub(crate) fn notify_asking(
         branch.as_deref(),
     );
     let body = crate::session::redact::redact(&body).into_owned();
-    crate::agent::asking::record(app, id, body.clone());
+    crate::agent::asking::record(
+        app,
+        crate::agent::asking::Ask {
+            session_id: id,
+            agent: agent_display_name(runner),
+            project: project.clone(),
+            branch: branch.clone(),
+        },
+    );
     notify_native_shown(
         app,
         sessions,
@@ -283,6 +291,11 @@ pub(crate) fn plugin_asking(
     id: SessionId,
     summary: Option<String>,
 ) {
+    // O par `PermissionRequest` + `Notification` do mesmo prompt chega em
+    // duas threads: a checagem e a gravação ficam sob o mesmo lock, ou o
+    // histórico ganha duas linhas.
+    static RECORDING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let guard = RECORDING.lock().unwrap_or_else(|e| e.into_inner());
     if sessions
         .get(id)
         .is_some_and(|s| !crate::status::agent_events::is_native_prompt(&s.status))
@@ -309,42 +322,47 @@ pub(crate) fn plugin_asking(
     } else {
         crate::agent::claude_plugin::mark_plugin_ask_kept(id);
     }
+    drop(guard);
     crate::agent::claude_plugin::with_ask_slot(id, std::time::Instant::now(), || {
         notify_asking(app, sessions, store, &AgentRunnerKind::ClaudeCode, id)
     });
 }
 
-/// Claude cru (plugin): o pedido fechou. `approved` quando o claude seguiu
-/// trabalhando (a tela mostrou trabalho, ou o `Stop` — negar no prompt nativo
-/// não dispara `Stop`); negado quando a sessão recomeçou. É dedução, como a
-/// do caminho hospedado.
+/// Claude cru (plugin): o pedido fechou — o claude voltou a trabalhar (tela),
+/// o turno acabou (`Stop`) ou a sessão recomeçou. O plugin não tem sinal de
+/// aprovação nem de negativa (o claude que negou segue trabalhando no turno
+/// seguinte), então o pedido fecha SEM veredito: nunca conta como aprovado.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) fn plugin_ask_settled(
     app: &AppHandle,
     sessions: &SharedSessionManager,
     store: &Store,
     id: SessionId,
-    approved: bool,
 ) {
     let Some(inferred) = crate::agent::claude_plugin::take_plugin_ask(id) else {
         return;
     };
     sessions.leave_native_prompt(app, id);
-    let Some((row, key)) = inferred else {
-        return;
-    };
-    let session = id.to_string();
-    let now = crate::approvals::now_ms();
-    if approved {
-        if let Ok(Some(_)) = store.resolve_inferred_by_call_key(&session, &key, "approved", now) {
-            crate::notifications::record(app, |n| n.native_prompt_approved(row));
+    if let Some((row, key)) = inferred {
+        if settle_plugin_inferred(store, id, &key) {
+            crate::notifications::record(app, |n| n.native_prompt_settled(row));
         }
-    } else if store
-        .deny_pending_inferred_for_session(&session, now)
-        .is_ok_and(|n| n > 0)
-    {
-        crate::notifications::record(app, |n| n.native_prompts_denied(id));
     }
+}
+
+/// O veredito que o pedido do plugin grava no histórico ao fechar.
+pub(crate) const PLUGIN_SETTLED_DECISION: &str = "unknown";
+
+/// Fecha a linha deduzida do pedido do plugin sem veredito. `true` se fechou.
+pub(crate) fn settle_plugin_inferred(store: &Store, id: SessionId, key: &str) -> bool {
+    store
+        .resolve_inferred_by_call_key(
+            &id.to_string(),
+            key,
+            PLUGIN_SETTLED_DECISION,
+            crate::approvals::now_ms(),
+        )
+        .is_ok_and(|row| row.is_some())
 }
 
 /// O aviso do sistema, com a política já resolvida.
@@ -2715,6 +2733,22 @@ mod free_session_tests {
 
     /// Novo em worktree, attach e retomar passam todos por `spawn_prepared`,
     /// que decide por aqui: o claude roda livre, o codex segue no gate.
+    #[test]
+    fn plugin_request_closes_without_a_verdict() {
+        let store = Store::open_in_memory().unwrap();
+        let id = SessionId::new_v4();
+        store
+            .insert_pending_inferred(&id.to_string(), "Bash: ls", None, "yellow", "plugin:k", 1)
+            .unwrap();
+        assert!(settle_plugin_inferred(&store, id, "plugin:k"));
+        let rows = store
+            .list_approval_history(Some(&id.to_string()), 10)
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].decision, PLUGIN_SETTLED_DECISION);
+        assert_ne!(rows[0].decision, "approved");
+    }
+
     #[test]
     fn claude_and_codex_run_free() {
         assert!(runs_free(&AgentRunnerKind::ClaudeCode));
