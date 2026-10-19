@@ -1,13 +1,21 @@
-import { useEffect } from "react";
+import { useContext, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ArrowsIn, FolderSimple } from "@phosphor-icons/react";
 
 import { HostedTerminalPane, useTerminalPane } from "@/components/TerminalPaneHost";
 import { TerminalView } from "@/components/TerminalView";
 import { hostedAgentOf, nodeDir, shortDir, type OrbitNode } from "@/lib/orbit";
+import { closesFocus } from "@/lib/orbitCard";
 import { isFocusCloseKey } from "@/lib/orbitFocus";
 import { IS_MAC } from "@/lib/platform";
-import { NodeStatusBadge, useOrbit } from "./NodeFrame";
+import {
+  NodeDeleteContext,
+  NodeHeaderButtons,
+  NodeSessionLog,
+  NodeStatusBadge,
+  useNodeHeader,
+  useOrbit,
+} from "./NodeFrame";
 import { FULL } from "./NodeTerminal";
 
 /**
@@ -19,6 +27,10 @@ import { FULL } from "./NodeTerminal";
  *
  * Fecha pelo ⤡ ou por ⌘. (Ctrl+. fora do mac). Esc NÃO fecha: é do claude
  * (interromper) e segue para o terminal — ver `isFocusCloseKey`.
+ *
+ * No cabeçalho, as mesmas ações do cabeçalho do nó (sem o ⤢) e o mesmo log
+ * do ⋯. Apagar fecha a vista (a pergunta, se houver, fica na cápsula do nó);
+ * parar o Terminal também (o shell acabou).
  */
 export function NodeFocus({ node, sessionId }: { node: OrbitNode; sessionId: string }) {
   const { t } = useTranslation();
@@ -29,6 +41,9 @@ export function NodeFocus({ node, sessionId }: { node: OrbitNode; sessionId: str
   const focusInput = paneHost?.focusInput;
   const nodeRun = run?.nodes[node.id];
   const dir = nodeDir(node.kind, graphDir);
+  const actions = useNodeHeader(node.id, node);
+  const del = useContext(NodeDeleteContext);
+  const [logOpen, setLogOpen] = useState(false);
 
   useEffect(() => {
     // Captura na janela: chega antes do textarea do xterm, que nem vê a tecla.
@@ -73,6 +88,23 @@ export function NodeFocus({ node, sessionId }: { node: OrbitNode; sessionId: str
             <span className="truncate">{shortDir(dir)}</span>
           </span>
         )}
+        <NodeHeaderButtons
+          kind={node.kind.type}
+          header={actions.header}
+          again={actions.again}
+          stop={() => {
+            actions.stop();
+            if (actions.header.stop?.enabled && closesFocus("stop", node.kind.type)) {
+              setFocusNode(null);
+            }
+          }}
+          onDelete={() => {
+            if (closesFocus("delete", node.kind.type)) setFocusNode(null);
+            del.request(node.id);
+          }}
+          logOpen={logOpen}
+          onLog={() => setLogOpen((v) => !v)}
+        />
         <button
           type="button"
           aria-label={close}
@@ -84,13 +116,16 @@ export function NodeFocus({ node, sessionId }: { node: OrbitNode; sessionId: str
           {t("orbitFocusCloseLabel")}
         </button>
       </div>
-      <div className="relative min-h-0 flex-1 bg-tyba-sunken">
+      <div className="relative isolate min-h-0 flex-1 bg-tyba-sunken">
         {tyba ? (
           <HostedTerminalPane sessionId={sessionId} hostedAgent={hostedAgentOf(runs, node.id)} />
         ) : (
           <TerminalView sessionId={sessionId} visible focused rect={FULL} />
         )}
       </div>
+      {logOpen && (
+        <NodeSessionLog id={node.id} node={node} rows={[]} onClose={() => setLogOpen(false)} />
+      )}
     </div>
   );
 }

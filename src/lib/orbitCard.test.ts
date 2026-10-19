@@ -6,6 +6,7 @@ import {
   agentDetailRows,
   agentName,
   approvalLine,
+  closesFocus,
   diffSummary,
   failureFooter,
   headerActions,
@@ -321,5 +322,17 @@ describe("sessionLog", () => {
       ["orbitLog_url", { url: "file:///x" }],
       ["orbitLog_started", {}],
     ]);
+  });
+});
+
+describe("closesFocus", () => {
+  test("apagar fecha a vista aberta de qualquer nó", () => {
+    expect(closesFocus("delete", "agent")).toBe(true);
+    expect(closesFocus("delete", "terminal")).toBe(true);
+  });
+  test("parar fecha só no Terminal (o shell acabou)", () => {
+    expect(closesFocus("stop", "terminal")).toBe(true);
+    expect(closesFocus("stop", "process")).toBe(false);
+    expect(closesFocus("stop", "agent")).toBe(false);
   });
 });

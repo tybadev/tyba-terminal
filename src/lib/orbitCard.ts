@@ -267,6 +267,15 @@ export function headerActions(
   };
 }
 
+/**
+ * Na vista aberta (o nó em tela grande), quais ações fecham a vista: apagar
+ * sempre (o nó sai), e parar só no Terminal (o ■ fecha o shell, não sobra
+ * sessão para mostrar). Reiniciar segue aberto na sessão nova.
+ */
+export function closesFocus(action: "stop" | "delete", kind: NodeKind["type"]): boolean {
+  return action === "delete" || kind === "terminal";
+}
+
 /** Cor do ponto de cada linha do log da sessão (quadro OrbitAcoesLog, B). */
 export type LogTone = "violet" | "green" | "amber" | "blue" | "red" | "faint";
 

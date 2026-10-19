@@ -1247,7 +1247,11 @@ export function OrbitCanvas({
           onClose={() => setPalette(null)}
         />
       )}
-      {focused && <NodeFocus node={focused.node} sessionId={focused.session} />}
+      {focused && (
+        <NodeDeleteContext.Provider value={nodeDelete}>
+          <NodeFocus node={focused.node} sessionId={focused.session} />
+        </NodeDeleteContext.Provider>
+      )}
     </div>
   );
 }

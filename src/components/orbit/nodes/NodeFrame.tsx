@@ -790,6 +790,174 @@ function HeaderButton({
 }
 
 /**
+ * As ações do cabeçalho do nó (quadro OrbitAcoesLog, A) com as regras de
+ * `headerActions`: o mesmo cálculo no cabeçalho do nó e na vista aberta.
+ */
+export function useNodeHeader(id: string, node: OrbitNode) {
+  const { setFocusNode, stopNode, restartNode, closeTerminal, run, runs, live } = useOrbit();
+  const session = shownSession(node.kind, run, runs, id, live);
+  const controls = nodeControls(node.kind, run, id, live);
+  const header = headerActions(node.kind.type, {
+    session: session !== null,
+    controls,
+    terminalOpen: node.kind.type === "terminal" && terminalRun(runs, id) !== null,
+  });
+  return {
+    controls,
+    header,
+    open: () => {
+      if (header.open?.enabled) setFocusNode(id);
+    },
+    again: () => {
+      if (header.again?.enabled) restartNode(id);
+    },
+    stop: () => {
+      if (!header.stop?.enabled) return;
+      if (node.kind.type === "terminal") closeTerminal(id);
+      else stopNode(id);
+    },
+  };
+}
+
+/**
+ * Os ícones do cabeçalho: ⤢ (só com `open`), ↻, ■, lixeira e ⋯ (o log).
+ * Os mesmos no cabeçalho do nó e na vista aberta.
+ */
+export function NodeHeaderButtons({
+  kind,
+  header,
+  open,
+  again,
+  stop,
+  onDelete,
+  logOpen,
+  onLog,
+}: {
+  kind: OrbitNode["kind"]["type"];
+  header: ReturnType<typeof useNodeHeader>["header"];
+  /** Sem ele, sem ⤢ (a vista aberta já está aberta). */
+  open?: () => void;
+  again: () => void;
+  stop: () => void;
+  onDelete: () => void;
+  logOpen: boolean;
+  onLog: () => void;
+}) {
+  const { t } = useTranslation();
+  return (
+    <span className="flex shrink-0 items-center gap-0.5">
+      {open && header.open && (
+        <HeaderButton action={header.open} label={t("orbitOpen")} onClick={open}>
+          <ArrowsOut size={14} />
+        </HeaderButton>
+      )}
+      {header.again && (
+        <HeaderButton
+          action={header.again}
+          label={t(header.again.rerun ? "orbitRerun" : "orbitRestart")}
+          onClick={again}
+        >
+          <ArrowClockwise size={14} />
+        </HeaderButton>
+      )}
+      {header.stop && (
+        <HeaderButton
+          action={header.stop}
+          label={t(kind === "terminal" ? "orbitTerminalClose" : "orbitStopNode")}
+          onClick={stop}
+        >
+          <Stop size={13} weight="fill" />
+        </HeaderButton>
+      )}
+      <HeaderButton
+        action={{ enabled: true, hint: "orbitDeleteNode" }}
+        label={t("orbitDeleteNode")}
+        onClick={onDelete}
+      >
+        <Trash size={14} />
+      </HeaderButton>
+      <HeaderButton
+        action={{ enabled: true, hint: "orbitSessionLog" }}
+        label={t("orbitSessionLog")}
+        pressed={logOpen}
+        onClick={onLog}
+      >
+        <DotsThree size={16} weight="bold" />
+      </HeaderButton>
+    </span>
+  );
+}
+
+/**
+ * O popover do ⋯ com as ações do rodapé (Trocar papel, Manter tudo, Apagar
+ * dados do navegador): o mesmo no nó e na vista aberta.
+ */
+export function NodeSessionLog({
+  id,
+  node,
+  rows,
+  onClose,
+  onClearData,
+}: {
+  id: string;
+  node: OrbitNode;
+  rows: NodeDetail[];
+  onClose: () => void;
+  /** Só no navegador nativo: pedir a confirmação de apagar os dados. */
+  onClearData?: () => void;
+}) {
+  const { t } = useTranslation();
+  const { keepCreated, run } = useOrbit();
+  const agent = node.kind.type === "agent";
+  // "Manter tudo" no ⋯ de quem criou: vale também depois do fim do run.
+  const keepAll = runCreated(run).some((c) => !c.kept && c.createdBy === id);
+  return (
+    <SessionLog
+      id={id}
+      kind={node.kind.type}
+      onClose={onClose}
+      rows={rows}
+      actions={
+        (agent || keepAll || onClearData) && (
+          <>
+            {agent && (
+              <button
+                type="button"
+                aria-disabled
+                title={t("orbitSwapRoleSoon")}
+                className={`${detailBtn} ${soonClass}`}
+              >
+                {t("orbitSwapRole")}
+              </button>
+            )}
+            {keepAll && (
+              <button
+                type="button"
+                title={t("orbitKeepAllHint")}
+                onClick={() => keepCreated(null, id)}
+                className={`${detailBtn} text-tyba-text hover:bg-tyba-text/[.12]`}
+              >
+                {t("orbitKeepAll")}
+              </button>
+            )}
+            {onClearData && (
+              <button
+                type="button"
+                onClick={onClearData}
+                className={`${detailBtn} text-tyba-text hover:text-tyba-red`}
+              >
+                <Broom size={12} />
+                {t("orbitBrowserClearData")}
+              </button>
+            )}
+          </>
+        )
+      }
+    />
+  );
+}
+
+/**
  * Moldura comum dos nós (quadro OrbitCardsD, "ilha"): a cápsula do
  * cabeçalho flutua sobre a janela sem moldura. Na cápsula, o anel da marca
  * com o estado, o nome, o estado curto, a ação do nó e o ⋯ (a grade de
@@ -842,21 +1010,8 @@ export function NodeFrame({
   children: ReactNode;
 }) {
   const { t } = useTranslation();
-  const {
-    integrations,
-    setFocusNode,
-    keepCreated,
-    stopNode,
-    restartNode,
-    closeTerminal,
-    graph,
-    run,
-    runs,
-    live,
-    createdIds,
-    createdBy,
-    approvals,
-  } = useOrbit();
+  const { integrations, keepCreated, restartNode, graph, run, createdIds, createdBy, approvals } =
+    useOrbit();
   const nodeRun = run?.nodes[id];
   // Criado por outro agente no run à vista: contorno tracejado violeta e
   // "criado pelo X". Enquanto efêmero, sem editar nem ligar, e "Manter";
@@ -865,26 +1020,10 @@ export function NodeFrame({
   const created = creator !== undefined;
   const locked = createdIds.has(id);
   const orchestrates = !created && isOrchestrator(node.kind);
-  const session = shownSession(node.kind, run, runs, id, live);
-  const controls = nodeControls(node.kind, run, id, live);
-  const again = controls.restart || controls.rerun;
   // Os ícones do cabeçalho (quadro OrbitAcoesLog, A).
-  const header = headerActions(node.kind.type, {
-    session: session !== null,
-    controls,
-    terminalOpen: node.kind.type === "terminal" && terminalRun(runs, id) !== null,
-  });
-  const openNode = () => {
-    if (header.open?.enabled) setFocusNode(id);
-  };
-  const againNode = () => {
-    if (header.again?.enabled) restartNode(id);
-  };
-  const stopIt = () => {
-    if (!header.stop?.enabled) return;
-    if (node.kind.type === "terminal") closeTerminal(id);
-    else stopNode(id);
-  };
+  const actions = useNodeHeader(id, node);
+  const { controls, header } = actions;
+  const again = controls.restart || controls.rerun;
   const request = approvals.get(id) ?? null;
   const ring =
     request === null && ringOverride ? ringOverride : ringState(nodeRun, request !== null, run?.settled);
@@ -935,10 +1074,6 @@ export function NodeFrame({
         .filter(Boolean)
         .join(" · ")
     : "";
-  const agent = node.kind.type === "agent";
-  // "Manter tudo" no ⋯ de quem criou: vale também depois do fim do run.
-  const keepAll = runCreated(run).some((c) => !c.kept && c.createdBy === id);
-
   const capsule = request
     ? "border-tyba-amber bg-tyba-amber text-tyba-text-inverse"
     : `${
@@ -1016,7 +1151,7 @@ export function NodeFrame({
         onDoubleClick={(e) => {
           // Duplo clique no cabeçalho abre (o mesmo do ⤢); nos botões, não.
           if (request || asking || (e.target as Element).closest("button, input")) return;
-          openNode();
+          actions.open();
         }}
       >
         <NodeRing
@@ -1087,56 +1222,20 @@ export function NodeFrame({
             {!dragging && (
               <>
                 <span aria-hidden className="h-4 w-px shrink-0 bg-tyba-text/10" />
-                <span className="flex shrink-0 items-center gap-0.5">
-                  {header.open && (
-                    <HeaderButton
-                      action={header.open}
-                      label={t("orbitOpen")}
-                      onClick={openNode}
-                    >
-                      <ArrowsOut size={14} />
-                    </HeaderButton>
-                  )}
-                  {header.again && (
-                    <HeaderButton
-                      action={header.again}
-                      label={t(header.again.rerun ? "orbitRerun" : "orbitRestart")}
-                      onClick={againNode}
-                    >
-                      <ArrowClockwise size={14} />
-                    </HeaderButton>
-                  )}
-                  {header.stop && (
-                    <HeaderButton
-                      action={header.stop}
-                      label={t(
-                        node.kind.type === "terminal" ? "orbitTerminalClose" : "orbitStopNode",
-                      )}
-                      onClick={stopIt}
-                    >
-                      <Stop size={13} weight="fill" />
-                    </HeaderButton>
-                  )}
-                  <HeaderButton
-                    action={{ enabled: true, hint: "orbitDeleteNode" }}
-                    label={t("orbitDeleteNode")}
-                    onClick={() => {
-                      setOpen(false);
-                      setClearing(false);
-                      del.request(id);
-                    }}
-                  >
-                    <Trash size={14} />
-                  </HeaderButton>
-                  <HeaderButton
-                    action={{ enabled: true, hint: "orbitSessionLog" }}
-                    label={t("orbitSessionLog")}
-                    pressed={open}
-                    onClick={() => setOpen((v) => !v)}
-                  >
-                    <DotsThree size={16} weight="bold" />
-                  </HeaderButton>
-                </span>
+                <NodeHeaderButtons
+                  kind={node.kind.type}
+                  header={header}
+                  open={actions.open}
+                  again={actions.again}
+                  stop={actions.stop}
+                  onDelete={() => {
+                    setOpen(false);
+                    setClearing(false);
+                    del.request(id);
+                  }}
+                  logOpen={open}
+                  onLog={() => setOpen((v) => !v)}
+                />
               </>
             )}
           </>
@@ -1212,9 +1311,9 @@ export function NodeFrame({
         )}
       </div>
       {open && (
-        <SessionLog
+        <NodeSessionLog
           id={id}
-          kind={node.kind.type}
+          node={node}
           onClose={() => setOpen(false)}
           rows={[
             ...details,
@@ -1230,44 +1329,12 @@ export function NodeFrame({
                 ]
               : []),
           ]}
-          actions={
-            (agent || keepAll || clearData) && (
-              <>
-                {agent && (
-                  <button
-                    type="button"
-                    aria-disabled
-                    title={t("orbitSwapRoleSoon")}
-                    className={`${detailBtn} ${soonClass}`}
-                  >
-                    {t("orbitSwapRole")}
-                  </button>
-                )}
-                {keepAll && (
-                  <button
-                    type="button"
-                    title={t("orbitKeepAllHint")}
-                    onClick={() => keepCreated(null, id)}
-                    className={`${detailBtn} text-tyba-text hover:bg-tyba-text/[.12]`}
-                  >
-                    {t("orbitKeepAll")}
-                  </button>
-                )}
-                {clearData && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setOpen(false);
-                      setClearing(true);
-                    }}
-                    className={`${detailBtn} text-tyba-text hover:text-tyba-red`}
-                  >
-                    <Broom size={12} />
-                    {t("orbitBrowserClearData")}
-                  </button>
-                )}
-              </>
-            )
+          onClearData={
+            clearData &&
+            (() => {
+              setOpen(false);
+              setClearing(true);
+            })
           }
         />
       )}
