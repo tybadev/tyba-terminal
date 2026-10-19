@@ -1172,17 +1172,23 @@ struct CheckpointBody {
     truncated: usize,
 }
 
-/// Marca em `settings` de que [`Store::redact_legacy_once`] já rodou neste
-/// banco. Fora do prefixo `pref.`, então não vai para o front.
+/// Marca em `settings` de que a redação de [`Store::redact_legacy_once`] já
+/// rodou neste banco. Gravada na MESMA transação da redação: ou as duas
+/// entram, ou nenhuma. Fora do prefixo `pref.`, então não vai para o front.
 const LEGACY_REDACTION_KEY: &str = "meta.legacy_redaction_v2";
 
+/// Marca própria do `VACUUM` que segue a redação. Separada para que um
+/// `VACUUM` que falha seja a única coisa retentada no boot seguinte.
+const LEGACY_VACUUM_KEY: &str = "meta.legacy_vacuum_v2";
+
 /// Colunas de texto que vieram do terminal ou do agente. As linhas de bloco e
-/// de checkpoint são JSON e têm passada própria.
+/// de checkpoint são JSON, e `command_history.command` carrega a chave de
+/// import junto — as três têm passada própria.
 const LEGACY_TEXT_COLUMNS: &[(&str, &str)] = &[
+    ("sessions", "title"),
     ("block", "command"),
     ("block", "cwd"),
     ("block_checkpoint", "command"),
-    ("command_history", "command"),
     ("command_history", "cwd"),
     ("approval_history", "command"),
     ("approval_history", "cwd"),
@@ -1191,8 +1197,33 @@ const LEGACY_TEXT_COLUMNS: &[(&str, &str)] = &[
     ("notification", "detail"),
 ];
 
-/// `redact` numa coluna inteira; reescreve só a linha que muda.
+fn has_setting(conn: &Connection, key: &str) -> Result<bool, StoreError> {
+    use rusqlite::OptionalExtension;
+    Ok(conn
+        .query_row(
+            "SELECT 1 FROM settings WHERE key = ?1",
+            params![key],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some())
+}
+
+fn set_marker(conn: &Connection, key: &str) -> Result<(), StoreError> {
+    conn.execute(
+        "INSERT INTO settings (key, value) VALUES (?1, '1')
+         ON CONFLICT(key) DO UPDATE SET value = '1'",
+        params![key],
+    )?;
+    Ok(())
+}
+
+/// `redact` numa coluna inteira; reescreve só a linha que muda. Coluna que
+/// não existe (banco degradado) é pulada, não derruba a passada.
 fn redact_text_column(conn: &Connection, table: &str, column: &str) -> Result<usize, StoreError> {
+    if !has_column(conn, table, column)? {
+        return Ok(0);
+    }
     // `table` e `column` vêm de constante do próprio código.
     let rows: Vec<(i64, String)> = {
         let mut stmt = conn.prepare(&format!(
@@ -1203,7 +1234,7 @@ fn redact_text_column(conn: &Connection, table: &str, column: &str) -> Result<us
             .collect::<Result<Vec<_>, _>>()?;
         mapped
     };
-    let mut changed = 0;
+    let mut changes = 0;
     for (rowid, text) in rows {
         let redacted = redact(&text);
         if redacted != text {
@@ -1211,16 +1242,82 @@ fn redact_text_column(conn: &Connection, table: &str, column: &str) -> Result<us
                 &format!("UPDATE {table} SET {column} = ?2 WHERE rowid = ?1"),
                 params![rowid, redacted.as_ref()],
             )?;
-            changed += 1;
+            changes += 1;
         }
     }
-    Ok(changed)
+    Ok(changes)
+}
+
+/// `command_history.command`, com a `import_key` recalculada sobre o comando
+/// redigido: a antiga é hash do texto com a senha, e um dicionário offline a
+/// recupera. Se a chave nova já existe, a linha é a mesma entrada importada
+/// duas vezes e sai.
+fn redact_command_history(conn: &Connection) -> Result<usize, StoreError> {
+    if !has_column(conn, "command_history", "command")? {
+        return Ok(0);
+    }
+    let keyed = has_column(conn, "command_history", "import_key")?;
+    let rows: Vec<(i64, String, i64, Option<String>)> = {
+        let key = if keyed { "import_key" } else { "NULL" };
+        let mut stmt = conn.prepare(&format!(
+            "SELECT rowid, command, started_at_ms, {key} FROM command_history"
+        ))?;
+        let mapped = stmt
+            .query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        mapped
+    };
+    let mut changes = 0;
+    for (rowid, command, started_at_ms, old_key) in rows {
+        let redacted = redact(&command);
+        if redacted == command {
+            continue;
+        }
+        changes += 1;
+        if !keyed {
+            conn.execute(
+                "UPDATE command_history SET command = ?2 WHERE rowid = ?1",
+                params![rowid, redacted.as_ref()],
+            )?;
+            continue;
+        }
+        // Prefixo desconhecido: sem como recalcular, a chave sai (NULL não
+        // colide no índice único).
+        let new_key = old_key
+            .as_deref()
+            .and_then(|k| crate::history::import::rekey(k, &redacted, started_at_ms));
+        if let Some(key) = &new_key {
+            let taken: bool = conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM command_history
+                               WHERE import_key = ?1 AND rowid <> ?2)",
+                params![key, rowid],
+                |row| row.get(0),
+            )?;
+            if taken {
+                conn.execute(
+                    "DELETE FROM command_history WHERE rowid = ?1",
+                    params![rowid],
+                )?;
+                continue;
+            }
+        }
+        conn.execute(
+            "UPDATE command_history SET command = ?2, import_key = ?3 WHERE rowid = ?1",
+            params![rowid, redacted.as_ref(), new_key],
+        )?;
+    }
+    Ok(changes)
 }
 
 /// `blocks::redact_lines` em cada bloco, um redator por bloco. Linha que não
 /// desserializa fica como está: `list_blocks` já não a mostra, e reescrevê-la
 /// exigiria adivinhar o formato.
 fn redact_block_lines(conn: &Connection) -> Result<usize, StoreError> {
+    if !has_column(conn, "block", "lines")? {
+        return Ok(0);
+    }
     let rows: Vec<(i64, String)> = {
         let mut stmt = conn.prepare("SELECT id, lines FROM block")?;
         let mapped = stmt
@@ -1228,7 +1325,7 @@ fn redact_block_lines(conn: &Connection) -> Result<usize, StoreError> {
             .collect::<Result<Vec<_>, _>>()?;
         mapped
     };
-    let mut changed = 0;
+    let mut changes = 0;
     for (id, json) in rows {
         let Ok(lines) = serde_json::from_str::<Vec<crate::blocks::LogicalLine>>(&json) else {
             continue;
@@ -1241,15 +1338,18 @@ fn redact_block_lines(conn: &Connection) -> Result<usize, StoreError> {
                 "UPDATE block SET lines = ?2, bytes = ?3 WHERE id = ?1",
                 params![id, json, json.len() as i64],
             )?;
-            changed += 1;
+            changes += 1;
         }
     }
-    Ok(changed)
+    Ok(changes)
 }
 
 /// O mesmo nas linhas de checkpoint. O byte cru do formato antigo é do dreno,
 /// que roda antes no boot e redige ao montar o bloco.
 fn redact_checkpoint_lines(conn: &Connection) -> Result<usize, StoreError> {
+    if !has_column(conn, "block_checkpoint", "bytes")? {
+        return Ok(0);
+    }
     let rows: Vec<(String, Vec<u8>)> = {
         let mut stmt = conn.prepare("SELECT session_id, bytes FROM block_checkpoint")?;
         let mapped = stmt
@@ -1257,7 +1357,7 @@ fn redact_checkpoint_lines(conn: &Connection) -> Result<usize, StoreError> {
             .collect::<Result<Vec<_>, _>>()?;
         mapped
     };
-    let mut changed = 0;
+    let mut changes = 0;
     for (session_id, bytes) in rows {
         let Ok(body) = serde_json::from_slice::<CheckpointBody>(&bytes) else {
             continue;
@@ -1272,10 +1372,10 @@ fn redact_checkpoint_lines(conn: &Connection) -> Result<usize, StoreError> {
                 "UPDATE block_checkpoint SET bytes = ?2 WHERE session_id = ?1",
                 params![session_id, bytes],
             )?;
-            changed += 1;
+            changes += 1;
         }
     }
-    Ok(changed)
+    Ok(changes)
 }
 
 pub struct Store {
@@ -2880,42 +2980,43 @@ impl Store {
     /// PTY em página livre — o que torna o `VACUUM` necessário mesmo quando
     /// nenhuma linha muda.
     ///
-    /// Uma vez por banco, marcada em `settings` ([`LEGACY_REDACTION_KEY`]), e não
-    /// por degrau de `migrate`: degrau é número disputado entre branches, e a
-    /// passada não muda schema. A marca só entra depois do `VACUUM`; se ele
-    /// falhar, tudo é repetido no boot seguinte (a redação é idempotente).
+    /// Uma vez por banco, marcada em `settings`, e não por degrau de `migrate`:
+    /// degrau é número disputado entre branches, e a passada não muda schema.
+    /// Duas marcas: [`LEGACY_REDACTION_KEY`] entra na transação da redação, e
+    /// [`LEGACY_VACUUM_KEY`] depois do `VACUUM` — se ele falhar, só ele é
+    /// retentado no boot seguinte.
     ///
-    /// Devolve `None` se já tinha rodado, ou quantas linhas reescreveu.
+    /// Roda na thread de boot ANTES do `ready`: a tela não pode ler um bloco
+    /// antigo antes da passada, e com o lock do store preso um comando
+    /// síncrono travaria a main thread.
+    ///
+    /// Devolve `None` se não havia nada a fazer, ou quantas alterações fez
+    /// (célula reescrita ou linha duplicada removida — não linhas distintas).
     pub fn redact_legacy_once(&self) -> Result<Option<usize>, StoreError> {
-        use rusqlite::OptionalExtension;
         let mut conn = self.conn.lock();
-        let done: Option<String> = conn
-            .query_row(
-                "SELECT value FROM settings WHERE key = ?1",
-                params![LEGACY_REDACTION_KEY],
-                |row| row.get(0),
-            )
-            .optional()?;
-        if done.is_some() {
+        let redacted = has_setting(&conn, LEGACY_REDACTION_KEY)?;
+        let vacuumed = has_setting(&conn, LEGACY_VACUUM_KEY)?;
+        if redacted && vacuumed {
             return Ok(None);
         }
 
-        let tx = conn.transaction()?;
-        let mut changed = 0;
-        for (table, column) in LEGACY_TEXT_COLUMNS {
-            changed += redact_text_column(&tx, table, column)?;
+        let mut changes = 0;
+        if !redacted {
+            let tx = conn.transaction()?;
+            for (table, column) in LEGACY_TEXT_COLUMNS {
+                changes += redact_text_column(&tx, table, column)?;
+            }
+            changes += redact_command_history(&tx)?;
+            changes += redact_block_lines(&tx)?;
+            changes += redact_checkpoint_lines(&tx)?;
+            set_marker(&tx, LEGACY_REDACTION_KEY)?;
+            tx.commit()?;
         }
-        changed += redact_block_lines(&tx)?;
-        changed += redact_checkpoint_lines(&tx)?;
-        tx.commit()?;
-
-        conn.execute_batch("VACUUM")?;
-        conn.execute(
-            "INSERT INTO settings (key, value) VALUES (?1, '1')
-             ON CONFLICT(key) DO UPDATE SET value = '1'",
-            params![LEGACY_REDACTION_KEY],
-        )?;
-        Ok(Some(changed))
+        if !vacuumed {
+            conn.execute_batch("VACUUM")?;
+            set_marker(&conn, LEGACY_VACUUM_KEY)?;
+        }
+        Ok(Some(changes))
     }
 
     pub fn list_snippets(&self) -> Result<Vec<crate::snippet::Snippet>, StoreError> {
@@ -6886,6 +6987,143 @@ mod tests {
             None,
             "uma vez por banco"
         );
+    }
+
+    fn legacy_history_row(store: &Store, command: &str, at: i64, key: Option<&str>) {
+        store
+            .conn
+            .lock()
+            .execute(
+                "INSERT INTO command_history (command, started_at_ms, import_key)
+                 VALUES (?1, ?2, ?3)",
+                params![command, at, key],
+            )
+            .unwrap();
+    }
+
+    fn history_rows(store: &Store) -> Vec<(String, i64, Option<String>)> {
+        let conn = store.conn.lock();
+        let mut stmt = conn
+            .prepare("SELECT command, started_at_ms, import_key FROM command_history ORDER BY id")
+            .unwrap();
+        let rows = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        rows
+    }
+
+    /// A chave de import era hash do comando COM a senha: recalculada sobre o
+    /// comando redigido, e a linha que passa a colidir é a mesma entrada
+    /// importada duas vezes — sai.
+    #[test]
+    fn legacy_redaction_rekeys_imported_history() {
+        use crate::history::import::{import_key, source::ImportSource};
+        let store = Store::open_in_memory().unwrap();
+        let raw = format!("export K=sk-{}", "FAKE0".repeat(5));
+        let clean = "export K=[REDACTED]";
+        let raw_key_1 = import_key(ImportSource::Zsh, &raw, 1);
+        let raw_key_2 = import_key(ImportSource::Zsh, &raw, 2);
+        // Importada antes do padrão existir, e reimportada depois.
+        legacy_history_row(&store, &raw, 1, Some(&raw_key_1));
+        legacy_history_row(
+            &store,
+            clean,
+            1,
+            Some(&import_key(ImportSource::Zsh, clean, 1)),
+        );
+        legacy_history_row(&store, &raw, 2, Some(&raw_key_2));
+
+        assert_eq!(store.redact_legacy_once().unwrap(), Some(2));
+        assert_eq!(
+            history_rows(&store),
+            vec![
+                (
+                    clean.to_string(),
+                    1,
+                    Some(import_key(ImportSource::Zsh, clean, 1))
+                ),
+                (
+                    clean.to_string(),
+                    2,
+                    Some(import_key(ImportSource::Zsh, clean, 2))
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn legacy_redaction_covers_the_session_title() {
+        let store = Store::open_in_memory().unwrap();
+        let s = sample("zsh");
+        store.upsert_session(&s).unwrap();
+        let sk = format!("sk-{}", "FAKE0".repeat(5));
+        store
+            .conn
+            .lock()
+            .execute("UPDATE sessions SET title = ?1", params![format!("K={sk}")])
+            .unwrap();
+        assert_eq!(store.redact_legacy_once().unwrap(), Some(1));
+        assert_eq!(store.load_sessions().unwrap()[0].title, "K=[REDACTED]");
+    }
+
+    /// `VACUUM` que falhou não refaz a varredura: só ele é retentado.
+    #[test]
+    fn a_pending_vacuum_is_retried_alone() {
+        let store = Store::open_in_memory().unwrap();
+        store.set_setting(LEGACY_REDACTION_KEY, "1").unwrap();
+        // Linha que a varredura mudaria: se ela rodasse de novo, mudaria.
+        let raw = format!("K=sk-{}", "FAKE0".repeat(5));
+        legacy_history_row(&store, &raw, 1, None);
+
+        assert_eq!(store.redact_legacy_once().unwrap(), Some(0));
+        assert_eq!(history_rows(&store)[0].0, raw);
+        assert_eq!(
+            store.get_setting(LEGACY_VACUUM_KEY).unwrap().as_deref(),
+            Some("1")
+        );
+        assert_eq!(store.redact_legacy_once().unwrap(), None);
+    }
+
+    /// Banco degradado sem uma das colunas: a coluna é pulada, o resto roda.
+    #[test]
+    fn legacy_redaction_skips_a_missing_column() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .conn
+            .lock()
+            .execute_batch(
+                // O índice único prende `import_key`; sai antes.
+                "ALTER TABLE notification DROP COLUMN detail;
+                 DROP INDEX command_history_import_key;
+                 ALTER TABLE command_history DROP COLUMN import_key;",
+            )
+            .unwrap();
+        let raw = format!("K=sk-{}", "FAKE0".repeat(5));
+        legacy_history_row_without_key(&store, &raw);
+
+        assert_eq!(store.redact_legacy_once().unwrap(), Some(1));
+        assert_eq!(command_of_first_history_row(&store), "K=[REDACTED]");
+    }
+
+    fn legacy_history_row_without_key(store: &Store, command: &str) {
+        store
+            .conn
+            .lock()
+            .execute(
+                "INSERT INTO command_history (command, started_at_ms) VALUES (?1, 1)",
+                params![command],
+            )
+            .unwrap();
+    }
+
+    fn command_of_first_history_row(store: &Store) -> String {
+        store
+            .conn
+            .lock()
+            .query_row("SELECT command FROM command_history", [], |r| r.get(0))
+            .unwrap()
     }
 
     #[test]
