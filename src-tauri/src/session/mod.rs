@@ -219,6 +219,10 @@ pub struct CreateSessionOpts {
     /// [`default_shell`]. Só vale para sessão de shell.
     #[serde(default)]
     pub shell: Option<String>,
+    /// Split de shell: abre no cwd vivo (kernel) desta sessão em vez de em
+    /// `cwd`. Sem processo vivo ou sem leitura, vale `cwd`.
+    #[serde(default)]
+    pub inherit_cwd_from: Option<SessionId>,
     #[serde(default)]
     pub initial_prompt: Option<String>,
     /// A sessão de agente nasce pelo gate (`reopenShellAgentManaged`), não por
