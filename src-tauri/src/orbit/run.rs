@@ -3006,6 +3006,12 @@ impl<H: RunHost> Runs<H> {
             }
             ToolCall::Restart { node } => self.restart_by_agent(run_id, orchestrator, &node),
             ToolCall::ListNodes => self.list_nodes(run_id, orchestrator),
+            ToolCall::Connect { from, to, kind } => {
+                self.connect(run_id, orchestrator, &from, &to, kind)
+            }
+            ToolCall::Reassign { node, prompt } => {
+                self.reassign(run_id, orchestrator, &node, &prompt)
+            }
             ToolCall::Wait {
                 node,
                 until,
@@ -4311,6 +4317,159 @@ impl<H: RunHost> Runs<H> {
         }))
     }
 
+    /// `orbit_connect`: liga dois nós do run, pela régua de
+    /// [`connect_owner`] (nada de poder novo) e pela do salvar (o tipo sai
+    /// de um e entra no outro; valor sem ciclo). A ligação mora no criado
+    /// (`created.edges`) até o "Manter"; a de valor vale na hora no
+    /// agendamento ([`Scheduler::rewire`]): quem já começou fica "↻ para
+    /// aplicar".
+    fn connect(
+        &self,
+        run_id: &str,
+        caller: &str,
+        from: &str,
+        to: &str,
+        kind: EdgeKind,
+    ) -> Result<serde_json::Value, String> {
+        let (id, stale) = {
+            let mut active = self.active.lock();
+            let a = active
+                .get_mut(run_id)
+                .ok_or("esta execução já terminou: ▶ Executar de novo para ligar nós")?;
+            let saved = self.saved_graph(&a.graph.id)?;
+            let edges = current_edges(saved.as_ref(), &a.sched.run.created);
+            let find = |id: &str| {
+                a.graph
+                    .nodes
+                    .iter()
+                    .find(|n| n.id == id)
+                    .ok_or_else(|| format!("nó não existe neste run: {id}"))
+            };
+            let (src, dst) = (find(from)?, find(to)?);
+            let by_id: HashMap<&str, &Integration> = a
+                .integrations
+                .iter()
+                .map(|(k, v)| (k.as_str(), v))
+                .collect();
+            if !super::produces(&src.kind, &by_id).contains(&kind) {
+                return Err(format!("{from} não produz {}", edge_kind_name(kind)));
+            }
+            if !super::accepts(&dst.kind, &by_id).contains(&kind) {
+                return Err(format!("{to} não aceita {}", edge_kind_name(kind)));
+            }
+            let mine: Vec<&str> = a
+                .sched
+                .run
+                .created
+                .iter()
+                .filter(|c| c.created_by == caller)
+                .map(|c| c.node.id.as_str())
+                .collect();
+            let owner = connect_owner(&edges, &mine, caller, from, to, kind)?;
+            let id = format!(
+                "orq-link-{}",
+                &uuid::Uuid::new_v4().simple().to_string()[..12]
+            );
+            let edge = Edge {
+                id: id.clone(),
+                from: from.to_string(),
+                to: to.to_string(),
+                kind,
+            };
+            let stale = kind.carries_data()
+                && a.sched
+                    .run
+                    .nodes
+                    .get(to)
+                    .is_some_and(|n| n.started_at.is_some());
+            if let Some(c) = a.sched.run.created.iter_mut().find(|c| c.node.id == owner) {
+                c.edges.push(edge);
+            }
+            let ids: HashSet<&str> = a.graph.nodes.iter().map(|n| n.id.as_str()).collect();
+            let now_edges: Vec<Edge> = current_edges(saved.as_ref(), &a.sched.run.created)
+                .into_iter()
+                .filter(|e| ids.contains(e.from.as_str()) && ids.contains(e.to.as_str()))
+                .collect();
+            a.sched.rewire(&now_edges);
+            a.graph.edges = now_edges;
+            a.sched.settle(now());
+            (id, stale)
+        };
+        self.publish_current(run_id);
+        self.advance(run_id);
+        let mut out = serde_json::json!({
+            "edge_id": id,
+            "from": from,
+            "to": to,
+            "kind": kind,
+        });
+        if stale {
+            out["note"] = serde_json::json!(
+                "o destino já começou: fica ↻ para aplicar; reinicie com orbit_restart_node para \
+                 ele receber o valor desta ligação"
+            );
+        }
+        Ok(out)
+    }
+
+    /// `orbit_reassign`: troca a tarefa (prompt) de um agente que quem chama
+    /// criou e o reinicia — mesmo nó, título, posição e ligações; só a sessão
+    /// do agente sobe de novo. Agente do dono não: o prompt é dele.
+    fn reassign(
+        &self,
+        run_id: &str,
+        caller: &str,
+        node_id: &str,
+        prompt: &str,
+    ) -> Result<serde_json::Value, String> {
+        {
+            let mut active = self.active.lock();
+            let a = active
+                .get_mut(run_id)
+                .ok_or("a execução já fechou: ▶ Executar de novo")?;
+            let mine = a
+                .sched
+                .run
+                .created
+                .iter()
+                .any(|c| c.node.id == node_id && c.created_by == caller);
+            if !mine {
+                return Err(format!(
+                    "só reatribui agente que você criou: {node_id} não é um deles"
+                ));
+            }
+            let set = |n: &mut Node| match &mut n.kind {
+                NodeKind::Agent { prompt: p, .. } => {
+                    *p = prompt.to_string();
+                    true
+                }
+                _ => false,
+            };
+            let in_graph = a
+                .graph
+                .nodes
+                .iter_mut()
+                .find(|n| n.id == node_id)
+                .is_some_and(set);
+            if !in_graph {
+                return Err(format!(
+                    "{node_id} não é agente: orbit_reassign é só para agente"
+                ));
+            }
+            if let Some(c) = a
+                .sched
+                .run
+                .created
+                .iter_mut()
+                .find(|c| c.node.id == node_id)
+            {
+                set(&mut c.node);
+            }
+        }
+        self.restart_node_by(run_id, node_id, Some(caller))?;
+        Ok(serde_json::json!({ "node_id": node_id, "reassigned": true }))
+    }
+
     /// `orbit_wait`: espera `node_id` (ligado a quem chama ou criado por ele,
     /// nunca o próprio) abrir porta, terminar ou fechar o turno, até
     /// `timeout`. Olha o estado a cada [`WAIT_POLL`], sem lock entre uma
@@ -5004,6 +5163,86 @@ impl<H: RunHost> Runs<H> {
 /// antes de responder: erro de subida (porta ocupada, módulo faltando) sai
 /// nisso.
 const PROCESS_SETTLE: std::time::Duration = std::time::Duration::from_secs(3);
+/// A régua do `orbit_connect`: nada de poder novo. `mine`: os nós que
+/// `caller` criou. Pode ligar dois nós seus (ele e os que criou); um nó seu
+/// a um do dono só com a mesma ligação, no mesmo sentido, que o dono já deu
+/// a ele (passa adiante o que tem, como a memória de uma nota ao agente que
+/// criou). Ao menos uma ponta é um criado dele, onde a ligação mora:
+/// devolve o id dele.
+fn connect_owner(
+    edges: &[Edge],
+    mine: &[&str],
+    caller: &str,
+    from: &str,
+    to: &str,
+    kind: EdgeKind,
+) -> Result<String, String> {
+    let own = |id: &str| id == caller || mine.contains(&id);
+    let linked = |a: &str, b: &str| {
+        edges.iter().any(|e| {
+            e.kind == kind
+                && ((e.from == a && e.to == b)
+                    || (kind == EdgeKind::Talk && e.from == b && e.to == a))
+        })
+    };
+    let allowed = match (own(from), own(to)) {
+        (true, true) => true,
+        (true, false) => linked(caller, to),
+        (false, true) => linked(from, caller),
+        (false, false) => false,
+    };
+    if !allowed {
+        return Err(
+            "só liga nós seus (você e os que você criou); com nó do dono, só a mesma ligação \
+             que o dono já deu a você no canvas"
+                .into(),
+        );
+    }
+    let owner = [to, from]
+        .into_iter()
+        .find(|id| mine.contains(id))
+        .ok_or("ligue a partir de um nó que você criou")?;
+    if linked(from, to) {
+        return Err(format!(
+            "{from} e {to} já estão ligados por {}",
+            edge_kind_name(kind)
+        ));
+    }
+    if kind.carries_data() && data_path(edges, to, from) {
+        return Err("a ligação faria um ciclo de valores".into());
+    }
+    Ok(owner.to_string())
+}
+
+/// O tipo da ligação como as ferramentas o escrevem (`talk`, `url`…).
+fn edge_kind_name(kind: EdgeKind) -> String {
+    serde_json::to_value(kind)
+        .ok()
+        .and_then(|v| v.as_str().map(String::from))
+        .unwrap_or_default()
+}
+
+/// Há caminho de valor de `start` até `goal` pelas ligações que levam valor.
+fn data_path(edges: &[Edge], start: &str, goal: &str) -> bool {
+    let mut stack = vec![start];
+    let mut seen: HashSet<&str> = HashSet::new();
+    while let Some(id) = stack.pop() {
+        if id == goal {
+            return true;
+        }
+        if !seen.insert(id) {
+            continue;
+        }
+        stack.extend(
+            edges
+                .iter()
+                .filter(|e| e.kind.carries_data() && e.from == id)
+                .map(|e| e.to.as_str()),
+        );
+    }
+    false
+}
+
 /// De quanto em quanto o `orbit_wait` olha o nó.
 const WAIT_POLL: std::time::Duration = std::time::Duration::from_millis(100);
 
@@ -9491,6 +9730,39 @@ mod tests {
         assert!(n.events.is_empty());
     }
 
+    /// `orbit_connect` não dá poder novo: liga o que é do agente, e a nó do
+    /// dono só passa adiante a ligação que o dono já deu a ele.
+    #[test]
+    fn connect_owner_never_grants_new_power() {
+        let edges = vec![
+            edge("m1", "o", "nota", EdgeKind::Memory),
+            edge("t1", "par", "o", EdgeKind::Talk),
+            edge("l1", "p", "r", EdgeKind::Log),
+        ];
+        let mine = ["r", "p"];
+        let ok = |from: &str, to: &str, kind| connect_owner(&edges, &mine, "o", from, to, kind);
+        assert_eq!(ok("r", "nota", EdgeKind::Memory).unwrap(), "r");
+        assert!(
+            ok("r", "outra", EdgeKind::Memory).is_err(),
+            "o dono não deu"
+        );
+        // Conversa vale nos dois sentidos.
+        assert_eq!(ok("par", "r", EdgeKind::Talk).unwrap(), "r");
+        assert_eq!(ok("o", "r", EdgeKind::Talk).unwrap(), "r");
+        assert_eq!(ok("r", "p", EdgeKind::Talk).unwrap(), "p");
+        // Dois nós do dono, nunca.
+        assert!(ok("par", "nota", EdgeKind::Memory).is_err());
+        // Sem criado numa ponta, não há onde a ligação morar.
+        assert!(ok("o", "nota", EdgeKind::Memory).is_err());
+        // Já ligados; e valor que voltaria para a origem.
+        let err = ok("p", "r", EdgeKind::Log).unwrap_err();
+        assert!(err.contains("já estão ligados por log"), "{err}");
+        let err = ok("r", "p", EdgeKind::Context).unwrap_err();
+        assert!(err.contains("ciclo"), "{err}");
+        // Ligação sem valor não faz ciclo.
+        assert!(ok("r", "p", EdgeKind::Talk).is_ok());
+    }
+
     /// Ação do dono num nó criado por um agente vira aviso para esse agente,
     /// entregue uma vez; a do agente e a em nó do dono, não.
     #[test]
@@ -9553,6 +9825,111 @@ mod tests {
         );
         // O log da sessão segue com tudo.
         assert_eq!(s.run().nodes["api"].events.len(), 4);
+    }
+
+    /// `orbit_connect` liga os criados (conversa com quem criou vale na
+    /// hora; valor num nó que já começou fica ↻ para aplicar) e
+    /// `orbit_reassign` troca a tarefa de um agente criado e o reinicia.
+    #[cfg(unix)]
+    #[test]
+    fn connect_and_reassign_created_nodes() {
+        use serde_json::json;
+        let dir = tempfile::tempdir().unwrap();
+        let work = dir.path().join("w");
+        std::fs::create_dir(&work).unwrap();
+        let (runs, host, _app) = pty_runs(dir.path().join("runs"));
+        let g = graph(vec![orchestrator("o"), agent("dono", "x")], vec![]);
+        runs.store.save_orbit_graph(&g, true, None).unwrap();
+        let run = runs.start_now(g, vec![]).unwrap();
+        wait_orchestrating(&runs, &run.id, "o");
+        let tools = tools_of(&host, "o");
+        let create = |args: serde_json::Value| {
+            tools.call("orbit_create_agent", &args).unwrap()["node_id"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        let r =
+            create(json!({"title": "rev", "runner": "claude", "prompt": "revise", "dir": work}));
+        let p = tools
+            .call(
+                "orbit_create_process",
+                &json!({"title": "api", "command": "sleep 30", "dir": work}),
+            )
+            .unwrap()["node_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        wait_status(&runs, &run.id, &r, NodeStatus::Done);
+
+        let out = tools
+            .call(
+                "orbit_connect",
+                &json!({"from": "o", "to": r, "kind": "talk"}),
+            )
+            .unwrap();
+        assert_eq!(out["kind"], "talk", "{out}");
+        let peers = tools.call("orbit_peers", &json!({})).unwrap();
+        assert_eq!(peers["peers"][0]["id"], r.as_str(), "{peers}");
+
+        let out = tools
+            .call(
+                "orbit_reassign",
+                &json!({"node": r, "prompt": "agora só o front"}),
+            )
+            .unwrap();
+        assert_eq!(out["reassigned"], true);
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while host
+            .agents
+            .lock()
+            .iter()
+            .filter(|l| l.title == "rev")
+            .count()
+            < 2
+        {
+            assert!(Instant::now() < deadline, "o agente não subiu de novo");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let last = host
+            .agents
+            .lock()
+            .iter()
+            .rfind(|l| l.title == "rev")
+            .cloned()
+            .unwrap();
+        assert!(last.prompt.contains("agora só o front"), "{}", last.prompt);
+        let run_now = runs.get(&run.id).unwrap();
+        assert_eq!(run_now.nodes[&r].attempt, 1);
+        // A ligação ficou.
+        assert!(run_now
+            .created
+            .iter()
+            .any(|c| c.node.id == r && c.edges.iter().any(|e| e.kind == EdgeKind::Talk)));
+        let out = tools
+            .call("orbit_connect", &json!({"from": p, "to": r, "kind": "log"}))
+            .unwrap();
+        assert!(out["note"].as_str().unwrap().contains("↻"), "{out}");
+        let run_now = runs.get(&run.id).unwrap();
+        assert!(run_now.nodes[&r].stale, "{run_now:?}");
+
+        for (args, why) in [
+            (json!({"from": "dono", "to": r, "kind": "talk"}), "só liga"),
+            (json!({"from": r, "to": p, "kind": "context"}), "ciclo"),
+            (json!({"from": p, "to": r, "kind": "log"}), "já estão"),
+        ] {
+            let err = tools.call("orbit_connect", &args).unwrap_err();
+            assert!(err.contains(why), "{args}: {err}");
+        }
+
+        for (args, why) in [
+            (json!({"node": "dono", "prompt": "x"}), "que você criou"),
+            (json!({"node": p, "prompt": "x"}), "não é agente"),
+        ] {
+            let err = tools.call("orbit_reassign", &args).unwrap_err();
+            assert!(err.contains(why), "{args}: {err}");
+        }
+        runs.stop(&run.id).unwrap();
     }
 
     /// O ↻/■ do dono num nó que o agente criou chega na próxima chamada de

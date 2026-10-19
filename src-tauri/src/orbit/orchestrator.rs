@@ -108,6 +108,17 @@ pub enum ToolCall {
     },
     /// Os nós do run, com o que liga cada um a quem pergunta.
     ListNodes,
+    /// Ligar dois nós (o run confere de quem são e se o tipo cabe).
+    Connect {
+        from: String,
+        to: String,
+        kind: super::EdgeKind,
+    },
+    /// Trocar a tarefa de um agente criado por quem chama e reiniciá-lo.
+    Reassign {
+        node: String,
+        prompt: String,
+    },
     /// Esperar `node` abrir porta, terminar ou fechar o turno, até `timeout_s`.
     Wait {
         node: String,
@@ -339,6 +350,21 @@ struct NodeArgs {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct ConnectArgs {
+    from: String,
+    to: String,
+    kind: super::EdgeKind,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReassignArgs {
+    node: String,
+    prompt: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ReadLogArgs {
     node: String,
     #[serde(default)]
@@ -524,6 +550,31 @@ pub fn parse_call(tool: &str, value: &Value) -> Result<ToolCall, String> {
         "orbit_list_nodes" => {
             let _: EmptyArgs = args(tool, value)?;
             Ok(ToolCall::ListNodes)
+        }
+        "orbit_connect" => {
+            let a: ConnectArgs = args(tool, value)?;
+            required("from", &a.from)?;
+            required("to", &a.to)?;
+            if a.from == a.to {
+                return Err("from e to são o mesmo nó".into());
+            }
+            if a.kind == super::EdgeKind::Plan {
+                return Err("plan: a ligação de plano o TYBA cria pelo orbit_plan".into());
+            }
+            Ok(ToolCall::Connect {
+                from: a.from,
+                to: a.to,
+                kind: a.kind,
+            })
+        }
+        "orbit_reassign" => {
+            let a: ReassignArgs = args(tool, value)?;
+            required("node", &a.node)?;
+            required("prompt", &a.prompt)?;
+            Ok(ToolCall::Reassign {
+                node: a.node,
+                prompt: a.prompt,
+            })
         }
         "orbit_wait" => {
             let a: WaitArgs = args(tool, value)?;
@@ -1798,6 +1849,49 @@ Binary files a/logo.png and b/logo.png differ
             json!({"node": "p", "lines": -1}),
         ] {
             assert!(parse_call("orbit_read_log", &bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn connect_and_reassign_parse() {
+        assert_eq!(
+            parse_call(
+                "orbit_connect",
+                &json!({"from": "a", "to": "b", "kind": "talk"})
+            )
+            .unwrap(),
+            ToolCall::Connect {
+                from: "a".into(),
+                to: "b".into(),
+                kind: crate::orbit::EdgeKind::Talk
+            }
+        );
+        for bad in [
+            json!({"from": "a", "to": "a", "kind": "talk"}),
+            json!({"from": "a", "to": "b", "kind": "plan"}),
+            json!({"from": "a", "to": "b", "kind": "tudo"}),
+            json!({"from": "a", "to": " ", "kind": "url"}),
+            json!({"from": "a\rb", "to": "c", "kind": "url"}),
+        ] {
+            assert!(parse_call("orbit_connect", &bad).is_err(), "{bad}");
+        }
+        assert_eq!(
+            parse_call(
+                "orbit_reassign",
+                &json!({"node": "r", "prompt": "revise de novo\nsó o front"})
+            )
+            .unwrap(),
+            ToolCall::Reassign {
+                node: "r".into(),
+                prompt: "revise de novo\nsó o front".into()
+            }
+        );
+        for bad in [
+            json!({"node": "r", "prompt": " "}),
+            json!({"node": "r", "prompt": "x\u{1b}[2J"}),
+            json!({"node": "r", "prompt": "x", "role": "y"}),
+        ] {
+            assert!(parse_call("orbit_reassign", &bad).is_err(), "{bad}");
         }
     }
 

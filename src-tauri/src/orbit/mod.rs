@@ -445,7 +445,10 @@ pub(crate) fn produces(
 }
 
 /// O que o nó aceita (tabela de rules).
-fn accepts(kind: &NodeKind, integrations: &HashMap<&str, &Integration>) -> Vec<EdgeKind> {
+pub(crate) fn accepts(
+    kind: &NodeKind,
+    integrations: &HashMap<&str, &Integration>,
+) -> Vec<EdgeKind> {
     match kind {
         NodeKind::Agent { .. } => {
             let mut kinds = EdgeKind::data();
