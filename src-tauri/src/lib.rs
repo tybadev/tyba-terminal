@@ -485,8 +485,7 @@ fn agent_payload(
         .and_then(|d| agent::process_probe::no_jail_marker(d.pid));
     let suggest_plugin = detected
         .as_ref()
-        .is_some_and(|d| matches!(d.kind, crate::session::AgentRunnerKind::ClaudeCode))
-        && plugin_suggested();
+        .is_some_and(|d| wants_plugin_chip(&d.kind, hosting) && plugin_suggested(d.pid));
     agent::process_probe::AgentDetectedPayload {
         session_id,
         detected,
@@ -498,16 +497,30 @@ fn agent_payload(
     }
 }
 
-/// Fatia 4 do agente livre: o plugin do TYBA falta no Claude desta máquina.
+/// Fatia 4 do agente livre: o chip só vale para o claude CRU. O hospedado
+/// pelo shim (`TYBA_HOSTED=1`) já fala com o TYBA pelos hooks da sessão, e o
+/// hook do plugin sai na primeira linha nele — o plugin não mudaria nada.
+fn wants_plugin_chip(kind: &crate::session::AgentRunnerKind, hosting: bool) -> bool {
+    matches!(kind, crate::session::AgentRunnerKind::ClaudeCode) && !hosting
+}
+
+/// O `CLAUDE_CONFIG_DIR` do claude detectado (do env dele, não do TYBA).
+fn pane_claude_config_dir(pid: u32) -> Option<String> {
+    agent::process_probe::env_var(pid, "CLAUDE_CONFIG_DIR").filter(|d| !d.is_empty())
+}
+
+/// O plugin do TYBA falta no config do Claude deste claude.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-fn plugin_suggested() -> bool {
+fn plugin_suggested(pid: u32) -> bool {
     std::env::var_os("HOME")
         .map(std::path::PathBuf::from)
-        .is_some_and(|home| agent::claude_plugin::suggest_install(&home))
+        .is_some_and(|home| {
+            agent::claude_plugin::suggest_install(&home, pane_claude_config_dir(pid).as_deref())
+        })
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-fn plugin_suggested() -> bool {
+fn plugin_suggested(_pid: u32) -> bool {
     false
 }
 
@@ -7222,7 +7235,7 @@ async fn claude_plugin_status() -> Result<agent::claude_plugin::PluginStatus, St
         .ok_or("HOME indisponível")?;
     // `resolved_binary` pode resolver o PATH de login (`$SHELL -lic`): fora
     // do worker do runtime.
-    tauri::async_runtime::spawn_blocking(move || agent::claude_plugin::status(&home))
+    tauri::async_runtime::spawn_blocking(move || agent::claude_plugin::status(&home, None))
         .await
         .map_err(|e| e.to_string())
 }
@@ -7233,7 +7246,12 @@ async fn claude_plugin_status() -> Result<agent::claude_plugin::PluginStatus, St
 #[tauri::command]
 async fn install_claude_plugin(
     app: AppHandle,
+    session_id: Option<SessionId>,
 ) -> Result<agent::claude_plugin::PluginStatus, String> {
+    // Pelo chip: o config do Claude é o do claude daquele pane.
+    let config_dir = session_id
+        .and_then(|id| app.state::<AppState>().agent_prober.detected(id))
+        .and_then(|d| pane_claude_config_dir(d.pid));
     let dir = std::env::var_os("TYBA_DATA_DIR")
         .map(std::path::PathBuf::from)
         .or_else(|| app.path().app_data_dir().ok())
@@ -7243,8 +7261,8 @@ async fn install_claude_plugin(
         .map(std::path::PathBuf::from)
         .ok_or("HOME indisponível")?;
     let status = tauri::async_runtime::spawn_blocking(move || {
-        agent::claude_plugin::install(&dir)?;
-        Ok(agent::claude_plugin::status(&home))
+        agent::claude_plugin::install(&dir, config_dir.as_deref())?;
+        Ok(agent::claude_plugin::status(&home, config_dir.as_deref()))
     })
     .await
     .map_err(|e| e.to_string())?;
@@ -7263,7 +7281,7 @@ async fn uninstall_claude_plugin(
         .ok_or("HOME indisponível")?;
     let status = tauri::async_runtime::spawn_blocking(move || {
         agent::claude_plugin::uninstall()?;
-        Ok(agent::claude_plugin::status(&home))
+        Ok(agent::claude_plugin::status(&home, None))
     })
     .await
     .map_err(|e| e.to_string())?;
@@ -10875,6 +10893,17 @@ mod tests {
         );
         let newline = agent::ResumeDir::Cd(std::path::PathBuf::from("/home/u/a\nb"));
         assert_eq!(shell_resume_line(id, &newline), None);
+    }
+
+    #[test]
+    fn plugin_chip_only_for_a_raw_claude() {
+        use crate::session::AgentRunnerKind;
+        assert!(wants_plugin_chip(&AgentRunnerKind::ClaudeCode, false));
+        assert!(
+            !wants_plugin_chip(&AgentRunnerKind::ClaudeCode, true),
+            "claude hospedado pelo shim: o hook do plugin nem roda"
+        );
+        assert!(!wants_plugin_chip(&AgentRunnerKind::Codex, false));
     }
 
     #[test]

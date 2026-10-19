@@ -975,8 +975,10 @@ export const claudePluginStatus = () =>
   invoke<ClaudePluginStatus>("claude_plugin_status");
 
 /** Mexe na config global do Claude: só por clique do usuário. */
-export const installClaudePlugin = () =>
-  invoke<ClaudePluginStatus>("install_claude_plugin");
+export const installClaudePlugin = (sessionId?: SessionId) =>
+  invoke<ClaudePluginStatus>("install_claude_plugin", {
+    sessionId: sessionId ?? null,
+  });
 
 export const uninstallClaudePlugin = () =>
   invoke<ClaudePluginStatus>("uninstall_claude_plugin");

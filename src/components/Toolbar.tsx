@@ -51,18 +51,20 @@ interface Props {
    * do TYBA. O chip instala; quando o core confirma, o payload volta sem a
    * sugestão e o chip some. */
   suggestPlugin: boolean;
+  /** O pane do chip: o core instala no config do Claude daquele claude. */
+  sessionId: string | null;
 }
 
 /** O chip de instalar o plugin: só emite a intenção. Quem decide se ainda
  * falta é o core, que reemite a detecção depois de instalar. */
-function PluginChip() {
+function PluginChip({ sessionId }: { sessionId: string | null }) {
   const { t } = useTranslation();
   const [busy, setBusy] = useState(false);
   return (
     <button
       onClick={() => {
         setBusy(true);
-        installClaudePlugin()
+        installClaudePlugin(sessionId ?? undefined)
           .catch((e) => toastError(t("claudePluginFailed"), translateError(e, t)))
           .finally(() => setBusy(false));
       }}
@@ -109,6 +111,7 @@ export function Toolbar({
   richInputCombo,
   onOpenRichInput,
   suggestPlugin,
+  sessionId,
 }: Props) {
   const { t } = useTranslation();
   if (!pref.enabled) return null;
@@ -275,7 +278,7 @@ export function Toolbar({
             <Shortcut combo={richInputCombo} />
           </button>
         )}
-        {suggestPlugin && <PluginChip />}
+        {suggestPlugin && <PluginChip sessionId={sessionId} />}
         {left}
       </div>
       <div className="flex shrink-0 items-center gap-4">{right}</div>

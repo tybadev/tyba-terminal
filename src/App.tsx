@@ -7102,6 +7102,7 @@ export default function App() {
               (activeId && detectedBySession.get(activeId)?.suggestPlugin) ||
               false
             }
+            sessionId={activeId ?? null}
           />
         )}
       </div>
