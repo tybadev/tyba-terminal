@@ -948,12 +948,29 @@ fn redact_line(
 
 /// As linhas de UM bloco (ou checkpoint), redigidas com um só
 /// [`LineRedactor`](crate::session::redact::LineRedactor) atravessando todas.
+///
+/// Um fim de chave sem começo quer dizer que o teto cortou a cabeça do bloco
+/// junto com o BEGIN: as linhas contíguas com cara de corpo logo antes dele
+/// são a chave, e são redigidas para trás.
 pub(crate) fn redact_lines(lines: Vec<LogicalLine>) -> Vec<LogicalLine> {
-    let mut redactor = crate::session::redact::LineRedactor::default();
-    lines
-        .into_iter()
-        .map(|line| redact_line(&mut redactor, line))
-        .collect()
+    use crate::session::redact::{looks_like_key_body, LineRedactor, REDACTION_MARK};
+    let mut redactor = LineRedactor::default();
+    let mut out: Vec<LogicalLine> = Vec::with_capacity(lines.len());
+    for line in lines {
+        if redactor.closes_unseen(&line.text) {
+            for prev in out.iter_mut().rev() {
+                if !looks_like_key_body(&prev.text) {
+                    break;
+                }
+                *prev = LogicalLine {
+                    text: REDACTION_MARK.to_string(),
+                    runs: Vec::new(),
+                };
+            }
+        }
+        out.push(redact_line(&mut redactor, line));
+    }
+    out
 }
 
 /// O checkpoint como vai para o disco: comando, linhas e cortadas.
@@ -1306,6 +1323,26 @@ mod tests {
         assert_eq!(texts.first(), Some(&"ok"));
         assert_eq!(texts.last(), Some(&"fim"));
         assert!(texts.iter().all(|t| !t.contains(&body)), "{texts:?}");
+    }
+
+    /// O teto de linhas cortou a cabeça do bloco junto com o BEGIN: o bloco
+    /// começa no meio do corpo. O END sem começo redige para trás.
+    #[test]
+    fn a_pem_body_whose_begin_was_cut_is_redacted_backwards() {
+        let body = "Zm9vYmFy".repeat(8);
+        let bytes = format!(
+            "{body}\r\n{body}\r\n-----END {k}-----\r\nfim\r\n",
+            k = "RSA PRIVATE KEY"
+        );
+        let block = build(finished(bytes.as_bytes()));
+        let texts: Vec<&str> = block.lines.iter().map(|l| l.text.as_str()).collect();
+        assert!(texts.iter().all(|t| !t.contains(&body)), "{texts:?}");
+        assert_eq!(texts.last(), Some(&"fim"));
+
+        let mut cp = checkpoint(bytes.as_bytes(), "cat id_rsa");
+        cp.cols = 80;
+        let (_, lines, _) = for_disk(&cp);
+        assert!(!serde_json::to_string(&lines).unwrap().contains(&body));
     }
 
     /// O mesmo `cat id_rsa`, mas pego no meio pelo checkpoint: o disco não

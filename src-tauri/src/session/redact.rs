@@ -1,26 +1,49 @@
 use std::borrow::Cow;
 use std::sync::LazyLock;
 
-use regex::{NoExpand, Regex};
+use regex::Regex;
 
 pub const REDACTION_MARK: &str = "[REDACTED]";
 
-/// Bloco PEM vem primeiro: fechado, some do BEGIN ao END (com quebra real ou
-/// `\n` escapado dentro de JSON); sem END, some do BEGIN ao fim do texto —
-/// texto cortado no meio da chave ainda esconde o corpo.
+/// Começo e fim de um bloco de chave privada: PEM (PKCS#1/#8, EC, OpenSSH,
+/// cifrada), PGP armor e a parte privada do `.ppk` do PuTTY.
+const KEY_START: &str =
+    r"-----BEGIN (?:[A-Z ]*PRIVATE KEY|PGP PRIVATE KEY BLOCK)-----|Private-Lines: *[0-9]+";
+const KEY_END: &str =
+    r"-----END (?:[A-Z ]*PRIVATE KEY|PGP PRIVATE KEY BLOCK)-----|Private-MAC: *[0-9A-Fa-f]*";
+/// Cabeçalho que pode estar DENTRO de um bloco de chave (PEM cifrado, armor
+/// do PGP); o resto do corpo é base64.
+const KEY_HEADER: &str = r"(?:Proc-Type|DEK-Info|Comment|Version|Hash):";
+/// Quebra de linha real ou `\n` escapado (chave dentro de JSON/YAML).
+const KEY_SEP: &str = r"(?:[\t ]*(?:\r?\n|\\n))+[\t ]*";
+
+/// O bloco de chave vem primeiro. Ele engole a linha do começo, as linhas
+/// seguintes enquanto tiverem cara de corpo e, se vier logo depois, a do fim.
+/// Um BEGIN citado (`rg`, diff de fixture) leva só ele mesmo: a primeira linha
+/// que não parece corpo encerra o bloco.
+///
+/// Linha real de corpo precisa ir até o fim da linha (`(?m:$)`), senão o
+/// base64 comeria o prefixo de `src/a.rs:10: …`. No `\n` escapado não há fim
+/// de linha a exigir; o pior caso é um prefixo a mais dentro da mesma string.
 static SECRETS: LazyLock<Regex> = LazyLock::new(|| {
+    let real_line =
+        format!(r"(?:[\t ]*\r?\n)+[\t ]*(?:{KEY_HEADER}[^\r\n]*|[A-Za-z0-9+/=]+[\t ]*\r?(?m:$))");
+    let escaped_line = format!(r#"(?:\\n)+(?:{KEY_HEADER}[^\\"\r\n]*|[A-Za-z0-9+/=]+)"#);
+    let key_block =
+        format!(r"(?:{KEY_START})(?:{real_line}|{escaped_line})*(?:{KEY_SEP}(?:{KEY_END}))?");
     Regex::new(
-        r"(?x)
-        -----BEGIN\ [A-Z\ ]*PRIVATE\ KEY-----(?s:.*?-----END\ [A-Z\ ]*PRIVATE\ KEY-----|.*)
-        | (AKIA|ASIA)[0-9A-Z]{16}
-        | sk-[A-Za-z0-9_-]{20,}
-        | gh[pousr]_[A-Za-z0-9]{20,}
-        | github_pat_[A-Za-z0-9_]{20,}
-        | glpat-[A-Za-z0-9_-]{20,}
-        | xox[abposr]-[A-Za-z0-9-]{10,}
-        | AIza[0-9A-Za-z_-]{35}
-        | eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+
-        ",
+        &[
+            key_block.as_str(),
+            r"(AKIA|ASIA)[0-9A-Z]{16}",
+            r"sk-[A-Za-z0-9_-]{20,}",
+            r"gh[pousr]_[A-Za-z0-9]{20,}",
+            r"github_pat_[A-Za-z0-9_]{20,}",
+            r"glpat-[A-Za-z0-9_-]{20,}",
+            r"xox[abposr]-[A-Za-z0-9-]{10,}",
+            r"AIza[0-9A-Za-z_-]{35}",
+            r"eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+",
+        ]
+        .join("|"),
     )
     .unwrap()
 });
@@ -32,14 +55,21 @@ static URL_PASSWORD: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"([A-Za-z][A-Za-z0-9+.-]*://[^\s:/@]*:)[^\s/?#"'<>]+@"#).unwrap()
 });
 
-static PEM_BEGIN: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"-----BEGIN [A-Z ]*PRIVATE KEY-----").unwrap());
-static PEM_END: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"-----END [A-Z ]*PRIVATE KEY-----").unwrap());
+static KEY_START_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(KEY_START).unwrap());
+static KEY_END_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(KEY_END).unwrap());
+static KEY_BODY_LINE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(&format!(r"^\s*(?:[A-Za-z0-9+/=]*|{KEY_HEADER}.*)\s*$")).unwrap());
 
 pub fn redact(input: &str) -> Cow<'_, str> {
+    // O bloco de chave vira UMA marca seguida das quebras que ele tinha: o
+    // texto mantém o número de linhas (`error_line` do CI, export de logs).
+    let mark = |c: &regex::Captures| {
+        let m = &c[0];
+        let nl = if m.contains("\r\n") { "\r\n" } else { "\n" };
+        format!("{REDACTION_MARK}{}", nl.repeat(m.matches('\n').count()))
+    };
     let password = |c: &regex::Captures| format!("{}{REDACTION_MARK}@", &c[1]);
-    match SECRETS.replace_all(input, NoExpand(REDACTION_MARK)) {
+    match SECRETS.replace_all(input, mark) {
         Cow::Borrowed(s) => URL_PASSWORD.replace_all(s, password),
         Cow::Owned(s) => Cow::Owned(URL_PASSWORD.replace_all(&s, password).into_owned()),
     }
@@ -50,39 +80,60 @@ pub fn contains_secret(input: &str) -> bool {
     SECRETS.is_match(input) || URL_PASSWORD.is_match(input)
 }
 
-/// [`redact`] linha a linha, lembrando do bloco PEM aberto.
+/// A linha poderia ser corpo de uma chave: base64, vazia ou cabeçalho de PEM
+/// cifrado / armor do PGP.
+pub fn looks_like_key_body(line: &str) -> bool {
+    KEY_BODY_LINE.is_match(line)
+}
+
+/// [`redact`] linha a linha, lembrando do bloco de chave aberto.
 ///
 /// Quem redige por linha lógica (blocos) recebe o BEGIN, o corpo base64 e o
 /// END separados. O `redact` sozinho esconderia só a linha do BEGIN, e o corpo
-/// — que É a chave — passaria. Aqui toda linha entre BEGIN e END vira marca.
-/// Base64 solto fora de um bloco não é tocado: hash e dump dariam falso
-/// positivo demais.
+/// — que É a chave — passaria. Aqui, depois de um começo de chave, as linhas
+/// com cara de corpo viram marca até o fim do bloco ou até a primeira que não
+/// parece corpo — essa fecha o estado e é redigida normalmente, para um BEGIN
+/// citado não apagar o resto da saída. Base64 solto fora de um bloco não é
+/// tocado: hash e dump dariam falso positivo demais.
 ///
 /// Como no `redact`, `Cow::Owned` quer dizer que algo foi redigido.
 #[derive(Default)]
 pub struct LineRedactor {
-    in_pem: bool,
+    in_key: bool,
 }
 
 impl LineRedactor {
     pub fn line<'a>(&mut self, line: &'a str) -> Cow<'a, str> {
-        if self.in_pem {
-            let Some(end) = PEM_END.find(line) else {
+        if self.in_key {
+            if let Some(end) = KEY_END_RE.find(line) {
+                self.in_key = false;
+                let rest = self.line(&line[end.end()..]);
+                return Cow::Owned(format!("{REDACTION_MARK}{rest}"));
+            }
+            if looks_like_key_body(line) {
                 return Cow::Owned(REDACTION_MARK.to_string());
-            };
-            self.in_pem = false;
-            let rest = self.line(&line[end.end()..]);
-            return Cow::Owned(format!("{REDACTION_MARK}{rest}"));
+            }
+            self.in_key = false;
         }
         let out = redact(line);
-        // BEGIN sempre redige, então `Borrowed` dispensa a busca.
+        // Começo de chave sempre redige, então `Borrowed` dispensa a busca.
         if matches!(out, Cow::Owned(_)) {
-            self.in_pem = PEM_BEGIN
+            self.in_key = KEY_START_RE
                 .find_iter(line)
                 .last()
-                .is_some_and(|b| !PEM_END.is_match(&line[b.end()..]));
+                .is_some_and(|b| !KEY_END_RE.is_match(&line[b.end()..]));
         }
         out
+    }
+
+    /// A linha fecha uma chave cujo começo este redator não viu (o teto de
+    /// linhas cortou a cabeça do bloco). Quem tem as linhas anteriores redige
+    /// para trás as que parecem corpo.
+    pub fn closes_unseen(&self, line: &str) -> bool {
+        !self.in_key
+            && KEY_END_RE
+                .find(line)
+                .is_some_and(|e| !KEY_START_RE.is_match(&line[..e.start()]))
     }
 }
 
@@ -239,7 +290,9 @@ mod tests {
     fn redacts_a_whole_pem_block_in_one_text() {
         let text = format!("antes\n{}\ndepois", pem_lines().join("\n"));
         let out = redact(&text);
-        assert_eq!(out, "antes\n[REDACTED]\ndepois");
+        // Mesmo número de linhas: as 5 linhas da chave viram marca + 4 quebras.
+        assert_eq!(out, "antes\n[REDACTED]\n\n\n\n\ndepois");
+        assert_eq!(out.lines().count(), text.lines().count());
     }
 
     #[test]
@@ -253,10 +306,116 @@ mod tests {
     }
 
     #[test]
-    fn redacts_to_the_end_when_the_pem_never_closes() {
+    fn redacts_the_body_when_the_pem_never_closes() {
         let lines = pem_lines();
         let text = format!("antes\n{}", lines[..3].join("\n"));
-        assert_eq!(redact(&text), "antes\n[REDACTED]");
+        assert_eq!(redact(&text), "antes\n[REDACTED]\n\n");
+    }
+
+    #[test]
+    fn keeps_crlf_line_count() {
+        let text = format!("a\r\n{}\r\nb", pem_lines().join("\r\n"));
+        assert_eq!(redact(&text), "a\r\n[REDACTED]\r\n\r\n\r\n\r\n\r\nb");
+    }
+
+    /// `rg 'PRIVATE KEY-----'` numa fixture: o BEGIN citado não pode apagar o
+    /// resto da saída.
+    fn quoted_begin() -> Vec<String> {
+        vec![
+            format!(
+                "tests/k.rs:3:    let k = \"-----BEGIN {} KEY-----\";",
+                "RSA PRIVATE"
+            ),
+            "tests/k.rs:4:    assert!(k.len() > 0);".to_string(),
+            "src/a.rs:10:fn main() {}".to_string(),
+            "README.md:2:texto".to_string(),
+        ]
+    }
+
+    #[test]
+    fn a_quoted_begin_keeps_the_rest_of_the_text() {
+        let lines = quoted_begin();
+        let out = redact(&lines.join("\n")).into_owned();
+        let out: Vec<&str> = out.lines().collect();
+        assert_eq!(out[1..], lines[1..]);
+    }
+
+    #[test]
+    fn a_quoted_begin_keeps_the_next_lines_line_by_line() {
+        let lines = quoted_begin();
+        let mut r = LineRedactor::default();
+        let out: Vec<String> = lines.iter().map(|l| r.line(l).into_owned()).collect();
+        assert!(out[0].contains(REDACTION_MARK));
+        assert_eq!(out[1..], lines[1..]);
+    }
+
+    fn pgp_lines() -> Vec<String> {
+        vec![
+            format!("-----BEGIN PGP {} BLOCK-----", "PRIVATE KEY"),
+            "Version: sintetica".to_string(),
+            String::new(),
+            fake("", "cXV4", 16),
+            fake("", "Zm9v", 16),
+            "=YWJj".to_string(),
+            format!("-----END PGP {} BLOCK-----", "PRIVATE KEY"),
+        ]
+    }
+
+    fn putty_lines() -> Vec<String> {
+        vec![
+            "PuTTY-User-Key-File-3: ssh-ed25519".to_string(),
+            "Encryption: none".to_string(),
+            "Comment: sintetica".to_string(),
+            "Public-Lines: 1".to_string(),
+            fake("", "UFVC", 16),
+            "Private-Lines: 1".to_string(),
+            fake("", "UFJJ", 16),
+            format!("Private-MAC: {}", "ab".repeat(32)),
+        ]
+    }
+
+    #[test]
+    fn redacts_pgp_and_putty_private_keys_in_one_text() {
+        let pgp = format!("a\n{}\nb", pgp_lines().join("\n"));
+        assert_eq!(
+            redact(&pgp),
+            format!("a\n{REDACTION_MARK}{}\nb", "\n".repeat(6))
+        );
+
+        let ppk = putty_lines().join("\n");
+        let out = redact(&ppk);
+        assert!(!out.contains(&fake("", "UFJJ", 16)), "{out}");
+        assert!(!out.contains("Private-MAC"), "{out}");
+        // A parte pública fica.
+        assert!(out.contains(&fake("", "UFVC", 16)), "{out}");
+        assert_eq!(out.split('\n').count(), ppk.split('\n').count());
+    }
+
+    #[test]
+    fn redacts_pgp_and_putty_private_keys_line_by_line() {
+        for (lines, secret) in [
+            (pgp_lines(), fake("", "cXV4", 16)),
+            (putty_lines(), fake("", "UFJJ", 16)),
+        ] {
+            let mut r = LineRedactor::default();
+            let mut out: Vec<String> = lines.iter().map(|l| r.line(l).into_owned()).collect();
+            out.push(r.line("$ ls").into_owned());
+            assert!(out.iter().all(|l| !l.contains(&secret)), "{out:?}");
+            assert_eq!(out.last().unwrap(), "$ ls");
+        }
+    }
+
+    #[test]
+    fn spots_an_end_whose_begin_was_cut() {
+        let r = LineRedactor::default();
+        let end = format!("-----END {} KEY-----", "RSA PRIVATE");
+        assert!(r.closes_unseen(&end));
+        assert!(r.closes_unseen(&format!("Private-MAC: {}", "ab".repeat(4))));
+        assert!(!r.closes_unseen(&pem_lines().join(r"\n")));
+        assert!(!r.closes_unseen("-----END CERTIFICATE-----"));
+        assert!(looks_like_key_body(&fake("", "Zm9v", 16)));
+        assert!(looks_like_key_body(""));
+        assert!(!looks_like_key_body("src/a.rs:1: x"));
     }
 
     #[test]
