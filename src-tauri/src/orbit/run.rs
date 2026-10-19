@@ -857,25 +857,35 @@ impl Scheduler {
     /// reiniciar sozinho; quem foi pulado por causa dele volta a esperar.
     /// Devolve a sessão de antes, para matar (o agente vivo depois do turno
     /// inclusive).
-    pub fn rerun(&mut self, id: &str) -> Result<Option<String>, String> {
+    /// O nó pode ser reiniciado agora ([`Scheduler::rerun`]): run aberto e
+    /// nó que já começou (não esperando nem pulado).
+    pub fn can_rerun(&self, id: &str) -> Result<(), String> {
         if self.run.status != RunStatus::Running {
             return Err("a execução já fechou: ▶ Executar de novo".into());
         }
         let n = self
             .run
             .nodes
-            .get_mut(id)
+            .get(id)
             .ok_or_else(|| format!("nó não existe neste run: {id}"))?;
         match n.status {
-            NodeStatus::Waiting => return Err("o nó ainda não começou".into()),
-            NodeStatus::Skipped => {
-                return Err(
-                    "o nó foi pulado porque uma origem dele não terminou: rode de novo a origem"
-                        .into(),
-                )
+            NodeStatus::Waiting => Err("o nó ainda não começou".into()),
+            NodeStatus::Skipped => Err(
+                "o nó foi pulado porque uma origem dele não terminou: rode de novo a origem".into(),
+            ),
+            NodeStatus::Running | NodeStatus::Done | NodeStatus::Failed | NodeStatus::Stopped => {
+                Ok(())
             }
-            NodeStatus::Running | NodeStatus::Done | NodeStatus::Failed | NodeStatus::Stopped => {}
         }
+    }
+
+    pub fn rerun(&mut self, id: &str) -> Result<Option<String>, String> {
+        self.can_rerun(id)?;
+        let n = self
+            .run
+            .nodes
+            .get_mut(id)
+            .ok_or_else(|| format!("nó não existe neste run: {id}"))?;
         let session = n.session_id.take();
         let mut fresh = NodeRun::waiting();
         fresh.attempt = n.attempt + 1;
@@ -4335,8 +4345,8 @@ impl<H: RunHost> Runs<H> {
         }))
     }
 
-    /// `orbit_connect`: liga dois nós do run, pela régua de
-    /// [`connect_owner`] (nada de poder novo) e pela do salvar (o tipo sai
+    /// `orbit_connect`: liga dois nós do run, pela régua de [`own_link`]
+    /// (só nós do próprio agente) e pela do salvar (o tipo sai
     /// de um e entra no outro; valor sem ciclo). A ligação mora no criado
     /// (`created.edges`) até o "Manter"; a de valor vale na hora no
     /// agendamento ([`Scheduler::rewire`]): quem já começou fica "↻ para
@@ -4375,15 +4385,8 @@ impl<H: RunHost> Runs<H> {
             if !super::accepts(&dst.kind, &by_id).contains(&kind) {
                 return Err(format!("{to} não aceita {}", edge_kind_name(kind)));
             }
-            let mine: Vec<&str> = a
-                .sched
-                .run
-                .created
-                .iter()
-                .filter(|c| c.created_by == caller)
-                .map(|c| c.node.id.as_str())
-                .collect();
-            let owner = connect_owner(&edges, &mine, caller, from, to, kind)?;
+            let mine = own_nodes(&a.sched.run.created, caller);
+            let owner = own_link(&edges, &mine, caller, from, to, kind)?;
             let id = format!(
                 "orq-link-{}",
                 &uuid::Uuid::new_v4().simple().to_string()[..12]
@@ -4431,8 +4434,11 @@ impl<H: RunHost> Runs<H> {
     }
 
     /// `orbit_reassign`: troca a tarefa (prompt) de um agente que quem chama
-    /// criou e o reinicia — mesmo nó, título, posição e ligações; só a sessão
-    /// do agente sobe de novo. Agente do dono não: o prompt é dele.
+    /// criou (e o dono não manteve) e o reinicia — mesmo nó, título, posição
+    /// e ligações; só a sessão do agente sobe de novo. Agente do dono não: o
+    /// prompt é dele. Tudo é conferido antes de mexer (de quem é, o estado
+    /// que deixa reiniciar, variável sem valor no prompt novo); se o
+    /// reinício ainda assim falha, o prompt antigo volta: erro não muda nada.
     fn reassign(
         &self,
         run_id: &str,
@@ -4440,39 +4446,14 @@ impl<H: RunHost> Runs<H> {
         node_id: &str,
         prompt: &str,
     ) -> Result<serde_json::Value, String> {
-        {
-            let mut active = self.active.lock();
-            let a = active
-                .get_mut(run_id)
-                .ok_or("a execução já fechou: ▶ Executar de novo")?;
-            let mine = a
-                .sched
-                .run
-                .created
-                .iter()
-                .any(|c| c.node.id == node_id && c.created_by == caller);
-            if !mine {
-                return Err(format!(
-                    "só reatribui agente que você criou: {node_id} não é um deles"
-                ));
-            }
-            let set = |n: &mut Node| match &mut n.kind {
-                NodeKind::Agent { prompt: p, .. } => {
-                    *p = prompt.to_string();
-                    true
+        let set = |a: &mut Active, text: &str| {
+            let put = |n: &mut Node| {
+                if let NodeKind::Agent { prompt: p, .. } = &mut n.kind {
+                    *p = text.to_string();
                 }
-                _ => false,
             };
-            let in_graph = a
-                .graph
-                .nodes
-                .iter_mut()
-                .find(|n| n.id == node_id)
-                .is_some_and(set);
-            if !in_graph {
-                return Err(format!(
-                    "{node_id} não é agente: orbit_reassign é só para agente"
-                ));
+            if let Some(n) = a.graph.nodes.iter_mut().find(|n| n.id == node_id) {
+                put(n);
             }
             if let Some(c) = a
                 .sched
@@ -4481,10 +4462,48 @@ impl<H: RunHost> Runs<H> {
                 .iter_mut()
                 .find(|c| c.node.id == node_id)
             {
-                set(&mut c.node);
+                put(&mut c.node);
             }
+        };
+        let old = {
+            let mut active = self.active.lock();
+            let a = active
+                .get_mut(run_id)
+                .ok_or("a execução já fechou: ▶ Executar de novo")?;
+            if !own_nodes(&a.sched.run.created, caller).contains(&node_id) {
+                return Err(format!(
+                    "só reatribui agente que você criou e o dono não manteve no grafo: \
+                     {node_id} não é um deles"
+                ));
+            }
+            let node = a
+                .graph
+                .nodes
+                .iter()
+                .find(|n| n.id == node_id)
+                .cloned()
+                .ok_or_else(|| format!("nó não existe neste run: {node_id}"))?;
+            let NodeKind::Agent { prompt: old, .. } = &node.kind else {
+                return Err(format!(
+                    "{node_id} não é agente: orbit_reassign é só para agente"
+                ));
+            };
+            let old = old.clone();
+            a.sched.can_rerun(node_id)?;
+            let mut next = node.clone();
+            if let NodeKind::Agent { prompt: p, .. } = &mut next.kind {
+                *p = prompt.to_string();
+            }
+            node_missing_variable(&next, None, &a.graph.variables)?;
+            set(a, prompt);
+            old
+        };
+        if let Err(e) = self.restart_node_by(run_id, node_id, Some(caller)) {
+            if let Some(a) = self.active.lock().get_mut(run_id) {
+                set(a, &old);
+            }
+            return Err(e);
         }
-        self.restart_node_by(run_id, node_id, Some(caller))?;
         Ok(serde_json::json!({ "node_id": node_id, "reassigned": true }))
     }
 
@@ -5181,13 +5200,21 @@ impl<H: RunHost> Runs<H> {
 /// antes de responder: erro de subida (porta ocupada, módulo faltando) sai
 /// nisso.
 const PROCESS_SETTLE: std::time::Duration = std::time::Duration::from_secs(3);
-/// A régua do `orbit_connect`: nada de poder novo. `mine`: os nós que
-/// `caller` criou. Pode ligar dois nós seus (ele e os que criou); um nó seu
-/// a um do dono só com a mesma ligação, no mesmo sentido, que o dono já deu
-/// a ele (passa adiante o que tem, como a memória de uma nota ao agente que
-/// criou). Ao menos uma ponta é um criado dele, onde a ligação mora:
-/// devolve o id dele.
-fn connect_owner(
+/// Os nós que `caller` criou neste run e o dono ainda não manteve: depois
+/// do "Manter" o nó é do dono (o próximo salvar desfaria a mudança).
+fn own_nodes<'a>(created: &'a [Created], caller: &str) -> Vec<&'a str> {
+    created
+        .iter()
+        .filter(|c| c.created_by == caller && !c.kept)
+        .map(|c| c.node.id.as_str())
+        .collect()
+}
+
+/// A régua do `orbit_connect`: só entre nós do próprio agente — ele e os
+/// que ele criou e o dono ainda não manteve (`mine`). Nó do dono nunca: a
+/// ligação viveria fora do alcance dele (não sai no canvas nem se revoga).
+/// Ao menos uma ponta é um criado dele, onde a ligação mora: devolve o id.
+fn own_link(
     edges: &[Edge],
     mine: &[&str],
     caller: &str,
@@ -5196,23 +5223,10 @@ fn connect_owner(
     kind: EdgeKind,
 ) -> Result<String, String> {
     let own = |id: &str| id == caller || mine.contains(&id);
-    let linked = |a: &str, b: &str| {
-        edges.iter().any(|e| {
-            e.kind == kind
-                && ((e.from == a && e.to == b)
-                    || (kind == EdgeKind::Talk && e.from == b && e.to == a))
-        })
-    };
-    let allowed = match (own(from), own(to)) {
-        (true, true) => true,
-        (true, false) => linked(caller, to),
-        (false, true) => linked(from, caller),
-        (false, false) => false,
-    };
-    if !allowed {
+    if !own(from) || !own(to) {
         return Err(
-            "só liga nós seus (você e os que você criou); com nó do dono, só a mesma ligação \
-             que o dono já deu a você no canvas"
+            "só liga nós seus: você e os nós que você criou e o dono ainda não manteve no \
+             grafo; nó do dono, nunca"
                 .into(),
         );
     }
@@ -5220,7 +5234,12 @@ fn connect_owner(
         .into_iter()
         .find(|id| mine.contains(id))
         .ok_or("ligue a partir de um nó que você criou")?;
-    if linked(from, to) {
+    let linked = edges.iter().any(|e| {
+        e.kind == kind
+            && ((e.from == from && e.to == to)
+                || (kind == EdgeKind::Talk && e.from == to && e.to == from))
+    });
+    if linked {
         return Err(format!(
             "{from} e {to} já estão ligados por {}",
             edge_kind_name(kind)
@@ -9781,37 +9800,60 @@ mod tests {
         assert!(n.events.is_empty());
     }
 
-    /// `orbit_connect` não dá poder novo: liga o que é do agente, e a nó do
-    /// dono só passa adiante a ligação que o dono já deu a ele.
+    /// `orbit_connect` só liga nós do próprio agente; nó do dono, nunca —
+    /// nem passando adiante uma ligação que o dono deu a ele.
     #[test]
-    fn connect_owner_never_grants_new_power() {
+    fn own_link_only_between_the_agents_own_nodes() {
         let edges = vec![
             edge("m1", "o", "nota", EdgeKind::Memory),
             edge("t1", "par", "o", EdgeKind::Talk),
             edge("l1", "p", "r", EdgeKind::Log),
         ];
         let mine = ["r", "p"];
-        let ok = |from: &str, to: &str, kind| connect_owner(&edges, &mine, "o", from, to, kind);
-        assert_eq!(ok("r", "nota", EdgeKind::Memory).unwrap(), "r");
-        assert!(
-            ok("r", "outra", EdgeKind::Memory).is_err(),
-            "o dono não deu"
-        );
-        // Conversa vale nos dois sentidos.
-        assert_eq!(ok("par", "r", EdgeKind::Talk).unwrap(), "r");
+        let ok = |from: &str, to: &str, kind| own_link(&edges, &mine, "o", from, to, kind);
         assert_eq!(ok("o", "r", EdgeKind::Talk).unwrap(), "r");
         assert_eq!(ok("r", "p", EdgeKind::Talk).unwrap(), "p");
-        // Dois nós do dono, nunca.
-        assert!(ok("par", "nota", EdgeKind::Memory).is_err());
-        // Sem criado numa ponta, não há onde a ligação morar.
-        assert!(ok("o", "nota", EdgeKind::Memory).is_err());
-        // Já ligados; e valor que voltaria para a origem.
+        for (from, to, kind) in [
+            ("r", "nota", EdgeKind::Memory),
+            ("par", "r", EdgeKind::Talk),
+            ("par", "nota", EdgeKind::Memory),
+        ] {
+            let err = ok(from, to, kind).unwrap_err();
+            assert!(err.contains("nunca"), "{from}->{to}: {err}");
+        }
+        // Já ligados (conversa nos dois sentidos); valor que voltaria à origem.
         let err = ok("p", "r", EdgeKind::Log).unwrap_err();
         assert!(err.contains("já estão ligados por log"), "{err}");
         let err = ok("r", "p", EdgeKind::Context).unwrap_err();
         assert!(err.contains("ciclo"), "{err}");
-        // Ligação sem valor não faz ciclo.
         assert!(ok("r", "p", EdgeKind::Talk).is_ok());
+        let talk = vec![edge("t2", "r", "p", EdgeKind::Talk)];
+        assert!(own_link(&talk, &mine, "o", "p", "r", EdgeKind::Talk).is_err());
+        // Criado mantido não está em `mine`: vira do dono.
+        let created = vec![
+            Created {
+                node: process("p", "x"),
+                created_by: "o".into(),
+                created_at: 0,
+                edges: Vec::new(),
+                kept: true,
+            },
+            Created {
+                node: process("q", "x"),
+                created_by: "o".into(),
+                created_at: 0,
+                edges: Vec::new(),
+                kept: false,
+            },
+            Created {
+                node: process("z", "x"),
+                created_by: "outro".into(),
+                created_at: 0,
+                edges: Vec::new(),
+                kept: false,
+            },
+        ];
+        assert_eq!(own_nodes(&created, "o"), vec!["q"]);
     }
 
     /// Ação do dono num nó criado por um agente vira aviso para esse agente,
@@ -9980,6 +10022,50 @@ mod tests {
             let err = tools.call("orbit_reassign", &args).unwrap_err();
             assert!(err.contains(why), "{args}: {err}");
         }
+
+        // Erro não muda nada: variável sem valor no prompt novo, e nó que
+        // espera (não dá para reiniciar).
+        let prompt_of = |runs: &Runs<Arc<PtyHost>>| {
+            let run = runs.get(&run.id).unwrap();
+            let c = run.created.iter().find(|c| c.node.id == r).unwrap();
+            match &c.node.kind {
+                NodeKind::Agent { prompt, .. } => prompt.clone(),
+                _ => unreachable!(),
+            }
+        };
+        let err = tools
+            .call(
+                "orbit_reassign",
+                &json!({"node": r, "prompt": "use {{falta}}"}),
+            )
+            .unwrap_err();
+        assert!(err.contains("sem valor"), "{err}");
+        assert_eq!(prompt_of(&runs), "agora só o front");
+        assert_eq!(runs.get(&run.id).unwrap().nodes[&r].attempt, 1);
+        // Reiniciado com a origem (p) ainda sem valor: espera.
+        tools
+            .call("orbit_restart_node", &json!({"node": r}))
+            .unwrap();
+        wait_attempt(&runs, &run.id, &r, 2, NodeStatus::Waiting);
+        let err = tools
+            .call("orbit_reassign", &json!({"node": r, "prompt": "outra"}))
+            .unwrap_err();
+        assert!(err.contains("não começou"), "{err}");
+        assert_eq!(prompt_of(&runs), "agora só o front");
+
+        // Depois do "Manter" o nó é do dono: nem liga nem reatribui.
+        runs.mark_kept(&run.id, &[p.clone(), r.clone()]);
+        let err = tools
+            .call(
+                "orbit_connect",
+                &json!({"from": "o", "to": p, "kind": "context"}),
+            )
+            .unwrap_err();
+        assert!(err.contains("só liga"), "{err}");
+        let err = tools
+            .call("orbit_reassign", &json!({"node": r, "prompt": "x"}))
+            .unwrap_err();
+        assert!(err.contains("não manteve"), "{err}");
         runs.stop(&run.id).unwrap();
     }
 

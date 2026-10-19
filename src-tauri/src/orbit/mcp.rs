@@ -766,13 +766,11 @@ pub fn tool_list(caller: Caller) -> Vec<Value> {
         }),
         json!({
             "name": "orbit_connect",
-            "description": "Link two nodes of this run on the canvas. Allowed between your own \
-                nodes (you and the ones you created), or between a node you created and an \
-                owner's node when the owner already gave you that same link (e.g. pass the \
-                memory link of a note on to an agent you created). Kinds: context, diff, file, \
-                log, json, url (values: the target must not have started, or it is marked to \
-                re-apply and you restart it with orbit_restart_node; no cycles), control, talk, \
-                memory. Returns the edge_id.",
+            "description": "Link two of your own nodes on the canvas: you and the nodes you \
+                created that the owner has not kept in the graph; never an owner's node. \
+                Kinds: context, diff, file, log, json, url (values: a target that already \
+                started is marked to re-apply and you restart it with orbit_restart_node; no \
+                cycles), control, talk, memory. Returns the edge_id.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -789,8 +787,10 @@ pub fn tool_list(caller: Caller) -> Vec<Value> {
         }),
         json!({
             "name": "orbit_reassign",
-            "description": "Give an agent node you created a new task: its prompt is replaced \
-                and only its agent session restarts; node, title, position and links stay.",
+            "description": "Give an agent node you created (not kept in the graph by the \
+                owner) a new task: its prompt is replaced and only its agent session restarts; \
+                node, title, position and links stay. Nothing changes when it is refused (e.g. \
+                a variable without value, or the node is still waiting).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1143,8 +1143,8 @@ navegador a ele; para navegador, ligue ao nó que serve \
 o endereço com from_node; se o endereço é um host virtual (ex.: https://code.muriki.test \
 servido pelo Caddy), passe também a url; use só url quando nenhum nó do grafo serve aquele \
 endereço; para trabalho de agente em outro repositório, use orbit_create_agent; para ligar nós que você \
-criou (ou passar a eles uma ligação que o dono deu a você), orbit_connect; para dar tarefa nova a \
-um agente que você criou sem recriar o nó, orbit_reassign.";
+criou (entre eles ou a você; nó do dono, nunca), orbit_connect; para dar tarefa nova a um agente \
+que você criou sem recriar o nó, orbit_reassign.";
 
 /// O agente criado por outro: sem cascata.
 pub const NO_CREATE_PROMPT: &str = "Você foi criado por outro agente e não cria nós \
