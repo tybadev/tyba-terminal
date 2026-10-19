@@ -1284,6 +1284,7 @@ fn resume_startup(
             worktree_task: None,
             attach_existing: false,
             shell: None,
+            inherit_cwd_from: None,
             initial_prompt: None,
             opened_by_gate: false,
             resume_conversation: None,
@@ -1373,12 +1374,19 @@ async fn create_session(
             };
             spawn(&ctx, opts, move |id| session_exited(&handle, id))?
         }
-        SessionKind::Shell => state
-            .sessions
-            .create_shell_session(app.clone(), &state.pty_pool, opts, move |id| {
-                session_exited(&handle, id)
-            })
-            .map_err(|e| e.to_string())?,
+        SessionKind::Shell => {
+            let mut opts = opts;
+            let source_pid = opts
+                .inherit_cwd_from
+                .and_then(|src| state.pty_pool.leader_pid(src));
+            opts.cwd = inherited_shell_cwd(opts.cwd.take(), source_pid);
+            state
+                .sessions
+                .create_shell_session(app.clone(), &state.pty_pool, opts, move |id| {
+                    session_exited(&handle, id)
+                })
+                .map_err(|e| e.to_string())?
+        }
         // Container nasce pelo painel de Docker (open_container_tab), não por aqui.
         SessionKind::Container { .. } => {
             return Err(crate::error::AppError::new("session.kind_unsupported").to_string())
@@ -3548,6 +3556,7 @@ async fn forge_pr_open_session(
                 worktree_task: None,
                 attach_existing: false,
                 shell: None,
+                inherit_cwd_from: None,
                 initial_prompt: None,
                 opened_by_gate: false,
                 resume_conversation: None,
@@ -4159,6 +4168,16 @@ fn broadcast_submit(
     Ok(verdict)
 }
 
+/// Cwd de um split: o diretório atual do processo da sessão de origem, lido
+/// do kernel — nunca do OSC 7, que o próprio processo forja e só serve de
+/// exibição. Sem origem viva, ou sem leitura, fica o `requested` de sempre.
+fn inherited_shell_cwd(
+    requested: Option<std::path::PathBuf>,
+    source_pid: Option<u32>,
+) -> Option<std::path::PathBuf> {
+    source_pid.and_then(repo::process_cwd).or(requested)
+}
+
 fn session_cwd_of(state: &AppState, id: SessionId) -> Result<std::path::PathBuf, String> {
     let pid = state
         .pty_pool
@@ -4711,6 +4730,7 @@ async fn spawn_slot(
                 worktree_task: None,
                 attach_existing: true,
                 shell: None,
+                inherit_cwd_from: None,
                 initial_prompt: slot.initial_prompt.clone(),
                 opened_by_gate: false,
                 resume_conversation: None,
@@ -4761,6 +4781,7 @@ async fn spawn_slot(
             worktree_task: None,
             attach_existing: true,
             shell: None,
+            inherit_cwd_from: None,
             initial_prompt: slot.initial_prompt.clone(),
             opened_by_gate: false,
             resume_conversation: None,
@@ -6876,6 +6897,7 @@ fn docker_open_project(
                 worktree_task: None,
                 attach_existing: false,
                 shell: None,
+                inherit_cwd_from: None,
                 initial_prompt: None,
                 opened_by_gate: false,
                 resume_conversation: None,
@@ -9632,6 +9654,44 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn split_inherits_the_kernel_cwd_of_the_source_process() {
+        use std::process::{Command, Stdio};
+
+        let dir = std::env::temp_dir().join(format!("tyba-split-cwd-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let want = std::fs::canonicalize(&dir).unwrap();
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg("read _ || sleep 5")
+            .current_dir(&dir)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .spawn()
+            .expect("spawn");
+        std::thread::sleep(std::time::Duration::from_millis(150));
+
+        let fallback = Some(std::path::PathBuf::from("/repo/root"));
+        let got = inherited_shell_cwd(fallback.clone(), Some(child.id()));
+
+        let _ = child.kill();
+        let _ = child.wait();
+        // Origem morta: o pid não tem mais cwd, fica o pedido original.
+        let dead = inherited_shell_cwd(fallback.clone(), Some(child.id()));
+        let got = got.map(|p| std::fs::canonicalize(p).unwrap());
+        std::fs::remove_dir_all(&dir).ok();
+
+        assert_eq!(got, Some(want));
+        assert_eq!(dead, fallback);
+    }
+
+    #[test]
+    fn split_without_live_source_keeps_the_requested_cwd() {
+        let fallback = Some(std::path::PathBuf::from("/repo/root"));
+        assert_eq!(inherited_shell_cwd(fallback.clone(), None), fallback);
+        assert_eq!(inherited_shell_cwd(None, None), None);
+    }
 
     fn host_form(alias: &str) -> crate::ssh::HostInput {
         crate::ssh::HostInput {

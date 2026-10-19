@@ -3246,6 +3246,7 @@ export default function App() {
       const session = await createSession({
         kind: hostId ? { type: "ssh", host_id: hostId } : { type: "shell" },
         cwd: hostId ? undefined : (activeWorkspace.repo_root ?? undefined),
+        inherit_cwd_from: hostId ? undefined : (activeId ?? undefined),
         cols: 80,
         rows: 24,
       });
@@ -3256,7 +3257,7 @@ export default function App() {
         void disposeSession(session.id).catch(() => {});
       }
     },
-    [activeWorkspace, activeTab, workspaceSshHostId],
+    [activeWorkspace, activeTab, activeId, workspaceSshHostId],
   );
 
   const cyclePane = useCallback(() => {
