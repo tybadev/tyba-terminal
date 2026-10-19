@@ -1163,6 +1163,15 @@ fn migrate(conn: &Connection) -> Result<Vec<String>, StoreError> {
     Ok(skipped)
 }
 
+/// O que a coluna `block_checkpoint.bytes` guarda. Ver [`Store::save_checkpoint`].
+#[derive(serde::Serialize, serde::Deserialize)]
+struct CheckpointBody {
+    lines: Vec<crate::blocks::LogicalLine>,
+    /// Cortadas no momento da gravação — o dreno não tem mais os bytes para
+    /// recontá-las.
+    truncated: usize,
+}
+
 pub struct Store {
     conn: Mutex<Connection>,
     /// Ver [`Store::degraded`].
@@ -1205,6 +1214,10 @@ impl Store {
 
     fn init(conn: Connection) -> Result<Self, StoreError> {
         conn.pragma_update(None, "foreign_keys", "ON")?;
+        // `DELETE` zera o conteúdo em vez de só marcar a página como livre:
+        // checkpoint, bloco podado e histórico apagado não ficam legíveis no
+        // arquivo depois de sair da tabela (princípio #10).
+        conn.pragma_update(None, "secure_delete", "ON")?;
         conn.execute_batch(SCHEMA)?;
         let skipped = migrate(&conn)?;
         Ok(Self {
@@ -2654,6 +2667,12 @@ impl Store {
     /// Sem isto, um crash no meio de um `cargo build` de cinco minutos perde a
     /// saída inteira — o bloco só nasce no `133;D`. Uma linha por sessão, sempre
     /// substituída.
+    ///
+    /// Recebe as linhas já extraídas e redigidas, nunca o byte cru do PTY (ver
+    /// `blocks::for_disk`). Elas vão na coluna `bytes` como JSON: a coluna
+    /// nova que o nome pediria custaria um degrau de schema, e o conteúdo é de
+    /// passagem — uma linha por sessão, consumida no boot seguinte.
+    #[allow(clippy::too_many_arguments)]
     pub fn save_checkpoint(
         &self,
         session_id: &str,
@@ -2661,8 +2680,13 @@ impl Store {
         started_at_ms: i64,
         cols: u16,
         rows: u16,
-        bytes: &[u8],
+        lines: &[crate::blocks::LogicalLine],
+        truncated: usize,
     ) -> Result<(), StoreError> {
+        let bytes = serde_json::to_vec(&CheckpointBody {
+            lines: lines.to_vec(),
+            truncated,
+        })?;
         let conn = self.conn.lock();
         conn.execute(
             "INSERT INTO block_checkpoint
@@ -2711,9 +2735,14 @@ impl Store {
         };
         let count = rows.len();
         for (session_id, command, started_at_ms, cols, rows_n, bytes) in rows {
-            let (lines, truncated) = crate::blocks::extract_lines(&bytes, cols, rows_n);
+            let (lines, truncated) = match serde_json::from_slice::<CheckpointBody>(&bytes) {
+                Ok(body) => (body.lines, body.truncated),
+                // Gravado por uma versão anterior: o byte cru do PTY.
+                Err(_) => crate::blocks::extract_lines(&bytes, cols, rows_n),
+            };
             // A mesma redação do `blocks::build`: o dreno monta o bloco por
-            // fora dele, e sem isto o segredo chegava em claro à tabela.
+            // fora dele. As linhas novas já chegam redigidas; as do formato
+            // antigo, não.
             let lines = lines.into_iter().map(crate::blocks::redact_line).collect();
             let block = crate::blocks::Block {
                 id: 0,
@@ -6390,10 +6419,26 @@ mod tests {
             .insert_block(&block(&other.to_string(), "b", 1))
             .unwrap();
         store
-            .save_checkpoint(&doomed.to_string(), "cargo build", 10, 80, 24, b"x")
+            .save_checkpoint(
+                &doomed.to_string(),
+                "cargo build",
+                10,
+                80,
+                24,
+                &text(&["x"]),
+                0,
+            )
             .unwrap();
         store
-            .save_checkpoint(&other.to_string(), "cargo test", 10, 80, 24, b"y")
+            .save_checkpoint(
+                &other.to_string(),
+                "cargo test",
+                10,
+                80,
+                24,
+                &text(&["y"]),
+                0,
+            )
             .unwrap();
 
         store.remove_session(doomed).unwrap();
@@ -6417,7 +6462,15 @@ mod tests {
         // O app morreu no meio de um comando longo: a saída não pode sumir.
         let store = Store::open_in_memory().unwrap();
         store
-            .save_checkpoint("s1", "cargo build", 10, 80, 24, b"Compiling tyba\r\n")
+            .save_checkpoint(
+                "s1",
+                "cargo build",
+                10,
+                80,
+                24,
+                &text(&["Compiling tyba"]),
+                0,
+            )
             .unwrap();
 
         assert_eq!(store.drain_checkpoints().unwrap(), 1);
@@ -6432,17 +6485,35 @@ mod tests {
         assert_eq!(store.list_blocks("s1", 10).unwrap().len(), 1);
     }
 
+    fn text(lines: &[&str]) -> Vec<crate::blocks::LogicalLine> {
+        lines
+            .iter()
+            .map(|t| crate::blocks::LogicalLine {
+                text: t.to_string(),
+                runs: Vec::new(),
+            })
+            .collect()
+    }
+
     #[test]
-    fn drained_checkpoint_redacts_secrets_like_a_finished_block() {
-        // Sintético: só tem a forma de uma chave. O dreno monta o bloco sem
-        // passar pelo `build`, e era por aí que o segredo chegava em claro à
-        // tabela `block` (princípio #10).
+    fn legacy_raw_checkpoint_is_redacted_on_drain() {
+        // Checkpoint gravado antes da correção: o byte cru do PTY, com o
+        // segredo dentro. O dreno monta o bloco sem passar pelo `build`, e era
+        // por aí que o segredo chegava em claro à tabela `block`. Sintético: só
+        // tem a forma de uma chave.
         let secret = format!("sk-{}", "FAKE0".repeat(5));
         let command = format!("OPENAI_KEY={secret} ./deploy.sh");
         let bytes = format!("token: \x1b[31m{secret}\x1b[0m\r\nok\r\n");
         let store = Store::open_in_memory().unwrap();
         store
-            .save_checkpoint("s1", &command, 10, 80, 24, bytes.as_bytes())
+            .conn
+            .lock()
+            .execute(
+                "INSERT INTO block_checkpoint
+                     (session_id, command, started_at_ms, cols, rows, bytes)
+                 VALUES ('s1', ?1, 10, 80, 24, ?2)",
+                params![command, bytes.as_bytes()],
+            )
             .unwrap();
 
         assert_eq!(store.drain_checkpoints().unwrap(), 1);
@@ -6456,13 +6527,52 @@ mod tests {
     }
 
     #[test]
+    fn checkpoint_keeps_color_and_cut_count_through_the_drain() {
+        // "N linhas cortadas" é contrato do bloco (ficaram + cortadas ==
+        // entraram), e o dreno já não tem os bytes para recontar.
+        let colored = vec![crate::blocks::LogicalLine {
+            text: "Compiling".into(),
+            runs: vec![crate::blocks::StyleRun {
+                start_utf16: 0,
+                end_utf16: 9,
+                fg: crate::blocks::Color::Idx(2),
+                bg: crate::blocks::Color::Default,
+                bold: true,
+                italic: false,
+                underline: false,
+            }],
+        }];
+        let store = Store::open_in_memory().unwrap();
+        store
+            .save_checkpoint("s1", "cargo build", 10, 80, 24, &colored, 42)
+            .unwrap();
+        store.drain_checkpoints().unwrap();
+        let found = store.list_blocks("s1", 10).unwrap();
+        assert_eq!(found[0].lines, colored);
+        assert_eq!(found[0].truncated, 42);
+    }
+
+    #[test]
+    fn deleted_rows_are_zeroed_on_disk() {
+        // Sem `secure_delete`, o `DELETE` do checkpoint só marca a página como
+        // livre e os bytes seguem legíveis no arquivo.
+        let store = Store::open_in_memory().unwrap();
+        let on: i64 = store
+            .conn
+            .lock()
+            .query_row("PRAGMA secure_delete", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(on, 1);
+    }
+
+    #[test]
     fn checkpoint_is_one_row_per_session_always_replaced() {
         let store = Store::open_in_memory().unwrap();
         store
-            .save_checkpoint("s1", "cmd", 1, 80, 24, b"antes")
+            .save_checkpoint("s1", "cmd", 1, 80, 24, &text(&["antes"]), 0)
             .unwrap();
         store
-            .save_checkpoint("s1", "cmd", 1, 80, 24, b"depois")
+            .save_checkpoint("s1", "cmd", 1, 80, 24, &text(&["depois"]), 0)
             .unwrap();
         store.drain_checkpoints().unwrap();
         let found = store.list_blocks("s1", 10).unwrap();
@@ -6474,7 +6584,7 @@ mod tests {
     fn finished_command_leaves_no_checkpoint_behind() {
         let store = Store::open_in_memory().unwrap();
         store
-            .save_checkpoint("s1", "cmd", 1, 80, 24, b"parcial")
+            .save_checkpoint("s1", "cmd", 1, 80, 24, &text(&["parcial"]), 0)
             .unwrap();
         store.clear_checkpoint("s1").unwrap();
         assert_eq!(store.drain_checkpoints().unwrap(), 0);

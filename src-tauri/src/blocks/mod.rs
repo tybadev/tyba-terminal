@@ -796,6 +796,8 @@ pub struct Checkpoint {
     pub command: String,
     pub started_at_ms: i64,
     pub bytes: Vec<u8>,
+    /// Linhas que o teto de captura comeu, como em [`Finished::dropped`].
+    pub dropped: usize,
     pub cols: u16,
     pub rows: u16,
 }
@@ -879,14 +881,15 @@ pub fn install(app: tauri::AppHandle, store: std::sync::Arc<crate::session::stor
                         let _ = store.clear_checkpoint(&session);
                     }
                     Work::Save(cp) => {
-                        let (bytes, command) = for_disk(&cp);
+                        let (command, lines, truncated) = for_disk(&cp);
                         let _ = store.save_checkpoint(
                             &cp.session_id,
                             &command,
                             cp.started_at_ms,
                             cp.cols,
                             cp.rows,
-                            &bytes,
+                            &lines,
+                            truncated,
                         );
                     }
                     Work::Clear(session) => {
@@ -937,32 +940,23 @@ pub(crate) fn redact_line(line: LogicalLine) -> LogicalLine {
     }
 }
 
-/// O checkpoint como vai para o disco: sem segredo (princípio #10).
+/// O checkpoint como vai para o disco: comando, linhas e cortadas.
 ///
-/// Redigir o byte cru não basta: uma cor ou um `\r` no meio da chave a parte
-/// em pedaços que a regex não vê, e só a linha lógica — depois do parser — junta
-/// as metades. Então o checkpoint passa pelo mesmo `extract_lines` do bloco.
+/// O byte cru do PTY NUNCA vai para o disco (princípio #10). Ele carrega o que
+/// a tela já não mostra — a linha que um `\r` sobrescreveu, o que um `\x1b[2J`
+/// apagou, o começo que o teto cortou, o título de um OSC, o URL de um OSC 8 —
+/// e a redação, que é por linha lógica, não alcança nada disso. Redigir o byte
+/// cru também não serve: uma cor no meio da chave a parte em pedaços que a
+/// regex não vê. O que se grava é o mesmo que um bloco guardaria: as linhas do
+/// `extract_lines`, já redigidas, com os runs de cor — o dreno não reparseia.
 ///
-/// Sem segredo, os bytes vão como vieram e a recuperação mantém a cor. Com
-/// segredo, vão as linhas já redigidas, em texto puro: a recuperação perde a
-/// cor e a contagem de linhas cortadas daquele checkpoint, mas o segredo não
-/// toca o disco. O dreno redige de novo de qualquer forma — checkpoint gravado
-/// por uma versão anterior ainda pode estar lá.
-fn for_disk(cp: &Checkpoint) -> (std::borrow::Cow<'_, [u8]>, std::borrow::Cow<'_, str>) {
-    let command = crate::session::redact::redact(&cp.command);
-    let (lines, _) = extract_lines(&cp.bytes, cp.cols, cp.rows);
-    if !lines
-        .iter()
-        .any(|line| crate::session::redact::contains_secret(&line.text))
-    {
-        return (std::borrow::Cow::Borrowed(&cp.bytes), command);
-    }
-    let text = lines
-        .into_iter()
-        .map(|line| redact_line(line).text)
-        .collect::<Vec<_>>()
-        .join("\r\n");
-    (std::borrow::Cow::Owned(text.into_bytes()), command)
+/// As cortadas somam as duas perdas, como no [`build`]: o bloco recuperado
+/// precisa dizer quanto faltou.
+fn for_disk(cp: &Checkpoint) -> (String, Vec<LogicalLine>, usize) {
+    let (lines, truncated) = extract_lines(&cp.bytes, cp.cols, cp.rows);
+    let lines = lines.into_iter().map(redact_line).collect();
+    let command = crate::session::redact::redact(&cp.command).into_owned();
+    (command, lines, truncated + cp.dropped)
 }
 
 fn build(finished: Finished) -> Block {
@@ -1137,38 +1131,90 @@ mod tests {
             command: command.into(),
             started_at_ms: 1,
             bytes: bytes.to_vec(),
+            dropped: 0,
             cols: 20,
             rows: 5,
         }
     }
 
-    #[test]
-    fn a_checkpoint_never_reaches_the_disk_with_a_secret() {
-        // A cor parte a chave ao meio NOS BYTES: regex sobre o byte cru não a
-        // veria. Só a linha lógica junta as duas metades.
-        let bytes = "linha longa que quebra na largura\r\nkey=AKIAIOSF\x1b[1mODNN7EXAMPLE\x1b[0m\r\nfim\r\n";
-        assert!(!bytes.contains(FAKE_AWS_KEY), "a fixture parte a chave");
-        let cp = checkpoint(bytes.as_bytes(), &format!("echo {FAKE_AWS_KEY}"));
-
-        let (on_disk, command) = for_disk(&cp);
-        assert!(!command.contains(FAKE_AWS_KEY), "{command}");
-        let (lines, _) = extract_lines(&on_disk, cp.cols, cp.rows);
-        let texts: Vec<&str> = lines.iter().map(|l| l.text.as_str()).collect();
-        assert_eq!(
-            texts,
-            vec!["linha longa que quebra na largura", "key=[REDACTED]", "fim"],
-            "a recuperação ainda reconstrói a saída, só que sem o segredo"
-        );
+    /// Tudo o que o checkpoint leva para o disco, como texto.
+    ///
+    /// Largura de terminal de verdade: em 20 colunas a linha da chave quebra,
+    /// o `\r` volta só para a segunda metade, e a primeira continua NA TELA —
+    /// um pedaço que nenhum padrão reconhece, mas que é o que o terminal mostra.
+    fn saved(bytes: &str) -> String {
+        let mut cp = checkpoint(bytes.as_bytes(), "cmd");
+        cp.cols = 80;
+        let (command, lines, _) = for_disk(&cp);
+        format!("{command}\n{}", serde_json::to_string(&lines).unwrap())
     }
 
     #[test]
-    fn a_checkpoint_without_secrets_is_saved_byte_for_byte() {
-        // O caminho comum não perde a cor: os bytes vão como vieram.
-        let bytes = b"\x1b[32mCompiling\x1b[0m tyba\r\n";
+    fn a_checkpoint_never_reaches_the_disk_with_a_secret() {
+        // Cada um destes deixa a chave no byte cru, e só no byte cru: a tela
+        // não a mostra mais (ou nunca mostrou), então a redação por linha
+        // lógica não a veria se o byte fosse para o disco.
+        let tail = "fim\r\n";
+        let cases = [
+            // A cor parte a chave ao meio NOS BYTES.
+            (
+                "cor no meio",
+                "key=AKIAIOSF\x1b[1mODNN7EXAMPLE\x1b[0m\r\n".to_string(),
+            ),
+            ("\\r + EL", format!("token {FAKE_AWS_KEY}\r\x1b[2Kdone\r\n")),
+            (
+                "sobe e apaga",
+                format!("token {FAKE_AWS_KEY}\r\n\x1b[1A\x1b[2K"),
+            ),
+            ("ED 2", format!("token {FAKE_AWS_KEY}\r\n\x1b[2J\x1b[H")),
+            (
+                "espaços por cima",
+                format!("{FAKE_AWS_KEY}\r{}\r\n", " ".repeat(20)),
+            ),
+            ("OSC título", format!("\x1b]0;{FAKE_AWS_KEY}\x07ok\r\n")),
+            (
+                "OSC 8",
+                format!("\x1b]8;;https://h/?k={FAKE_AWS_KEY}\x1b\\link\x1b]8;;\x1b\\\r\n"),
+            ),
+        ];
+        for (name, head) in cases {
+            let on_disk = saved(&format!("{head}{tail}"));
+            assert!(!on_disk.contains(FAKE_AWS_KEY), "{name}: {on_disk}");
+            assert!(!on_disk.contains("AKIAIOSF"), "{name}: {on_disk}");
+            assert!(on_disk.contains("fim"), "{name}: o resto da saída fica");
+        }
+        let (command, _, _) = for_disk(&checkpoint(b"ok\r\n", &format!("echo {FAKE_AWS_KEY}")));
+        assert!(!command.contains(FAKE_AWS_KEY), "{command}");
+    }
+
+    #[test]
+    fn a_secret_in_the_cut_head_never_reaches_the_disk() {
+        // A chave saiu no começo e o teto de linhas a cortou: não é linha do
+        // bloco, então nenhuma redação passaria por ela.
+        let mut bytes = format!("token {FAKE_AWS_KEY}\r\n");
+        for i in 0..MAX_LINES + 50 {
+            bytes.push_str(&format!("{i}\r\n"));
+        }
+        let mut cp = checkpoint(bytes.as_bytes(), "cmd");
+        cp.cols = 80;
+        cp.dropped = 7;
+        let (_, lines, truncated) = for_disk(&cp);
+        assert!(!serde_json::to_string(&lines)
+            .unwrap()
+            .contains(FAKE_AWS_KEY));
+        assert!(truncated > 7, "o corte do teto conta");
+        // Ficaram + cortadas == entraram, contando o que a captura já comeu.
+        assert_eq!(lines.len() + truncated, MAX_LINES + 51 + 7);
+    }
+
+    #[test]
+    fn a_checkpoint_without_secrets_keeps_text_and_color() {
+        let bytes = b"\x1b[32mCompiling\x1b[0m tyba\r\nlinha longa que quebra na largura\r\n";
         let cp = checkpoint(bytes, "cargo build");
-        let (on_disk, command) = for_disk(&cp);
-        assert_eq!(&*on_disk, bytes);
+        let (command, lines, truncated) = for_disk(&cp);
         assert_eq!(command, "cargo build");
+        assert_eq!(truncated, 0);
+        assert_eq!((lines, 0), extract_lines(bytes, cp.cols, cp.rows));
     }
 
     /// `export AWS_KEY=<segredo em vermelho> ok`.
