@@ -864,7 +864,8 @@ impl<R: Runtime> ActionSink<R> {
 
     /// Checkpoint do comando longo em voo. Devolve `true` quando gravou — é o
     /// sinal para reiniciar o relógio. A sessão efêmera nunca grava: o
-    /// checkpoint são os bytes CRUS do PTY, e o dreno do boot os vira bloco.
+    /// checkpoint vai para o disco (redigido, `blocks::for_disk`), e o dreno
+    /// do boot o vira bloco.
     fn checkpoint(&self, machine: &capture::CaptureMachine, cols: u16, rows: u16) -> bool {
         if !self.persist {
             return false;
@@ -879,6 +880,7 @@ impl<R: Runtime> ActionSink<R> {
             command: snapshot.command,
             started_at_ms: snapshot.started_at_ms,
             bytes: snapshot.bytes,
+            dropped: snapshot.dropped,
             cols,
             rows,
         }));

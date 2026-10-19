@@ -62,6 +62,9 @@ pub(super) struct Snapshot {
     pub command: String,
     pub started_at_ms: i64,
     pub bytes: Vec<u8>,
+    /// Linhas que o teto de captura já comeu: sem isto o bloco recuperado
+    /// diria que a saída está inteira.
+    pub dropped: usize,
 }
 
 /// O que o emitter faz depois de entregar o chunk. A ordem é significativa.
@@ -555,6 +558,7 @@ impl CaptureMachine {
             command: self.tracker.command().unwrap_or_default().to_string(),
             started_at_ms: self.tracker.started_at().unwrap_or(now_ms),
             bytes: self.capture.snapshot(),
+            dropped: self.capture.dropped(),
         })
     }
 

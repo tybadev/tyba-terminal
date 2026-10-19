@@ -4962,6 +4962,7 @@ impl RunHost for TauriHost {
             resume_conversation: None,
             agent_model: None,
             prepared_worktree: None,
+            inherit_cwd_from: None,
         };
         let session = state
             .sessions
