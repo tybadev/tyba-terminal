@@ -1006,7 +1006,11 @@ fn build(finished: Finished) -> Block {
         session_id: finished.session_id,
         command: crate::session::redact::redact(&finished.command).into_owned(),
         exit_code: finished.exit_code,
-        cwd: finished.cwd,
+        // Redigido como o `cwd` do histórico e da aprovação: sem isto o mesmo
+        // diretório sairia diferente em cada tabela.
+        cwd: finished
+            .cwd
+            .map(|c| crate::session::redact::redact(&c).into_owned()),
         started_at_ms: finished.started_at_ms,
         finished_at_ms: finished.finished_at_ms,
         lines,
@@ -1123,6 +1127,14 @@ mod tests {
             dropped: 0,
             alt_screen: false,
         }
+    }
+
+    /// O `cwd` do bloco sai redigido como o do histórico e o da aprovação.
+    #[test]
+    fn build_redacts_the_cwd() {
+        let mut f = finished(b"ok\r\n");
+        f.cwd = Some(format!("/tmp/{FAKE_AWS_KEY}"));
+        assert_eq!(build(f).cwd.as_deref(), Some("/tmp/[REDACTED]"));
     }
 
     /// Remonta a linha como o componente `Line` do front remonta, devolvendo

@@ -1397,7 +1397,8 @@ impl Store {
             params![
                 s.id.to_string(),
                 kind,
-                s.title,
+                // O título pode vir do terminal (OSC 0/2) — princípio #10.
+                redact(&s.title),
                 repo_root,
                 worktree,
                 status,
@@ -3808,6 +3809,18 @@ mod tests {
         assert_eq!(loaded[0].title, "zsh");
         assert!(matches!(loaded[0].status, SessionStatus::Running));
         assert_eq!(loaded[0].repo_root, Some(PathBuf::from("/repo")));
+    }
+
+    /// O título vem do terminal (OSC 0/2) e vai para o disco redigido.
+    #[test]
+    fn session_title_is_redacted_on_write() {
+        let store = Store::open_in_memory().unwrap();
+        let sk = format!("sk-{}", "FAKE0".repeat(5));
+        store
+            .upsert_session(&sample(&format!("OPENAI={sk} ./run")))
+            .unwrap();
+        let title = &store.load_sessions().unwrap()[0].title;
+        assert_eq!(title, "OPENAI=[REDACTED] ./run");
     }
 
     #[test]
