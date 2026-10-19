@@ -19,6 +19,8 @@ export function sandboxWarningTitleKey(kind: SandboxWarningKind): string {
       return "sandboxWarningHomeRoClaudeJsonNaoPersiste";
     case "FilhoDesconhecidoEmClaude":
       return "sandboxWarningFilhoDesconhecidoEmClaude";
+    case "HooksGitIndisponiveis":
+      return "sandboxWarningHooksGitIndisponiveis";
   }
 }
 

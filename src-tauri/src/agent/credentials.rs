@@ -59,6 +59,9 @@ pub enum SandboxWarningKind {
     CredencialHostNaoGrava,
     HomeRoClaudeJsonNaoPersiste,
     FilhoDesconhecidoEmClaude,
+    /// A pasta de hooks git do TYBA não pôde ser gravada: a sessão sobe sem
+    /// o `pre-push` que recusa push para main/master.
+    HooksGitIndisponiveis,
 }
 
 /// V5: `CLAUDE_CONFIG_DIR` sobrepõe `~/.claude` tanto para `.claude.json`

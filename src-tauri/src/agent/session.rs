@@ -1623,6 +1623,7 @@ fn free_agent_env(
     base: HashMap<String, String>,
     login_path: String,
     nested_wrapper: Option<&Path>,
+    git_hooks: Option<&Path>,
 ) -> HashMap<String, String> {
     let mut env: HashMap<String, String> = base
         .into_iter()
@@ -1648,10 +1649,31 @@ fn free_agent_env(
     }
     // Push para main/master: o `pre-push` do TYBA, por `core.hooksPath` no env
     // (somado ao `GIT_CONFIG_*` do dono).
-    if let Some(hooks) = crate::session::tyba_git_hooks_dir() {
+    if let Some(hooks) = git_hooks {
         crate::agent::git_hooks::with_hooks(&mut env, hooks);
     }
     env
+}
+
+/// A pasta de hooks git do TYBA para esta sessão, conferida agora. Sem ela,
+/// a sessão sobe sem o `pre-push` — e o dono vê o aviso (toast fixo).
+fn git_hooks_for_session(app: &AppHandle, id: SessionId) -> Option<PathBuf> {
+    match crate::session::ensure_git_hooks() {
+        Ok(dir) => Some(dir),
+        Err(detail) => {
+            eprintln!("tyba: hooks git indisponíveis, sessão {id} sobe sem o pre-push: {detail}");
+            let _ = app.emit(
+                crate::agent::credentials::EVENT_SANDBOX_WARNING,
+                crate::agent::credentials::SandboxWarningPayload {
+                    session_id: id,
+                    kind: crate::agent::credentials::SandboxWarningKind::HooksGitIndisponiveis,
+                    detail: Some(detail),
+                    names: None,
+                },
+            );
+            None
+        }
+    }
 }
 
 // A partir daqui, e até o fim de `prepare_hosted_agent`, todo o código é
@@ -1713,6 +1735,7 @@ fn passthrough_spec(cwd: &Path, runtime: &Path, socket_path: &Path, exe: &Path) 
 /// ([`crate::hook_ipc::channel::hosted_child_env`]); o plano só carrega o
 /// socket de hooks e os marcadores.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
+#[allow(clippy::too_many_arguments)]
 fn build_hosted_command(
     runner: &dyn AgentRunner,
     cwd: &Path,
@@ -1721,6 +1744,7 @@ fn build_hosted_command(
     runtime: &Path,
     exe: &Path,
     args: &[String],
+    git_hooks: Option<&Path>,
 ) -> Result<HostedCommand, String> {
     use crate::sandbox::Sandbox;
 
@@ -1741,7 +1765,7 @@ fn build_hosted_command(
     cmd.env(FORCE_HYPERLINK.0, FORCE_HYPERLINK.1);
     // O `core.hooksPath` do TYBA entra no shim, por cima do `GIT_CONFIG_*`
     // do pane (que só ele conhece): ver `git_hooks::with_hooks_os`.
-    if let Some(hooks) = crate::session::tyba_git_hooks_dir() {
+    if let Some(hooks) = git_hooks {
         cmd.env(crate::agent::git_hooks::HOOKS_DIR_ENV, hooks);
     }
     let spec = passthrough_spec(cwd, runtime, socket_path, exe);
@@ -1825,6 +1849,7 @@ pub fn prepare_hosted_agent(
         &runtime,
         &exe,
         args,
+        git_hooks_for_session(&ctx.app, id).as_deref(),
     )?;
 
     ctx.subagents.register_session(id);
@@ -2178,6 +2203,7 @@ fn spawn_prepared(
             crate::shell_path::login_shell_vars().unwrap_or_else(|| user_env.clone()),
             crate::shell_path::agent_path(),
             crate::session::nested_guard_wrapper(),
+            git_hooks_for_session(&ctx.app, id).as_deref(),
         )
     } else {
         let config = consented_config(&ctx.store, &root);
@@ -2500,6 +2526,7 @@ mod build_hosted_command_tests {
             runtime,
             &std::env::current_exe().unwrap(),
             args,
+            Some(Path::new("/h")),
         )
         .expect("o claude digitado sempre monta")
     }
@@ -2793,7 +2820,7 @@ mod free_session_tests {
         .into_iter()
         .map(|(k, v)| (k.to_string(), v.to_string()))
         .collect();
-        let env = free_agent_env(base, "/opt/homebrew/bin:/usr/bin".into(), None);
+        let env = free_agent_env(base, "/opt/homebrew/bin:/usr/bin".into(), None, None);
         assert_eq!(env["PATH"], "/opt/homebrew/bin:/usr/bin");
         // O env do dono passa inteiro, sem allowlist.
         assert_eq!(env["AWS_PROFILE"], "dev");
@@ -2827,7 +2854,7 @@ mod free_session_tests {
         .into_iter()
         .map(|(k, v)| (k.to_string(), v.to_string()))
         .collect();
-        let env = free_agent_env(base, "/usr/bin".into(), Some(Path::new("/w/bin")));
+        let env = free_agent_env(base, "/usr/bin".into(), Some(Path::new("/w/bin")), None);
         let dirs: Vec<PathBuf> = std::env::split_paths(&env["PATH"]).collect();
         assert_eq!(dirs, [PathBuf::from("/w/bin"), PathBuf::from("/usr/bin")]);
         assert_eq!(env["TYBA_HOSTED"], "1");

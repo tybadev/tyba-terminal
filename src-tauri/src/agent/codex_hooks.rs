@@ -172,7 +172,7 @@ fn trusted_hash(spec: &HookSpec, hook_cmd: &str) -> String {
     format!("sha256:{hex}")
 }
 
-fn toml_string(text: &str) -> String {
+pub(crate) fn toml_string(text: &str) -> String {
     let mut out = String::with_capacity(text.len() + 2);
     out.push('"');
     for c in text.chars() {

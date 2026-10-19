@@ -2070,6 +2070,8 @@ const resources = {
         "Sua pasta pessoal (~) foi liberada só para leitura para o agente — o arquivo .claude.json pode parar de salvar.",
       sandboxWarningFilhoDesconhecidoEmClaude:
         "O TYBA encontrou item(ns) novo(s) em ~/.claude que ainda não conhece: {{detail}}. Ficaram graváveis por padrão.",
+      sandboxWarningHooksGitIndisponiveis:
+        "O TYBA não conseguiu gravar a pasta de hooks git ({{detail}}): esta sessão de agente subiu sem o hook que recusa push para main/master.",
       authAlertNotLoggedInPreflight:
         "Esta sessão de agente não tem login utilizável. Rode `/login` na sessão — ou clique no aviso de navegador que vai aparecer.",
       authAlertNotLoggedInRuntime:
@@ -4137,6 +4139,8 @@ const resources = {
         "Your home folder (~) was granted read-only to the agent — .claude.json may stop saving.",
       sandboxWarningFilhoDesconhecidoEmClaude:
         "TYBA found new item(s) in ~/.claude it doesn't recognize yet: {{detail}}. They stayed writable by default.",
+      sandboxWarningHooksGitIndisponiveis:
+        "TYBA couldn't write its git hooks folder ({{detail}}): this agent session started without the hook that refuses push to main/master.",
       authAlertNotLoggedInPreflight:
         "This agent session has no usable login. Run `/login` in the session — or click the browser prompt that's about to show up.",
       authAlertNotLoggedInRuntime:

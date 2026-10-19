@@ -856,7 +856,8 @@ export type SandboxWarningKind =
   | "CredencialSombreadaDepois"
   | "CredencialHostNaoGrava"
   | "HomeRoClaudeJsonNaoPersiste"
-  | "FilhoDesconhecidoEmClaude";
+  | "FilhoDesconhecidoEmClaude"
+  | "HooksGitIndisponiveis";
 
 export interface AgentSandboxWarningPayload {
   session_id: SessionId;

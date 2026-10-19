@@ -33,9 +33,13 @@ pub const BASE_ENV: &str = "TYBA_GIT_CONFIG_BASE";
 /// `core.hooksPath` ao env do pane ([`with_hooks_os`]), que só ele conhece.
 pub const HOOKS_DIR_ENV: &str = "TYBA_GIT_HOOKS";
 
-/// Todo hook que o git procura na pasta de hooks (githooks(5)), menos o
-/// `fsmonitor-watchman`, que o git nunca procura lá (o `core.fsmonitor`
-/// aponta o caminho do script).
+/// Todo hook que o git procura na pasta de hooks (githooks(5)), menos:
+/// - `fsmonitor-watchman`, que o git nunca procura lá (o `core.fsmonitor`
+///   aponta o caminho do script);
+/// - `reference-transaction` e `post-index-change` (decisão do dono,
+///   2026-10-19, "hook enxuto"): disparam várias vezes por comando e eram
+///   ~90% do custo (rebase de 200 commits de 1,3 s para 60 s). **Hooks do
+///   usuário desses dois tipos não rodam em sessão de agente.**
 pub const HOOK_NAMES: &[&str] = &[
     "applypatch-msg",
     "pre-applypatch",
@@ -54,7 +58,6 @@ pub const HOOK_NAMES: &[&str] = &[
     "proc-receive",
     "post-receive",
     "post-update",
-    "reference-transaction",
     "push-to-checkout",
     "pre-auto-gc",
     "post-rewrite",
@@ -63,24 +66,19 @@ pub const HOOK_NAMES: &[&str] = &[
     "p4-prepare-changelist",
     "p4-post-changelist",
     "p4-pre-submit",
-    "post-index-change",
 ];
 
 /// Acha o hook do usuário com o nome deste script. Deixa em `user_hook` e
-/// devolve 0; sem hook (ou se a pasta do usuário é a nossa), devolve 1.
+/// devolve 0; sem hook (ou se ele é este mesmo arquivo), devolve 1. O mais
+/// barato possível: um `git rev-parse` e nada de subshell além dele.
 const FIND_USER_HOOK: &str = r#"tyba_user_hook() {
-  name=${0##*/}
   dir=$(GIT_CONFIG_COUNT="${TYBA_GIT_CONFIG_BASE:-0}" git rev-parse --git-path hooks 2>/dev/null) || return 1
   case "$dir" in
     /*|[A-Za-z]:*) ;;
-    *) dir="$(pwd)/$dir" ;;
+    *) dir="$PWD/$dir" ;;
   esac
-  self=$(cd "${0%/*}" 2>/dev/null && pwd -P) || return 1
-  real=$(cd "$dir" 2>/dev/null && pwd -P) || return 1
-  [ "$real" = "$self" ] && return 1
-  [ -f "$real/$name" ] && [ -x "$real/$name" ] || return 1
-  user_hook="$real/$name"
-  return 0
+  user_hook="$dir/${0##*/}"
+  [ -f "$user_hook" ] && [ -x "$user_hook" ] && ! [ "$user_hook" -ef "$0" ]
 }
 "#;
 
@@ -118,7 +116,7 @@ tyba_user_hook || exit 0
 printf '%s' "$input" | "$user_hook" "$@"
 "#;
 
-fn script(name: &str) -> String {
+pub fn script(name: &str) -> String {
     let tail = match name {
         "pre-push" => PRE_PUSH_TAIL,
         "push-to-checkout" => PUSH_TO_CHECKOUT_TAIL,
@@ -129,17 +127,140 @@ fn script(name: &str) -> String {
     )
 }
 
-/// Escreve a pasta de hooks (reescreve sempre: o conteúdo é do binário atual).
+/// Permissão da pasta e dos scripts depois de gravados: só leitura e
+/// execução — instalador de hook (lefthook, git-lfs) não grava nela.
+#[cfg(unix)]
+const READ_ONLY: u32 = 0o500;
+
+#[cfg(unix)]
+fn set_mode(path: &Path, mode: u32) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+}
+
+/// A pasta está como o binário atual a gravaria: todo script com o conteúdo
+/// certo e, no unix, pasta e scripts só leitura.
+pub fn hooks_current(dir: &Path) -> bool {
+    #[cfg(unix)]
+    let mode_ok = |p: &Path| {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(p).is_ok_and(|m| m.permissions().mode() & 0o777 == READ_ONLY)
+    };
+    #[cfg(not(unix))]
+    let mode_ok = |_: &Path| true;
+    mode_ok(dir)
+        && HOOK_NAMES.iter().all(|name| {
+            let path = dir.join(name);
+            mode_ok(&path) && std::fs::read_to_string(&path).is_ok_and(|s| s == script(name))
+        })
+}
+
+/// Grava a pasta de hooks com o conteúdo do binário atual: abre a permissão
+/// (pasta e scripts que já existem), grava, tira scripts que não são mais
+/// nossos e fecha tudo em só leitura.
 pub fn write_hooks(dir: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    #[cfg(unix)]
+    {
+        set_mode(dir, 0o700)?;
+        for entry in std::fs::read_dir(dir)?.flatten() {
+            let _ = set_mode(&entry.path(), 0o700);
+        }
+    }
+    for entry in std::fs::read_dir(dir)?.flatten() {
+        let name = entry.file_name();
+        if !HOOK_NAMES.iter().any(|n| name.as_os_str() == *n) {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
     for name in HOOK_NAMES {
         crate::session::write_private(dir, name, &script(name))?;
         #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(dir.join(name), std::fs::Permissions::from_mode(0o700))?;
+        set_mode(&dir.join(name), READ_ONLY)?;
+    }
+    #[cfg(unix)]
+    set_mode(dir, READ_ONLY)?;
+    Ok(())
+}
+
+/// Confere a pasta a cada sessão de agente e regrava se ela sumiu, foi
+/// mexida ou é de outra versão.
+pub fn ensure_hooks(dir: &Path) -> std::io::Result<()> {
+    if hooks_current(dir) {
+        return Ok(());
+    }
+    write_hooks(dir)
+}
+
+/// Tira de um `GIT_CONFIG_PARAMETERS` (o `git -c` herdado) as entradas de
+/// `core.hookspath`: elas venceriam o `core.hooksPath` do TYBA. Formato do
+/// git: `'chave'='valor'` (ou `'chave'`) separados por espaço, com `'` como
+/// `'\''`. `None` se não sobrou nada.
+pub fn strip_hookspath_params(params: &str) -> Option<String> {
+    let mut entries: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut quoted = false;
+    for c in params.chars() {
+        match c {
+            '\'' => {
+                quoted = !quoted;
+                current.push(c);
+            }
+            ' ' if !quoted => {
+                if !current.is_empty() {
+                    entries.push(std::mem::take(&mut current));
+                }
+            }
+            _ => current.push(c),
         }
     }
-    Ok(())
+    if !current.is_empty() {
+        entries.push(current);
+    }
+    let key_of = |entry: &str| {
+        let mut key = String::new();
+        let mut quoted = false;
+        for c in entry.chars() {
+            match c {
+                '\'' => quoted = !quoted,
+                '=' if !quoted => break,
+                _ => key.push(c),
+            }
+        }
+        key.trim().to_ascii_lowercase()
+    };
+    let kept: Vec<String> = entries
+        .into_iter()
+        .filter(|e| key_of(e) != "core.hookspath")
+        .collect();
+    (!kept.is_empty()).then(|| kept.join(" "))
+}
+
+/// As variáveis do hook no env (para o Codex repassar pelo
+/// `shell_environment_policy.set`, que ele aplica por último — com uma
+/// política restrita, o env sozinho não chega aos comandos dele).
+pub fn hook_vars(get: impl Fn(&str) -> Option<String>) -> Vec<(String, String)> {
+    let Some(_) = get(BASE_ENV) else {
+        return Vec::new();
+    };
+    let count: usize = get("GIT_CONFIG_COUNT")
+        .and_then(|c| c.trim().parse().ok())
+        .unwrap_or(0);
+    let mut vars = vec![("GIT_CONFIG_COUNT".to_string(), count.to_string())];
+    for i in 0..count {
+        for key in [
+            format!("GIT_CONFIG_KEY_{i}"),
+            format!("GIT_CONFIG_VALUE_{i}"),
+        ] {
+            if let Some(v) = get(&key) {
+                vars.push((key, v));
+            }
+        }
+    }
+    if let Some(base) = get(BASE_ENV) {
+        vars.push((BASE_ENV.to_string(), base));
+    }
+    vars
 }
 
 /// As entradas de env que somam `core.hooksPath=<dir>` ao `GIT_CONFIG_*` que
@@ -166,7 +287,14 @@ pub fn config_env(get: impl Fn(&str) -> Option<String>, dir: &str) -> Vec<(Strin
 }
 
 /// [`config_env`] aplicado a um env em mapa (o do agente aberto pelo TYBA).
+/// Também tira `core.hookspath` de um `GIT_CONFIG_PARAMETERS` herdado.
 pub fn with_hooks(env: &mut HashMap<String, String>, dir: &Path) {
+    if let Some(params) = env.get("GIT_CONFIG_PARAMETERS").cloned() {
+        match strip_hookspath_params(&params) {
+            Some(kept) => env.insert("GIT_CONFIG_PARAMETERS".into(), kept),
+            None => env.remove("GIT_CONFIG_PARAMETERS"),
+        };
+    }
     let dir = dir.to_string_lossy();
     let add = config_env(|k| env.get(k).cloned(), &dir);
     env.extend(add);
@@ -187,10 +315,15 @@ pub fn with_hooks_os(
         return env;
     };
     let add = config_env(get, &dir);
+    let params = get("GIT_CONFIG_PARAMETERS").map(|p| strip_hookspath_params(&p));
     let mut env: Vec<_> = env
         .into_iter()
         .filter(|(k, _)| !add.iter().any(|(a, _)| k.as_os_str() == a.as_str()))
+        .filter(|(k, _)| params.is_none() || k.as_os_str() != "GIT_CONFIG_PARAMETERS")
         .collect();
+    if let Some(Some(kept)) = params {
+        env.push(("GIT_CONFIG_PARAMETERS".into(), kept.into()));
+    }
     env.extend(add.into_iter().map(|(k, v)| (k.into(), v.into())));
     env
 }
@@ -255,6 +388,81 @@ mod tests {
         );
     }
 
+    #[test]
+    fn inherited_git_c_hookspath_is_dropped() {
+        assert_eq!(strip_hookspath_params("'core.hooksPath'='/x'"), None);
+        assert_eq!(
+            strip_hookspath_params("'user.name'='a b' 'CORE.HOOKSPATH'='/x' 'x.y'"),
+            Some("'user.name'='a b' 'x.y'".to_string())
+        );
+        assert_eq!(
+            strip_hookspath_params("'a.b'='it'\\''s'"),
+            Some("'a.b'='it'\\''s'".to_string())
+        );
+        let mut env: HashMap<String, String> = [(
+            "GIT_CONFIG_PARAMETERS".to_string(),
+            "'core.hookspath'='/dev/null' 'color.ui'='never'".to_string(),
+        )]
+        .into_iter()
+        .collect();
+        with_hooks(&mut env, Path::new("/h"));
+        assert_eq!(env["GIT_CONFIG_PARAMETERS"], "'color.ui'='never'");
+        let os = with_hooks_os(vec![
+            ("GIT_CONFIG_PARAMETERS".into(), "'core.hooksPath'=''".into()),
+            (HOOKS_DIR_ENV.into(), "/h".into()),
+        ]);
+        assert!(!os
+            .iter()
+            .any(|(k, _)| k.as_os_str() == "GIT_CONFIG_PARAMETERS"));
+    }
+
+    #[test]
+    fn hook_vars_carry_the_whole_git_config_for_codex() {
+        let mut env = HashMap::new();
+        env.insert("GIT_CONFIG_COUNT".to_string(), "1".to_string());
+        env.insert("GIT_CONFIG_KEY_0".to_string(), "user.name".to_string());
+        env.insert("GIT_CONFIG_VALUE_0".to_string(), "dono".to_string());
+        assert!(
+            hook_vars(|k| env.get(k).cloned()).is_empty(),
+            "sem o hook do TYBA, nada"
+        );
+        with_hooks(&mut env, Path::new("/h"));
+        let vars: HashMap<_, _> = hook_vars(|k| env.get(k).cloned()).into_iter().collect();
+        assert_eq!(vars["GIT_CONFIG_COUNT"], "2");
+        assert_eq!(vars["GIT_CONFIG_KEY_0"], "user.name");
+        assert_eq!(vars["GIT_CONFIG_KEY_1"], "core.hooksPath");
+        assert_eq!(vars["GIT_CONFIG_VALUE_1"], "/h");
+        assert_eq!(vars[BASE_ENV], "1");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hooks_folder_is_read_only_and_kept_current() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("git-hooks");
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        ensure_hooks(&dir).unwrap();
+        assert_eq!(mode(&dir), 0o500);
+        assert_eq!(mode(&dir.join("pre-push")), 0o500);
+        assert!(hooks_current(&dir));
+        assert!(!dir.join("reference-transaction").exists());
+        // Um instalador não consegue gravar nela.
+        assert!(std::fs::write(dir.join("pre-commit"), "x").is_err());
+        assert!(std::fs::write(dir.join("novo"), "x").is_err());
+        // Mexida (por fora) ou apagada: a próxima sessão regrava.
+        set_mode(&dir.join("pre-push"), 0o700).unwrap();
+        std::fs::write(dir.join("pre-push"), "velho").unwrap();
+        assert!(!hooks_current(&dir));
+        ensure_hooks(&dir).unwrap();
+        assert!(hooks_current(&dir));
+        set_mode(&dir, 0o700).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        ensure_hooks(&dir).unwrap();
+        assert!(hooks_current(&dir));
+        set_mode(&dir, 0o700).unwrap();
+    }
+
     /// e2e com git de verdade (repos sintéticos num tempdir, remoto bare).
     #[cfg(unix)]
     mod e2e {
@@ -267,6 +475,13 @@ mod tests {
             work: PathBuf,
             remote: PathBuf,
             hooks: PathBuf,
+        }
+
+        /// A pasta de hooks é só leitura: abre antes de o tempdir ser apagado.
+        impl Drop for Lab {
+            fn drop(&mut self) {
+                let _ = set_mode(&self.hooks, 0o700);
+            }
         }
 
         /// Git sem a config da máquina (nada de assinatura, hooks globais).
@@ -421,6 +636,56 @@ mod tests {
             );
             assert!(refused(&out), "HEAD na raiz");
             assert_eq!(lab.remote_main(), before, "a main do remoto não andou");
+        }
+
+        /// Medida, não verificação: `cargo test --lib medir_custo -- --ignored
+        /// --nocapture`. Rebase de 200 commits e um `git commit`, com e sem o
+        /// env do TYBA.
+        #[test]
+        #[ignore = "medida de tempo, roda à mão"]
+        fn medir_custo_dos_hooks() {
+            let lab = lab();
+            lab.agent(
+                "git checkout -q -b longa && for i in $(seq 1 200); do \
+                 echo $i > n.txt && git add n.txt && git commit -q -m c$i; done && \
+                 git checkout -q -b base main~1 && echo b > b.txt && git add b.txt && \
+                 git commit -q -m b && git checkout -q longa",
+            );
+            let time = |with: bool, script: &str| {
+                let start = std::time::Instant::now();
+                let mut sh = Command::new("bash");
+                sh.current_dir(&lab.work)
+                    .arg("-c")
+                    .arg(script)
+                    .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                    .env("GIT_CONFIG_NOSYSTEM", "1")
+                    .env("GIT_AUTHOR_NAME", "t")
+                    .env("GIT_AUTHOR_EMAIL", "t@t")
+                    .env("GIT_COMMITTER_NAME", "t")
+                    .env("GIT_COMMITTER_EMAIL", "t@t")
+                    .env_remove("GIT_CONFIG_COUNT");
+                if with {
+                    let mut env = HashMap::new();
+                    with_hooks(&mut env, &lab.hooks);
+                    sh.envs(env);
+                }
+                let out = sh.output().unwrap();
+                assert!(
+                    out.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&out.stderr)
+                );
+                start.elapsed()
+            };
+            let rebase = "git checkout -q -B r longa && git rebase -q base";
+            let commit = "git commit -q --allow-empty -m x";
+            let sem_rebase = time(false, rebase);
+            let com_rebase = time(true, rebase);
+            let sem_commit = time(false, commit);
+            let com_commit = time(true, commit);
+            eprintln!(
+                "rebase 200: sem {sem_rebase:?}, com TYBA {com_rebase:?}; commit: sem {sem_commit:?}, com TYBA {com_commit:?}"
+            );
         }
 
         #[test]
