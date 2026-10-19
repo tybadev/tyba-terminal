@@ -77,7 +77,8 @@ const SPECS: [HookSpec; 12] = [
 /// TYBA — todo evento tem teto curto e nenhum anuncia "Aguardando aprovação no
 /// TYBA…". O `PreToolUse` só leva o guarda-corpo; a aprovação é do Codex.
 fn specs_for(hook_cmd: &str) -> Vec<HookSpec> {
-    let observing = hook_cmd.ends_with(crate::hook_ipc::OBSERVE_FLAG);
+    let observing = hook_cmd.ends_with(crate::hook_ipc::OBSERVE_FLAG)
+        || hook_cmd.ends_with(crate::hook_ipc::GUARD_ONLY_FLAG);
     SPECS
         .iter()
         .map(|spec| {

@@ -865,6 +865,11 @@ impl SessionManager {
             }) {
                 cmd.env("TYBA_REAL_CLAUDE", real);
             }
+            if let Some(real) = crate::shell_path::agent_path_if_resolved().and_then(|path| {
+                crate::agent::codex_shim::real_codex(None, Some(&path), wrapper, is_executable_file)
+            }) {
+                cmd.env("TYBA_REAL_CODEX", real);
+            }
         }
 
         if let Some(command) = self.preferred_editor_command() {
@@ -1783,6 +1788,9 @@ fn write_bash_integration() -> std::io::Result<PathBuf> {
 // Só Unix: o wrapper é um script sh e só `write_agent_wrapper` (cfg(unix)) o usa.
 #[cfg(unix)]
 pub(crate) const TYBA_CLAUDE_WRAPPER: &str = include_str!("tyba-claude-wrapper.sh");
+/// O wrapper `codex` do pane: vai para `tyba _codex` (ver `agent::codex_shim`).
+#[cfg(unix)]
+pub(crate) const TYBA_CODEX_WRAPPER: &str = include_str!("tyba-codex-wrapper.sh");
 
 /// Diretório com o wrapper `claude` do TYBA (M6-A do claude-monitor), que o
 /// rc põe na frente do PATH do pane. Privado (0700, do usuário, verificado
@@ -1847,6 +1855,8 @@ fn write_agent_wrapper() -> std::io::Result<PathBuf> {
     let dir = integration_dir("bin")?;
     write_private(&dir, "claude", TYBA_CLAUDE_WRAPPER)?;
     std::fs::set_permissions(dir.join("claude"), std::fs::Permissions::from_mode(0o700))?;
+    write_private(&dir, "codex", TYBA_CODEX_WRAPPER)?;
+    std::fs::set_permissions(dir.join("codex"), std::fs::Permissions::from_mode(0o700))?;
     Ok(dir)
 }
 
@@ -2607,6 +2617,7 @@ command claude beta
             .env("ZDOTDIR", home.path())
             .env_remove("TYBA_WRAPPER_DIR")
             .env_remove("TYBA_REAL_CLAUDE")
+            .env_remove("TYBA_REAL_CODEX")
             .env(
                 "PATH",
                 format!(
@@ -2682,6 +2693,120 @@ command claude beta
         )
         .unwrap();
         std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    /// Stubs do shim do codex: `codex` de verdade e um `tyba` que só aceita
+    /// `_codex`, registra a chamada e passa para o stub.
+    #[cfg(unix)]
+    fn write_codex_shim_stubs() -> (tempfile::TempDir, PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("dir de stubs");
+        let codex = dir.path().join("codex");
+        std::fs::write(&codex, "#!/bin/sh\necho STUB-CODEX \"$@\"\n").unwrap();
+        std::fs::set_permissions(&codex, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let tyba = dir.path().join("tyba");
+        std::fs::write(
+            &tyba,
+            "#!/bin/sh\n\
+             [ \"$1\" = \"_codex\" ] || exit 1\n\
+             echo \"TYBA-BIN-CALLED $*\" >> \"$TYBA_BIN_LOG\"\n\
+             shift\n\
+             [ \"$1\" = \"--\" ] && shift\n\
+             exec \"${0%/*}/codex\" \"$@\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&tyba, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let bin = dir.path().to_path_buf();
+        (dir, bin)
+    }
+
+    /// `codex` digitado passa por `tyba _codex -- <args>` em bash e zsh;
+    /// caminho absoluto e `command codex` (sem o wrapper no PATH) pulam.
+    #[test]
+    #[cfg(unix)]
+    fn typed_codex_goes_through_tyba_codex_in_bash_and_zsh() {
+        for (shell, rc_body) in [("bash", TYBA_BASH_RC), ("zsh", TYBA_ZSH_RC)] {
+            if std::process::Command::new(shell)
+                .arg("--version")
+                .output()
+                .is_err()
+            {
+                continue;
+            }
+            let (dir, bin) = write_codex_shim_stubs();
+            let rc = dir.path().join("rc.sh");
+            std::fs::write(&rc, rc_body).unwrap();
+            let tyba = bin.join("tyba");
+            let log = dir.path().join("tyba-bin.log");
+            let codex = bin.join("codex");
+            let script = format!(
+                "source {}\ncodex exec 'faz x'\n{} --version\ncommand codex --help\n",
+                rc.display(),
+                codex.display()
+            );
+            let out = run_interactive_shell(
+                shell,
+                &bin,
+                &script,
+                &[
+                    ("TYBA_BIN", tyba.to_str().unwrap()),
+                    ("TYBA_BIN_LOG", log.to_str().unwrap()),
+                ],
+            );
+            let Some(texto) = out else { continue };
+            let calls = std::fs::read_to_string(&log).unwrap_or_default();
+            assert_eq!(
+                calls.lines().collect::<Vec<_>>(),
+                ["TYBA-BIN-CALLED _codex -- exec faz x"],
+                "{shell}: só o codex digitado passa pelo TYBA: {calls:?}"
+            );
+            assert!(
+                texto.contains("STUB-CODEX exec faz x"),
+                "{shell}: {texto:?}"
+            );
+            assert!(texto.contains("STUB-CODEX --version"), "{shell}: {texto:?}");
+            assert!(texto.contains("STUB-CODEX --help"), "{shell}: {texto:?}");
+        }
+    }
+
+    /// O wrapper `codex` no PATH (scripts, `command codex`): com o TYBA, vai a
+    /// `tyba _codex`; sem ele, acha o codex de verdade pulando a si mesmo.
+    #[test]
+    #[cfg(unix)]
+    fn codex_wrapper_routes_to_tyba_or_the_real_binary() {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, bin) = write_codex_shim_stubs();
+        let wrapper_dir = dir.path().join("wrapper");
+        std::fs::create_dir_all(&wrapper_dir).unwrap();
+        let wrapper = wrapper_dir.join("codex");
+        std::fs::write(&wrapper, TYBA_CODEX_WRAPPER).unwrap();
+        std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let log = dir.path().join("tyba-bin.log");
+        let path = format!("{}:{}:/usr/bin:/bin", wrapper_dir.display(), bin.display());
+        let run = |with_tyba: bool| {
+            let mut cmd = std::process::Command::new("sh");
+            cmd.arg("-c")
+                .arg("codex a b")
+                .env("PATH", &path)
+                .env("TYBA_BIN_LOG", &log)
+                .env_remove("TYBA_REAL_CODEX");
+            if with_tyba {
+                cmd.env("TYBA_BIN", bin.join("tyba"));
+            } else {
+                cmd.env_remove("TYBA_BIN");
+            }
+            String::from_utf8_lossy(&cmd.output().unwrap().stdout).into_owned()
+        };
+        assert!(run(true).contains("STUB-CODEX a b"));
+        assert!(std::fs::read_to_string(&log)
+            .unwrap()
+            .contains("TYBA-BIN-CALLED _codex -- a b"));
+        std::fs::remove_file(&log).unwrap();
+        assert!(
+            run(false).contains("STUB-CODEX a b"),
+            "sem o TYBA, o codex de verdade"
+        );
+        assert!(!log.exists(), "sem o TYBA, nada passa por ele");
     }
 
     /// Item 26: `claude` puro, sem argumento nenhum, gateia — chama

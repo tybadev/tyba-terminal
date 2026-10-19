@@ -13,6 +13,7 @@ pub mod claude_plugin;
 pub mod channel_host;
 pub mod claude_settings;
 pub mod codex_hooks;
+pub mod codex_shim;
 pub mod conversation;
 pub mod credentials;
 pub mod disk_observer;

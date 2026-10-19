@@ -264,6 +264,18 @@ if [ -n "${TYBA_BIN:-}" ] && [ "${TYBA_AGENT_SHIM:-1}" = "1" ]; then
     fi
   }
 
+  # `codex` digitado: sobe o codex de verdade com o hook pre-push do TYBA e
+  # o guarda-corpo de texto, sem gate e sem jaula (`tyba _codex`). Mesmas
+  # escotilhas do claude: caminho absoluto pula, TYBA_AGENT_SHIM=0 desliga.
+  codex() {
+    __tyba_shim_record "codex"
+    if [ -x "$TYBA_BIN" ]; then
+      "$TYBA_BIN" _codex -- "$@"
+    else
+      command codex "$@"
+    fi
+  }
+
   if [ -n "${TYBA_WRAPPER_DIR:-}" ] && [ -x "$TYBA_WRAPPER_DIR/claude" ]; then
     case ":$PATH:" in
       *":$TYBA_WRAPPER_DIR:"*) ;;
