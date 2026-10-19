@@ -65,50 +65,35 @@ fn check(pieces: &[Piece], depth: usize) -> Option<&'static str> {
 
 const SHELLS: &[&str] = &["sh", "bash", "zsh", "dash", "ksh", "fish"];
 
-/// As variáveis que carregam o `core.hooksPath` do TYBA (ou que trocariam a
-/// config inteira).
-fn is_git_config_var(word: &str) -> bool {
-    let upper = word.to_ascii_uppercase();
-    let name = upper
-        .trim_start_matches("--UNSET=")
-        .trim_start_matches("-U")
-        .trim_start_matches("$ENV:")
-        .trim_start_matches("ENV:")
-        .split('=')
-        .next()
-        .unwrap_or("");
-    name == "GIT_CONFIG_COUNT"
-        || name == "GIT_CONFIG_PARAMETERS"
-        || name == "GIT_CONFIG_GLOBAL"
-        || name == "GIT_CONFIG_SYSTEM"
-        || name == "GIT_CONFIG_NOSYSTEM"
-        || name.starts_with("GIT_CONFIG_KEY_")
-        || name.starts_with("GIT_CONFIG_VALUE_")
-}
+/// Quem só lê variável: `echo $GIT_CONFIG_COUNT`, `printenv`, `env | grep`.
+const READS_ONLY: &[&str] = &["echo", "printenv", "grep", "egrep", "fgrep", "rg"];
 
-/// O comando mexe nas variáveis do hook: atribuição (`GIT_CONFIG_COUNT=0`,
-/// `$env:GIT_CONFIG_COUNT=0`), `env -u`/`env -i`, `unset`, `export`,
-/// `Remove-Item Env:…`.
+/// Regra simples (decisão do dono, 2026-10-19): comando que menciona
+/// `GIT_CONFIG_` (COUNT/KEY/VALUE/PARAMETERS/GLOBAL/NOSYSTEM…) é recusado, a
+/// não ser que o programa só leia ([`READS_ONLY`]) e nada antes dele atribua
+/// a variável. Pega atribuição, `+=`, `export`, `unset`, `env -u`,
+/// `printf -v`, `read`, `declare`/`typeset`/`local`, `mapfile` e o
+/// `$env:` do PowerShell sem precisar conhecer cada um. `env -i`/`env -`
+/// (limpa o env inteiro, hooksPath junto) também.
 fn tampers_git_config_env(words: &[String]) -> bool {
-    let program = words.first().map(|p| program_name(p)).unwrap_or_default();
-    words.iter().enumerate().any(|(i, word)| {
-        if !is_git_config_var(word) {
-            // `env -i`/`env -` limpa o env inteiro, hooksPath junto.
-            return program == "env"
-                && matches!(word.as_str(), "-i" | "-" | "--ignore-environment");
-        }
-        let prev = i.checked_sub(1).map(|p| words[p].as_str()).unwrap_or("");
-        word.contains('=')
-            || word.to_ascii_lowercase().starts_with("-u")
-            || word.to_ascii_lowercase().starts_with("--unset")
-            || matches!(prev, "-u" | "--unset")
-            || matches!(
-                program.as_str(),
-                "unset" | "export" | "remove-item" | "rm" | "set" | "setx"
-            )
-            || word.to_ascii_uppercase().starts_with("$ENV:")
-            || word.to_ascii_uppercase().starts_with("ENV:")
-    })
+    let mentions = |w: &String| w.to_ascii_uppercase().contains("GIT_CONFIG_");
+    let canonical = canonical_words(words);
+    let program = canonical
+        .first()
+        .map(|p| program_name(p))
+        .unwrap_or_default();
+    let prefix = &words[..words.len() - canonical.len()];
+    let cleans_env = words.first().is_some_and(|w| program_name(w) == "env")
+        && words
+            .iter()
+            .any(|w| matches!(w.as_str(), "-i" | "-" | "--ignore-environment"));
+    if cleans_env {
+        return true;
+    }
+    if !words.iter().any(mentions) {
+        return false;
+    }
+    !READS_ONLY.contains(&program.as_str()) || prefix.iter().any(mentions)
 }
 
 fn command_verdict(words: &[String], depth: usize) -> Option<&'static str> {
@@ -139,11 +124,16 @@ fn command_verdict(words: &[String], depth: usize) -> Option<&'static str> {
         }
         "eval" => guard_rail_at(&args.join(" "), depth + 1),
         "git" => git_verdict(args, depth),
+        // Plumbing do push: não roda o hook `pre-push`.
+        "git-send-pack" => Some(HOOK_BYPASS_MESSAGE),
         "gh" => gh_verdict(args),
         "glab" => {
             let args = without_repo_flag(args);
             if args.first().is_some_and(|a| a == "api") {
                 return api_merge_verdict(&args[1..]);
+            }
+            if subcommand_is(&args, "mr", "approve") {
+                return Some(PR_APPROVE_MESSAGE);
             }
             subcommand_is(&args, "mr", "merge").then_some(PR_MERGE_MESSAGE)
         }
@@ -712,6 +702,24 @@ fn api_merge_verdict(args: &[String]) -> Option<&'static str> {
     {
         return Some(PR_MERGE_MESSAGE);
     }
+    // Aprovar PR/MR por API.
+    let approves = joined.contains("APPROVE");
+    let reviews_path = paths
+        .iter()
+        .any(|p| p.contains("pulls/") && p.ends_with("/reviews"));
+    let reviews_events = paths
+        .iter()
+        .any(|p| p.contains("pulls/") && p.contains("/reviews/") && p.ends_with("/events"));
+    let mr_approve = paths
+        .iter()
+        .any(|p| p.contains("merge_requests/") && p.ends_with("/approve"));
+    if ((reviews_path || reviews_events) && approves)
+        || mr_approve
+        || (mutation("addPullRequestReview") && approves)
+        || (mutation("submitPullRequestReview") && approves)
+    {
+        return Some(PR_APPROVE_MESSAGE);
+    }
     let main_ref = paths
         .iter()
         .any(|p| p.ends_with("git/refs/heads/main") || p.ends_with("git/refs/heads/master"));
@@ -789,9 +797,17 @@ fn git_verdict(args: &[String], depth: usize) -> Option<&'static str> {
     }
     let sub = args.get(i)?;
     let rest = &args[i + 1..];
-    let pushes_without_hook = |args: &[String]| args.iter().any(|a| a == "--no-verify");
+    // `--no-verify` e qualquer prefixo dele que o git aceita (`--no-veri`…;
+    // `--no-ver` é ambíguo com `--no-verbose` e o git recusa).
+    let skips_hook =
+        |a: &String| a.len() >= "--no-veri".len() && "--no-verify".starts_with(a.as_str());
+    let pushes_without_hook = |args: &[String]| args.iter().any(skips_hook);
     if sub == "push" {
         return pushes_without_hook(rest).then_some(HOOK_BYPASS_MESSAGE);
+    }
+    // `git send-pack` empurra sem passar pelo `pre-push`.
+    if sub == "send-pack" {
+        return Some(HOOK_BYPASS_MESSAGE);
     }
     // Alias: o nome do git ignora maiúsculas.
     let lower = sub.to_ascii_lowercase();
@@ -939,6 +955,66 @@ mod tests {
             "echo \"git push --no-verify\"",
             "git commit -m 'git push --no-verify'",
             "git config --get core.hooksPath",
+        ] {
+            assert_eq!(guard(cmd), None, "{cmd}");
+        }
+    }
+
+    #[test]
+    fn plumbing_abbreviations_and_git_config_writes_are_refused() {
+        for cmd in [
+            "git send-pack origin refs/heads/main",
+            "git -C x send-pack ../r main",
+            "git-send-pack ../r main",
+            "git push --no-veri origin main",
+            "git push --no-verif origin main",
+            "git push origin main --no-verify",
+            "printf -v GIT_CONFIG_COUNT 0; git push",
+            "read GIT_CONFIG_COUNT <<< 0",
+            "GIT_CONFIG_COUNT+=1 git push",
+            "declare GIT_CONFIG_COUNT=0",
+            "typeset -x GIT_CONFIG_COUNT=0",
+            "local GIT_CONFIG_PARAMETERS=x",
+            "mapfile -t GIT_CONFIG_KEY_0 < f",
+            "export GIT_CONFIG_NOSYSTEM=1",
+            "echo GIT_CONFIG_COUNT=0 | GIT_CONFIG_COUNT=0 grep x",
+            "GIT_CONFIG_COUNT=0 echo ok",
+        ] {
+            assert_eq!(guard(cmd), Some(HOOK_BYPASS_MESSAGE), "{cmd}");
+        }
+        for cmd in [
+            "echo $GIT_CONFIG_COUNT",
+            "printenv GIT_CONFIG_KEY_0",
+            "env | grep GIT_CONFIG_",
+            "git push --no-ver origin feat",
+            "git push --verbose origin feat",
+            "git commit --no-verify -m x",
+        ] {
+            assert_eq!(guard(cmd), None, "{cmd}");
+        }
+    }
+
+    #[test]
+    fn pr_approval_through_the_api_is_refused() {
+        for cmd in [
+            "gh api -X POST repos/o/r/pulls/3/reviews -f event=APPROVE",
+            "gh api repos/o/r/pulls/3/reviews -f event=APPROVE -f body=ok",
+            "gh api repos/o/r/pulls/3/reviews/9/events -f event=APPROVE",
+            "gh api graphql -f query='mutation { addPullRequestReview(input:{pullRequestId:\"x\", event: APPROVE}) { clientMutationId } }'",
+            "gh api graphql -f query='mutation { submitPullRequestReview(input:{event: APPROVE}) { clientMutationId } }'",
+            "curl -X POST https://api.github.com/repos/o/r/pulls/3/reviews -d '{\"event\":\"APPROVE\"}'",
+            "glab mr approve 7",
+            "glab -R o/r mr approve 7",
+            "glab api -X POST projects/1/merge_requests/7/approve",
+            "curl -X POST https://gitlab.com/api/v4/projects/1/merge_requests/7/approve",
+        ] {
+            assert_eq!(guard(cmd), Some(PR_APPROVE_MESSAGE), "{cmd}");
+        }
+        for cmd in [
+            "gh api repos/o/r/pulls/3/reviews",
+            "gh api -X POST repos/o/r/pulls/3/reviews -f event=COMMENT -f body=x",
+            "gh api -X POST repos/o/r/pulls/3/reviews -f event=REQUEST_CHANGES -f body=x",
+            "glab mr view 7",
         ] {
             assert_eq!(guard(cmd), None, "{cmd}");
         }
