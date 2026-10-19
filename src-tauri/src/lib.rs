@@ -8805,6 +8805,21 @@ fn run_boot(
     let span = boot::Span::start("checkpoints.drain");
     let _ = store.drain_checkpoints();
     span.end();
+
+    // Uma vez por banco: o que versões antigas gravaram sem a redação de hoje.
+    // Depois do dreno (que já redige o que monta) e antes do `ready`: depois
+    // dele a tela leria o bloco antigo antes da passada, e um comando síncrono
+    // esperaria o lock do store na main thread. O WAL que o `VACUUM` deixa sai
+    // no `checkpoint_truncate` da manutenção.
+    let span = boot::Span::start("store.redact_legacy");
+    match store.redact_legacy_once() {
+        Ok(Some(n)) => span.end_with(format!("{n} alterações")),
+        Ok(None) => span.end(),
+        Err(e) => {
+            span.end();
+            eprintln!("tyba: redação do legado falhou, repete no próximo boot: {e}");
+        }
+    }
     blocks::install(app.clone(), Arc::clone(&store));
 
     // Abrir o portão antes de avisar: quem for reconsultar por causa do evento

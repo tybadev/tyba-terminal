@@ -31,17 +31,26 @@ static SECRETS: LazyLock<Regex> = LazyLock::new(|| {
     let escaped_line = format!(r#"(?:\\n)+(?:{KEY_HEADER}[^\\"\r\n]*|[A-Za-z0-9+/=]+)"#);
     let key_block =
         format!(r"(?:{KEY_START})(?:{real_line}|{escaped_line})*(?:{KEY_SEP}(?:{KEY_END}))?");
+    // Token de prefixo só vale no começo de uma palavra: sem a fronteira,
+    // `task-runner-for-monorepos` virava `ta[REDACTED]`. O crate `regex` não
+    // tem lookbehind, então o caractere anterior entra no match (grupo `b`) e
+    // o `redact` o devolve. `\n` escapado conta como fronteira (JSON).
+    let prefixed = [
+        r"(?:AKIA|ASIA)[0-9A-Z]{16}",
+        r"sk-[A-Za-z0-9_-]{20,}",
+        r"gh[pousr]_[A-Za-z0-9]{20,}",
+        r"github_pat_[A-Za-z0-9_]{20,}",
+        r"glpat-[A-Za-z0-9_-]{20,}",
+        r"(?:xoxe\.)?xox[abposre]-[A-Za-z0-9-]{10,}",
+        r"xapp-[A-Za-z0-9-]{10,}",
+        r"AIza[0-9A-Za-z_-]{35}",
+    ]
+    .join("|");
+    let bounded = format!(r"(?:^|(?P<b>\\[nrt]|[^A-Za-z0-9]))(?:{prefixed})");
     Regex::new(
         &[
             key_block.as_str(),
-            r"(AKIA|ASIA)[0-9A-Z]{16}",
-            r"sk-[A-Za-z0-9_-]{20,}",
-            r"gh[pousr]_[A-Za-z0-9]{20,}",
-            r"github_pat_[A-Za-z0-9_]{20,}",
-            r"glpat-[A-Za-z0-9_-]{20,}",
-            r"(?:xoxe\.)?xox[abposre]-[A-Za-z0-9-]{10,}",
-            r"xapp-[A-Za-z0-9-]{10,}",
-            r"AIza[0-9A-Za-z_-]{35}",
+            bounded.as_str(),
             // base64("-----BEGIN"): PEM inteiro em base64 (Secret do
             // Kubernetes). Certificado também cai aqui, e tudo bem.
             r"LS0tLS1CRUdJTi[A-Za-z0-9+/=]*",
@@ -94,6 +103,9 @@ pub fn redact(input: &str) -> Cow<'_, str> {
     // O bloco de chave vira UMA marca seguida das quebras que ele tinha: o
     // texto mantém o número de linhas (`error_line` do CI, export de logs).
     let mark = |c: &regex::Captures| {
+        if let Some(b) = c.name("b") {
+            return format!("{}{REDACTION_MARK}", b.as_str());
+        }
         let m = &c[0];
         let nl = if m.contains("\r\n") { "\r\n" } else { "\n" };
         format!("{REDACTION_MARK}{}", nl.repeat(m.matches('\n').count()))
@@ -226,6 +238,40 @@ mod tests {
         assert!(!out.contains("AKIAIOSFODNN7EXAMPLE"));
         assert!(!out.contains("sk-abcdef1234567890ABCDEFghijkl"));
         assert_eq!(out.matches(REDACTION_MARK).count(), 2);
+    }
+
+    #[test]
+    fn a_token_prefix_inside_a_word_is_not_a_token() {
+        // Falso positivo visto: `sk-` no meio de `task-…`.
+        for clean in [
+            "npm i task-runner-for-monorepos".to_string(),
+            format!("disk-{}", "a".repeat(30)),
+            format!("x{}", fake("ghp_", "a", 25)),
+            format!("my{}", fake("glpat-", "a", 25)),
+            format!("x{}", fake("xoxb-", "0", 24)),
+            format!("ZAKIA{}", "Q".repeat(16)),
+            format!("bAIza{}", "a".repeat(35)),
+        ] {
+            assert_eq!(redact(&clean), clean.as_str());
+            assert!(!contains_secret(&clean), "{clean}");
+        }
+    }
+
+    #[test]
+    fn a_token_after_a_separator_is_still_redacted() {
+        let sk = fake("sk-", "FAKE0", 5);
+        let ghp = fake("ghp_", "FAKE0", 5);
+        let akia = fake("AKIA", "FAKE", 4);
+        assert_eq!(redact(&format!("OPENAI_KEY={sk}")), "OPENAI_KEY=[REDACTED]");
+        assert_eq!(redact(&format!("\"{sk}\"")), "\"[REDACTED]\"");
+        assert_eq!(redact(&sk), REDACTION_MARK);
+        assert_eq!(redact(&format!("a\n{ghp}")), "a\n[REDACTED]");
+        assert_eq!(
+            redact(&format!("{{\"k\":\"x\\n{ghp}\"}}")),
+            "{\"k\":\"x\\n[REDACTED]\"}"
+        );
+        assert_eq!(redact(&format!("{akia},{sk}")), "[REDACTED],[REDACTED]");
+        assert_eq!(redact(&format!("id={akia}")), "id=[REDACTED]");
     }
 
     /// Segredo sintético montado em runtime: o literal inteiro nunca aparece no
