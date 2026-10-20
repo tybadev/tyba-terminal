@@ -4302,10 +4302,13 @@ async fn session_remote_chips(
     let Some((host_id, alias, name)) = ssh_target(&state, id) else {
         return Ok(None);
     };
-    Ok(state
-        .host_queries
-        .get(&host_id, &alias)
-        .session_chips(id, &name))
+    // Três `exec` pelo ssh, em série: segundos num servidor distante. Fora do
+    // runtime async, como o docker remoto — senão a espera prende um worker que
+    // os outros comandos usam.
+    let query = state.host_queries.get(&host_id, &alias);
+    tauri::async_runtime::spawn_blocking(move || query.session_chips(id, &name))
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// A integração daquela sessão, para a tela desenhar a linha do pane sem ter de

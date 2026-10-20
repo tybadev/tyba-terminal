@@ -31,6 +31,7 @@ import {
   formatCpu,
   groupContainers,
   healthOf,
+  loadContainers,
   portList,
   shortImage,
   uptimeMs,
@@ -384,7 +385,7 @@ export function DockerScreen({
   const [logsRestart, setLogsRestart] = useState(0);
   const [composeRuns, setComposeRuns] = useState<Record<string, ComposeRun>>({});
   // A etapa da primeira leitura: o comando que o core está rodando agora.
-  const [loadCmd, setLoadCmd] = useState<"version" | "ps -a">("version");
+  const [loadCmd, setLoadCmd] = useState<"version" | "ps -a">("ps -a");
   const [loadStart, setLoadStart] = useState(() => Date.now());
 
   const sectionRef = useRef<HTMLElement>(null);
@@ -401,18 +402,17 @@ export function DockerScreen({
         () => {},
       );
     try {
-      setLoadCmd("version");
-      const ok = await dockerAvailable(host);
-      setAvailable(ok);
-      if (!ok) {
-        setList([]);
-        return;
-      }
-      setLoadCmd("ps -a");
-      const next = await dockerListContainers(host ? null : repoRoot, true, host);
-      for (const c of next) rememberContainerName(c.id, c.name);
-      setList(next);
+      const read = await loadContainers(
+        () => dockerListContainers(host ? null : repoRoot, true, host),
+        () => dockerAvailable(host),
+        setLoadCmd,
+      );
+      setAvailable(read.available);
+      for (const c of read.list) rememberContainerName(c.id, c.name);
+      setList(read.list);
     } catch (e) {
+      // Só lança com o `version` respondendo: o docker está de pé, o `ps` é que falhou.
+      setAvailable(true);
       setError(translateError(e, t));
     }
   }, [host, repoRoot, t]);

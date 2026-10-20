@@ -123,6 +123,14 @@ pub struct ProjectInfo {
     pub config_files: Vec<String>,
 }
 
+/// O `--format` do `ps`: só os campos de `PsRow`, nunca `{{json .}}`.
+///
+/// O `{{json .}}` serializa o contexto inteiro, e isso inclui `.Size`: o CLI
+/// vê o campo no template e pede `containers/json?all=1&size=1`, que faz o
+/// daemon medir a camada gravável de cada container a cada leitura. Num
+/// servidor com containers grandes é o que mais custa na lista remota.
+const PS_FORMAT: &str = r#"{"ID":{{json .ID}},"Names":{{json .Names}},"Image":{{json .Image}},"State":{{json .State}},"Status":{{json .Status}},"Ports":{{json .Ports}},"Labels":{{json .Labels}}}"#;
+
 #[derive(Debug, Deserialize)]
 struct PsRow {
     #[serde(rename = "ID", default)]
@@ -1331,7 +1339,7 @@ impl DockerManager {
     ) -> Result<Vec<ContainerInfo>, DockerError> {
         let key = host.map(str::to_string);
         let raw = match run_docker(
-            &["ps", "-a", "--no-trunc", "--format", "{{json .}}"],
+            &["ps", "-a", "--no-trunc", "--format", PS_FORMAT],
             PS_TIMEOUT,
             host,
         ) {
@@ -1339,10 +1347,11 @@ impl DockerManager {
                 self.availability.lock().insert(key, (true, Instant::now()));
                 raw
             }
+            // Falha do `ps` não decide disponibilidade: a tela pergunta o
+            // `version` em seguida para separar "sem docker" de erro, e um
+            // `false` em cache responderia por ele sem perguntar.
             Err(e) => {
-                self.availability
-                    .lock()
-                    .insert(key, (false, Instant::now()));
+                self.availability.lock().remove(&key);
                 return Err(e);
             }
         };
@@ -1590,7 +1599,7 @@ impl DockerManager {
             return Err(DockerError::UnknownContainer(id.chars().take(12).collect()));
         }
         let raw = run_docker(
-            &["ps", "-a", "--no-trunc", "--format", "{{json .}}"],
+            &["ps", "-a", "--no-trunc", "--format", PS_FORMAT],
             PS_TIMEOUT,
             host,
         )?;
@@ -2027,6 +2036,34 @@ not-json-line
         assert_eq!(list[1].name, "loose-redis");
         assert_eq!(list[1].compose_project, None);
         assert_eq!(list[1].service, None);
+    }
+
+    /// `.Size` no template faz o CLI pedir `size=1`, e o daemon mede o disco de
+    /// cada container a cada leitura da lista. Verificado com o docker 29: o
+    /// `{{json .}}` pede `containers/json?all=1&size=1`; este formato, só
+    /// `all=1`.
+    #[test]
+    fn ps_format_never_asks_the_daemon_for_sizes() {
+        assert!(!PS_FORMAT.contains("Size"), "o template pediria size=1");
+        assert!(!PS_FORMAT.contains("{{json .}}"));
+        for field in ["ID", "Names", "Image", "State", "Status", "Ports", "Labels"] {
+            assert!(
+                PS_FORMAT.contains(&format!("\"{field}\":{{{{json .{field}}}}}")),
+                "o campo {field} de PsRow tem de vir no formato"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_ps_output_reads_the_explicit_format() {
+        let line = r#"{"ID":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","Names":"tyba-db-1","Image":"postgres:16","State":"running","Status":"Up 2 hours","Ports":"0.0.0.0:5432->5432/tcp","Labels":"com.docker.compose.project=tyba-terminal,com.docker.compose.service=db"}"#;
+        let list = parse_ps_output(line);
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].name, "tyba-db-1");
+        assert_eq!(list[0].state, "running");
+        assert_eq!(list[0].ports, "0.0.0.0:5432->5432/tcp");
+        assert_eq!(list[0].compose_project.as_deref(), Some("tyba-terminal"));
+        assert_eq!(list[0].service.as_deref(), Some("db"));
     }
 
     #[test]
