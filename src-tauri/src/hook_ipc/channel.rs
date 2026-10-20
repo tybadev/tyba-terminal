@@ -369,11 +369,12 @@ pub fn hosted_child_env(
         remove.iter().any(|r| k.as_os_str() == r.as_str())
             || set.iter().any(|(s, _)| k.as_os_str() == s.as_str())
     };
-    inherited
+    let env = inherited
         .into_iter()
         .filter(|(k, _)| !overridden(k))
         .chain(set.iter().map(|(k, v)| (k.into(), v.into())))
-        .collect()
+        .collect();
+    crate::agent::git_hooks::with_hooks_os(env)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

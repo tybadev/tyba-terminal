@@ -3651,6 +3651,18 @@ impl Store {
         )?)
     }
 
+    /// Fecha a entrada `native_approval` sem veredito (`decision` nulo): o
+    /// pedido do plugin, que não tem sinal de aprovação nem de negativa.
+    pub fn settle_native_notification(&self, inferred_id: i64) -> Result<usize, StoreError> {
+        let conn = self.conn.lock();
+        Ok(conn.execute(
+            "UPDATE notification
+             SET pending = 0, category = 'done', read = 1
+             WHERE kind = 'native_approval' AND approval_id = ?1 AND pending = 1",
+            params![inferred_id],
+        )?)
+    }
+
     /// O turno seguiu sem rodar a chamada (ou a sessão acabou): toda entrada
     /// `native_approval` pendente da sessão vira negada, como as linhas
     /// deduzidas de [`Store::deny_pending_inferred_for_session`].

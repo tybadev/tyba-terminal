@@ -12,25 +12,50 @@
 //! A mesma invocação devolve o `SSH_AUTH_SOCK` do login shell: é por onde o
 //! `ssh` do core alcança o agente que o dono configurou no rc (1Password,
 //! Secretive), e sem ele o app lançado pelo Dock só vê o agente do launchd.
+//!
+//! E devolve o env COMPLETO do login shell (`env -0`), que só vai para o
+//! agente livre que o TYBA abre (agente livre: o env do agente é o do shell
+//! de login do dono — `ANTHROPIC_API_KEY`, `AWS_PROFILE`, `CLAUDE_CONFIG_DIR`,
+//! proxy). O rc roda fora de qualquer repositório: o que é por pasta
+//! (direnv, `.nvmrc`) não entra.
 
 use std::path::Path;
 use std::process::Command;
-use std::sync::OnceLock;
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 const RESOLVE_TIMEOUT: Duration = Duration::from_secs(3);
 const MARKER: &str = "__TYBA_PATH__";
 const SOCK_MARKER: &str = "__TYBA_SOCK__";
+const ENV_MARKER: &str = "__TYBA_ENV__";
+/// Marca a invocação de resolução; não vai para o env do agente.
+const RESOLVING_VAR: &str = "TYBA_RESOLVING_PATH";
 
-/// O que o login shell do dono tem e o processo do app pode não ter. Só estas
-/// duas variáveis atravessam — nenhuma outra do rc chega aos processos do core.
+/// O que o login shell do dono tem e o processo do app pode não ter. `path` e
+/// `ssh_auth_sock` servem o core; `vars` (o env inteiro) só vai para o agente
+/// livre que o TYBA abre.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LoginEnv {
     pub path: Option<String>,
     pub ssh_auth_sock: Option<String>,
+    pub vars: Option<Vec<(String, String)>>,
 }
 
-static RESOLVED: OnceLock<Option<LoginEnv>> = OnceLock::new();
+/// Só o sucesso fica em cache. Falha ou prazo estourado tentam de novo depois
+/// de [`RETRY_AFTER`] — na próxima sessão, não a cada chamada (o PATH é lido a
+/// toda hora).
+static RESOLVED: OnceLock<LoginEnv> = OnceLock::new();
+static LAST_FAILURE: Mutex<Option<Instant>> = Mutex::new(None);
+/// Uma resolução por vez; quem pode esperar espera aqui.
+static RESOLVING: Mutex<()> = Mutex::new(());
+/// Já há uma nova tentativa rodando em segundo plano.
+static RETRYING: AtomicBool = AtomicBool::new(false);
+const RETRY_AFTER: Duration = Duration::from_secs(60);
+
+/// Variáveis do login shell que não vão para o agente: a pasta onde o rc
+/// rodou não é a do agente.
+const NOT_FOR_AGENT: &[&str] = &["PWD", "OLDPWD"];
 
 /// O PATH a usar para achar e spawnar binários de agente.
 pub fn agent_path() -> String {
@@ -39,17 +64,73 @@ pub fn agent_path() -> String {
         .unwrap_or_else(|| std::env::var("PATH").unwrap_or_default())
 }
 
-/// O mesmo PATH de [`agent_path`], mas só se já foi resolvido — nunca dispara
-/// o `$SHELL -lic` (até 3 s). Para quem não pode esperar, como o spawn de um
-/// pane.
+fn last_failure() -> Option<Instant> {
+    *LAST_FAILURE.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// O mesmo PATH de [`agent_path`], mas sem nunca esperar: nunca dispara o
+/// `$SHELL -lic` (até 3 s) nem espera uma resolução em andamento. Para o spawn
+/// de um pane. Sem resolução ainda: `None`. Depois de uma falha: o PATH do
+/// processo, e a nova tentativa vai para segundo plano.
 pub fn agent_path_if_resolved() -> Option<String> {
-    RESOLVED.get().map(|_| agent_path())
+    if let Some(env) = RESOLVED.get() {
+        return with_process_fallback(Some(env.clone()), |n| std::env::var(n).ok()).path;
+    }
+    let failure = last_failure()?;
+    if should_retry(Some(failure), Instant::now()) && !RETRYING.swap(true, Ordering::SeqCst) {
+        std::thread::spawn(|| {
+            let _ = resolved();
+            RETRYING.store(false, Ordering::SeqCst);
+        });
+    }
+    Some(std::env::var("PATH").unwrap_or_default())
+}
+
+/// Tenta resolver de novo agora? Só passado [`RETRY_AFTER`] da última falha.
+fn should_retry(last_failure: Option<Instant>, now: Instant) -> bool {
+    last_failure.is_none_or(|at| now.saturating_duration_since(at) >= RETRY_AFTER)
+}
+
+/// O env do login shell: do cache, ou resolvido agora (sem cache se falhar).
+/// Pode esperar até 3 s: nunca no spawn do pane.
+fn resolved() -> Option<LoginEnv> {
+    if let Some(env) = RESOLVED.get() {
+        return Some(env.clone());
+    }
+    let _one_at_a_time = RESOLVING.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(env) = RESOLVED.get() {
+        return Some(env.clone());
+    }
+    if !should_retry(last_failure(), Instant::now()) {
+        return None;
+    }
+    match resolve_login_env() {
+        Some(env) => {
+            let _ = RESOLVED.set(env.clone());
+            *LAST_FAILURE.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            Some(env)
+        }
+        None => {
+            *LAST_FAILURE.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
+            None
+        }
+    }
+}
+
+/// O env completo do shell de login, resolvido uma vez (até 3 s, com cache).
+/// `None` quando o shell não respondeu: quem chama cai no env do processo.
+pub fn login_shell_vars() -> Option<std::collections::HashMap<String, String>> {
+    let vars = resolved()?.vars?;
+    Some(
+        vars.into_iter()
+            .filter(|(k, _)| k != RESOLVING_VAR && !NOT_FOR_AGENT.contains(&k.as_str()))
+            .collect(),
+    )
 }
 
 /// Resolvido uma vez. Variável que o login shell não trouxe cai na do processo.
 pub fn login_env() -> LoginEnv {
-    let resolved = RESOLVED.get_or_init(resolve_login_env).clone();
-    with_process_fallback(resolved, |name| std::env::var(name).ok())
+    with_process_fallback(resolved(), |name| std::env::var(name).ok())
 }
 
 fn with_process_fallback(
@@ -62,6 +143,7 @@ fn with_process_fallback(
         path: non_empty(resolved.path).or_else(|| non_empty(process("PATH"))),
         ssh_auth_sock: non_empty(resolved.ssh_auth_sock)
             .or_else(|| non_empty(process("SSH_AUTH_SOCK"))),
+        vars: resolved.vars,
     }
 }
 
@@ -77,36 +159,53 @@ fn resolve_login_env_with(shell: &Path, timeout: Duration) -> Option<LoginEnv> {
     let mut child = Command::new(shell)
         .arg("-lic")
         .arg(format!(
-            "printf '{MARKER}%s{MARKER}{SOCK_MARKER}%s{SOCK_MARKER}' \"$PATH\" \"$SSH_AUTH_SOCK\""
+            "printf '{MARKER}%s{MARKER}{SOCK_MARKER}%s{SOCK_MARKER}' \"$PATH\" \"$SSH_AUTH_SOCK\"; \
+             printf '{ENV_MARKER}'; env -0 2>/dev/null; printf '{ENV_MARKER}'"
         ))
-        .env("TYBA_RESOLVING_PATH", "1")
+        .env(RESOLVING_VAR, "1")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .spawn()
         .ok()?;
 
-    let deadline = std::time::Instant::now() + timeout;
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => break,
-            Ok(None) if std::time::Instant::now() >= deadline => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
-            }
-            Ok(None) => std::thread::sleep(Duration::from_millis(25)),
-            Err(_) => return None,
-        }
-    }
-
-    let out = child.wait_with_output().ok()?;
-    let stdout = String::from_utf8_lossy(&out.stdout);
+    // Lê a saída enquanto espera: com o env inteiro passando de 64 KB, o
+    // pipe enche e o shell trava escrevendo se ninguém lê.
+    let mut pipe = child.stdout.take()?;
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        use std::io::Read;
+        let mut out = Vec::new();
+        let _ = pipe.read_to_end(&mut out);
+        let _ = tx.send(out);
+    });
+    let Ok(out) = rx.recv_timeout(timeout) else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return None;
+    };
+    let _ = child.wait();
+    let stdout = String::from_utf8_lossy(&out);
     let path = parse_marked_path(&stdout)?;
     Some(LoginEnv {
         path: Some(path),
         ssh_auth_sock: parse_between(&stdout, SOCK_MARKER),
+        vars: parse_env_block(&stdout),
     })
+}
+
+/// O `env -0` entre os marcadores: `NOME=valor` separados por NUL. Bloco
+/// vazio ou ausente (shell sem `env -0`) é `None`.
+fn parse_env_block(stdout: &str) -> Option<Vec<(String, String)>> {
+    let (_, rest) = stdout.split_once(ENV_MARKER)?;
+    let (block, _) = rest.rsplit_once(ENV_MARKER)?;
+    let vars: Vec<(String, String)> = block
+        .split('\0')
+        .filter_map(|entry| entry.split_once('='))
+        .filter(|(k, _)| !k.is_empty() && !k.contains(['\n', ' ']))
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+    (!vars.is_empty()).then_some(vars)
 }
 
 /// O rc do usuário pode imprimir qualquer coisa (banner, fastfetch, aviso de
@@ -150,11 +249,18 @@ mod tests {
             dir.path(),
             "echo 'banner do rc'\n\
              PATH=/opt/fake/bin:/usr/bin SSH_AUTH_SOCK='/tmp/agent dir/agent.sock'\n\
-             export PATH SSH_AUTH_SOCK\n\
+             SYNTH_ONLY_IN_RC='valor com espaço
+\
+e linha'\n\
+             export PATH SSH_AUTH_SOCK SYNTH_ONLY_IN_RC\n\
              eval \"$2\"",
         );
         let env = resolve_login_env_with(&shell, Duration::from_secs(3)).expect("resolveu");
         assert_eq!(env.path.as_deref(), Some("/opt/fake/bin:/usr/bin"));
+        let vars: std::collections::HashMap<_, _> =
+            env.vars.clone().expect("env").into_iter().collect();
+        assert_eq!(vars["PATH"], "/opt/fake/bin:/usr/bin");
+        assert_eq!(vars["SYNTH_ONLY_IN_RC"], "valor com espaço\ne linha");
         assert_eq!(
             env.ssh_auth_sock.as_deref(),
             Some("/tmp/agent dir/agent.sock")
@@ -196,6 +302,7 @@ mod tests {
             Some(LoginEnv {
                 path: Some("/opt/fake/bin".into()),
                 ssh_auth_sock: None,
+                vars: None,
             }),
             process,
         );
@@ -205,6 +312,50 @@ mod tests {
             Some("/private/tmp/launchd/Listeners"),
             "login shell sem agente não apaga o agente do processo"
         );
+    }
+
+    /// Env grande (> 64 KB, mais que o buffer do pipe) não trava a leitura.
+    /// Quatro variáveis de 50 KB, não uma de 200 KB: no Linux uma única
+    /// string de env acima de `MAX_ARG_STRLEN` (128 KB) faz o exec do `env`
+    /// falhar com E2BIG.
+    #[cfg(unix)]
+    #[test]
+    fn env_grande_nao_trava_o_login_shell() {
+        let dir = tempfile::tempdir().unwrap();
+        let shell = fake_login_shell(
+            dir.path(),
+            "BIG=$(head -c 50000 /dev/zero | tr '\\0' x)\n\
+             export BIG1=$BIG BIG2=$BIG BIG3=$BIG BIG4=$BIG\n\
+             unset BIG\n\
+             eval \"$2\"",
+        );
+        let env = resolve_login_env_with(&shell, Duration::from_secs(5)).expect("resolveu");
+        let vars: std::collections::HashMap<_, _> = env.vars.expect("env").into_iter().collect();
+        for name in ["BIG1", "BIG2", "BIG3", "BIG4"] {
+            assert_eq!(vars[name].len(), 50_000, "{name}");
+        }
+    }
+
+    /// O spawn do pane nunca espera: nem uma resolução em andamento (aqui,
+    /// o lock segurado pelo teste), nem o `$SHELL -lic`.
+    #[test]
+    fn agent_path_if_resolved_never_waits() {
+        let held = RESOLVING.lock().unwrap_or_else(|e| e.into_inner());
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(agent_path_if_resolved());
+        });
+        let answered = rx.recv_timeout(Duration::from_millis(500));
+        drop(held);
+        assert!(answered.is_ok(), "agent_path_if_resolved esperou");
+    }
+
+    #[test]
+    fn falha_nao_fica_em_cache_mas_espera_um_pouco_para_tentar_de_novo() {
+        let now = Instant::now();
+        assert!(should_retry(None, now));
+        assert!(!should_retry(Some(now), now + Duration::from_secs(5)));
+        assert!(should_retry(Some(now), now + RETRY_AFTER));
     }
 
     #[test]

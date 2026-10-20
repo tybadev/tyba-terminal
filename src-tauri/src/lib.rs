@@ -345,7 +345,6 @@ fn install_screen_observers(
                     &observed_sessions,
                     &observed_store,
                     id,
-                    true,
                 );
             }
             #[cfg(not(any(target_os = "linux", target_os = "macos")))]
@@ -591,14 +590,8 @@ fn handle_plugin_event(
                 );
             });
         }
-        agent::claude_plugin::PluginSignal::Settled { approved } => {
-            agent::session::plugin_ask_settled(
-                app,
-                &state.sessions,
-                &state.store,
-                session,
-                approved,
-            );
+        agent::claude_plugin::PluginSignal::Settled => {
+            agent::session::plugin_ask_settled(app, &state.sessions, &state.store, session);
         }
         agent::claude_plugin::PluginSignal::None => {}
     }
@@ -1202,6 +1195,14 @@ fn teardown_agent_session(app: &AppHandle, state: &AppState, id: SessionId) {
             "expired",
             request.requested_at_ms,
         );
+    }
+    // Pedido do plugin (claude cru) ainda aberto: fecha sem veredito e tira
+    // a marca do pane — o plugin não sabe se foi aprovado.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    if let Some(Some((row, key))) = agent::claude_plugin::take_plugin_ask(id) {
+        if agent::session::settle_plugin_inferred(&state.store, id, &key) {
+            notifications::record(app, |n| n.native_prompt_settled(row));
+        }
     }
     // Prompt nativo do Claude ainda aberto quando a sessão acaba: a chamada
     // não rodou. Fecha como negado (deduzido) em vez de deixar `pending` para
@@ -6786,39 +6787,6 @@ fn user_config_path(state: State<'_, AppState>) -> Option<String> {
         .map(|p| p.to_string_lossy().into_owned())
 }
 
-/// Pastas extras que a jaula dos agentes deixa ler (`[sandbox] read_allow`),
-/// para a seção Segurança mostrar. Só leitura: afrouxar a jaula é no arquivo,
-/// nunca num clique.
-#[derive(serde::Serialize)]
-struct SandboxOverview {
-    read_allow: Vec<String>,
-    error: Option<String>,
-}
-
-#[tauri::command]
-fn sandbox_overview() -> SandboxOverview {
-    let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) else {
-        return SandboxOverview {
-            read_allow: Vec::new(),
-            error: Some("HOME indisponível".into()),
-        };
-    };
-    match user_config::load(&home) {
-        Ok(config) => SandboxOverview {
-            read_allow: config
-                .sandbox_read_allow
-                .iter()
-                .map(|p| p.to_string_lossy().into_owned())
-                .collect(),
-            error: None,
-        },
-        Err(e) => SandboxOverview {
-            read_allow: Vec::new(),
-            error: Some(e),
-        },
-    }
-}
-
 /// "▶ ouvir" nas Notificações: toca o som escolhido uma vez (só macOS, só os
 /// sons de `MAC_SOUNDS`).
 ///
@@ -7493,6 +7461,9 @@ struct AgentConfigInfo {
     hash: String,
     default_agent: Option<String>,
     env_allow: Vec<String>,
+    /// Os snippets do repo (`nome — comando`): entram na paleta do dono só
+    /// depois do consentimento, e o diálogo mostra o que eles rodam.
+    snippets: Vec<String>,
     consent: Option<bool>,
 }
 
@@ -7547,6 +7518,11 @@ async fn agent_repo_config(
             hash,
             default_agent: config.default_agent,
             env_allow: config.env_allow,
+            snippets: config
+                .snippets
+                .iter()
+                .map(|s| format!("{} — {}", s.name, s.command))
+                .collect(),
             consent,
         }))
     })
@@ -9668,7 +9644,6 @@ pub fn run() {
             docker_open_compose_file,
             open_view_tab,
             user_config_path,
-            sandbox_overview,
             preview_notify_sound,
             open_notification_settings,
             splash::splash_done,

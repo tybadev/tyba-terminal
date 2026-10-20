@@ -1,10 +1,12 @@
 import { describe, expect, test } from "bun:test";
 
-import { visibleAsk } from "./asking";
+import { askingText, visibleAsk } from "./asking";
 
 const ask = (session_id: string) => ({
   session_id,
-  body: `O Claude está pedindo algo · ${session_id}`,
+  agent: "Claude",
+  project: "api" as string | null,
+  branch: "feat/x" as string | null,
 });
 
 describe("card de pedido dentro do app", () => {
@@ -21,5 +23,20 @@ describe("card de pedido dentro do app", () => {
 
   test("sessão que já não existe não ganha card", () => {
     expect(visibleAsk([ask("x"), ask("b")], null, known)?.session_id).toBe("b");
+  });
+});
+
+describe("texto do card", () => {
+  const t = (key: string, params?: Record<string, string>) =>
+    `${key}(${params?.agent ?? ""})`;
+
+  test("agente, projeto e branch, separados por ·", () => {
+    expect(askingText(ask("a"), t)).toBe("askingBody(Claude) · api · feat/x");
+  });
+
+  test("sem branch nem projeto, só o agente", () => {
+    expect(askingText({ ...ask("a"), project: null, branch: null }, t)).toBe(
+      "askingBody(Claude)",
+    );
   });
 });

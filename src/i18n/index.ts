@@ -223,7 +223,8 @@ const resources = {
       launchAddTabShort: "aba",
       launchPickPaneHint: "clique num pane para escolher o que roda nele",
       launchPane: "Pane",
-      launchAgentRunsHint: "o claude sobe livre, como o digitado: a permissão é do prompt dele. O codex segue com o próprio sandbox e o gate do TYBA.",
+      launchAgentRunsHint:
+        "claude e codex sobem livres, como o digitado: a permissão é do prompt do próprio agente (no codex, também o sandbox dele). O TYBA observa e recusa push para main/master e merge de PR.",
       launchSlotModel: "Modelo",
       launchModelDefault: "Padrão",
       launchSlotCommand: "Comando",
@@ -290,8 +291,6 @@ const resources = {
       settingsCommandLine: "Linha de comando",
       shortcutsClickToChange: "clique num atalho e aperte o novo",
       securityFixedNote: "não se desligam",
-      securityReadAllowCount_one: "{{count}} pasta extra",
-      securityReadAllowCount_other: "{{count}} pastas extras",
       aboutDiagnostics: "Diagnóstico",
       aboutUpToDateShort: "está em dia",
       historyClearHint: "Apaga tudo, de todos os repositórios.",
@@ -303,26 +302,29 @@ const resources = {
       claudePluginInstallShort: "Instalar",
       claudePluginUnavailableShort: "claude não encontrado",
       settingsSecurity: "Segurança",
-      settingsSecurityHint: "O que protege a sua máquina dos agentes — e o que não se desliga.",
-      settingsSecurityShort: "regras fixas, jaula",
+      settingsSecurityHint: "O que protege a sua máquina — e o que não se desliga.",
+      settingsSecurityShort: "regras fixas, agente livre",
       securityFixed: "Regras fixas",
       securityAlwaysOn: "sempre",
-      securityRuleRed: "Ações vermelhas sempre pedem você",
-      securityRuleRedHint: "git push, gh pr create, sudo, rede, escrita fora do worktree e rm -rf nunca rodam sozinhos — nem com \"sempre permitir\".",
-      securityRuleMain: "Push para main/master é recusado",
-      securityRuleMainHint: "Sessão de agente não empurra para a branch principal. O core recusa, sempre.",
-      securityRuleEnv: "Env por allowlist",
-      securityRuleEnvHint: "Agentes recebem só as variáveis que o repositório permite, nunca o env inteiro do seu shell.",
+      securityRuleMain: "Push para main/master e merge de PR são recusados",
+      securityRuleMainHint:
+        "Agente nenhum empurra para a branch principal nem mergeia PR: um hook pre-push do TYBA recusa o push para main/master no próprio git, venha o comando de onde vier, e merge e aprovação de PR são recusados antes de rodar. Seus hooks do git continuam rodando.",
       securityRuleSecrets: "Segredos redigidos antes de gravar",
-      securityRuleSecretsHint: "Chaves AWS, JWT e tokens sk-… saem do histórico e do scrollback antes de ir para o disco.",
+      securityRuleSecretsHint: "Chaves AWS, tokens sk-…, do GitHub e do Slack, senha em URL e chave privada saem do histórico e dos blocos antes de ir para o disco.",
       securityRuleKill: "Encerrar mata o grupo inteiro",
       securityRuleKillHint: "Fechar uma sessão encerra todos os processos dela, não só o primeiro.",
-      securityJail: "Jaula dos agentes",
-      securityReadAllow: "Pastas extras de leitura",
-      securityReadAllowHint: "O que a jaula deixa o agente ler além do repositório. Edita-se no config.toml ([sandbox] read_allow): afrouxar a jaula nunca é um clique.",
-      securityReadAllowNone: "Nenhuma — o agente só lê o repositório e o que ele precisa para rodar.",
+      securityAgent: "Como o agente roda",
+      securityRuleFree: "O agente roda como no seu terminal",
+      securityRuleFreeHint:
+        "Claude e Codex rodam com as suas pastas e as permissões deles: digitados no pane, com o env do shell do pane; abertos pelo TYBA, com o env do seu shell de login. Quem pede permissão é o próprio agente, no prompt dele. O TYBA observa e avisa.",
+      securityFreeChip: "agente livre",
+      securityRuleAsk: "Pedido de permissão vira aviso, nunca aprovação",
+      securityRuleAskHint: "Agente pedindo algo fora da sua vista: aviso do sistema e um card no TYBA com “Ir”. Nada se aprova pelo aviso — a resposta é no prompt do agente.",
+      securityLater:
+        "Jaula do TYBA, pastas extras de leitura e env por allowlist ficam para um modo autônomo, depois do 2.0. O [sandbox] read_allow do config hoje só vale para a jaula do LSP.",
       securityRepo: "Por repositório",
-      securityRepoHint: "Env permitido e agente padrão vêm do .tyba/config.toml de cada repositório, e só valem depois que você consente na primeira vez que o TYBA o encontra.",
+      securityRepoHint:
+        "O agente padrão e os snippets vêm do <file>.tyba/config.toml</file> de cada repositório, e só valem depois que você consente na primeira vez que o TYBA o encontra.",
       settingsSearch: "buscar em todas as seções",
       settingsSearchResults_one: "{{count}} resultado",
       settingsSearchResults_other: "{{count}} resultados",
@@ -683,7 +685,7 @@ const resources = {
       sshIntegrationEphemeral:
         "Sessão integrada, sem persistência: o servidor não tem tmux, e o que está aqui morre se a conexão cair ou se você fechar o TYBA.",
       sshRemoteAgentNotice:
-        "{{binary}} está rodando no servidor — sem jaula e sem inbox de aprovações.",
+        "{{binary}} está rodando no servidor — sem o guarda-corpo do TYBA (push na main, merge de PR) e sem observação: nenhum aviso de pedido, histórico ou monitor.",
       shimV2IntroToast:
         "Agora o TYBA acompanha o claude que você roda aqui — monitor, histórico e notificação —, sem jaula e sem perguntar nada. O guarda-corpo recusa push na main e merge de PR.",
       agentResumeNotice:
@@ -1046,9 +1048,10 @@ const resources = {
         "Binário `codex` não encontrado no PATH — instale o Codex CLI",
       worktreeAgentPrompt: "Prompt inicial (opcional)",
       worktreeAgentPromptPlaceholder: "O que o agente deve fazer primeiro?",
-      agentConsentTitle: "Este repo pede variáveis do seu ambiente",
+      agentConsentTitle: "Este repo tem um .tyba/config.toml",
       agentConsentBody:
-        "O .tyba/config.toml deste repo pede que o agente receba estas variáveis do SEU ambiente. Sem permitir, a sessão sobe só com o baseline padrão.",
+        "Ele escolhe o agente padrão e põe snippets — comandos — na sua paleta. Só valem depois que você permitir.",
+      agentConsentDefaultAgent: "agente padrão: {{agent}}",
       agentConsentAllow: "Permitir",
       agentConsentSkip: "Agora não",
       agentReadyTimeoutTitle: "O prompt inicial não foi enviado",
@@ -1063,7 +1066,7 @@ const resources = {
       sessionFailed: "falhou",
       notifyRequest: "Avisar quando um agente precisar de você",
       notifyRequestHint:
-        "Aprovação pendente ou pergunta aberta. Cala só quando você já está vendo a sessão.",
+        "Pedido de permissão do agente ou pergunta aberta. Cala só quando você já está vendo a sessão.",
       notifyDone: "Avisar quando um agente terminar",
       notifyDoneHint: "Fim de turno. Cala só quando você já está vendo a sessão.",
       notifyObservedRequest: "Avisar por palpite da tela",
@@ -1091,7 +1094,9 @@ const resources = {
       nextAttentionSessionNav: "Próximo agente esperando",
       sessionTurnEndedTitle: "Concluído",
       askingGo: "Ir",
-      askingHelp: "Responda no prompt do Claude.",
+      askingBody: "O {{agent}} está pedindo algo",
+      askingHelp:
+        "Responda no prompt do {{agent}}.",
       sessionFailedTitle: "Falhou",
       openSessionShortcut: "abrir sessão",
       dismiss: "Dispensar",
@@ -1227,7 +1232,7 @@ const resources = {
       notifGlyphDone: "concluído",
       notifHowItWorks: "Como funciona",
       notifHowItWorksBody:
-        "Aqui fica, por 7 dias, o que pediu sua atenção: pedidos de aprovação, erros, agentes que terminaram e avisos de limite. Ação vermelha só se aprova na sessão. O pedido amarelo do Claude se decide no próprio terminal e entra aqui com a decisão deduzida: aprovado quando o comando rodou, negado quando o turno seguiu sem ele. Por ser deduzido, ele não conta no sino.",
+        "Aqui fica, por 7 dias, o que pediu sua atenção: pedidos de permissão, erros, agentes que terminaram e avisos de limite. O pedido do agente se decide no prompt dele e entra aqui com a decisão deduzida: aprovado quando o comando rodou, negado quando o turno seguiu sem ele. O do claude aberto fora do TYBA (pelo plugin) fecha sem decisão — o plugin não sabe o que você respondeu. Por ser deduzido, nada disso conta no sino.",
       gitLogCreateBranch: "Criar branch aqui",
       gitLogCreateBranchTitle: "Nova branch em {{sha}}",
       gitLogCreateBranchPlaceholder: "nome-da-branch",
@@ -1297,7 +1302,8 @@ const resources = {
       prReviewConfirm_comment: "Publicar comentário no PR #{{number}}?",
       prReviewConfirm_approve: "Aprovar o PR #{{number}}?",
       prReviewConfirm_request_changes: "Pedir mudanças no PR #{{number}}?",
-      prReviewNote: "Revisar e mergear publicam no GitHub como você e pedem confirmação. Agentes nunca aprovam nem mergeiam.",
+      prReviewNote:
+        "Revisar e mergear publicam no GitHub como você e pedem confirmação. Agentes não aprovam nem mergeiam: o TYBA recusa.",
       prMergeStrategy: "Estratégia",
       prMergeSquash: "Squash e merge",
       prMergeCommit: "Merge commit",
@@ -1359,7 +1365,8 @@ const resources = {
       gitRefreshFailed: "não deu para atualizar",
       gitRefreshRetry: "tentar de novo",
       prRecentMerged: "Mesclados recentemente",
-      prListNote: "PRs abertos por sessão de agente levam a marca do agente · criar PR pede sua aprovação toda vez",
+      prListNote:
+        "PRs abertos por sessão de agente levam a marca do agente · quem pergunta antes de criar PR é o prompt do próprio agente · aprovar e mergear por agente são recusados",
       prListNotePush: "push para main é recusado",
       prReviewedApproved: "aprovou",
       prReviewedChanges: "pediu mudanças",
@@ -2063,6 +2070,8 @@ const resources = {
         "Sua pasta pessoal (~) foi liberada só para leitura para o agente — o arquivo .claude.json pode parar de salvar.",
       sandboxWarningFilhoDesconhecidoEmClaude:
         "O TYBA encontrou item(ns) novo(s) em ~/.claude que ainda não conhece: {{detail}}. Ficaram graváveis por padrão.",
+      sandboxWarningHooksGitIndisponiveis:
+        "O TYBA não conseguiu gravar a pasta de hooks git ({{detail}}): esta sessão de agente subiu sem o hook que recusa push para main/master.",
       authAlertNotLoggedInPreflight:
         "Esta sessão de agente não tem login utilizável. Rode `/login` na sessão — ou clique no aviso de navegador que vai aparecer.",
       authAlertNotLoggedInRuntime:
@@ -2288,7 +2297,8 @@ const resources = {
       launchAddTabShort: "tab",
       launchPickPaneHint: "click a pane to choose what runs in it",
       launchPane: "Pane",
-      launchAgentRunsHint: "claude runs free, like the typed one: permission is its own prompt. codex keeps its own sandbox and the TYBA gate.",
+      launchAgentRunsHint:
+        "claude and codex run free, like the typed ones: permission is the agent's own prompt (for codex, its own sandbox too). TYBA watches and refuses push to main/master and PR merge.",
       launchSlotModel: "Model",
       launchModelDefault: "Default",
       launchSlotCommand: "Command",
@@ -2355,8 +2365,6 @@ const resources = {
       settingsCommandLine: "Command line",
       shortcutsClickToChange: "click a shortcut and press the new one",
       securityFixedNote: "can't be turned off",
-      securityReadAllowCount_one: "{{count}} extra folder",
-      securityReadAllowCount_other: "{{count}} extra folders",
       aboutDiagnostics: "Diagnostics",
       aboutUpToDateShort: "up to date",
       historyClearHint: "Deletes everything, from every repository.",
@@ -2368,26 +2376,29 @@ const resources = {
       claudePluginInstallShort: "Install",
       claudePluginUnavailableShort: "claude not found",
       settingsSecurity: "Security",
-      settingsSecurityHint: "What protects your machine from agents — and what can't be turned off.",
-      settingsSecurityShort: "fixed rules, jail",
+      settingsSecurityHint: "What protects your machine — and what can't be turned off.",
+      settingsSecurityShort: "fixed rules, free agent",
       securityFixed: "Fixed rules",
       securityAlwaysOn: "always",
-      securityRuleRed: "Red actions always ask you",
-      securityRuleRedHint: "git push, gh pr create, sudo, network, writes outside the worktree and rm -rf never run on their own — not even with \"always allow\".",
-      securityRuleMain: "Push to main/master is refused",
-      securityRuleMainHint: "An agent session never pushes to the main branch. The core refuses, always.",
-      securityRuleEnv: "Env by allowlist",
-      securityRuleEnvHint: "Agents get only the variables the repository allows, never your shell's whole env.",
+      securityRuleMain: "Push to main/master and PR merge are refused",
+      securityRuleMainHint:
+        "No agent pushes to the main branch or merges a PR: a TYBA pre-push hook refuses the push to main/master inside git itself, wherever the command comes from, and PR merge and approval are refused before they run. Your own git hooks keep running.",
       securityRuleSecrets: "Secrets redacted before saving",
-      securityRuleSecretsHint: "AWS keys, JWTs and sk-… tokens are stripped from history and scrollback before they hit disk.",
+      securityRuleSecretsHint: "AWS keys, sk-… tokens, GitHub and Slack tokens, passwords in URLs and private keys are stripped from history and blocks before they hit disk.",
       securityRuleKill: "Closing kills the whole group",
       securityRuleKillHint: "Closing a session ends all of its processes, not just the first one.",
-      securityJail: "Agent jail",
-      securityReadAllow: "Extra read folders",
-      securityReadAllowHint: "What the jail lets the agent read beyond the repository. Edited in config.toml ([sandbox] read_allow): loosening the jail is never one click.",
-      securityReadAllowNone: "None — the agent only reads the repository and what it needs to run.",
+      securityAgent: "How the agent runs",
+      securityRuleFree: "The agent runs like in your terminal",
+      securityRuleFreeHint:
+        "Claude and Codex run with your folders and their own permissions: typed in the pane, with the pane's shell env; opened by TYBA, with your login shell's env. The agent itself asks for permission, in its own prompt. TYBA watches and notifies.",
+      securityFreeChip: "free agent",
+      securityRuleAsk: "A permission request becomes a notice, never an approval",
+      securityRuleAskHint: "An agent asking for something out of your sight: a system notice and a card in TYBA with “Go”. Nothing is approved from the notice — the answer is in the agent's prompt.",
+      securityLater:
+        "TYBA's jail, extra read folders and env by allowlist are left for an autonomous mode, after 2.0. The config's [sandbox] read_allow only applies to the LSP jail today.",
       securityRepo: "Per repository",
-      securityRepoHint: "Allowed env and default agent come from each repository's .tyba/config.toml, and only apply after you consent the first time TYBA finds it.",
+      securityRepoHint:
+        "The default agent and snippets come from each repository's <file>.tyba/config.toml</file>, and only apply after you consent the first time TYBA finds it.",
       settingsSearch: "search all sections",
       settingsSearchResults_one: "{{count}} result",
       settingsSearchResults_other: "{{count}} results",
@@ -2749,7 +2760,7 @@ const resources = {
       sshIntegrationEphemeral:
         "Integrated session, no persistence: the server has no tmux, so what is here dies if the connection drops or you close TYBA.",
       sshRemoteAgentNotice:
-        "{{binary}} is running on the server — no jail, no approval inbox.",
+        "{{binary}} is running on the server — without the TYBA guard rail (push to main, PR merge) and unobserved: no request notice, history or monitor.",
       shimV2IntroToast:
         "TYBA now follows the claude you run here — monitor, history and notifications — with no jail and no prompts. The guard rail refuses pushes to main and PR merges.",
       agentResumeNotice:
@@ -3110,9 +3121,10 @@ const resources = {
         "`codex` binary not found in PATH — install the Codex CLI",
       worktreeAgentPrompt: "Initial prompt (optional)",
       worktreeAgentPromptPlaceholder: "What should the agent do first?",
-      agentConsentTitle: "This repo asks for variables from your environment",
+      agentConsentTitle: "This repo has a .tyba/config.toml",
       agentConsentBody:
-        "This repo's .tyba/config.toml asks for the agent to receive these variables from YOUR environment. Without allowing, the session starts with the default baseline only.",
+        "It picks the default agent and adds snippets — commands — to your palette. They only apply after you allow them.",
+      agentConsentDefaultAgent: "default agent: {{agent}}",
       agentConsentAllow: "Allow",
       agentConsentSkip: "Not now",
       agentReadyTimeoutTitle: "The initial prompt wasn't sent",
@@ -3127,7 +3139,7 @@ const resources = {
       sessionFailed: "failed",
       notifyRequest: "Notify when an agent needs you",
       notifyRequestHint:
-        "Pending approval or open question. Silent only while you are viewing the session.",
+        "The agent's permission request or an open question. Silent only while you are viewing the session.",
       notifyDone: "Notify when an agent finishes",
       notifyDoneHint: "End of turn. Silent only while you are viewing the session.",
       notifyObservedRequest: "Notify on a screen guess",
@@ -3155,7 +3167,9 @@ const resources = {
       nextAttentionSessionNav: "Next agent waiting",
       sessionTurnEndedTitle: "Finished",
       askingGo: "Go",
-      askingHelp: "Answer in Claude's prompt.",
+      askingBody: "{{agent}} is asking for something",
+      askingHelp:
+        "Answer in {{agent}}'s prompt.",
       sessionFailedTitle: "Failed",
       openSessionShortcut: "open session",
       dismiss: "Dismiss",
@@ -3291,7 +3305,7 @@ const resources = {
       notifGlyphDone: "done",
       notifHowItWorks: "How it works",
       notifHowItWorksBody:
-        "What needed your attention stays here for 7 days: approval requests, errors, agents that finished and usage limit warnings. A red action is only approved in its session. Claude's yellow requests are decided in the terminal itself and show up here with an inferred decision: approved when the command ran, denied when the turn moved on without it. Since it is inferred, it does not count on the bell.",
+        "What needed your attention stays here for 7 days: permission requests, errors, agents that finished and usage limit warnings. The agent's request is decided in its own prompt and shows up here with an inferred decision: approved when the command ran, denied when the turn moved on without it. A claude opened outside TYBA (through the plugin) closes without a decision — the plugin can't tell what you answered. Since it is inferred, none of it counts on the bell.",
       gitLogCreateBranch: "Create branch here",
       gitLogCreateBranchTitle: "New branch at {{sha}}",
       gitLogCreateBranchPlaceholder: "branch-name",
@@ -3361,7 +3375,8 @@ const resources = {
       prReviewConfirm_comment: "Post a comment on PR #{{number}}?",
       prReviewConfirm_approve: "Approve PR #{{number}}?",
       prReviewConfirm_request_changes: "Request changes on PR #{{number}}?",
-      prReviewNote: "Reviewing and merging publish on GitHub as you and ask for confirmation. Agents never approve or merge.",
+      prReviewNote:
+        "Reviewing and merging publish on GitHub as you and ask for confirmation. Agents don't approve or merge: TYBA refuses.",
       prMergeStrategy: "Strategy",
       prMergeSquash: "Squash and merge",
       prMergeCommit: "Merge commit",
@@ -3423,7 +3438,8 @@ const resources = {
       gitRefreshFailed: "couldn't refresh",
       gitRefreshRetry: "try again",
       prRecentMerged: "Recently merged",
-      prListNote: "PRs opened by an agent session carry the agent's tag · opening a PR asks for your approval every time",
+      prListNote:
+        "PRs opened by an agent session carry the agent's tag · the agent's own prompt asks before opening a PR · approving and merging by an agent are refused",
       prListNotePush: "push to main is refused",
       prReviewedApproved: "approved",
       prReviewedChanges: "requested changes",
@@ -4123,6 +4139,8 @@ const resources = {
         "Your home folder (~) was granted read-only to the agent — .claude.json may stop saving.",
       sandboxWarningFilhoDesconhecidoEmClaude:
         "TYBA found new item(s) in ~/.claude it doesn't recognize yet: {{detail}}. They stayed writable by default.",
+      sandboxWarningHooksGitIndisponiveis:
+        "TYBA couldn't write its git hooks folder ({{detail}}): this agent session started without the hook that refuses push to main/master.",
       authAlertNotLoggedInPreflight:
         "This agent session has no usable login. Run `/login` in the session — or click the browser prompt that's about to show up.",
       authAlertNotLoggedInRuntime:

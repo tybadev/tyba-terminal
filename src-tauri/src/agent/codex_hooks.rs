@@ -12,6 +12,7 @@ const OBSERVE_TIMEOUT_SECS: u64 = 10;
 /// `SessionEnd` e `Interrupt` só aceitam de 1 a 3 s (doc do Codex).
 const SHORT_TIMEOUT_SECS: u64 = 3;
 
+#[derive(Clone, Copy)]
 struct HookSpec {
     event: &'static str,
     /// O nome do evento em snake_case: é o `event_name` da identidade que o
@@ -72,12 +73,38 @@ const SPECS: [HookSpec; 12] = [
     observe("Interrupt", "interrupt", SHORT_TIMEOUT_SECS),
 ];
 
+/// Agente livre: com o hook do observador (`_hook --observe`) nada espera o
+/// TYBA — todo evento tem teto curto e nenhum anuncia "Aguardando aprovação no
+/// TYBA…". O `PreToolUse` só leva o guarda-corpo; a aprovação é do Codex.
+fn specs_for(hook_cmd: &str) -> Vec<HookSpec> {
+    let observing = hook_cmd.ends_with(crate::hook_ipc::OBSERVE_FLAG)
+        || hook_cmd.ends_with(crate::hook_ipc::GUARD_ONLY_FLAG);
+    SPECS
+        .iter()
+        .map(|spec| {
+            if observing && spec.status_message.is_some() {
+                HookSpec {
+                    timeout: OBSERVE_TIMEOUT_SECS,
+                    status_message: None,
+                    ..*spec
+                }
+            } else {
+                *spec
+            }
+        })
+        .collect()
+}
+
 pub fn codex_config_overrides(hook_cmd: &str) -> Vec<String> {
-    let mut overrides: Vec<String> = SPECS
+    let specs = specs_for(hook_cmd);
+    let mut overrides: Vec<String> = specs
         .iter()
         .map(|spec| format!("hooks.{}={}", spec.event, event_groups_toml(spec, hook_cmd)))
         .collect();
-    overrides.push(format!("hooks.state={}", trust_state_toml(hook_cmd)));
+    overrides.push(format!(
+        "hooks.state={}",
+        trust_state_toml(&specs, hook_cmd)
+    ));
     overrides
 }
 
@@ -98,8 +125,8 @@ fn event_groups_toml(spec: &HookSpec, hook_cmd: &str) -> String {
     format!("[{group}]")
 }
 
-fn trust_state_toml(hook_cmd: &str) -> String {
-    let entries: Vec<String> = SPECS
+fn trust_state_toml(specs: &[HookSpec], hook_cmd: &str) -> String {
+    let entries: Vec<String> = specs
         .iter()
         .map(|spec| {
             format!(
@@ -146,7 +173,7 @@ fn trusted_hash(spec: &HookSpec, hook_cmd: &str) -> String {
     format!("sha256:{hex}")
 }
 
-fn toml_string(text: &str) -> String {
+pub(crate) fn toml_string(text: &str) -> String {
     let mut out = String::with_capacity(text.len() + 2);
     out.push('"');
     for c in text.chars() {
@@ -169,6 +196,16 @@ fn toml_string(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Codex livre: nenhum hook espera o TYBA nem diz que espera.
+    #[test]
+    fn observer_hooks_never_wait_for_tyba() {
+        let overrides = codex_config_overrides("'/usr/bin/tyba' _hook --observe").join("\n");
+        assert!(!overrides.contains(APPROVAL_STATUS_MESSAGE));
+        assert!(!overrides.contains(&format!("timeout={APPROVAL_TIMEOUT_SECS}")));
+        let gated = codex_config_overrides("'/usr/bin/tyba' _hook").join("\n");
+        assert!(gated.contains(APPROVAL_STATUS_MESSAGE));
+    }
 
     const CMD: &str = "'/usr/bin/tyba' _hook";
 

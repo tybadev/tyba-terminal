@@ -31,7 +31,7 @@ import {
 import {
   needsConsentPrompt,
   applyConsentDecision,
-  runnerFromDefault,
+  repoDefaultRunner,
   type AgentRunnerId,
 } from "../lib/agentSession";
 import { AgentConsentDialog } from "./AgentConsentDialog";
@@ -96,7 +96,9 @@ export function WorktreeCreateDialog({ dir, onClose, onCreate }: Props) {
     void agentRepoConfig(dir)
       .then(async (config) => {
         setAgentConfig(config);
-        const preferred = runnerFromDefault(config?.default_agent);
+        // O agente padrão do repo só vale depois do consentimento: antes
+        // dele, o runner inicial é o padrão do app.
+        const preferred = repoDefaultRunner(config);
         if (preferred === "codex" && (await codexReady)) setRunner("codex");
       })
       .catch(() => setAgentConfig(null));
@@ -285,6 +287,7 @@ export function WorktreeCreateDialog({ dir, onClose, onCreate }: Props) {
         config={consentOpen ? agentConfig : null}
         onAllow={() => void decideConsent(true)}
         onSkip={() => void decideConsent(false)}
+        onCancel={() => setConsentOpen(false)}
       />
     </Dialog>
   );

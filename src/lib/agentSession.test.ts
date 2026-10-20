@@ -5,14 +5,16 @@ import {
   applyConsentDecision,
   buildAgentSessionOpts,
   needsConsentPrompt,
+  repoDefaultRunner,
   runnerFromCommand,
   runnerFromDefault,
 } from "./agentSession";
 
 const config = (over: Partial<AgentRepoConfig> = {}): AgentRepoConfig => ({
   hash: "abc123",
-  default_agent: null,
-  env_allow: ["DATABASE_URL"],
+  default_agent: "codex",
+  env_allow: [],
+  snippets: ["test — cargo test"],
   consent: null,
   ...over,
 });
@@ -22,25 +24,47 @@ describe("needsConsentPrompt", () => {
     expect(needsConsentPrompt(null)).toBe(false);
   });
 
-  test("config com consent true não pede de novo", () => {
+  test("já consentido não pede de novo", () => {
     expect(needsConsentPrompt(config({ consent: true }))).toBe(false);
   });
 
-  test("config com consent null ou false pede consent", () => {
-    expect(needsConsentPrompt(config({ consent: null }))).toBe(true);
+  test("agente padrão ou snippets pedem consentimento", () => {
+    expect(needsConsentPrompt(config())).toBe(true);
+    expect(needsConsentPrompt(config({ default_agent: null }))).toBe(true);
+    expect(needsConsentPrompt(config({ snippets: [] }))).toBe(true);
     expect(needsConsentPrompt(config({ consent: false }))).toBe(true);
+  });
+
+  test("só env (que não vale mais) não pede nada", () => {
+    expect(
+      needsConsentPrompt(
+        config({ default_agent: null, snippets: [], env_allow: ["DB_URL"] }),
+      ),
+    ).toBe(false);
+  });
+});
+
+describe("repoDefaultRunner", () => {
+  test("sem consentimento, o agente do repo não vale", () => {
+    expect(repoDefaultRunner(config({ consent: null }))).toBeNull();
+    expect(repoDefaultRunner(config({ consent: false }))).toBeNull();
+    expect(repoDefaultRunner(null)).toBeNull();
+  });
+
+  test("consentido, vale", () => {
+    expect(repoDefaultRunner(config({ consent: true }))).toBe("codex");
   });
 });
 
 describe("applyConsentDecision", () => {
   test("permitir marca consent true e pede persistência", () => {
-    const outcome = applyConsentDecision(config({ consent: null }), "allow");
+    const outcome = applyConsentDecision(config(), "allow");
     expect(outcome.persist).toBe(true);
     expect(outcome.config.consent).toBe(true);
   });
 
-  test("agora não segue sem persistir e sem marcar consent true", () => {
-    const outcome = applyConsentDecision(config({ consent: null }), "skip");
+  test("agora não segue sem persistir", () => {
+    const outcome = applyConsentDecision(config(), "skip");
     expect(outcome.persist).toBe(false);
     expect(outcome.config.consent).toBe(false);
   });

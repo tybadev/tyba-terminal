@@ -15,11 +15,11 @@ Seu ambiente, tudo conectado. Terminal opensource orientado a agentes de IA: o a
 ## Princípios de arquitetura (não negociáveis)
 
 1. **Todo estado vive no Rust core.** O webview é burro: renderiza o que recebe via eventos e emite intenções via commands. Nenhuma lógica de sessão/git/status no lado React.
-2. **Spawn de processos de agente SEMPRE atrás da trait `Sandbox`.** O padrão é a implementação passthrough (agente livre); Seatbelt/bwrap ficam para um modo autônomo, se um dia fizer falta. Nunca `Command::new` cru espalhado no código para agentes.
+2. **Spawn de processos de agente SEMPRE atrás da trait `Sandbox`.** No caminho padrão (agente livre, digitado ou aberto pelo TYBA) a implementação é o passthrough; Seatbelt, bwrap e a jaula do Windows ficam para um modo autônomo futuro. Nunca `Command::new` cru espalhado no código para agentes.
 3. **PTY output com batching**: acumular chunks e flushar para o webview a cada ~8-16ms. Nunca um evento IPC por chunk.
-4. **Agente livre, TYBA observador.** Quem pede permissão é o próprio CLI do agente (prompt nativo do Claude Code / Codex), uma vez só; o TYBA não pergunta de novo nem empilha jaula. Observar nunca bloqueia o agente. Ver `docs/SECURITY.md`.
-5. **Guarda-corpo fixo:** `git push` para main/master e merge de PR (`gh pr merge`, `glab mr merge`) por agente são recusados — sem perguntar, hard-coded, não configurável.
-6. **Env do agente é o env do shell do pane**, como qualquer comando que o usuário digita. Env por allowlist só num modo autônomo.
+4. **Agente livre, TYBA observador.** Claude e codex — digitados no pane ou abertos pelo TYBA, em worktree ou não — rodam livres: quem pede permissão é o próprio CLI (prompt nativo do Claude Code; sandbox e aprovação do Codex), uma vez só. O TYBA não pergunta de novo, não abre card e não empilha jaula; observar nunca bloqueia o agente. Ver `docs/SECURITY.md`.
+5. **Guarda-corpo fixo, em todo SO:** push para main/master por agente é recusado por um hook `pre-push` do TYBA, que toda sessão de agente recebe por `core.hooksPath` no env e que encadeia os hooks do usuário; merge e aprovação de PR/MR (`gh pr merge`, `glab mr merge`, `gh pr review --approve` e o mesmo por API) e desligar o hook (`--no-verify`, `core.hooksPath`, `GIT_CONFIG_*`) são recusados por texto de comando — sem perguntar, hard-coded, não configurável.
+6. **Env do agente é o env do usuário:** o do shell do pane no agente digitado; o env completo do shell de login no agente que o TYBA abre. Jaula e env por allowlist só num modo autônomo futuro.
 7. **Diff de sessão contra base fixa**: `git diff <base_sha>..HEAD` dentro do worktree, com `base_sha` salvo na criação — é o base congelado que dá a semântica de three-dot (a sintaxe `..` é two-dot); nunca comparar com o estado atual da main.
 8. **Output de git sempre com `-z`, `--no-color` e `-c core.quotePath=false`.** Parsing NUL-separated.
 9. **Kill de sessão mata o process group inteiro** (`killpg`), não só o processo pai.

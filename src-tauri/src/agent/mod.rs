@@ -13,9 +13,12 @@ pub mod claude_plugin;
 pub mod channel_host;
 pub mod claude_settings;
 pub mod codex_hooks;
+pub mod codex_shim;
 pub mod conversation;
 pub mod credentials;
 pub mod disk_observer;
+pub mod git_hooks;
+pub mod guard_rail;
 pub mod hooks_settings;
 pub mod inherited_env;
 pub mod notify;
@@ -658,6 +661,17 @@ impl AgentRunner for CodexRunner {
             cmd.arg("--config");
             cmd.arg(over);
         }
+        // O hook pre-push do TYBA (`core.hooksPath` por `GIT_CONFIG_*`) também
+        // pelo `shell_environment_policy.set`, que o Codex aplica por último:
+        // com uma política restrita, o env sozinho não chega aos comandos dele
+        // (ou chega pela metade — `missing config key`).
+        for (key, value) in crate::agent::git_hooks::hook_vars(|k| env.get(k).cloned()) {
+            cmd.arg("--config");
+            cmd.arg(format!(
+                "shell_environment_policy.set.{key}={}",
+                codex_hooks::toml_string(&value)
+            ));
+        }
         cmd.cwd(worktree_path);
         cmd.env_clear();
         for (k, v) in env {
@@ -923,6 +937,38 @@ mod tests {
         assert!(matches!(CodexRunner.kind(), AgentRunnerKind::Codex));
         assert!(CodexRunner.supports_hooks());
         assert!(CodexRunner.needs_network());
+    }
+
+    #[test]
+    fn codex_command_carries_the_git_hook_through_its_env_policy() {
+        let mut env = HashMap::new();
+        crate::agent::git_hooks::with_hooks(&mut env, Path::new("/dados/git-hooks"));
+        let cmd = CodexRunner.build_command(Path::new("/wt"), &env, &hooks(), None, None);
+        let argv = argv_strings(&cmd);
+        let sets: Vec<&String> = argv
+            .iter()
+            .enumerate()
+            .filter(|(i, a)| {
+                *i > 0
+                    && argv[i - 1] == "--config"
+                    && a.starts_with("shell_environment_policy.set.")
+            })
+            .map(|(_, a)| a)
+            .collect();
+        for expected in [
+            "shell_environment_policy.set.GIT_CONFIG_COUNT=\"1\"",
+            "shell_environment_policy.set.GIT_CONFIG_KEY_0=\"core.hooksPath\"",
+            "shell_environment_policy.set.GIT_CONFIG_VALUE_0=\"/dados/git-hooks\"",
+            "shell_environment_policy.set.TYBA_GIT_CONFIG_BASE=\"0\"",
+        ] {
+            assert!(sets.iter().any(|s| *s == expected), "{expected}: {sets:?}");
+        }
+        // Sem o hook no env, nada disso.
+        let plain =
+            CodexRunner.build_command(Path::new("/wt"), &HashMap::new(), &hooks(), None, None);
+        assert!(!argv_strings(&plain)
+            .iter()
+            .any(|a| a.starts_with("shell_environment_policy")));
     }
 
     #[test]

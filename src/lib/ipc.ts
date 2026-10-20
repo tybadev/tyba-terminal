@@ -809,6 +809,8 @@ export interface AgentRepoConfig {
   hash: string;
   default_agent: string | null;
   env_allow: string[];
+  /** `nome — comando` de cada snippet do repo. */
+  snippets: string[];
   consent: boolean | null;
 }
 
@@ -854,7 +856,8 @@ export type SandboxWarningKind =
   | "CredencialSombreadaDepois"
   | "CredencialHostNaoGrava"
   | "HomeRoClaudeJsonNaoPersiste"
-  | "FilhoDesconhecidoEmClaude";
+  | "FilhoDesconhecidoEmClaude"
+  | "HooksGitIndisponiveis";
 
 export interface AgentSandboxWarningPayload {
   session_id: SessionId;
@@ -923,11 +926,14 @@ export const onAgentAlert = (
 
 /** Agente livre, fatia 5: um pedido de permissão em aberto no prompt do
  * agente. O core guarda um por sessão e manda a lista inteira, mais antigo
- * primeiro; o texto vem pronto ("O Claude está pedindo algo · projeto ·
- * branch"). Nada aqui aprova. */
+ * primeiro, com os campos; o texto é montado aqui, com i18n. Nada aqui
+ * aprova. */
 export interface AgentAsk {
   session_id: SessionId;
-  body: string;
+  /** "Claude", "Codex". */
+  agent: string;
+  project: string | null;
+  branch: string | null;
 }
 
 export const onAgentAsks = (
@@ -1039,12 +1045,6 @@ export const previewNotifySound = (name: string) =>
 /** Ajustes do Sistema → Notificações (macOS). */
 export const openNotificationSettings = () => invoke<void>("open_notification_settings");
 
-/** Pastas extras de leitura da jaula dos agentes (`[sandbox] read_allow`). */
-export interface SandboxOverview {
-  read_allow: string[];
-  error: string | null;
-}
-export const sandboxOverview = () => invoke<SandboxOverview>("sandbox_overview");
 
 /** Onde mora o `config.toml` do usuário; `null` se a pasta foi recusada. */
 export const userConfigPath = () => invoke<string | null>("user_config_path");

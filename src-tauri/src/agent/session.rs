@@ -254,7 +254,15 @@ pub(crate) fn notify_asking(
         branch.as_deref(),
     );
     let body = crate::session::redact::redact(&body).into_owned();
-    crate::agent::asking::record(app, id, body.clone());
+    crate::agent::asking::record(
+        app,
+        crate::agent::asking::Ask {
+            session_id: id,
+            agent: agent_display_name(runner),
+            project: project.clone(),
+            branch: branch.clone(),
+        },
+    );
     notify_native_shown(
         app,
         sessions,
@@ -282,6 +290,11 @@ pub(crate) fn plugin_asking(
     id: SessionId,
     summary: Option<String>,
 ) {
+    // O par `PermissionRequest` + `Notification` do mesmo prompt chega em
+    // duas threads: a checagem e a gravação ficam sob o mesmo lock, ou o
+    // histórico ganha duas linhas.
+    static RECORDING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let guard = RECORDING.lock().unwrap_or_else(|e| e.into_inner());
     if sessions
         .get(id)
         .is_some_and(|s| !crate::status::agent_events::is_native_prompt(&s.status))
@@ -308,42 +321,49 @@ pub(crate) fn plugin_asking(
     } else {
         crate::agent::claude_plugin::mark_plugin_ask_kept(id);
     }
+    drop(guard);
     crate::agent::claude_plugin::with_ask_slot(id, std::time::Instant::now(), || {
         notify_asking(app, sessions, store, &AgentRunnerKind::ClaudeCode, id)
     });
 }
 
-/// Claude cru (plugin): o pedido fechou. `approved` quando o claude seguiu
-/// trabalhando (a tela mostrou trabalho, ou o `Stop` — negar no prompt nativo
-/// não dispara `Stop`); negado quando a sessão recomeçou. É dedução, como a
-/// do caminho hospedado.
+/// Claude cru (plugin): o pedido fechou — o claude voltou a trabalhar (tela),
+/// o turno acabou (`Stop`) ou a sessão recomeçou. O plugin não tem sinal de
+/// aprovação nem de negativa (o claude que negou segue trabalhando no turno
+/// seguinte), então o pedido fecha SEM veredito: nunca conta como aprovado.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) fn plugin_ask_settled(
     app: &AppHandle,
     sessions: &SharedSessionManager,
     store: &Store,
     id: SessionId,
-    approved: bool,
 ) {
     let Some(inferred) = crate::agent::claude_plugin::take_plugin_ask(id) else {
         return;
     };
     sessions.leave_native_prompt(app, id);
-    let Some((row, key)) = inferred else {
-        return;
-    };
-    let session = id.to_string();
-    let now = crate::approvals::now_ms();
-    if approved {
-        if let Ok(Some(_)) = store.resolve_inferred_by_call_key(&session, &key, "approved", now) {
-            crate::notifications::record(app, |n| n.native_prompt_approved(row));
+    if let Some((row, key)) = inferred {
+        if settle_plugin_inferred(store, id, &key) {
+            crate::notifications::record(app, |n| n.native_prompt_settled(row));
         }
-    } else if store
-        .deny_pending_inferred_for_session(&session, now)
-        .is_ok_and(|n| n > 0)
-    {
-        crate::notifications::record(app, |n| n.native_prompts_denied(id));
     }
+}
+
+/// O veredito que o pedido do plugin grava no histórico ao fechar.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) const PLUGIN_SETTLED_DECISION: &str = "unknown";
+
+/// Fecha a linha deduzida do pedido do plugin sem veredito. `true` se fechou.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) fn settle_plugin_inferred(store: &Store, id: SessionId, key: &str) -> bool {
+    store
+        .resolve_inferred_by_call_key(
+            &id.to_string(),
+            key,
+            PLUGIN_SETTLED_DECISION,
+            crate::approvals::now_ms(),
+        )
+        .is_ok_and(|row| row.is_some())
 }
 
 /// O aviso do sistema, com a política já resolvida.
@@ -845,6 +865,11 @@ fn hook_route(runner: &AgentRunnerKind, hook_event_name: &str) -> HookRoute {
 /// decisão. O `PermissionRequest` do Claude já é só aviso (`NativePrompt`).
 fn session_route(runner: &AgentRunnerKind, hook_event_name: &str, observe_only: bool) -> HookRoute {
     match hook_route(runner, hook_event_name) {
+        // Codex livre: o `PermissionRequest` dele vira o mesmo aviso de
+        // pedido do Claude; a resposta é no prompt do Codex.
+        HookRoute::ToolUse if observe_only && hook_event_name == "PermissionRequest" => {
+            HookRoute::NativePrompt
+        }
         HookRoute::ToolUse if observe_only => HookRoute::Observe,
         route => route,
     }
@@ -997,7 +1022,11 @@ enum InferredStep {
 /// fechando como negado algo que o usuário ainda vai aprovar. Quem chega depois
 /// de toda negação é o `UserPromptSubmit` da próxima mensagem.
 fn inferred_step(runner: &AgentRunnerKind, hook_event_name: &str) -> InferredStep {
-    if hook_route(runner, hook_event_name) == HookRoute::NativePrompt {
+    // O prompt nativo abriu: o do Claude sempre; o do Codex agora que ele roda
+    // livre (o `PermissionRequest` dele é o mesmo aviso, e o histórico também).
+    let native = hook_route(runner, hook_event_name) == HookRoute::NativePrompt
+        || (runs_free(runner) && hook_event_name == "PermissionRequest");
+    if native {
         return InferredStep::Open;
     }
     match hook_event_name {
@@ -1494,7 +1523,6 @@ pub fn create_agent_session(
         worktree.clone(),
         task,
         None,
-        false,
         on_exit,
     );
     if result.is_err() {
@@ -1538,11 +1566,6 @@ pub fn attach_agent_session(
         .or_else(|| opts.title.clone())
         .unwrap_or_else(|| worktree.branch.clone());
 
-    // Agente livre, fatia 6: o claude em attach (review, conflitos, launch
-    // config sem `isolate`) só é observado — hooks `_hook --observe`, sem card;
-    // quem pergunta é o prompt do próprio Claude. A jaula continua. O Codex
-    // segue no gate: o `PermissionRequest` dele é o protocolo de aprovação.
-    let observe = attach_observes(&runner_kind);
     // Sem `worktree::remove` no erro: a pasta é do usuário, não nossa.
     spawn_prepared(
         ctx,
@@ -1553,14 +1576,105 @@ pub fn attach_agent_session(
         worktree,
         task,
         None,
-        observe,
         on_exit,
     )
 }
 
-/// Se a sessão em attach deste runner roda no modelo do agente livre.
-fn attach_observes(runner: &AgentRunnerKind) -> bool {
-    matches!(runner, AgentRunnerKind::ClaudeCode)
+/// Agente livre (decisões do dono, 2026-10-19): o claude e o codex que o
+/// TYBA abre — agente novo em worktree, review, conflitos, launch config com
+/// ou sem `isolate`, retomar — rodam como o agente digitado: hooks que só
+/// observam (`_hook --observe`, com o guarda-corpo), sem card, sem jaula do
+/// TYBA e com o env do shell de login ([`free_agent_env`]). Quem pergunta é o
+/// próprio CLI (o prompt do Claude; o sandbox e a aprovação do Codex). Só um
+/// runner custom segue no caminho antigo.
+fn runs_free(runner: &AgentRunnerKind) -> bool {
+    matches!(runner, AgentRunnerKind::ClaudeCode | AgentRunnerKind::Codex)
+}
+
+/// O que sai do env do agente livre: o que desligaria os hooks do
+/// `--settings` (e com eles o guarda-corpo) e o marcador de versões antigas.
+/// `PWD`/`OLDPWD` também: a pasta é a do agente (o cwd do spawn), não a de
+/// onde o TYBA ou o login shell rodaram.
+const FREE_ENV_REMOVE: &[&str] = &[
+    "CLAUDE_CODE_SIMPLE",
+    "CLAUDE_CODE_SAFE_MODE",
+    "TYBA_SHIM",
+    "PWD",
+    "OLDPWD",
+];
+
+/// Links clicáveis no terminal (OSC 8) para todo agente (decisão do dono,
+/// 2026-10-19): o claude e o codex só os emitem com isto.
+pub(crate) const FORCE_HYPERLINK: (&str, &str) = ("FORCE_HYPERLINK", "1");
+
+/// O env do agente livre: o env COMPLETO do shell de login do dono
+/// ([`crate::shell_path::login_shell_vars`]; sem resposta dele, o env do
+/// processo do TYBA) — `SSH_AUTH_SOCK`, `ANTHROPIC_API_KEY`, `AWS_PROFILE`,
+/// `CLAUDE_CONFIG_DIR`, proxy —, com o PATH de login, o terminal que o pane
+/// anuncia e `FORCE_HYPERLINK`; menos os marcadores de sessão herdados e
+/// [`FREE_ENV_REMOVE`]. Sem allowlist e sem override de git: vale o git
+/// config do dono. O rc roda fora do repositório: direnv e `.nvmrc` por
+/// pasta não entram.
+///
+/// `nested_wrapper`: a pasta do wrapper `claude` do TYBA. Entra na frente do
+/// PATH com `TYBA_HOSTED=1`, como no pane: um claude aberto de dentro do
+/// agente (Bash, script, `claude -p`) passa pelo `_jail` e ganha o
+/// guarda-corpo.
+fn free_agent_env(
+    base: HashMap<String, String>,
+    login_path: String,
+    nested_wrapper: Option<&Path>,
+    git_hooks: Option<&Path>,
+) -> HashMap<String, String> {
+    let mut env: HashMap<String, String> = base
+        .into_iter()
+        .filter(|(k, _)| !crate::agent::inherited_env::is_inherited_session_marker(k))
+        .collect();
+    let path = match nested_wrapper {
+        Some(dir) => {
+            env.insert("TYBA_HOSTED".into(), "1".into());
+            let mut dirs = vec![dir.to_path_buf()];
+            dirs.extend(std::env::split_paths(&login_path));
+            std::env::join_paths(dirs)
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or(login_path)
+        }
+        None => login_path,
+    };
+    env.insert("PATH".into(), path);
+    env.insert("TERM".into(), "xterm-256color".into());
+    env.insert("COLORTERM".into(), "truecolor".into());
+    env.insert(FORCE_HYPERLINK.0.into(), FORCE_HYPERLINK.1.into());
+    for key in FREE_ENV_REMOVE {
+        env.remove(*key);
+    }
+    // Push para main/master: o `pre-push` do TYBA, por `core.hooksPath` no env
+    // (somado ao `GIT_CONFIG_*` do dono).
+    if let Some(hooks) = git_hooks {
+        crate::agent::git_hooks::with_hooks(&mut env, hooks);
+    }
+    env
+}
+
+/// A pasta de hooks git do TYBA para esta sessão, conferida agora. Sem ela,
+/// a sessão sobe sem o `pre-push` — e o dono vê o aviso (toast fixo).
+fn git_hooks_for_session(app: &AppHandle, id: SessionId) -> Option<PathBuf> {
+    match crate::session::ensure_git_hooks() {
+        Ok(dir) => Some(dir),
+        Err(detail) => {
+            eprintln!("tyba: hooks git indisponíveis, sessão {id} sobe sem o pre-push: {detail}");
+            let _ = app.emit(
+                crate::agent::credentials::EVENT_SANDBOX_WARNING,
+                crate::agent::credentials::SandboxWarningPayload {
+                    session_id: id,
+                    kind: crate::agent::credentials::SandboxWarningKind::HooksGitIndisponiveis,
+                    detail: Some(detail),
+                    names: None,
+                },
+            );
+            None
+        }
+    }
 }
 
 // A partir daqui, e até o fim de `prepare_hosted_agent`, todo o código é
@@ -1595,7 +1709,6 @@ struct HostedCommand {
 /// A spec que acompanha o `wrap` do passthrough. Ele não a lê — o agente
 /// livre não tem jaula —, mas o spawn continua passando pela trait
 /// `Sandbox` (princípio 2), e a trait pede uma.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn passthrough_spec(cwd: &Path, runtime: &Path, socket_path: &Path, exe: &Path) -> SandboxSpec {
     SandboxSpec {
         writable_root: cwd.to_path_buf(),
@@ -1623,6 +1736,7 @@ fn passthrough_spec(cwd: &Path, runtime: &Path, socket_path: &Path, exe: &Path) 
 /// ([`crate::hook_ipc::channel::hosted_child_env`]); o plano só carrega o
 /// socket de hooks e os marcadores.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
+#[allow(clippy::too_many_arguments)]
 fn build_hosted_command(
     runner: &dyn AgentRunner,
     cwd: &Path,
@@ -1631,6 +1745,7 @@ fn build_hosted_command(
     runtime: &Path,
     exe: &Path,
     args: &[String],
+    git_hooks: Option<&Path>,
 ) -> Result<HostedCommand, String> {
     use crate::sandbox::Sandbox;
 
@@ -1648,6 +1763,12 @@ fn build_hosted_command(
     // Track C consome estes via `/proc/<agente>/environ`.
     cmd.env("TYBA_HOSTED", "1");
     cmd.env("TYBA_JAILED", "0");
+    cmd.env(FORCE_HYPERLINK.0, FORCE_HYPERLINK.1);
+    // O `core.hooksPath` do TYBA entra no shim, por cima do `GIT_CONFIG_*`
+    // do pane (que só ele conhece): ver `git_hooks::with_hooks_os`.
+    if let Some(hooks) = git_hooks {
+        cmd.env(crate::agent::git_hooks::HOOKS_DIR_ENV, hooks);
+    }
     let spec = passthrough_spec(cwd, runtime, socket_path, exe);
     let cmd = crate::sandbox::passthrough::PassthroughSandbox.wrap(cmd, &spec)?;
     Ok(HostedCommand { cmd, worktree_root })
@@ -1729,6 +1850,7 @@ pub fn prepare_hosted_agent(
         &runtime,
         &exe,
         args,
+        git_hooks_for_session(&ctx.app, id).as_deref(),
     )?;
 
     ctx.subagents.register_session(id);
@@ -1827,7 +1949,6 @@ pub fn resume_agent_session(
         worktree,
         task,
         Some(target.conversation_id),
-        false,
         on_exit,
     )
 }
@@ -2044,9 +2165,9 @@ fn spawn_prepared(
     worktree: crate::worktree::Worktree,
     task: String,
     resume: Option<String>,
-    observe: bool,
     on_exit: impl FnOnce(SessionId) + Send + 'static,
 ) -> Result<Session, String> {
+    let free = runs_free(&runner.kind());
     let runtime = runtime_dir(id)?;
     let socket_path = runtime.join(HOOK_SOCKET_FILE);
     if socket_path.as_os_str().len() > MAX_SOCKET_PATH {
@@ -2054,7 +2175,7 @@ fn spawn_prepared(
     }
 
     let exe = std::env::current_exe().map_err(|e| format!("exe do Tyba: {e}"))?;
-    let hook_cmd = if observe {
+    let hook_cmd = if free {
         observer_hook_command(&exe)
     } else {
         hook_command(&exe)
@@ -2062,7 +2183,7 @@ fn spawn_prepared(
     if matches!(runner.kind(), AgentRunnerKind::ClaudeCode) {
         let status_line =
             session_statusline(&exe, &std::env::vars().collect(), &[&worktree.path, &root]);
-        let settings = if observe {
+        let settings = if free {
             observer_session_settings(&hook_cmd, status_line)
         } else {
             claude_session_settings(&hook_cmd, status_line)
@@ -2078,9 +2199,19 @@ fn spawn_prepared(
     };
 
     let user_env: HashMap<String, String> = std::env::vars().collect();
-    let config = consented_config(&ctx.store, &root);
-    let mut env = crate::repo_config::agent_env(config.as_ref(), &user_env);
-    apply_git_overrides(&mut env);
+    let env = if free {
+        free_agent_env(
+            crate::shell_path::login_shell_vars().unwrap_or_else(|| user_env.clone()),
+            crate::shell_path::agent_path(),
+            crate::session::nested_guard_wrapper(),
+            git_hooks_for_session(&ctx.app, id).as_deref(),
+        )
+    } else {
+        let config = consented_config(&ctx.store, &root);
+        let mut env = crate::repo_config::agent_env(config.as_ref(), &user_env);
+        apply_git_overrides(&mut env);
+        env
+    };
 
     let mut cmd = runner.build_command(
         &worktree.path,
@@ -2113,7 +2244,30 @@ fn spawn_prepared(
     // Camada A do Windows (Opção B): a jaula se aplica no spawn (token + ConPTY),
     // não por `wrap`. `jailed_spawner` devolve `Some` só no Windows; mac/linux
     // seguem reescrevendo argv via `wrap` e `jail` fica `None`.
-    let (cmd, jail) = if runner.self_sandboxes() {
+    let (cmd, jail) = if free {
+        // Avisos de credencial e o preflight de login não são da jaula: valem
+        // para o agente livre também (o diagnóstico da jaula fica de fora).
+        #[cfg(target_os = "linux")]
+        if matches!(runner.kind(), AgentRunnerKind::ClaudeCode) {
+            let home = env.get("HOME").map(PathBuf::from).unwrap_or_default();
+            crate::agent::credentials::emit_warnings(&ctx.app, id, &env, &home, None, &ctx.store);
+        }
+        if matches!(runner.kind(), AgentRunnerKind::ClaudeCode) {
+            crate::agent::auth_preflight::spawn_preflight(
+                ctx.app.clone(),
+                id,
+                crate::agent::resolved_binary(&AgentRunnerKind::ClaudeCode),
+                env.clone(),
+            );
+        }
+        // Sem jaula, mas pela trait `Sandbox` (princípio 2): o passthrough.
+        use crate::sandbox::Sandbox;
+        let spec = passthrough_spec(&worktree.path, &runtime, &socket_path, &exe);
+        (
+            crate::sandbox::passthrough::PassthroughSandbox.wrap(cmd, &spec)?,
+            None,
+        )
+    } else if runner.self_sandboxes() {
         (cmd, None)
     } else {
         let sandbox = crate::sandbox::platform_sandbox()?;
@@ -2131,7 +2285,14 @@ fn spawn_prepared(
         // depende da inversão da política (§2). Nunca bloqueia o spawn (§6).
         #[cfg(target_os = "linux")]
         if matches!(runner.kind(), AgentRunnerKind::ClaudeCode) {
-            crate::agent::credentials::emit_warnings(&ctx.app, id, &env, &spec, &ctx.store);
+            crate::agent::credentials::emit_warnings(
+                &ctx.app,
+                id,
+                &env,
+                &spec.home,
+                Some(&spec),
+                &ctx.store,
+            );
         }
         // Entrega C, mecanismo 1 (preflight): mesmo ponto/condição do
         // `emit_warnings` acima, mas CROSS-PLATFORM (sem `cfg(linux)`) — a
@@ -2176,7 +2337,7 @@ fn spawn_prepared(
         agent_home: agent_home(&env),
         turn_settle: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         seen_transcript: Arc::new(Mutex::new(None)),
-        observe_only: observe,
+        observe_only: free,
     };
     let server = HookServer::bind(
         &socket_path,
@@ -2366,6 +2527,7 @@ mod build_hosted_command_tests {
             runtime,
             &std::env::current_exe().unwrap(),
             args,
+            Some(Path::new("/h")),
         )
         .expect("o claude digitado sempre monta")
     }
@@ -2452,7 +2614,17 @@ mod build_hosted_command_tests {
 
         let mut keys: Vec<&str> = plan.env.iter().map(|(k, _)| k.as_str()).collect();
         keys.sort_unstable();
-        assert_eq!(keys, ["TYBA_HOOK_SOCKET", "TYBA_HOSTED", "TYBA_JAILED"]);
+        // `FORCE_HYPERLINK`: links clicáveis para todo agente (dono, 2026-10-19).
+        assert_eq!(
+            keys,
+            [
+                "FORCE_HYPERLINK",
+                "TYBA_GIT_HOOKS",
+                "TYBA_HOOK_SOCKET",
+                "TYBA_HOSTED",
+                "TYBA_JAILED"
+            ]
+        );
 
         let pane: Vec<(std::ffi::OsString, std::ffi::OsString)> = [
             ("TYBA_TEST_PANE_VAR", "1"),
@@ -2607,13 +2779,90 @@ mod session_end_tests {
 }
 
 #[cfg(test)]
-mod attach_tests {
+mod free_session_tests {
     use super::*;
 
+    /// Novo em worktree, attach e retomar passam todos por `spawn_prepared`,
+    /// que decide por aqui: o claude roda livre, o codex segue no gate.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
-    fn only_claude_attach_runs_observed() {
-        assert!(attach_observes(&AgentRunnerKind::ClaudeCode));
-        assert!(!attach_observes(&AgentRunnerKind::Codex));
+    fn plugin_request_closes_without_a_verdict() {
+        let store = Store::open_in_memory().unwrap();
+        let id = SessionId::new_v4();
+        store
+            .insert_pending_inferred(&id.to_string(), "Bash: ls", None, "yellow", "plugin:k", 1)
+            .unwrap();
+        assert!(settle_plugin_inferred(&store, id, "plugin:k"));
+        let rows = store
+            .list_approval_history(Some(&id.to_string()), 10)
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].decision, PLUGIN_SETTLED_DECISION);
+        assert_ne!(rows[0].decision, "approved");
+    }
+
+    #[test]
+    fn claude_and_codex_run_free() {
+        assert!(runs_free(&AgentRunnerKind::ClaudeCode));
+        assert!(runs_free(&AgentRunnerKind::Codex));
+    }
+
+    #[test]
+    fn free_env_is_a_new_pane_env_without_what_turns_hooks_off() {
+        let base: HashMap<String, String> = [
+            ("HOME", "/Users/x"),
+            ("AWS_PROFILE", "dev"),
+            ("PATH", "/usr/bin"),
+            ("CLAUDE_CODE_SIMPLE", "1"),
+            ("CLAUDE_CODE_SAFE_MODE", "1"),
+            ("TYBA_SHIM", "fallback"),
+            ("PWD", "/onde/o/tyba/rodou"),
+            ("OLDPWD", "/antes"),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+        let env = free_agent_env(base, "/opt/homebrew/bin:/usr/bin".into(), None, None);
+        assert_eq!(env["PATH"], "/opt/homebrew/bin:/usr/bin");
+        // O env do dono passa inteiro, sem allowlist.
+        assert_eq!(env["AWS_PROFILE"], "dev");
+        assert_eq!(env["HOME"], "/Users/x");
+        assert_eq!(env["TERM"], "xterm-256color");
+        for gone in FREE_ENV_REMOVE {
+            assert!(!env.contains_key(*gone), "{gone}");
+        }
+        // Sem override de git (gpgsign etc.); o único `GIT_CONFIG_*` é o
+        // `core.hooksPath` do pre-push do TYBA.
+        let keys: Vec<&String> = env
+            .iter()
+            .filter(|(k, _)| k.starts_with("GIT_CONFIG_KEY_"))
+            .map(|(_, v)| v)
+            .collect();
+        assert!(keys.iter().all(|k| *k == "core.hooksPath"), "{keys:?}");
+        assert_eq!(env["FORCE_HYPERLINK"], "1");
+        assert!(!env.contains_key("TYBA_HOSTED"));
+    }
+
+    /// Com o wrapper: ele vai na frente do PATH e o `TYBA_HOSTED=1` faz o
+    /// claude aberto de dentro do agente sair com o guarda-corpo. Marcador de
+    /// sessão herdado nunca passa.
+    #[test]
+    fn free_env_puts_the_nested_guard_in_front() {
+        let base: HashMap<String, String> = [
+            ("CLAUDE_CODE_SESSION_ID", "de-fora"),
+            ("TYBA_HOOK_SOCKET", "/tmp/velho"),
+            ("ANTHROPIC_API_KEY", "sintetica"),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+        let env = free_agent_env(base, "/usr/bin".into(), Some(Path::new("/w/bin")), None);
+        let dirs: Vec<PathBuf> = std::env::split_paths(&env["PATH"]).collect();
+        assert_eq!(dirs, [PathBuf::from("/w/bin"), PathBuf::from("/usr/bin")]);
+        assert_eq!(env["TYBA_HOSTED"], "1");
+        assert_eq!(env["ANTHROPIC_API_KEY"], "sintetica");
+        assert!(!env.contains_key("CLAUDE_CODE_SESSION_ID"));
+        assert!(!env.contains_key("TYBA_HOOK_SOCKET"));
     }
 }
 
@@ -3263,8 +3512,9 @@ mod inferred_history_tests {
         for name in ["Stop", "Notification", "SessionStart", "SubagentStop"] {
             assert_eq!(inferred_step(&CLAUDE, name), InferredStep::None, "{name}");
         }
-        // O `PermissionRequest` do Codex vai ao gate, que grava a linha `tyba`.
-        assert_ne!(
+        // Codex livre: o `PermissionRequest` dele entra no histórico como o do
+        // Claude.
+        assert_eq!(
             inferred_step(&AgentRunnerKind::Codex, "PermissionRequest"),
             InferredStep::Open
         );
@@ -3431,9 +3681,10 @@ mod inferred_history_tests {
         assert!(decisions.iter().all(|d| !d.2));
     }
 
-    /// Codex não abre linha deduzida: o `PermissionRequest` dele é o gate.
+    /// Codex livre: o `PermissionRequest` dele abre a linha deduzida, como o
+    /// do Claude.
     #[test]
-    fn codex_nao_grava_linha_deduzida() {
+    fn codex_livre_grava_linha_deduzida() {
         let store = Store::open_in_memory().unwrap();
         let session = SessionId::new_v4();
         record_inferred(
@@ -3444,6 +3695,6 @@ mod inferred_history_tests {
             &event(permission_request("p1", "cargo test")),
             1_000,
         );
-        assert!(decisions(&store, session).is_empty());
+        assert_eq!(decisions(&store, session).len(), 1);
     }
 }

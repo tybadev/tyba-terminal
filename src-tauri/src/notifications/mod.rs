@@ -482,6 +482,15 @@ impl Notifications {
             .unwrap_or(false)
     }
 
+    /// O pedido do plugin fechou sem veredito: deixa de estar pendente e não
+    /// vira aprovado ("encerrado sem decisão").
+    pub fn native_prompt_settled(&self, inferred_id: i64) -> bool {
+        self.store
+            .settle_native_notification(inferred_id)
+            .map(|n| n > 0)
+            .unwrap_or(false)
+    }
+
     /// O turno seguiu sem rodar (ou a sessão acabou): negadas (deduzido).
     pub fn native_prompts_denied(&self, session_id: SessionId) -> bool {
         self.store

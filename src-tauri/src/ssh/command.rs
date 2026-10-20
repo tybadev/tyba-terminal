@@ -166,6 +166,7 @@ mod tests {
         LoginEnv {
             path: Some(format!("{}:/usr/bin:/bin", dir.display())),
             ssh_auth_sock: Some("/tmp/fake-agent.sock".into()),
+            vars: None,
         }
     }
 

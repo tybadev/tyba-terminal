@@ -68,12 +68,9 @@ pub fn maybe_run_hook_mode() -> Option<i32> {
     let socket = || std::env::var_os("TYBA_HOOK_SOCKET").map(PathBuf::from);
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    let guard = &crate::agent::claude_plugin::guard_rail_output;
-    // Windows não tem shim nem claude digitado com hook do TYBA: sem o
-    // guarda-corpo (o módulo é só unix), o modo `_hook` não recusa nada.
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    let guard = &|_: &serde_json::Value| -> Option<String> { None };
+    // O guarda-corpo é multiplataforma: no Windows também recusa push para
+    // main/master e merge de PR (princípio 5).
+    let guard = &crate::agent::guard_rail::guard_rail_output;
     let code = match mode.as_deref() {
         Some(GUARD_ONLY_FLAG) => run_guard_only_client(stdin.lock(), stdout.lock(), guard),
         Some(OBSERVE_FLAG) => {
