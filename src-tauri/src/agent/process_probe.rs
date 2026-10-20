@@ -50,6 +50,10 @@ pub struct AgentDetectedPayload {
     /// M7: por que um claude hospedado está sem jaula (`TYBA_NOJAIL`):
     /// `home`, `hidden_dir`, `outside_home` ou `sandbox`. `None` com jaula.
     pub no_jail: Option<String>,
+    /// Agente livre, fatia 4: claude no pane sem o plugin do TYBA (e com os
+    /// hooks livres) — o pane mostra o chip de instalar. Decidido aqui, no
+    /// core; o front só mostra.
+    pub suggest_plugin: bool,
 }
 
 /// Mapeia o nome do processo para o runner conhecido, reusando `runner_binary`
@@ -317,6 +321,34 @@ fn procargs2_environ(buf: &[u8]) -> Option<&[u8]> {
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub fn hosting_markers(_pid: u32) -> (bool, bool) {
     (false, false)
+}
+
+/// O valor de `name` num bloco de env NUL-separado. Só a entrada que começa
+/// com `name=` conta.
+pub fn parse_env_var(environ: &[u8], name: &str) -> Option<String> {
+    let prefix = format!("{name}=");
+    environ
+        .split(|b| *b == 0)
+        .find_map(|entry| entry.strip_prefix(prefix.as_bytes()))
+        .map(|v| String::from_utf8_lossy(v).into_owned())
+}
+
+/// Uma variável do env real do processo, lido como o de [`hosting_markers`].
+/// Fatia 4 do agente livre: o `CLAUDE_CONFIG_DIR` do claude do pane, que o
+/// TYBA aberto pelo Dock não herda.
+#[cfg(target_os = "linux")]
+pub fn env_var(pid: u32, name: &str) -> Option<String> {
+    parse_env_var(&std::fs::read(format!("/proc/{pid}/environ")).ok()?, name)
+}
+
+#[cfg(target_os = "macos")]
+pub fn env_var(pid: u32, name: &str) -> Option<String> {
+    parse_env_var(procargs2_environ(&procargs2(pid)?)?, name)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+pub fn env_var(_pid: u32, _name: &str) -> Option<String> {
+    None
 }
 
 /// Anda a árvore de processos a partir do `leader_pid` do shell (BFS pelos
@@ -975,6 +1007,23 @@ mod tests {
         }
         assert_eq!(parse_no_jail_marker(&environ_of(&["TYBA_NOJAIL=x"])), None);
         assert_eq!(parse_no_jail_marker(&environ_of(&["HOME=/x"])), None);
+    }
+
+    #[test]
+    fn env_var_reads_only_the_exact_entry() {
+        let env = environ_of(&[
+            "XCLAUDE_CONFIG_DIR=/no",
+            "CLAUDE_CONFIG_DIR=/Users/x/.claude-work",
+            "HOME=/Users/x",
+        ]);
+        assert_eq!(
+            parse_env_var(&env, "CLAUDE_CONFIG_DIR").as_deref(),
+            Some("/Users/x/.claude-work")
+        );
+        assert_eq!(
+            parse_env_var(&environ_of(&["HOME=/x"]), "CLAUDE_CONFIG_DIR"),
+            None
+        );
     }
 
     #[test]

@@ -955,6 +955,9 @@ export interface AgentDetectedPayload {
   shim: ShimRoute | null;
   /** M7: por que um claude hospedado está sem jaula. `null` com jaula. */
   no_jail: NoJailReason | null;
+  /** Agente livre, fatia 4: claude no pane sem o plugin do TYBA — o chip de
+   * instalar aparece. Decidido no core. */
+  suggest_plugin: boolean;
 }
 
 /** `raw` (M6-B): o plugin do TYBA para o Claude Code avisou um claude que
@@ -972,8 +975,10 @@ export const claudePluginStatus = () =>
   invoke<ClaudePluginStatus>("claude_plugin_status");
 
 /** Mexe na config global do Claude: só por clique do usuário. */
-export const installClaudePlugin = () =>
-  invoke<ClaudePluginStatus>("install_claude_plugin");
+export const installClaudePlugin = (sessionId?: SessionId) =>
+  invoke<ClaudePluginStatus>("install_claude_plugin", {
+    sessionId: sessionId ?? null,
+  });
 
 export const uninstallClaudePlugin = () =>
   invoke<ClaudePluginStatus>("uninstall_claude_plugin");

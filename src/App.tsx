@@ -704,6 +704,7 @@ type DetectedAgentState = DetectedAgent & {
   jailed: boolean;
   shim: ShimRoute | null;
   noJail: NoJailReason | null;
+  suggestPlugin: boolean;
 };
 
 const withHostingState = (p: AgentDetectedPayload): DetectedAgentState | null =>
@@ -714,6 +715,7 @@ const withHostingState = (p: AgentDetectedPayload): DetectedAgentState | null =>
         jailed: p.jailed,
         shim: p.shim ?? null,
         noJail: p.no_jail ?? null,
+        suggestPlugin: p.suggest_plugin ?? false,
       }
     : null;
 
@@ -7096,6 +7098,11 @@ export default function App() {
             onOpenRichInput={() => {
               if (activeId) openRichInput(activeId);
             }}
+            suggestPlugin={
+              (activeId && detectedBySession.get(activeId)?.suggestPlugin) ||
+              false
+            }
+            sessionId={activeId ?? null}
           />
         )}
       </div>

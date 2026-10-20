@@ -876,8 +876,10 @@ pub struct PluginStatus {
     pub blocked: Option<&'static str>,
 }
 
-pub fn status(home: &Path) -> PluginStatus {
-    let env_dir = std::env::var("CLAUDE_CONFIG_DIR").ok();
+pub fn status(home: &Path, config_dir: Option<&str>) -> PluginStatus {
+    let env_dir = config_dir
+        .map(str::to_string)
+        .or_else(|| std::env::var("CLAUDE_CONFIG_DIR").ok());
     let config = claude_config_dir(env_dir.as_deref(), home);
     PluginStatus {
         available: crate::agent::resolved_binary(&crate::session::AgentRunnerKind::ClaudeCode)
@@ -890,19 +892,48 @@ pub fn status(home: &Path) -> PluginStatus {
     }
 }
 
+/// Fatia 4 do agente livre: o chip "Instalar plugin" no pane. Só aparece
+/// com o plugin ausente e os hooks livres — bloqueado, instalar não adianta
+/// nada, e a tela de Integrações já diz por quê.
+pub fn should_suggest(installed: bool, blocked: Option<&str>) -> bool {
+    !installed && blocked.is_none()
+}
+
+/// O mesmo [`status`] sem resolver o binário: quem pergunta já achou um
+/// claude rodando no pane. Só lê dois JSON, então cabe no poll do probe.
+/// `config_dir` é o `CLAUDE_CONFIG_DIR` do claude do pane — não o do TYBA,
+/// que aberto pelo Dock não tem o rc do shell.
+pub fn suggest_install(home: &Path, config_dir: Option<&str>) -> bool {
+    suggest_in(
+        &claude_config_dir(config_dir, home),
+        read_json(&managed_settings_path()).as_ref(),
+    )
+}
+
+fn suggest_in(config: &Path, managed: Option<&Value>) -> bool {
+    should_suggest(
+        is_installed(read_json(&config.join("plugins/installed_plugins.json")).as_ref()),
+        hooks_blocked(read_json(&config.join("settings.json")).as_ref(), managed),
+    )
+}
+
 /// Roda os comandos do Claude Code em sequência, parando no primeiro que
 /// falha. Só por clique do usuário (Configurações → Integrações).
-pub fn run_commands(commands: &[Vec<OsString>]) -> Result<(), String> {
+/// `config_dir`: o `CLAUDE_CONFIG_DIR` do claude do pane (chip); `None`
+/// herda o do TYBA (Configurações).
+pub fn run_commands(commands: &[Vec<OsString>], config_dir: Option<&str>) -> Result<(), String> {
     for argv in commands {
         let Some((program, args)) = argv.split_first() else {
             continue;
         };
-        let out = std::process::Command::new(program)
-            .args(args)
+        let mut cmd = std::process::Command::new(program);
+        cmd.args(args)
             .env("PATH", crate::shell_path::agent_path())
-            .stdin(std::process::Stdio::null())
-            .output()
-            .map_err(|e| format!("claude não rodou: {e}"))?;
+            .stdin(std::process::Stdio::null());
+        if let Some(dir) = config_dir.filter(|d| !d.is_empty()) {
+            cmd.env("CLAUDE_CONFIG_DIR", dir);
+        }
+        let out = cmd.output().map_err(|e| format!("claude não rodou: {e}"))?;
         if !out.status.success() {
             let stderr = String::from_utf8_lossy(&out.stderr);
             let msg: String = stderr.trim().chars().take(400).collect();
@@ -912,17 +943,17 @@ pub fn run_commands(commands: &[Vec<OsString>]) -> Result<(), String> {
     Ok(())
 }
 
-pub fn install(marketplace_dir: &Path) -> Result<(), String> {
+pub fn install(marketplace_dir: &Path, config_dir: Option<&str>) -> Result<(), String> {
     let claude = crate::agent::resolved_binary(&crate::session::AgentRunnerKind::ClaudeCode)
         .ok_or("claude não encontrado no PATH")?;
     write_marketplace(marketplace_dir).map_err(|e| format!("arquivos do plugin: {e}"))?;
-    run_commands(&install_commands(&claude, marketplace_dir))
+    run_commands(&install_commands(&claude, marketplace_dir), config_dir)
 }
 
 pub fn uninstall() -> Result<(), String> {
     let claude = crate::agent::resolved_binary(&crate::session::AgentRunnerKind::ClaudeCode)
         .ok_or("claude não encontrado no PATH")?;
-    run_commands(&uninstall_commands(&claude))
+    run_commands(&uninstall_commands(&claude), None)
 }
 
 // --- Cliente: `tyba _plugin-hook` ---------------------------------------------
@@ -1607,7 +1638,7 @@ mod tests {
         std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
         let mkt = dir.path().join("mkt dir");
 
-        let err = run_commands(&install_commands(&fake, &mkt)).unwrap_err();
+        let err = run_commands(&install_commands(&fake, &mkt), None).unwrap_err();
         let lines: Vec<String> = std::fs::read_to_string(&log)
             .unwrap()
             .lines()
@@ -1625,10 +1656,32 @@ mod tests {
         );
 
         std::fs::remove_file(&log).unwrap();
-        run_commands(&uninstall_commands(&fake)).expect("desinstala");
+        run_commands(&uninstall_commands(&fake), None).expect("desinstala");
         let lines = std::fs::read_to_string(&log).unwrap();
         assert!(lines.contains("plugin|uninstall|tyba@tyba|"));
         assert!(lines.contains("plugin|marketplace|remove|tyba|"));
+    }
+
+    /// Pelo chip, o `claude plugin …` roda com o `CLAUDE_CONFIG_DIR` do
+    /// claude do pane.
+    #[test]
+    fn run_commands_passes_the_pane_config_dir() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("env.log");
+        let fake = dir.path().join("claude");
+        std::fs::write(
+            &fake,
+            format!(
+                "#!/bin/sh\necho \"${{CLAUDE_CONFIG_DIR:-}}\" >> '{log}'\n",
+                log = log.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        run_commands(&uninstall_commands(&fake), Some("/tmp/cfg-do-pane")).unwrap();
+        let seen = std::fs::read_to_string(&log).unwrap();
+        assert!(seen.lines().all(|l| l == "/tmp/cfg-do-pane"), "{seen}");
     }
 
     #[test]
@@ -1644,6 +1697,33 @@ mod tests {
         );
         // `allowManagedHooksOnly` só vale na config gerenciada.
         assert_eq!(hooks_blocked(Some(&managed), None), None);
+    }
+
+    #[test]
+    fn chip_reads_the_config_dir_of_the_pane_claude() {
+        let home = tempfile::tempdir().unwrap();
+        let work = home.path().join(".claude-work");
+        std::fs::create_dir_all(work.join("plugins")).unwrap();
+        std::fs::write(
+            work.join("plugins/installed_plugins.json"),
+            r#"{"plugins":{"tyba@tyba":[]}}"#,
+        )
+        .unwrap();
+        // Instalado no config do pane: sem chip. O ~/.claude padrão (vazio)
+        // pediria o chip.
+        assert!(!suggest_in(
+            &claude_config_dir(work.to_str(), home.path()),
+            None
+        ));
+        assert!(suggest_in(&claude_config_dir(None, home.path()), None));
+    }
+
+    #[test]
+    fn chip_only_when_missing_and_hooks_run() {
+        assert!(should_suggest(false, None));
+        assert!(!should_suggest(true, None));
+        assert!(!should_suggest(false, Some("disable_all_hooks")));
+        assert!(!should_suggest(false, Some("managed_hooks_only")));
     }
 
     #[test]
