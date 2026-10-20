@@ -314,20 +314,26 @@ e linha'\n\
         );
     }
 
-    /// Env grande (> 64 KB) não trava a leitura.
+    /// Env grande (> 64 KB, mais que o buffer do pipe) não trava a leitura.
+    /// Quatro variáveis de 50 KB, não uma de 200 KB: no Linux uma única
+    /// string de env acima de `MAX_ARG_STRLEN` (128 KB) faz o exec do `env`
+    /// falhar com E2BIG.
     #[cfg(unix)]
     #[test]
     fn env_grande_nao_trava_o_login_shell() {
         let dir = tempfile::tempdir().unwrap();
         let shell = fake_login_shell(
             dir.path(),
-            "BIG=$(head -c 200000 /dev/zero | tr '\\0' x)\n\
-             export BIG\n\
+            "BIG=$(head -c 50000 /dev/zero | tr '\\0' x)\n\
+             export BIG1=$BIG BIG2=$BIG BIG3=$BIG BIG4=$BIG\n\
+             unset BIG\n\
              eval \"$2\"",
         );
         let env = resolve_login_env_with(&shell, Duration::from_secs(5)).expect("resolveu");
         let vars: std::collections::HashMap<_, _> = env.vars.expect("env").into_iter().collect();
-        assert_eq!(vars["BIG"].len(), 200_000);
+        for name in ["BIG1", "BIG2", "BIG3", "BIG4"] {
+            assert_eq!(vars[name].len(), 50_000, "{name}");
+        }
     }
 
     /// O spawn do pane nunca espera: nem uma resolução em andamento (aqui,
