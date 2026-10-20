@@ -205,3 +205,26 @@ export function formatBytes(bytes: number | null | undefined, locale?: string): 
   return `${new Intl.NumberFormat(locale, { maximumFractionDigits: digits }).format(value)} ${units[unit]}`;
 }
 
+/**
+ * A leitura da lista: o `ps -a` direto, e o `version` só quando ele falha.
+ *
+ * Sobre ssh cada `docker` paga a ida inteira (canal, shell e CLI do servidor),
+ * e o `version` antes de todo `ps` dobrava a espera da lista remota. O `ps`
+ * que responde já prova que o docker responde; o `version` fica para separar
+ * "sem docker" (lista vazia, tela de indisponível) de erro (sobe a quem chamou).
+ */
+export async function loadContainers<T>(
+  list: () => Promise<T[]>,
+  available: () => Promise<boolean>,
+  onStep: (cmd: "ps -a" | "version") => void,
+): Promise<{ available: boolean; list: T[] }> {
+  onStep("ps -a");
+  try {
+    return { available: true, list: await list() };
+  } catch (e) {
+    onStep("version");
+    if (!(await available().catch(() => false))) return { available: false, list: [] };
+    throw e;
+  }
+}
+

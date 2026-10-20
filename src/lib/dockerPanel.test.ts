@@ -11,6 +11,7 @@ import {
   formatCpu,
   groupContainers,
   healthOf,
+  loadContainers,
   matchesQuery,
   parseDockerSpan,
   portList,
@@ -191,4 +192,60 @@ describe("dockerPanel", () => {
     expect(exitCode("Created")).toBeNull();
   });
 
+});
+
+describe("loadContainers", () => {
+  test("o ps que responde basta: o version não roda", async () => {
+    const steps: string[] = [];
+    let versions = 0;
+    const out = await loadContainers(
+      async () => ["a", "b"],
+      async () => {
+        versions += 1;
+        return true;
+      },
+      (cmd) => steps.push(cmd),
+    );
+    expect(out).toEqual({ available: true, list: ["a", "b"] });
+    expect(versions).toBe(0);
+    expect(steps).toEqual(["ps -a"]);
+  });
+
+  test("ps falhou e o version também: sem docker, lista vazia", async () => {
+    const steps: string[] = [];
+    const out = await loadContainers(
+      async () => {
+        throw new Error("timeout");
+      },
+      async () => false,
+      (cmd) => steps.push(cmd),
+    );
+    expect(out).toEqual({ available: false, list: [] });
+    expect(steps).toEqual(["ps -a", "version"]);
+  });
+
+  test("ps falhou com o docker de pé: o erro do ps sobe", async () => {
+    await expect(
+      loadContainers(
+        async () => {
+          throw new Error("permission denied");
+        },
+        async () => true,
+        () => {},
+      ),
+    ).rejects.toThrow("permission denied");
+  });
+
+  test("version que também lança conta como indisponível", async () => {
+    const out = await loadContainers(
+      async () => {
+        throw new Error("x");
+      },
+      async () => {
+        throw new Error("y");
+      },
+      () => {},
+    );
+    expect(out).toEqual({ available: false, list: [] });
+  });
 });

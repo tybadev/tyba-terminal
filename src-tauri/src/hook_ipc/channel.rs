@@ -744,8 +744,12 @@ fn run_codex_client(socket_path: Option<&Path>, args: &[String]) -> i32 {
                 let child_env = hosted_child_env(std::env::vars_os(), &env_remove, &env);
                 // O codex filtra o env dos comandos que roda: o hook pre-push
                 // vai também em `shell_environment_policy.set.*`, como no
-                // `tyba _codex`.
-                let rest = crate::agent::codex_shim::codex_argv(rest, |key| {
+                // `tyba _codex`. O guarda-corpo por texto (`--guard-only`)
+                // vai junto, como no codex livre.
+                let guard = std::env::current_exe()
+                    .ok()
+                    .map(|exe| crate::agent::hooks_settings::guard_only_hook_command(&exe));
+                let rest = crate::agent::codex_shim::codex_argv(rest, guard.as_deref(), |key| {
                     child_env
                         .iter()
                         .rev()
