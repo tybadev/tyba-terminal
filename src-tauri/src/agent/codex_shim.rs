@@ -7,7 +7,9 @@
 //! - o hook `pre-push` do TYBA (`core.hooksPath` por `GIT_CONFIG_*`, somado ao
 //!   do pane) — no env e pelo `-c shell_environment_policy.set.*`, que o Codex
 //!   aplica por último;
-//! - (sem `-c hooks.*`: substituiria os hooks do dono — ver [`codex_argv`]);
+//! - o guarda-corpo de texto no `PreToolUse` (`tyba _hook --guard-only`, que
+//!   não fala com o core) — o `-c hooks.*` vira uma camada própria do codex
+//!   e soma aos hooks do dono (ver [`codex_argv`]);
 //! - `FORCE_HYPERLINK=1`.
 //!
 //! Escotilha: o caminho absoluto do codex pula o shim, e `TYBA_AGENT_SHIM=0`
@@ -18,14 +20,24 @@ use std::path::{Path, PathBuf};
 /// O argv do codex de verdade: os `--config` do TYBA na frente (opções
 /// globais do codex) e os args do usuário intactos depois.
 ///
-/// Sem `-c hooks.*`: o `-c` do codex troca o valor da chave inteira (os
-/// eventos de `hooks` e o `hooks.state` de confiança), então passar os nossos
-/// desligaria os hooks que o dono tem no `~/.codex/config.toml`. Não dá para
-/// garantir a soma sem rodar o codex; o codex digitado fica com o hook git
-/// (`pre-push`) e o `shell_environment_policy.set.*`, que é por chave e só
-/// acrescenta.
-pub fn codex_argv(user_args: &[String], env_get: impl Fn(&str) -> Option<String>) -> Vec<String> {
+/// O `-c hooks.*` não troca os hooks do dono: o codex põe os `-c` numa
+/// camada própria (`SessionFlags`), descobre os hooks camada por camada e
+/// soma todos, e mescla o `hooks.state` chave a chave (conferido no codex
+/// 0.163.0, 2026-10-20). Os do `~/.codex/config.toml` rodam junto com o do
+/// TYBA.
+pub fn codex_argv(
+    user_args: &[String],
+    guard_hook_cmd: Option<&str>,
+    env_get: impl Fn(&str) -> Option<String>,
+) -> Vec<String> {
     let mut argv = Vec::new();
+    for over in guard_hook_cmd
+        .map(crate::agent::codex_hooks::codex_config_overrides)
+        .unwrap_or_default()
+    {
+        argv.push("--config".to_string());
+        argv.push(over);
+    }
     for (key, value) in crate::agent::git_hooks::hook_vars(env_get) {
         argv.push("--config".to_string());
         argv.push(format!(
@@ -98,7 +110,10 @@ pub fn maybe_run_codex_mode() -> Option<i32> {
         crate::agent::session::FORCE_HYPERLINK.0.into(),
         crate::agent::session::FORCE_HYPERLINK.1.into(),
     );
-    let args = codex_argv(&user_args, |k| env.get(k).cloned());
+    let guard = std::env::current_exe()
+        .ok()
+        .map(|exe| crate::agent::hooks_settings::guard_only_hook_command(&exe));
+    let args = codex_argv(&user_args, guard.as_deref(), |k| env.get(k).cloned());
     let err = std::process::Command::new(real)
         .args(args)
         .env_clear()
@@ -121,12 +136,17 @@ mod tests {
     fn codex_argv_puts_tyba_options_first_and_keeps_user_args() {
         let mut env = std::collections::HashMap::new();
         crate::agent::git_hooks::with_hooks(&mut env, Path::new("/dados/git-hooks"));
-        let argv = codex_argv(&["exec".to_string(), "faz x".to_string()], |k| {
-            env.get(k).cloned()
-        });
+        let argv = codex_argv(
+            &["exec".to_string(), "faz x".to_string()],
+            Some("'/usr/bin/tyba' _hook --guard-only"),
+            |k| env.get(k).cloned(),
+        );
         assert_eq!(&argv[argv.len() - 2..], ["exec", "faz x"]);
-        // Nada de `hooks.*`: trocaria os hooks do dono.
-        assert!(!argv.iter().any(|a| a.starts_with("hooks.")));
+        // O guarda-corpo de texto (merge, aprovação, desligar o hook) vai por
+        // `-c hooks.*`, que soma aos hooks do dono.
+        assert!(argv.iter().any(|a| a.starts_with("hooks.PreToolUse=")));
+        // O guarda-corpo do aninhado não espera o TYBA nem diz que espera.
+        assert!(!argv.iter().any(|a| a.contains("Aguardando aprovação")));
         assert!(argv
             .iter()
             .any(|a| a == "shell_environment_policy.set.GIT_CONFIG_KEY_0=\"core.hooksPath\""));
