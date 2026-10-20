@@ -5178,6 +5178,42 @@ impl<H: RunHost> Runs<H> {
         Ok(())
     }
 
+    /// O dono encerrou pela tela Ports o processo de um nó de processo: o nó
+    /// vira "parado por você", como no ■, e não "falhou" — senão o agente
+    /// que o criou vê uma falha e o sobe de novo. Chamado antes do sinal;
+    /// quem mata é a tela Ports. Sessão de outro tipo de nó: nada muda.
+    pub fn owner_stopped_session(&self, session_id: &str) {
+        let mut stopped = None;
+        {
+            let mut active = self.active.lock();
+            for (run_id, a) in active.iter_mut() {
+                let Some(node_id) = a
+                    .sched
+                    .run
+                    .nodes
+                    .iter()
+                    .find(|(_, n)| n.session_id.as_deref() == Some(session_id))
+                    .map(|(id, _)| id.clone())
+                else {
+                    continue;
+                };
+                let process = a
+                    .graph
+                    .nodes
+                    .iter()
+                    .chain(a.sched.run.created.iter().map(|c| &c.node))
+                    .any(|n| n.id == node_id && matches!(n.kind, NodeKind::Process { .. }));
+                if process && a.sched.stop_node_by(&node_id, now(), Actor::You).is_some() {
+                    stopped = Some(run_id.clone());
+                }
+                break;
+            }
+        }
+        if let Some(run_id) = stopped {
+            self.publish_current(&run_id);
+        }
+    }
+
     /// ↻ do nó, com a execução aberta (rodando ou assentada — que volta a
     /// "ao vivo"): reiniciar o que roda (mata o process group e sobe de novo
     /// com a mesma config) ou rodar de novo o que terminou, falhou ou parou.
@@ -10973,6 +11009,66 @@ mod tests {
         // Nó do dono não se descarta por aqui.
         assert!(runs.discard_created(&run.id, "dono").is_err());
         runs.stop(&run.id).unwrap();
+    }
+
+    /// Fechar pela tela Ports o processo de um nó criado: "parado por você",
+    /// não "falhou", e o aviso chega ao agente que o criou. A sessão do
+    /// agente não é tocada.
+    #[test]
+    fn closing_a_process_node_from_ports_is_an_owner_stop() {
+        use serde_json::json;
+        let dir = tempfile::tempdir().unwrap();
+        let work = dir.path().join("w");
+        std::fs::create_dir(&work).unwrap();
+        let (runs, host, _app) = pty_runs(dir.path().join("runs"));
+        let g = graph(vec![orchestrator("o")], vec![]);
+        runs.store.save_orbit_graph(&g, true, None).unwrap();
+        let run = runs.start_now(g, vec![]).unwrap();
+        wait_orchestrating(&runs, &run.id, "o");
+        let tools = tools_of(&host, "o");
+        let api = tools
+            .call(
+                "orbit_create_process",
+                &json!({"title": "api", "command": "sleep 30", "dir": work}),
+            )
+            .unwrap()["node_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let r = wait_status(&runs, &run.id, &api, NodeStatus::Running);
+        let session = r.nodes[&api].session_id.clone().unwrap();
+        let agent = r.nodes["o"].session_id.clone().unwrap();
+
+        runs.owner_stopped_session(&agent);
+        assert_eq!(
+            runs.get(&run.id).unwrap().nodes["o"].status,
+            NodeStatus::Running
+        );
+
+        runs.owner_stopped_session(&session);
+        let r = runs.get(&run.id).unwrap();
+        assert_eq!(r.nodes[&api].status, NodeStatus::Stopped, "{r:?}");
+        assert!(
+            event_kinds(&r.nodes[&api]).contains(&NodeEventKind::Stopped { by: Actor::You }),
+            "{r:?}"
+        );
+        // Quem mata é a tela Ports, não o Orbit.
+        assert!(!host.killed.lock().contains(&session));
+        let out = tools.call("orbit_list_nodes", &json!({})).unwrap();
+        assert!(
+            out["since_your_last_call"][0]
+                .as_str()
+                .unwrap()
+                .contains("parado por você"),
+            "{out}"
+        );
+        // A saída do processo, que chega depois, não vira "falhou".
+        host.kill(&session);
+        std::thread::sleep(Duration::from_millis(800));
+        assert_eq!(
+            runs.get(&run.id).unwrap().nodes[&api].status,
+            NodeStatus::Stopped
+        );
     }
 
     /// O ↻/■ do dono num nó que o agente criou chega na próxima chamada de

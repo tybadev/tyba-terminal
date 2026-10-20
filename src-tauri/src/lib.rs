@@ -6217,9 +6217,16 @@ async fn services_kill(
     start_ms: u64,
     group: Option<u32>,
 ) -> Result<services::KillOutcome, AppError> {
-    off_main(app, move |_app, state| {
+    off_main(app, move |app, state| {
         let ctx = services_ctx(&state);
-        state.services.terminate(&ctx, pid, start_ms, group)
+        let runs = app.try_state::<orbit::run::SharedRuns>();
+        state
+            .services
+            .terminate(&ctx, pid, start_ms, group, |session| {
+                if let (Some(runs), Some(session)) = (runs, session) {
+                    runs.owner_stopped_session(&session.to_string());
+                }
+            })
     })
     .await
     .map_err(|e| AppError::new("services.kill_failed").with("detail", e))?
