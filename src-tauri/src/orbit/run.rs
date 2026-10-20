@@ -1607,6 +1607,28 @@ pub fn process_argv(
     (bash_program(), args)
 }
 
+/// Nó de processo criado por agente: o comando é do agente, então leva o
+/// mesmo guarda-corpo que ele (o `pre-push` do TYBA por `core.hooksPath`,
+/// somado ao `GIT_CONFIG_*` de `base`). Sem isto um `orbit_create_process`
+/// com `git push origin HEAD:main` passaria por fora do hook. Devolve só o
+/// que muda; chave que `with_hooks` apagou volta vazia.
+fn agent_process_git_env(base: HashMap<String, String>, hooks: &Path) -> Vec<(String, String)> {
+    let mut env = base.clone();
+    crate::agent::git_hooks::with_hooks(&mut env, hooks);
+    let mut changed: Vec<(String, String)> = env
+        .iter()
+        .filter(|(k, v)| base.get(*k) != Some(*v))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    changed.extend(
+        base.keys()
+            .filter(|k| !env.contains_key(*k))
+            .map(|k| (k.clone(), String::new())),
+    );
+    changed.sort();
+    changed
+}
+
 /// Exit gravado pelo wrapper. Sem `.exit` o processo morreu antes do fim.
 fn read_exit(out_dir: &Path) -> Option<i32> {
     std::fs::read_to_string(out_dir.join(".exit"))
@@ -1672,6 +1694,9 @@ pub struct ProcessLaunch {
     pub cwd: PathBuf,
     pub program: PathBuf,
     pub args: Vec<String>,
+    /// Env por cima do do TYBA: o `pre-push` do TYBA quando o nó foi criado
+    /// por agente ([`agent_process_git_env`]); vazio no nó do dono.
+    pub env: Vec<(String, String)>,
 }
 
 /// O que o host precisa para subir o agente de um nó.
@@ -2942,11 +2967,26 @@ impl<H: RunHost> Runs<H> {
                 runs.process_exited(&run, &node, attempt, &config);
             }
         });
+        let env = if start.created {
+            match crate::session::ensure_git_hooks() {
+                Ok(hooks) => agent_process_git_env(std::env::vars().collect(), &hooks),
+                Err(detail) => {
+                    eprintln!(
+                        "tyba: nó {} criado por agente sobe sem o pre-push do TYBA: {detail}",
+                        start.node.id
+                    );
+                    Vec::new()
+                }
+            }
+        } else {
+            Vec::new()
+        };
         let launch = ProcessLaunch {
             title: start.node.title.clone(),
             cwd: start.node_dir.clone(),
             program,
             args,
+            env,
         };
         let log = match super::log::LogWriter::create(
             &start.out_dir.join("log.txt"),
@@ -6078,6 +6118,7 @@ impl RunHost for TauriHost {
                 &state.pty_pool,
                 &launch.program,
                 &launch.args,
+                &launch.env,
                 launch.title,
                 Some(&launch.cwd),
                 100,
@@ -6843,6 +6884,9 @@ mod tests {
             let mut cmd = portable_pty::CommandBuilder::new(&launch.program);
             cmd.args(&launch.args);
             cmd.cwd(&launch.cwd);
+            for (k, v) in &launch.env {
+                cmd.env(k, v);
+            }
             let id = uuid::Uuid::new_v4();
             self.pool.set_tap(id, tap);
             self.pool
@@ -12466,5 +12510,50 @@ mod tests {
         // Já fechado: nada muda.
         assert!(s.close_live(4).is_empty());
         assert_eq!(s.run.finished_at, Some(3));
+    }
+}
+
+#[cfg(test)]
+mod agent_process_git_env_tests {
+    use super::*;
+
+    #[test]
+    fn the_agent_process_gets_the_pre_push_hook() {
+        let env = agent_process_git_env(HashMap::new(), Path::new("/dados/git-hooks"));
+        let get = |k: &str| {
+            env.iter()
+                .find(|(key, _)| key == k)
+                .map(|(_, v)| v.as_str())
+        };
+        assert_eq!(get("GIT_CONFIG_COUNT"), Some("1"));
+        assert_eq!(get("GIT_CONFIG_KEY_0"), Some("core.hooksPath"));
+        assert_eq!(get("GIT_CONFIG_VALUE_0"), Some("/dados/git-hooks"));
+    }
+
+    #[test]
+    fn the_owner_config_is_kept_and_a_hookspath_param_is_cleared() {
+        let base = HashMap::from([
+            ("GIT_CONFIG_COUNT".to_string(), "1".to_string()),
+            ("GIT_CONFIG_KEY_0".to_string(), "user.name".to_string()),
+            ("GIT_CONFIG_VALUE_0".to_string(), "dono".to_string()),
+            (
+                "GIT_CONFIG_PARAMETERS".to_string(),
+                "'core.hooksPath'='/dev/null'".to_string(),
+            ),
+            ("HOME".to_string(), "/home/dono".to_string()),
+        ]);
+        let env = agent_process_git_env(base, Path::new("/h"));
+        let get = |k: &str| {
+            env.iter()
+                .find(|(key, _)| key == k)
+                .map(|(_, v)| v.as_str())
+        };
+        // Só o que muda: o resto do env do TYBA fica como está.
+        assert_eq!(get("HOME"), None);
+        assert_eq!(get("GIT_CONFIG_COUNT"), Some("2"));
+        assert_eq!(get("GIT_CONFIG_KEY_1"), Some("core.hooksPath"));
+        assert_eq!(get("GIT_CONFIG_VALUE_1"), Some("/h"));
+        // O `core.hooksPath` herdado por parâmetro não desliga o hook.
+        assert_eq!(get("GIT_CONFIG_PARAMETERS"), Some(""));
     }
 }

@@ -602,6 +602,7 @@ impl SessionManager {
         pty_pool: &SharedPtyPool,
         program: &std::path::Path,
         args: &[String],
+        env: &[(String, String)],
         title: String,
         cwd: Option<&std::path::Path>,
         cols: u16,
@@ -614,6 +615,9 @@ impl SessionManager {
         let id = Uuid::new_v4();
         let mut cmd = CommandBuilder::new(program);
         cmd.args(args);
+        for (k, v) in env {
+            cmd.env(k, v);
+        }
         if let Some(cwd) = cwd {
             cmd.cwd(cwd);
         }
