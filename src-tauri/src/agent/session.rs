@@ -350,9 +350,11 @@ pub(crate) fn plugin_ask_settled(
 }
 
 /// O veredito que o pedido do plugin grava no histórico ao fechar.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) const PLUGIN_SETTLED_DECISION: &str = "unknown";
 
 /// Fecha a linha deduzida do pedido do plugin sem veredito. `true` se fechou.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) fn settle_plugin_inferred(store: &Store, id: SessionId, key: &str) -> bool {
     store
         .resolve_inferred_by_call_key(
@@ -2782,6 +2784,7 @@ mod free_session_tests {
 
     /// Novo em worktree, attach e retomar passam todos por `spawn_prepared`,
     /// que decide por aqui: o claude roda livre, o codex segue no gate.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn plugin_request_closes_without_a_verdict() {
         let store = Store::open_in_memory().unwrap();
