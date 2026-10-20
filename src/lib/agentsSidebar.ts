@@ -1,5 +1,5 @@
 import type { AgentRow } from "./agentsBoard";
-import { rowShowsNoGate, wantsAttention } from "./agentsBoard";
+import { wantsAttention } from "./agentsBoard";
 
 /**
  * O que uma linha da seção de agentes pode mostrar.
@@ -19,9 +19,7 @@ export type AgentToken =
   | "agent"
   /** O que o agente espera, ou o resumo do que ele fez. O herdr não tem — ele
    *  não sabe no que o agente travou, porque não tem gate. */
-  | "detail"
-  /** Selo de "sem gate", para agente deduzido da tela. */
-  | "no_gate";
+  | "detail";
 
 /**
  * O layout padrão, em duas linhas.
@@ -32,7 +30,7 @@ export type AgentToken =
  * que é o que o gate permite dizer e o herdr não consegue.
  */
 export const DEFAULT_AGENT_ROWS: AgentToken[][] = [
-  ["state_icon", "workspace", "no_gate"],
+  ["state_icon", "workspace"],
   ["agent", "detail"],
 ];
 
@@ -42,15 +40,13 @@ export interface AgentTokenValues {
   workspace: string;
   agent: string | null;
   detail: string | null;
-  no_gate: true | null;
 }
 
 /**
  * O valor de cada token para esta linha. `null` significa "sem valor".
  *
- * `state_icon` e `no_gate` não têm texto — o valor deles é a presença. Ficam
- * aqui mesmo assim para que a regra de linha vazia (abaixo) os considere: uma
- * linha que só tem o selo ainda tem o que mostrar.
+ * `state_icon` não tem texto — o valor dele é a presença. Fica aqui mesmo
+ * assim para que a regra de linha vazia (abaixo) o considere.
  */
 export const tokenValues = (
   row: AgentRow,
@@ -75,10 +71,6 @@ export const tokenValues = (
       : row.place.workspaceName,
     agent: row.observed?.agent ?? null,
     detail,
-    // Shim v2 (tech-spec §7): hospedado (hosting) já está dentro do gate,
-    // então não mostra "sem gate" — ver `rowShowsNoGate`, fonte única desta
-    // regra também no quadro e na fila.
-    no_gate: rowShowsNoGate(row) ? true : null,
   };
 };
 
@@ -93,7 +85,9 @@ export const tokenValues = (
 export const rowHasValue = (
   tokens: AgentToken[],
   values: AgentTokenValues,
-): boolean => tokens.some((token) => values[token] != null);
+): boolean =>
+  // Token desconhecido (o `no_gate` de um layout antigo) não conta.
+  tokens.some((token) => token in values && values[token] != null);
 
 /** As linhas que de fato serão pintadas, já sem as vazias. */
 export const visibleRows = (

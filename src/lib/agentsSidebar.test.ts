@@ -18,7 +18,6 @@ const row = (
   status: SessionStatus,
   over: {
     observed?: ObservedAgent | null;
-    hosting?: boolean;
     attention?: boolean;
     workspaceName?: string;
     id?: string;
@@ -50,7 +49,6 @@ const row = (
       order: over.order ?? 0,
     },
     observed: over.observed ?? null,
-    hosting: over.hosting ?? false,
     visual: {
       dotClass: "bg-tyba-amber",
       textClass: "text-tyba-amber",
@@ -73,7 +71,6 @@ describe("valores dos tokens", () => {
   test("o detalhe de um gerenciado é o que ele espera", () => {
     const values = tokenValues(row(bloqueado), label);
     expect(values.detail).toBe("Aprovação pendente: git push");
-    expect(values.no_gate).toBeNull();
     expect(values.agent).toBeNull();
   });
 
@@ -86,27 +83,21 @@ describe("valores dos tokens", () => {
     );
     expect(values.agent).toBe("claude-code");
     expect(values.detail).toBeNull();
-    expect(values.no_gate).toBe(true);
   });
 
   test("concluído traz o resumo do turno", () => {
     expect(tokenValues(row(concluiu), label).detail).toBe("ajustei o parser");
   });
 
-  test("observado hospedado pelo shim v2 (hosting) não leva o selo sem gate (tech-spec §7)", () => {
-    const values = tokenValues(
-      row(rodando, {
-        observed: { agent: "claude-code", state: "running" },
-        hosting: true,
-      }),
-      label,
-    );
-    expect(values.agent).toBe("claude-code");
-    expect(values.no_gate).toBeNull();
-  });
 });
 
 describe("linha vazia desaparece — a regra do herdr", () => {
+  test("o `no_gate` de um layout antigo é ignorado", () => {
+    const values = tokenValues(row(rodando), label);
+    const antigo = ["agent", "no_gate"] as unknown as AgentToken[];
+    expect(rowHasValue(antigo, values)).toBe(false);
+  });
+
   test("gerenciado rodando não gasta a segunda linha", () => {
     // O caso que a regra existe para pegar: `agent` é null (é gerenciado) e
     // `detail` é null (rodando não tem hint). Sem a regra, toda linha da seção
@@ -116,19 +107,17 @@ describe("linha vazia desaparece — a regra do herdr", () => {
     const linhas = visibleRows(DEFAULT_AGENT_ROWS, values);
 
     expect(linhas).toHaveLength(1);
-    expect(linhas[0]).toEqual(["state_icon", "workspace", "no_gate"]);
+    expect(linhas[0]).toEqual(["state_icon", "workspace"]);
   });
 
   test("a primeira linha nunca desaparece, porque o ícone é sempre um valor", () => {
     const values = tokenValues(row(rodando, { workspaceName: "" }), label);
-    expect(rowHasValue(["state_icon", "workspace", "no_gate"], values)).toBe(
-      true,
-    );
+    expect(rowHasValue(["state_icon", "workspace"], values)).toBe(true);
   });
 
   test("linha de tokens todos vazios some", () => {
     const values = tokenValues(row(rodando), label);
-    const sóVazios: AgentToken[] = ["agent", "detail", "no_gate"];
+    const sóVazios: AgentToken[] = ["agent", "detail"];
     expect(rowHasValue(sóVazios, values)).toBe(false);
   });
 

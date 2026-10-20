@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { GitDiff, ShieldSlash, X } from "@phosphor-icons/react";
+import { GitDiff, X } from "@phosphor-icons/react";
 
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -8,7 +8,6 @@ import {
   buildRows,
   boardOrder,
   oldestApprovalBySession,
-  rowShowsNoGate,
   wantsAttention,
   type AgentRow,
   type SessionPlace,
@@ -28,12 +27,6 @@ interface Props {
   sessions: Session[];
   layout: LayoutState;
   approvals: ApprovalRequest[];
-  /**
-   * `hosting` do shim v2 (tech-spec §7), por sessão — ver
-   * `AgentsBoard`/`agentsBoard.rowShowsNoGate` para o porquê de não vir de
-   * `Session.observed`.
-   */
-  hostingBySession: Map<SessionId, boolean>;
   onJump: (sessionId: SessionId, place: SessionPlace) => void;
   onReviewDiff: (sessionId: SessionId) => void;
   onClose: () => void;
@@ -114,13 +107,6 @@ function Row({
         <span className={`shrink-0 text-[11px] ${row.visual.textClass}`}>
           {t(row.visual.labelKey)}
         </span>
-        {rowShowsNoGate(row) && (
-          <ShieldSlash
-            size={12}
-            className="shrink-0 text-tyba-amber"
-            aria-label={t("agentsBoardNoGate")}
-          />
-        )}
       </div>
 
       {/* O que ele quer rodar, quando quer. Mono e recuado: é texto de máquina,
@@ -260,15 +246,14 @@ export function AgentsQueue({
   sessions,
   layout,
   approvals,
-  hostingBySession,
   onJump,
   onReviewDiff,
   onClose,
 }: Props) {
   const { t } = useTranslation();
   const rows = useMemo(
-    () => boardOrder(buildRows(sessions, layout, hostingBySession)),
-    [sessions, layout, hostingBySession],
+    () => boardOrder(buildRows(sessions, layout)),
+    [sessions, layout],
   );
   const esperando = useMemo(() => rows.filter(wantsAttention).length, [rows]);
   // Mesma função que o toaster usa (via agentQueueVisibleApprovalIds em

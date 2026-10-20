@@ -573,8 +573,8 @@ impl DiskObserver {
             .unwrap_or(false)
     }
 
-    /// Id da conversa do transcript ligado enquanto a observação está viva — é
-    /// o que o "Reabrir com gate" retoma (M1 do claude-monitor). Observação
+    /// Id da conversa do transcript ligado enquanto a observação está viva (M1
+    /// do claude-monitor). Observação
     /// congelada devolve `None`: o bind é de um agente que já sumiu, e retomar
     /// a conversa dele no lugar da do agente atual seria trocar de conversa às
     /// cegas. O id já sai validado por [`crate::agent::conversation`].
@@ -1475,7 +1475,7 @@ mod tests {
 
     #[test]
     fn bound_conversation_is_the_live_transcript_id_and_none_once_frozen() {
-        // M1: o "Reabrir com gate" retoma a conversa ligada. Fixture
+        // M1: a conversa ligada ao pane. Fixture
         // sintética: id escrito à mão, nada copiado de ~/.claude/projects.
         let app = tauri::test::mock_app();
         let handle = app.handle().clone();

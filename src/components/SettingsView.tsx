@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { searchSettings } from "../lib/settingsSearch";
-import { useTranslation } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { changelogUrl } from "@/lib/changelog";
 import {
@@ -74,8 +74,6 @@ import {
   openNotificationSettings,
   previewNotifySound,
   updateCheck,
-  sandboxOverview,
-  type SandboxOverview,
 } from "../lib/ipc";
 import {
   formatDiagnostics,
@@ -147,27 +145,18 @@ const SECTIONS: { id: Section; label: string; hint: string; long: string; icon: 
 const RAIL_PREF_KEY = "pref.settings_rail";
 
 /** As regras que o core impõe e que nenhuma configuração desliga. */
-const SECURITY_RULES = [
-  "securityRuleRed",
-  "securityRuleMain",
-  "securityRuleEnv",
-  "securityRuleSecrets",
-  "securityRuleKill",
-];
+const SECURITY_RULES = ["securityRuleMain", "securityRuleSecrets", "securityRuleKill"];
+
+/** Como o agente roda (agente livre): leitura, sem interruptor. */
+const SECURITY_AGENT = ["securityRuleFree", "securityRuleAsk"];
 
 /**
- * Segurança: o que é fixo aparece como leitura, para ninguém procurar um
- * interruptor que não existe; a única folga da jaula (`read_allow`) se lê aqui
- * e se edita no arquivo — afrouxar a jaula nunca é um clique.
+ * Segurança (quadro CfgSegurancaLivre): o que é fixo aparece como leitura,
+ * para ninguém procurar um interruptor que não existe; o agente roda livre, e
+ * a jaula do TYBA fica para um modo autônomo depois do 2.0.
  */
-function SecuritySection({ onOpenConfig }: { onOpenConfig: () => void }) {
+function SecuritySection() {
   const { t } = useTranslation();
-  const [overview, setOverview] = useState<SandboxOverview | null>(null);
-  useEffect(() => {
-    void sandboxOverview()
-      .then(setOverview)
-      .catch(() => {});
-  }, []);
   return (
     <>
       <SettingGroup title={t("securityFixed")} note={t("securityFixedNote")} />
@@ -179,26 +168,23 @@ function SecuritySection({ onOpenConfig }: { onOpenConfig: () => void }) {
           </span>
         </SettingLine>
       ))}
-      <SettingGroup
-        title={t("securityJail")}
-        note={overview && !overview.error ? t("securityReadAllowCount", { count: overview.read_allow.length }) : undefined}
-      />
-      <SettingLine label={t("securityReadAllow")} hint={t("securityReadAllowHint")}>
-        <Button variant="ghost" size="sm" onClick={onOpenConfig}>
-          {t("settingsOpenInTyba")}
-        </Button>
+      <SettingGroup title={t("securityAgent")} />
+      <SettingLine label={t("securityRuleFree")} hint={t("securityRuleFreeHint")}>
+        <span className="rounded-full bg-tyba-green/[.12] px-[9px] py-0.5 text-[11px] text-tyba-green">
+          {t("securityFreeChip")}
+        </span>
       </SettingLine>
-      {overview?.error && <SettingNote tone="amber">{overview.error}</SettingNote>}
-      {overview && !overview.error && overview.read_allow.length === 0 && (
-        <SettingNote>{t("securityReadAllowNone")}</SettingNote>
-      )}
-      {overview?.read_allow.map((path) => (
-        <SettingNote key={path} tone="muted">
-          <span className="font-mono">{path}</span>
-        </SettingNote>
-      ))}
+      <SettingLine label={t("securityRuleAsk")} hint={t("securityRuleAskHint")} />
       <SettingGroup title={t("securityRepo")} />
-      <SettingNote>{t("securityRepoHint")}</SettingNote>
+      <SettingNote>
+        <Trans
+          i18nKey="securityRepoHint"
+          components={{ file: <span className="text-tyba-text" /> }}
+        />
+      </SettingNote>
+      <div className="px-[18px] py-3.5 text-[11.5px] leading-[17px] text-tyba-text-faint/80">
+        {t("securityLater")}
+      </div>
     </>
   );
 }
@@ -239,7 +225,7 @@ const searchKeys = (): Record<Section, string[]> => ({
     ...RICH_INPUT_TOGGLES.map((r) => r.label),
     "settingsLaunchConfigs",
   ],
-  security: [...SECURITY_RULES, "securityReadAllow", "securityRepo"],
+  security: [...SECURITY_RULES, ...SECURITY_AGENT, "securityRepo"],
   integrations: ["dockerIntegration", "claudePlugin", "fileLinks", "defaultEditor"],
   notifications: [...NOTIFY_KINDS.map((k) => k.label), "notifyMacos"],
   shortcuts: Object.values(ACTION_LABEL_KEYS),
@@ -844,7 +830,10 @@ export function SettingsView({
         searchKeys()[id].map((key) => ({
           section: id,
           label: t(key, { combo: "" }),
-          hint: i18n.exists(`${key}Hint`) ? t(`${key}Hint`, { combo: "" }) : undefined,
+          // Sem as marcações do `<Trans>` (`<file>…</file>`): a busca mostra texto.
+          hint: i18n.exists(`${key}Hint`)
+            ? t(`${key}Hint`, { combo: "" }).replace(/<\/?[a-z]+>/g, "")
+            : undefined,
         })),
       ),
     [t, i18n],
@@ -1310,7 +1299,7 @@ export function SettingsView({
         )}
         {section === "security" && (
           <section className="mx-auto w-full max-w-[860px]">
-            <SecuritySection onOpenConfig={onOpenConfig} />
+            <SecuritySection />
           </section>
         )}
         {section === "integrations" && (

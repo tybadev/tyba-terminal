@@ -40,7 +40,7 @@ const INHERITED_SESSION_MARKERS: &[&str] = &[
     "TYBA_ORBIT_TERMINAL",
 ];
 
-fn is_inherited_session_marker(key: &str) -> bool {
+pub(crate) fn is_inherited_session_marker(key: &str) -> bool {
     INHERITED_SESSION_MARKERS.contains(&key)
 }
 

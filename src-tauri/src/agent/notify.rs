@@ -73,10 +73,10 @@ impl NotifyKind {
 /// decide quem pode interromper — o `notifies` do manifesto — é declarada por
 /// **nós**, nos manifestos embutidos. Com o padrão ligado, o usuário consentiria
 /// uma vez ao conceito e daí em diante o TYBA escolheria por release quem tem
-/// licença de interromper a máquina dele. E destoaria do resto do desenho: o
-/// agente sem gate tem seção separada no quadro, badge "sem gate" e "sem sinal"
-/// em vez de cor — tudo diz que ele é de segunda classe, e só a notificação
-/// nasceria tão barulhenta quanto a do agente com hook.
+/// licença de interromper a máquina dele. E o palpite é de tela, não de hook:
+/// o agente deduzido mostra "sem sinal" em vez de cor quando a tela não diz o
+/// estado, e a notificação dele não deveria nascer tão barulhenta quanto a do
+/// agente com hook.
 pub const fn default_enabled(kind: NotifyKind) -> bool {
     match kind {
         NotifyKind::Request | NotifyKind::NativePrompt | NotifyKind::Done => true,
@@ -163,9 +163,43 @@ pub fn resolve(
     NotifyPolicy { enabled, sound }
 }
 
+/// Agente livre, fatia 5: o aviso de quando o agente pede algo. Diz só quem
+/// pede e onde — a pergunta está no prompt do próprio agente, e é lá que se
+/// responde. Nada aqui aprova coisa nenhuma.
+pub fn asking_body(agent: &str, project: Option<&str>, branch: Option<&str>) -> String {
+    let mut body = format!("O {agent} está pedindo algo");
+    for part in [project, branch].into_iter().flatten() {
+        if !part.is_empty() {
+            body.push_str(" · ");
+            body.push_str(part);
+        }
+    }
+    body
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pedido_diz_quem_projeto_e_branch() {
+        assert_eq!(
+            asking_body("Claude", Some("muriki-api"), Some("feat/x")),
+            "O Claude está pedindo algo · muriki-api · feat/x"
+        );
+        assert_eq!(
+            asking_body("Claude", Some("notas"), None),
+            "O Claude está pedindo algo · notas"
+        );
+        assert_eq!(
+            asking_body("Claude", None, None),
+            "O Claude está pedindo algo"
+        );
+        assert_eq!(
+            asking_body("Codex", Some(""), Some("main")),
+            "O Codex está pedindo algo · main"
+        );
+    }
 
     #[test]
     fn ouvir_so_toca_som_da_lista() {

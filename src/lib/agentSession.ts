@@ -1,7 +1,11 @@
 import type { AgentRepoConfig, CreateSessionOpts } from "./ipc";
 
+/** O `.tyba/config.toml` do repo pede consentimento: ele escolhe o agente
+ * padrão e põe snippets (comandos) na paleta. Sem nada disso, ou já
+ * consentido, nada a perguntar. */
 export function needsConsentPrompt(config: AgentRepoConfig | null): boolean {
-  return config !== null && config.consent !== true;
+  if (config === null || config.consent === true) return false;
+  return config.default_agent !== null || config.snippets.length > 0;
 }
 
 export type ConsentDecision = "allow" | "skip";
@@ -32,8 +36,7 @@ export function runnerFromDefault(
 }
 
 /** A preferência de review é uma linha de comando (`claude`, `codex --flag`), mas
- * uma sessão de agente exige o runner do core — é ele que carrega hooks, sandbox
- * e env allowlist. Casa pelo binário, ignorando argumentos; o que não for
+ * uma sessão de agente exige o runner do core — é ele que carrega os hooks. Casa pelo binário, ignorando argumentos; o que não for
  * reconhecido cai no Claude Code, que é o default do produto. */
 export function runnerFromCommand(
   command: string | null | undefined,
@@ -62,4 +65,12 @@ export function buildAgentSessionOpts(
     rows: params.rows ?? 30,
     worktree_task: params.task,
   };
+}
+
+/** O agente padrão do repo, só depois do consentimento; antes dele vale o
+ * padrão do app (`null`). */
+export function repoDefaultRunner(
+  config: AgentRepoConfig | null,
+): AgentRunnerId | null {
+  return config?.consent === true ? runnerFromDefault(config.default_agent) : null;
 }

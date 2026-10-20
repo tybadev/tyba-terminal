@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ArrowRight, CheckCircle, Warning, XCircle } from "@phosphor-icons/react";
 
+import { askingText, visibleAsk } from "@/lib/asking";
+
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -20,12 +22,17 @@ import {
 import { RISK_DOT, RISK_LABEL, approvalActions, decideApproval } from "@/lib/notifications";
 import { toastIsPointerOnly } from "@/lib/approvalPanel";
 import {
+  agentAsks,
+  dismissAsk,
+  focusSession,
+  onAgentAsks,
   onApprovalRequested,
   onApprovalResolved,
   onSessionTunnels,
   openTunnelsPanel,
   resolveApproval,
   sessionMarkSeen,
+  type AgentAsk,
   type ApprovalDecision,
   type ApprovalRequest,
   type Session,
@@ -127,6 +134,9 @@ export function NotificationToaster({
     });
 
   const [outcomes, setOutcomes] = useState<OutcomeToast[]>([]);
+  // Fatia 5: os pedidos de permissão em aberto, como o core os guarda. O card
+  // mostra o mais antigo fora da tela; só o clique no "Ir" troca de pane.
+  const [asks, setAsks] = useState<AgentAsk[]>([]);
   const outcomeTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
   const settleTimers = useRef(new Map<SessionId, ReturnType<typeof setTimeout>>());
   const prevStates = useRef(
@@ -226,6 +236,12 @@ export function NotificationToaster({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessions]);
 
+  const ask = visibleAsk(
+    asks,
+    activeSessionId,
+    new Set(sessions.map((s) => s.id)),
+  );
+
   useEffect(() => {
     const pending = settleTimers.current;
     const shown = outcomeTimers.current;
@@ -323,6 +339,12 @@ export function NotificationToaster({
         });
       }),
     );
+    track(onAgentAsks(setAsks));
+    void agentAsks()
+      .then((list) => {
+        if (!disposed) setAsks(list);
+      })
+      .catch(() => {});
     track(
       onApprovalRequested((request) => {
         setToasts((prev) => addApprovalToast(prev, request));
@@ -632,6 +654,43 @@ export function NotificationToaster({
           </div>
         </Toast>
       ))}
+      {ask && (
+        <Toast
+          key={`asking:${ask.session_id}`}
+          onOpenChange={(nextOpen) => {
+            if (!nextOpen) void dismissAsk(ask.session_id).catch(() => {});
+          }}
+        >
+          {/* Sem atalho de teclado e sem clique no card inteiro: um Enter
+              ou um colar perdidos não podem cair no prompt do Claude. */}
+          <div className="flex items-start gap-2">
+            <Warning
+              aria-hidden="true"
+              size={16}
+              weight="fill"
+              className="mt-0.5 shrink-0 text-tyba-amber"
+            />
+            <div className="min-w-0 flex-1">
+              <ToastTitle>{askingText(ask, t)}</ToastTitle>
+              <ToastDescription>{t("askingHelp", { agent: ask.agent })}</ToastDescription>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {/* Botão comum, não `ToastAction`: aquele fecha o toast, e
+                    fechar dispensa o pedido no core. "Ir" só troca de pane;
+                    quem dispensa é o X. */}
+                <Button
+                  size="sm"
+                  onClick={() => {
+                    void focusSession(ask.session_id).catch(() => {});
+                  }}
+                  className="h-6 rounded-[4px] px-2.5 text-[11px]"
+                >
+                  {t("askingGo")}
+                </Button>
+              </div>
+            </div>
+          </div>
+        </Toast>
+      )}
       {outcomes.map((outcome) => {
         const session = sessions.find((s) => s.id === outcome.sessionId);
         const branch = session?.worktree?.branch ?? null;

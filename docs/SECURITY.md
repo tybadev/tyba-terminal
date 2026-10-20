@@ -12,21 +12,24 @@ Três fontes de comandos, em ordem crescente de risco:
 
 ## Modelo de execução: agente livre, TYBA observador (2026-10-15)
 
-Decisão do dono depois de usar o TYBA no dia a dia: o agente que você roda — digitado no pane, aberto pelo TYBA, em worktree ou não — **roda livre**, como no Warp. Sem jaula do TYBA, com o env do shell do pane, e **quem pede permissão é o próprio CLI** (prompt nativo do Claude Code; sandbox e aprovação do Codex), uma vez só.
+Decisão do dono depois de usar o TYBA no dia a dia: o agente que você roda — claude ou codex, digitado no pane ou aberto pelo TYBA, em worktree ou não — **roda livre**, como no Warp. Sem jaula do TYBA, com o env do shell (o do pane, ou o env completo do shell de login nas sessões que o TYBA abre), e **quem pede permissão é o próprio CLI** (prompt nativo do Claude Code; sandbox e aprovação do Codex), uma vez só.
 
 Por quê: o TYBA nasceu desenhado para "agente autônomo em worktree isolado", mas o uso real é o humano acompanhando a sessão ao vivo. Para esse uso, a jaula empilhada sobre a do próprio Claude Code travava o trabalho (pasta fora do repo ilegível, `/Applications` invisível, vermelho para `ls`, aprovação que não abria a jaula) e gerava aprovação em excesso — e aprovação em excesso ensina a clicar "Aprovar" sem ler, o contrário de segurança.
 
 O que o TYBA faz:
 
 - **Observa**: monitor e histórico da conversa, subagentes, status, diff. Pelo disco (transcript, `~/.claude/sessions/<pid>.json`), por processo e pelo plugin do TYBA para o Claude Code (instalado só por ação do usuário, no-op fora do TYBA). Observar nunca bloqueia o agente; plugin nunca usa `onFailure: "block"`.
-- **Avisa**: pedido de permissão do agente vira notificação (SO + badge) que leva ao pane; a resposta é no prompt do agente.
-- **Guarda-corpo fixo** (hard-coded, não configurável, sem perguntar): `git push` para `main`/`master` e merge de PR (`gh pr merge`, `glab mr merge`) por agente são recusados, com o motivo em texto para o agente.
+- **Avisa**: pedido de permissão do agente vira aviso do SO e card dentro do app, com "Ir" para o pane; a resposta é no prompt do agente. Nada se aprova de fora.
+- **Guarda-corpo fixo** (hard-coded, não configurável, sem perguntar, em todo SO): **push para `main`/`master` é recusado por um hook `pre-push` do TYBA**, que toda sessão de agente (claude e codex, digitado e hospedado ou aberto pelo TYBA, e o que eles abrirem) recebe por `core.hooksPath` no env (`GIT_CONFIG_COUNT`/`KEY`/`VALUE`, somado ao `GIT_CONFIG_*` do dono). O hook vê o destino de verdade, venha o push de onde vier (alias, script, `push.default`, `remote.*.push`, upstream), e encadeia o `pre-push` do dono; todos os outros hooks do git do dono continuam rodando por hooks de passagem. Por texto de comando, nas ferramentas de shell do Claude (`Bash`, `PowerShell`) e do Codex, são recusados: desligar o hook (`--no-verify`, `-c core.hooksPath`, mexer em `GIT_CONFIG_*`, `env -i`), merge e aprovação de PR/MR (`gh pr merge`, `gh pr review --approve`, `glab mr merge`) e escrita na main por API (`gh api`, `curl`).
 - **Redação de secrets** antes de gravar histórico ou notificação no SQLite (sem mudança).
-- **O que ainda se recusa ou se tira no claude digitado**: as flags `--bare`, `--safe-mode`, `--settings` e `--setting-sources`, e as variáveis `CLAUDE_CODE_SIMPLE` e `CLAUDE_CODE_SAFE_MODE` (removidas do env do pane). Todas desligam ou trocam os hooks da sessão, e com eles o guarda-corpo. Um `claude` aberto de dentro do claude digitado ganha um `--settings` só com o guarda-corpo do Bash, que não fala com o core; com uma dessas flags, ou numa sessão em segundo plano, ele roda sem guarda-corpo (limite conhecido).
+- **O que ainda se recusa ou se tira no claude digitado**: as flags `--bare`, `--safe-mode`, `--settings` e `--setting-sources`, e as variáveis `CLAUDE_CODE_SIMPLE` e `CLAUDE_CODE_SAFE_MODE` (removidas do env do pane). Todas desligam ou trocam os hooks da sessão do Claude, e com eles a parte de texto do guarda-corpo (o hook `pre-push` do git segue valendo, porque vem do env). O claude cru que escapa do shim (caminho absoluto, `npx`) não tem o hook do git — só o plugin, se instalado (limite conhecido).
 
-**Riscos aceitos**: o agente tem o mesmo poder de qualquer comando que o usuário roda no shell; prompt injection que leva a um comando aprovado sem ler é o mesmo risco do Claude Code puro e do Warp. O guarda-corpo é por texto de comando — contornável por um agente determinado (script, alias); é proteção contra o erro, não fronteira.
+**Riscos aceitos**: o agente tem o mesmo poder de qualquer comando que o usuário roda no shell; prompt injection que leva a um comando aprovado sem ler é o mesmo risco do Claude Code puro e do Warp. O push para a main é barrado no próprio git (hook `pre-push`), mas um agente determinado ainda pode contornar (outro binário de git, apagar a pasta de hooks, credencial própria); a parte de texto do guarda-corpo (merge, aprovação, desligar o hook) é contornável por script ou alias. É proteção contra o erro, não fronteira.
 
-As seções abaixo sobre classificação de risco, cards de aprovação, env por allowlist e jaula (Seatbelt/bwrap/Windows) descrevem o **modelo anterior**. O código delas sai do caminho padrão em PRs seguintes; o que for mantido para um eventual modo autônomo será marcado aqui.
+- **Sessões que o TYBA abre** (agente novo em worktree, review, conflitos, launch config com ou sem `isolate`, retomar a conversa), claude e codex: sobem como o digitado — hooks que só observam (com o guarda-corpo), sem card, sem jaula do TYBA (o `Sandbox` é o passthrough) e com o env completo do shell de login (`$SHELL -lic`, uma vez, com cache; sem resposta, o env do processo), menos os marcadores de sessão herdados e `CLAUDE_CODE_SIMPLE`/`CLAUDE_CODE_SAFE_MODE`. O rc roda fora do repositório: direnv e `.nvmrc` por pasta não entram. Sem override de git: vale o git config do dono.
+- **O hook decide pelo destino real**: o git passa ao `pre-push` as refs que vai atualizar, então não há destino ambíguo para adivinhar. `git push --no-verify` (que pula o hook) é recusado no texto do comando.
+
+As seções abaixo sobre classificação de risco, cards de aprovação, env por allowlist e jaula (Seatbelt/bwrap/Windows) descrevem o **modelo anterior**. Nenhum agente do caminho padrão (claude ou codex) passa mais por elas; o código fica para um modo autônomo, depois do 2.0. A jaula do git (seção do #42) continua valendo para o git que o próprio core roda.
 
 ## Classificação de risco de comandos (modelo anterior)
 
@@ -45,14 +48,14 @@ Regras hard-coded (não configuráveis):
 - Push para `main`/`master` de sessão de agente é **recusado pelo core**, ponto.
 - `git push`/`gh pr create` exigem aprovação humana sempre — vermelho nunca entra em "sempre permitir".
 
-## UX de aprovação (anti-fadiga)
+## UX de aprovação (anti-fadiga) (modelo anterior)
 
 O maior risco de um produto de aprovações é o usuário virar autômato de "y". Cada prompt de aprovação mostra: comando completo, cwd, classificação de risco com cor, e as opções numeradas do TUI (1/2/3). Aprovação rápida pela inbox sem trocar de foco é o diferencial de UX que torna o modo seguro tolerável. Pela mesma razão, gate que aparece toda hora é gate que ninguém lê: o verde não pede clique — a fricção fica reservada para o amarelo e o vermelho.
 
 ## Secrets
 
-- **Env do agente**: no agente livre, o env do shell do pane (ver "Modelo de execução"). O env por allowlist definida em `.tyba/config` por repo é do modelo anterior.
-- **Runtime secrets** via 1Password CLI (`op run`): planejado, não construído. Hoje a proteção é a combinação env por allowlist + leitura deny-por-default no sandbox + redação em persistência.
+- **Env do agente**: no agente livre, o env do shell do pane no agente digitado e o env completo do shell de login no agente que o TYBA abre (ver "Modelo de execução"). O env por allowlist definida em `.tyba/config` por repo é do modelo anterior; do `.tyba/config.toml` valem hoje o agente padrão e os snippets, depois do consentimento.
+- **Runtime secrets** via 1Password CLI (`op run`): planejado, não construído. No agente livre, o agente tem o env do shell do dono; a proteção que sobra é a redação em persistência.
 - **Redação em persistência**: padrões de secret (AWS keys, JWTs, `sk-...`, private keys PEM) são redigidos antes de qualquer scrollback ir para o SQLite. Nada de secret em log.
 - Repo é público: nunca commitar exemplo com secret real.
 
@@ -101,7 +104,7 @@ O core faz shell-out de `git` num diretório que vem do **OSC 7** — atacante-c
 
 ## Conteúdo externo é input não-confiável
 
-Quando existir "agente, resolve a issue #42": o corpo da issue entra no prompt com framing de dado (não instrução), e ações vermelhas continuam atrás de aprovação. A aprovação humana de ações vermelhas é a mitigação real contra prompt injection — não confiar em sanitização de prompt.
+Quando existir "agente, resolve a issue #42": o corpo da issue entra no prompt com framing de dado (não instrução). No agente livre, quem aprova a ação é o prompt do próprio CLI — o mesmo risco do Claude Code puro; o TYBA só garante o guarda-corpo (push na main e merge de PR). Não confiar em sanitização de prompt.
 
 ## Terminal core (herdado de qualquer emulador)
 
@@ -113,4 +116,4 @@ Quando existir "agente, resolve a issue #42": o corpo da issue entra no prompt c
 
 - `SECURITY.md` na raiz com canal de disclosure responsável desde o commit 1.
 - Releases assinados/notarizados quando houver distribuição de binário (macOS: codesign + notarização obrigatórios).
-- Audit log local: nas sessões gerenciadas (modelo anterior), os eventos de hook (`PreToolUse`, decisões de aprovação, `Stop`/`Notification`) persistidos no SQLite servem como trilha de auditoria das ações do agente. O claude digitado (agente livre) guarda só o histórico deduzido (os pedidos de permissão); auditoria de toda ação dele é follow-up registrado.
+- Audit log local: o agente livre (digitado ou aberto pelo TYBA) guarda o histórico de pedidos de permissão — no claude hospedado, deduzido dos hooks (aprovado/negado); no claude cru do plugin, sem veredito ("encerrado sem decisão"), porque o plugin não tem sinal de aprovação. Auditoria de toda ação do agente é follow-up registrado.

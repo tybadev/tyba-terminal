@@ -1,6 +1,5 @@
 import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
-import { ShieldSlash } from "@phosphor-icons/react";
 
 import {
   DEFAULT_AGENT_ROWS,
@@ -39,10 +38,6 @@ function Token({
           aria-hidden
         />
       );
-    case "no_gate":
-      return values.no_gate ? (
-        <ShieldSlash size={10} className="shrink-0 text-tyba-amber" />
-      ) : null;
     case "workspace":
       return (
         <span className="min-w-0 truncate text-[12px] text-tyba-text">

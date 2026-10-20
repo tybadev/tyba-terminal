@@ -5,7 +5,6 @@ import {
   ArrowsOutSimple,
   CaretDown,
   CaretRight,
-  ShieldSlash,
   X,
 } from "@phosphor-icons/react";
 
@@ -50,7 +49,6 @@ interface Props {
   session: Session;
   snapshot: SubagentSnapshot | null;
   approvals: ApprovalRequest[];
-  ungated: boolean;
   /** Nome do orquestrador no topo da cascata: em sessão de shell é o binário
    * detectado (`claude`), não o título da sessão (que seria o shell). */
   orchestratorTitle?: string | null;
@@ -98,7 +96,6 @@ export function AgentsPanel({
   session,
   snapshot,
   approvals,
-  ungated,
   orchestratorTitle,
   runner,
   expanded,
@@ -195,19 +192,6 @@ export function AgentsPanel({
           <X size={13} />
         </button>
       </header>
-
-      {ungated && (
-        <div className="flex shrink-0 items-start gap-1.5 tyba-divide-b bg-tyba-amber/[.06] px-3 py-1.5">
-          <ShieldSlash
-            size={12}
-            weight="fill"
-            className="mt-px shrink-0 text-tyba-amber"
-          />
-          <span className="min-w-0 text-[11px] leading-snug text-tyba-text-muted">
-            {t("agentsNoGate")}
-          </span>
-        </div>
-      )}
 
       {/* Resumo da sessão: quem, onde, em que estado; embaixo, o que o core
           sabe dela. Com o `statusLine` do Claude: modelo, contexto, tokens,

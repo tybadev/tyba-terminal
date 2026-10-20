@@ -46,7 +46,15 @@ fn git_base(path: &Path) -> Command {
 }
 
 fn caged(path: &Path, profile: crate::sandbox::git::GitProfile, extra: &[PathBuf]) -> Command {
-    let mut cmd = crate::sandbox::git::wrap(git_base(path), profile, path, extra);
+    defended(crate::sandbox::git::wrap(
+        git_base(path),
+        profile,
+        path,
+        extra,
+    ))
+}
+
+fn defended(mut cmd: Command) -> Command {
     cmd.env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_OPTIONAL_LOCKS", "0")
         .env_remove("GIT_DIR")

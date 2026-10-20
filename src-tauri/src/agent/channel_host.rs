@@ -302,6 +302,7 @@ mod resolve_tests {
             event: None,
             tool: None,
             summary: None,
+            notification_type: None,
         }
     }
 

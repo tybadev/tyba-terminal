@@ -6121,8 +6121,6 @@ impl RunHost for TauriHost {
             attach_existing: false,
             shell: None,
             initial_prompt: None,
-            opened_by_gate: false,
-            resume_conversation: None,
             agent_model: None,
             prepared_worktree: None,
             inherit_cwd_from: None,

@@ -2,7 +2,7 @@
 //! "hospede este agente" — sem cwd nem session-id (o core deriva os dois do
 //! peer da conexão, nunca do que o pedido afirma). Ver o `[!danger]` da spec
 //! e a ADR 2026-09-02: esta é uma superfície de IPC NOVA que pode pedir ao
-//! core que suba um agente com gate numa pasta, e por isso o protocolo é
+//! core que suba um agente numa pasta, e por isso o protocolo é
 //! deliberadamente pequeno — um único `op`, um único agente por vez.
 //!
 //! Reusa o ESTILO de `hook_ipc::framing`/`server` (linha JSON, inflight
@@ -102,6 +102,9 @@ pub struct ChannelRequest {
     pub tool: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
+    /// Fatia 5: o `notification_type` do `Notification` (só identificador).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notification_type: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -366,11 +369,12 @@ pub fn hosted_child_env(
         remove.iter().any(|r| k.as_os_str() == r.as_str())
             || set.iter().any(|(s, _)| k.as_os_str() == s.as_str())
     };
-    inherited
+    let env = inherited
         .into_iter()
         .filter(|(k, _)| !overridden(k))
         .chain(set.iter().map(|(k, v)| (k.into(), v.into())))
-        .collect()
+        .collect();
+    crate::agent::git_hooks::with_hooks_os(env)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -483,6 +487,7 @@ fn resolve_agent_outcome(socket_path: Option<&Path>, agent: &str, args: &[String
         event: None,
         tool: None,
         summary: None,
+        notification_type: None,
     };
     let Some(response) = exchange(stream, &request) else {
         return JailOutcome::RunReal;
@@ -536,6 +541,7 @@ pub fn send_plugin_event(
     event: String,
     tool: Option<String>,
     summary: Option<String>,
+    notification_type: Option<String>,
 ) -> Option<ChannelResponse> {
     let socket_path = jail_connect_socket_path();
     if !socket_dir_is_ours(&socket_path) {
@@ -556,6 +562,7 @@ pub fn send_plugin_event(
         event: Some(event),
         tool,
         summary,
+        notification_type,
     };
     exchange(stream, &request)
 }
@@ -593,7 +600,7 @@ pub fn jail_args(argv: &[String]) -> Vec<String> {
 /// o alvo do shim do rc e do wrapper `claude` no PATH do pane (M6-A). Toda
 /// forma de chamar `claude` chega aqui; [`crate::agent::claude_cli::route`]
 /// decide o caminho. Nunca trava o terminal: qualquer dúvida no canal cai no
-/// binário de verdade — mas marcado, para o pane mostrar "sem gate".
+/// binário de verdade, com um aviso no terminal.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub fn maybe_run_jail_mode() -> Option<i32> {
     let argv: Vec<String> = std::env::args().collect();
@@ -644,10 +651,8 @@ pub fn maybe_run_jail_mode() -> Option<i32> {
     None
 }
 
-/// Marcador no env do `claude` cru que passou pelo `_jail` (M6-A). O core lê
-/// do processo detectado (`process_probe::shim_route`): `passthrough` não
-/// pede aviso nenhum; `ungated`/`fallback` acendem o "sem gate" vermelho.
-/// Nunca a faixa âmbar "Reabrir com gate": esse claude já passou pelo TYBA.
+/// Marcador que versões antigas punham no env do `claude` cru (M6-A). Ninguém
+/// lê mais; só é retirado do env do claude, para não vazar de um shell antigo.
 pub const SHIM_ENV: &str = "TYBA_SHIM";
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -671,17 +676,17 @@ fn run_jail_client(socket_path: Option<&Path>, args: &[String]) -> i32 {
             }
             Err(_) => args.to_vec(),
         };
-        return exec_real(&args, None);
+        return exec_real(&args);
     }
     match route(args) {
         ClaudeRoute::Forbidden(reason) => {
             eprintln!("tyba: {reason}. Dentro do TYBA o claude roda sempre com os hooks do TYBA.");
             return 2;
         }
-        ClaudeRoute::Passthrough => return exec_real(args, Some("passthrough")),
+        ClaudeRoute::Passthrough => return exec_real(args),
         ClaudeRoute::Ungated => {
-            eprintln!("tyba: sessão em segundo plano roda fora do pane, SEM gate do TYBA.");
-            return exec_real(args, Some("ungated"));
+            eprintln!("tyba: sessão em segundo plano roda fora do pane, sem os hooks do TYBA.");
+            return exec_real(args);
         }
         ClaudeRoute::Host => {}
     }
@@ -710,18 +715,18 @@ fn run_jail_client(socket_path: Option<&Path>, args: &[String]) -> i32 {
         JailOutcome::RunReal => {}
     }
     // Fail-open final, mas VISÍVEL: o core não hospedou (ou o exec acima
-    // falhou), o terminal não pode travar, e o claude sobe cru marcado como
-    // `fallback` — o pane mostra "sem gate" em vermelho.
-    eprintln!("tyba: o TYBA não conseguiu hospedar este claude; ele roda SEM gate.");
-    exec_real(args, Some("fallback"))
+    // falhou), o terminal não pode travar, e o claude sobe cru, com aviso.
+    eprintln!("tyba: o TYBA não conseguiu hospedar este claude; ele roda sem os hooks do TYBA.");
+    exec_real(args)
 }
 
 /// O `codex` digitado no shell de um nó Terminal do Orbit (fatia 4). O core
 /// acha a sessão dona pela árvore de processos e só hospeda — com o MCP do
 /// Orbit — quando ela é o shell de um nó Terminal aberto. Qualquer outra
 /// resposta (outra sessão, core fora do ar, subcomando que não é sessão, já
-/// dentro de um agente hospedado) roda o `codex` de verdade, intacto e sem
-/// aviso: é o mesmo `codex` de sempre, só sem as ferramentas.
+/// dentro de um agente hospedado) roda o codex livre do `tyba _codex`
+/// ([`crate::agent::codex_shim::exec_free_codex`]): o mesmo `codex` de
+/// sempre, sem as ferramentas e com o hook pre-push do TYBA.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn run_codex_client(socket_path: Option<&Path>, args: &[String]) -> i32 {
     use std::os::unix::process::CommandExt;
@@ -736,30 +741,34 @@ fn run_codex_client(socket_path: Option<&Path>, args: &[String]) -> i32 {
         } = resolve_agent_outcome(socket_path, "codex", args)
         {
             if let Some((program, rest)) = argv.split_first() {
+                let child_env = hosted_child_env(std::env::vars_os(), &env_remove, &env);
+                // O codex filtra o env dos comandos que roda: o hook pre-push
+                // vai também em `shell_environment_policy.set.*`, como no
+                // `tyba _codex`.
+                let rest = crate::agent::codex_shim::codex_argv(rest, |key| {
+                    child_env
+                        .iter()
+                        .rev()
+                        .find(|(k, _)| k.as_os_str() == key)
+                        .map(|(_, v)| v.to_string_lossy().into_owned())
+                });
                 let mut cmd = std::process::Command::new(program);
                 cmd.args(rest);
                 cmd.current_dir(&cwd);
                 cmd.env_clear();
-                cmd.envs(hosted_child_env(std::env::vars_os(), &env_remove, &env));
+                cmd.envs(child_env);
                 let err = cmd.exec();
                 eprintln!("tyba: exec do codex hospedado falhou: {err}");
             }
         }
     }
-    // Sem wrapper `codex` no PATH: o `codex` daqui é o de verdade.
-    let err = std::process::Command::new("codex").args(args).exec();
-    if err.kind() == std::io::ErrorKind::NotFound {
-        eprintln!("tyba _jail-codex: codex não encontrado no PATH");
-        return 127;
-    }
-    eprintln!("tyba _jail-codex: exec de codex falhou: {err}");
-    126
+    crate::agent::codex_shim::exec_free_codex(args)
 }
 
 /// `exec` do `claude` de verdade com os args intactos (argv, nunca shell).
 /// Nunca o wrapper do TYBA — ver [`crate::agent::claude_cli::real_claude`].
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-fn exec_real(args: &[String], marker: Option<&str>) -> i32 {
+fn exec_real(args: &[String]) -> i32 {
     use std::os::unix::process::CommandExt;
 
     let wrapper_dir = std::env::var_os("TYBA_WRAPPER_DIR").map(PathBuf::from);
@@ -774,10 +783,8 @@ fn exec_real(args: &[String], marker: Option<&str>) -> i32 {
     };
     let mut cmd = std::process::Command::new(real);
     cmd.args(args);
-    match marker {
-        Some(marker) => cmd.env(SHIM_ENV, marker),
-        None => cmd.env_remove(SHIM_ENV),
-    };
+    // Um marcador herdado de versão antiga não chega ao claude.
+    cmd.env_remove(SHIM_ENV);
     let err = cmd.exec();
     eprintln!("tyba _jail: exec de claude falhou: {err}");
     126
@@ -1057,6 +1064,7 @@ mod server_tests {
                 event: None,
                 tool: None,
                 summary: None,
+                notification_type: None,
             },
         );
         assert_eq!(
@@ -1120,6 +1128,7 @@ mod server_tests {
                 event: Some("PermissionRequest".into()),
                 tool: Some("Bash".into()),
                 summary: Some("Bash: ls".into()),
+                notification_type: None,
             },
         );
         assert_eq!(response, Some(ChannelResponse::Plugin));
@@ -1157,6 +1166,7 @@ mod server_tests {
                 event: None,
                 tool: None,
                 summary: None,
+                notification_type: None,
             },
         );
         assert_eq!(response, None);
@@ -1250,6 +1260,7 @@ mod server_tests {
                 event: None,
                 tool: None,
                 summary: None,
+                notification_type: None,
             },
         );
         assert_eq!(
@@ -1381,6 +1392,7 @@ mod protocol_tests {
             event: None,
             tool: None,
             summary: None,
+            notification_type: None,
         };
         let value = serde_json::to_value(&req).unwrap();
         assert_eq!(
@@ -1402,6 +1414,7 @@ mod protocol_tests {
             event: None,
             tool: None,
             summary: None,
+            notification_type: None,
         };
         let line = serde_json::to_string(&req).unwrap();
         let back: ChannelRequest = serde_json::from_str(&line).unwrap();

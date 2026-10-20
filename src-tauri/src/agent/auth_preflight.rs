@@ -302,34 +302,42 @@ mod tests {
     /// batimento mede a coisa que importa de verdade -- o processo ainda
     /// está FAZENDO algo? -- e não depende de reaping nem é Linux-only
     /// (`/proc` não existe no macOS, que também roda esta suíte no CI).
+    ///
+    /// O teto é interno a `run_status_json`, então o teste não escolhe o
+    /// instante do kill — só fica sabendo, pelo sinal do script, se o neto já
+    /// estava de pé quando ele veio. O neto grava `grandchild-up` DEPOIS do
+    /// primeiro batimento; sem esse arquivo, o kill chegou antes de o `sh`
+    /// subir o neto (máquina carregada) e a rodada não prova nada: repete com
+    /// o teto dobrado, num dir novo. A rodada que conta é sempre uma em que o
+    /// neto estava vivo e batendo na hora do `killpg`.
     #[test]
     #[cfg(unix)]
     fn run_status_json_timeout_kills_the_whole_group_not_just_the_direct_child() {
-        let dir = tempfile::tempdir().unwrap();
-        let bin = fake_binary(
-            dir.path(),
-            "claude",
-            "#!/bin/sh\n\
-             (i=0; while [ $i -lt 200 ]; do echo tick >> heartbeat; i=$((i+1)); sleep 0.05; done) &\n\
-             echo $! > grandchild-pid\n\
-             sleep 10\n",
-        );
-        let pid_file = dir.path().join("grandchild-pid");
-        let heartbeat = dir.path().join("heartbeat");
-
-        let result = run_status_json(
-            &bin,
-            &HashMap::new(),
-            dir.path(),
-            Duration::from_millis(500),
-        );
-        assert!(result.is_none());
-
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        while !pid_file.exists() && std::time::Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        assert!(pid_file.exists(), "o neto nunca chegou a subir");
+        let mut timeout = Duration::from_millis(500);
+        let (_dir, heartbeat) = loop {
+            let dir = tempfile::tempdir().unwrap();
+            let bin = fake_binary(
+                dir.path(),
+                "claude",
+                "#!/bin/sh\n\
+                 (echo tick >> heartbeat; : > grandchild-up; \
+                  i=0; while [ $i -lt 1000 ]; do echo tick >> heartbeat; i=$((i+1)); sleep 0.05; done) &\n\
+                 sleep 30\n",
+            );
+            let result = run_status_json(&bin, &HashMap::new(), dir.path(), timeout);
+            assert!(result.is_none());
+            // O grupo já morreu quando `run_status_json` devolve: ou o sinal
+            // está lá agora, ou não vai estar nunca.
+            if dir.path().join("grandchild-up").exists() {
+                let heartbeat = dir.path().join("heartbeat");
+                break (dir, heartbeat);
+            }
+            assert!(
+                timeout < Duration::from_secs(16),
+                "o neto nunca chegou a subir, nem com teto de {timeout:?}"
+            );
+            timeout *= 2;
+        };
 
         let ticks_at = || {
             std::fs::read_to_string(&heartbeat)

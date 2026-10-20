@@ -38,8 +38,8 @@ const PASSTHROUGH_SUBCOMMANDS: &[&str] = &[
 const PASSTHROUGH_FLAGS: &[&str] = &["-v", "--version", "-h", "--help"];
 
 /// Sessões em segundo plano: o agente roda num processo do próprio Claude,
-/// fora do pane, onde o TYBA não hospeda nem jaula. Rodam cruas, marcadas
-/// como sem gate (o pane mostra o estado vermelho), nunca escondidas.
+/// fora do pane, onde o TYBA não hospeda. Rodam cruas, sem os hooks do TYBA,
+/// com um aviso no terminal.
 const BACKGROUND_SUBCOMMANDS: &[&str] = &["agents", "attach", "respawn"];
 const BACKGROUND_FLAGS: &[&str] = &["--bg", "--background"];
 
@@ -58,7 +58,7 @@ pub enum ClaudeRoute {
     Host,
     /// Não abre sessão (versão, ajuda, `mcp`, `doctor`...): roda cru.
     Passthrough,
-    /// Abre sessão fora do pane (segundo plano): roda cru, marcado sem gate.
+    /// Abre sessão fora do pane (segundo plano): roda cru, com aviso.
     Ungated,
     /// Tiraria os hooks do TYBA: recusado, com o motivo para o usuário.
     Forbidden(String),
