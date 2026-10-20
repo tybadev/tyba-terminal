@@ -2135,6 +2135,8 @@ mod hook_zsh_tests {
         let out = std::process::Command::new("zsh")
             .args(["-i", "-c", "__tyba_precmd"])
             .env("ZDOTDIR", dir.path())
+            // A home também é a do teste: nada do dono entra por `~`.
+            .env("HOME", dir.path())
             .output()
             .expect("zsh");
         String::from_utf8_lossy(&out.stdout).into_owned()
@@ -2484,12 +2486,11 @@ command claude beta
 "#,
             rc = rc.display()
         );
-        let out = std::process::Command::new("bash")
-            .arg("-i")
+        let home = tempfile::tempdir().expect("home");
+        let out = isolated_interactive_shell("bash", home.path())
             // `type claude` é lido como texto; num bash em pt-BR ele diz
             // "claude é uma função" e o teste quebrava na máquina do dono.
             .env("LC_ALL", "C")
-            .env("HOME", std::env::var("HOME").unwrap_or_default())
             .env(
                 "PATH",
                 format!(
@@ -2555,9 +2556,8 @@ command claude beta
             "source {rc}\ntype -t claude || echo SEM-FUNCAO\n",
             rc = rc.display()
         );
-        let out = std::process::Command::new("bash")
-            .arg("-i")
-            .env("HOME", std::env::var("HOME").unwrap_or_default())
+        let home = tempfile::tempdir().expect("home");
+        let out = isolated_interactive_shell("bash", home.path())
             .env_remove("TYBA_BIN")
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
@@ -2587,6 +2587,25 @@ command claude beta
     // --- Shim v2 (canal shim↔core, tech-spec §6): bare `claude` gateia,
     // `claude <args>` cai cru --------------------------------------------
 
+    /// Um `bash`/`zsh` interativo que não lê rc nenhum de quem roda a suíte.
+    /// O rc do dono pode ter a sua própria função `claude` (que passa na
+    /// frente do stub) ou mudar o que `type` imprime; o teste dá `source` à
+    /// mão no rc que quer provar. Por isso: `HOME` e `ZDOTDIR` em `home`
+    /// (vazio), bash com `--norc`, e sem `BASH_ENV`/`ENV` herdados.
+    #[cfg(unix)]
+    fn isolated_interactive_shell(shell: &str, home: &Path) -> std::process::Command {
+        let mut cmd = std::process::Command::new(shell);
+        if shell == "bash" {
+            cmd.arg("--norc");
+        }
+        cmd.arg("-i")
+            .env("HOME", home)
+            .env("ZDOTDIR", home)
+            .env_remove("BASH_ENV")
+            .env_remove("ENV");
+        cmd
+    }
+
     /// Roda um shell interativo de verdade (`bash -i`/`zsh -i`) com o script
     /// dado no stdin. `None` quando o binário do shell não existe nesta
     /// máquina — o chamador decide se isso é "pula o teste" (zsh pode faltar)
@@ -2598,14 +2617,9 @@ command claude beta
         script: &str,
         envs: &[(&str, &str)],
     ) -> Option<String> {
-        // Hermético: HOME e ZDOTDIR vazios, para o rc do dono (que pode ter a
-        // sua própria função `claude`) nunca vazar para o teste.
         let home = tempfile::tempdir().ok()?;
-        let mut cmd = std::process::Command::new(shell);
-        cmd.arg("-i")
-            .env("HOME", home.path())
-            .env("ZDOTDIR", home.path())
-            .env_remove("TYBA_WRAPPER_DIR")
+        let mut cmd = isolated_interactive_shell(shell, home.path());
+        cmd.env_remove("TYBA_WRAPPER_DIR")
             .env_remove("TYBA_REAL_CLAUDE")
             .env(
                 "PATH",
@@ -3217,9 +3231,8 @@ echo beta
 "#,
             rc = rc.display()
         );
-        let out = std::process::Command::new("bash")
-            .arg("-i")
-            .env("HOME", std::env::var("HOME").unwrap_or_default())
+        let home = tempfile::tempdir().expect("home");
+        let out = isolated_interactive_shell("bash", home.path())
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
