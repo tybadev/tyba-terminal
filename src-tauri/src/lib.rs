@@ -517,6 +517,7 @@ fn wants_plugin_chip(kind: &crate::session::AgentRunnerKind, hosting: bool) -> b
 }
 
 /// O `CLAUDE_CONFIG_DIR` do claude detectado (do env dele, não do TYBA).
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn pane_claude_config_dir(pid: u32) -> Option<String> {
     agent::process_probe::env_var(pid, "CLAUDE_CONFIG_DIR").filter(|d| !d.is_empty())
 }
