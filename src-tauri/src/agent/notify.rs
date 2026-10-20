@@ -163,9 +163,43 @@ pub fn resolve(
     NotifyPolicy { enabled, sound }
 }
 
+/// Agente livre, fatia 5: o aviso de quando o agente pede algo. Diz só quem
+/// pede e onde — a pergunta está no prompt do próprio agente, e é lá que se
+/// responde. Nada aqui aprova coisa nenhuma.
+pub fn asking_body(agent: &str, project: Option<&str>, branch: Option<&str>) -> String {
+    let mut body = format!("O {agent} está pedindo algo");
+    for part in [project, branch].into_iter().flatten() {
+        if !part.is_empty() {
+            body.push_str(" · ");
+            body.push_str(part);
+        }
+    }
+    body
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pedido_diz_quem_projeto_e_branch() {
+        assert_eq!(
+            asking_body("Claude", Some("muriki-api"), Some("feat/x")),
+            "O Claude está pedindo algo · muriki-api · feat/x"
+        );
+        assert_eq!(
+            asking_body("Claude", Some("notas"), None),
+            "O Claude está pedindo algo · notas"
+        );
+        assert_eq!(
+            asking_body("Claude", None, None),
+            "O Claude está pedindo algo"
+        );
+        assert_eq!(
+            asking_body("Codex", Some(""), Some("main")),
+            "O Codex está pedindo algo · main"
+        );
+    }
 
     #[test]
     fn ouvir_so_toca_som_da_lista() {

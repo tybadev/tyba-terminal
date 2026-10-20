@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ArrowRight, CheckCircle, Warning, XCircle } from "@phosphor-icons/react";
 
+import { nextAsk, pruneAsks, recordAsk, type Ask } from "@/lib/asking";
+
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -20,6 +22,8 @@ import {
 import { RISK_DOT, RISK_LABEL, approvalActions, decideApproval } from "@/lib/notifications";
 import { toastIsPointerOnly } from "@/lib/approvalPanel";
 import {
+  focusSession,
+  onAgentAsking,
   onApprovalRequested,
   onApprovalResolved,
   onSessionTunnels,
@@ -127,6 +131,9 @@ export function NotificationToaster({
     });
 
   const [outcomes, setOutcomes] = useState<OutcomeToast[]>([]);
+  // Fatia 5: pedidos de permissão em aberto, um por sessão. O card mostra o
+  // mais antigo fora da tela; só o clique no "Ir" troca de pane.
+  const [asks, setAsks] = useState<ReadonlyMap<SessionId, Ask>>(() => new Map());
   const outcomeTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
   const settleTimers = useRef(new Map<SessionId, ReturnType<typeof setTimeout>>());
   const prevStates = useRef(
@@ -227,6 +234,19 @@ export function NotificationToaster({
   }, [sessions]);
 
   useEffect(() => {
+    setAsks((prev) => pruneAsks(prev, sessions));
+  }, [sessions]);
+
+  const dropAsk = (sessionId: SessionId) =>
+    setAsks((prev) => {
+      if (!prev.has(sessionId)) return prev;
+      const next = new Map(prev);
+      next.delete(sessionId);
+      return next;
+    });
+  const ask = nextAsk(asks, sessions, activeSessionId);
+
+  useEffect(() => {
     const pending = settleTimers.current;
     const shown = outcomeTimers.current;
     return () => {
@@ -321,6 +341,11 @@ export function NotificationToaster({
           }
           return next;
         });
+      }),
+    );
+    track(
+      onAgentAsking(({ session_id, body }) => {
+        setAsks((prev) => recordAsk(prev, session_id, body, Date.now()));
       }),
     );
     track(
@@ -632,6 +657,44 @@ export function NotificationToaster({
           </div>
         </Toast>
       ))}
+      {ask && (
+        <Toast
+          key={`asking:${ask.sessionId}`}
+          onOpenChange={(nextOpen) => {
+            if (!nextOpen) dropAsk(ask.sessionId);
+          }}
+        >
+          {/* Sem atalho de teclado e sem clique no card inteiro: um Enter
+              ou um colar perdidos não podem cair no prompt do Claude. */}
+          <div className="flex items-start gap-2">
+            <Warning
+              aria-hidden="true"
+              size={16}
+              weight="fill"
+              className="mt-0.5 shrink-0 text-tyba-amber"
+            />
+            <div className="min-w-0 flex-1">
+              <ToastTitle>{ask.body}</ToastTitle>
+              <ToastDescription>{t("askingHelp")}</ToastDescription>
+              <div className="mt-2 flex flex-wrap gap-2">
+                <ToastAction altText={t("askingGo")} asChild>
+                  <Button
+                    size="sm"
+                    onClick={() => {
+                      const id = ask.sessionId;
+                      dropAsk(id);
+                      void focusSession(id).catch(() => {});
+                    }}
+                    className="h-6 rounded-[4px] px-2.5 text-[11px]"
+                  >
+                    {t("askingGo")}
+                  </Button>
+                </ToastAction>
+              </div>
+            </div>
+          </div>
+        </Toast>
+      )}
       {outcomes.map((outcome) => {
         const session = sessions.find((s) => s.id === outcome.sessionId);
         const branch = session?.worktree?.branch ?? null;

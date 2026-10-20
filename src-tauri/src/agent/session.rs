@@ -171,6 +171,140 @@ fn notify_suppressed(window_focused: bool, viewed: Option<SessionId>, id: Sessio
     window_focused && viewed == Some(id)
 }
 
+/// Nome do agente nos avisos.
+fn agent_display_name(runner: &AgentRunnerKind) -> String {
+    match runner {
+        AgentRunnerKind::ClaudeCode => "Claude".to_string(),
+        AgentRunnerKind::Codex => "Codex".to_string(),
+        other => crate::agent::runner_binary(other)
+            .unwrap_or("agente")
+            .to_string(),
+    }
+}
+
+/// Projeto e branch da sessão, lidos do cwd do processo do AGENTE no kernel
+/// (o claude detectado no pane; sem ele, o processo líder) — nunca do
+/// payload do hook.
+fn session_place(app: &AppHandle, id: SessionId) -> (Option<String>, Option<String>) {
+    let Some(state) = app.try_state::<crate::AppState>() else {
+        return (None, None);
+    };
+    let agent_cwd = state
+        .agent_prober
+        .detected(id)
+        .and_then(|d| crate::repo::process_cwd(d.pid));
+    let Some(cwd) = agent_cwd.or_else(|| {
+        state
+            .pty_pool
+            .leader_pid(id)
+            .and_then(crate::repo::process_cwd)
+    }) else {
+        return (None, None);
+    };
+    place_of(&cwd)
+}
+
+/// Projeto e branch de uma pasta. Projeto é o repositório de ORIGEM — num
+/// worktree gerenciado, o repo de onde ele saiu, não o slug do worktree;
+/// fora de git, a própria pasta. Com HEAD destacado, o sha curto.
+pub(crate) fn place_of(cwd: &Path) -> (Option<String>, Option<String>) {
+    let name = |p: &Path| p.file_name().map(|n| n.to_string_lossy().into_owned());
+    let Some(top) = crate::repo::toplevel(cwd) else {
+        return (name(cwd), None);
+    };
+    let origin = crate::worktree::main_repo_of(&top).unwrap_or_else(|_| top.clone());
+    let branch = branch_label(crate::repo::branch(&top), || short_head(&top));
+    (name(&origin), branch)
+}
+
+/// `rev-parse --abbrev-ref` devolve `HEAD` com HEAD destacado: aí vale o sha.
+fn branch_label(
+    branch: Option<String>,
+    short_sha: impl FnOnce() -> Option<String>,
+) -> Option<String> {
+    match branch {
+        Some(b) if b != "HEAD" => Some(b),
+        _ => short_sha(),
+    }
+}
+
+fn short_head(top: &Path) -> Option<String> {
+    let out = crate::worktree::git_in(top)
+        .args(["rev-parse", "--short", "HEAD"])
+        .output()
+        .ok()?;
+    let sha = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (out.status.success() && !sha.is_empty()).then_some(sha)
+}
+
+/// Fatia 5: o pedido de permissão que o app mostra dentro dele (o card com
+/// "Ir"). Só pedidos de permissão emitem isto.
+pub const EVENT_AGENT_ASKING: &str = "agent://asking";
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AgentAsking {
+    pub session_id: SessionId,
+    pub body: String,
+}
+
+/// Fatia 5: "o Claude está pedindo algo · projeto · branch" — o card dentro
+/// do app e o aviso do sistema (mesma política do pedido). Nada aqui aprova:
+/// a resposta é no prompt do próprio agente, e o texto não leva nada do
+/// payload. Devolve se o aviso do sistema saiu.
+pub(crate) fn notify_asking(
+    app: &AppHandle,
+    sessions: &SharedSessionManager,
+    store: &Store,
+    runner: &AgentRunnerKind,
+    id: SessionId,
+) -> bool {
+    let (project, branch) = session_place(app, id);
+    let body = notify::asking_body(
+        &agent_display_name(runner),
+        project.as_deref(),
+        branch.as_deref(),
+    );
+    let body = crate::session::redact::redact(&body).into_owned();
+    let _ = app.emit(
+        EVENT_AGENT_ASKING,
+        AgentAsking {
+            session_id: id,
+            body: body.clone(),
+        },
+    );
+    notify_native_shown(
+        app,
+        sessions,
+        store,
+        notify::NotifyKind::NativePrompt,
+        id,
+        &body,
+    )
+}
+
+/// Claude cru (plugin): o pedido marca a sessão como "pedindo" — o mesmo
+/// estado do caminho hospedado — e avisa. O plugin manda o par
+/// `PermissionRequest` + `Notification(permission_prompt)` do mesmo prompt:
+/// só um aviso do sistema sai.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) fn plugin_asking(
+    app: &AppHandle,
+    sessions: &SharedSessionManager,
+    store: &Store,
+    id: SessionId,
+) {
+    crate::agent::claude_plugin::mark_plugin_ask(id);
+    if sessions
+        .get(id)
+        .is_some_and(|s| !crate::status::agent_events::is_native_prompt(&s.status))
+    {
+        sessions.set_status(app, id, native_prompt_status(None));
+    }
+    crate::agent::claude_plugin::with_ask_slot(id, std::time::Instant::now(), || {
+        notify_asking(app, sessions, store, &AgentRunnerKind::ClaudeCode, id)
+    });
+}
+
 /// O aviso do sistema, com a política já resolvida.
 ///
 /// `pub(crate)` porque o palpite de tela também sai por aqui: são fontes
@@ -185,11 +319,23 @@ pub(crate) fn notify_native(
     id: SessionId,
     body: &str,
 ) {
+    notify_native_shown(app, sessions, store, kind, id, body);
+}
+
+/// [`notify_native`], dizendo se o aviso saiu de fato.
+fn notify_native_shown(
+    app: &AppHandle,
+    sessions: &SharedSessionManager,
+    store: &Store,
+    kind: notify::NotifyKind,
+    id: SessionId,
+    body: &str,
+) -> bool {
     let focused = main_window_focused(app);
     let viewed = viewed_session(app);
     if notify_suppressed(focused, viewed, id) {
         eprintln!("[tyba] aviso {kind:?} de {id} calado: a sessão está na tela");
-        return;
+        return false;
     }
     // Preferência ilegível não silencia o aviso: `ok().flatten()` cai em `None`,
     // que é "nunca escolhi", que é o default ligado. Perder o aviso de um agente
@@ -199,7 +345,7 @@ pub(crate) fn notify_native(
     let policy = notify::resolve(kind, enabled_raw.as_deref(), sound_raw.as_deref());
     if !policy.enabled {
         eprintln!("[tyba] aviso {kind:?} de {id} desligado nas preferências");
-        return;
+        return false;
     }
     let title = sessions
         .get(id)
@@ -215,10 +361,16 @@ pub(crate) fn notify_native(
         builder = builder.sound(sound);
     }
     match builder.show() {
-        Ok(()) => eprintln!(
-            "[tyba] aviso {kind:?} de {id} enviado (janela em foco: {focused}, na tela: {viewed:?})"
-        ),
-        Err(e) => eprintln!("[tyba] aviso {kind:?} de {id} falhou: {e}"),
+        Ok(()) => {
+            eprintln!(
+                "[tyba] aviso {kind:?} de {id} enviado (janela em foco: {focused}, na tela: {viewed:?})"
+            );
+            true
+        }
+        Err(e) => {
+            eprintln!("[tyba] aviso {kind:?} de {id} falhou: {e}");
+            false
+        }
     }
 }
 
@@ -706,18 +858,13 @@ fn on_native_prompt(ctx: &HandlerCtx, event: &HookEvent) -> HookAction {
     .summary();
     let hint = (!summary.trim().is_empty()).then_some(summary);
     ctx.sessions
-        .set_status(&ctx.app, ctx.session_id, native_prompt_status(hint.clone()));
-    let body = match hint {
-        Some(summary) => format!("Pede permissão no terminal: {summary}"),
-        None => "Pede permissão no terminal".to_string(),
-    };
-    notify_native(
+        .set_status(&ctx.app, ctx.session_id, native_prompt_status(hint));
+    notify_asking(
         &ctx.app,
         &ctx.sessions,
         &ctx.store,
-        notify::NotifyKind::NativePrompt,
+        &ctx.runner_kind,
         ctx.session_id,
-        &body,
     );
     HookAction::Ack
 }
@@ -2497,6 +2644,73 @@ mod hook_route_tests {
         assert!(!notify_suppressed(true, Some(other), here));
         assert!(!notify_suppressed(true, None, here));
         assert!(!notify_suppressed(false, Some(here), here));
+    }
+
+    #[test]
+    fn detached_head_shows_the_short_sha() {
+        assert_eq!(
+            branch_label(Some("feat/x".into()), || Some("abc1234".into())).as_deref(),
+            Some("feat/x")
+        );
+        assert_eq!(
+            branch_label(Some("HEAD".into()), || Some("abc1234".into())).as_deref(),
+            Some("abc1234")
+        );
+        assert_eq!(branch_label(None, || None), None);
+    }
+
+    /// Repo sintético: o worktree mostra o nome do repo de origem e a branch
+    /// dele; com HEAD destacado, o sha curto.
+    #[test]
+    fn place_of_names_the_origin_repo_and_branch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("origem");
+        std::fs::create_dir_all(&repo).unwrap();
+        let git = |dir: &Path, args: &[&str]| {
+            let ok = std::process::Command::new("git")
+                .args([
+                    "-c",
+                    "user.name=t",
+                    "-c",
+                    "user.email=t@t",
+                    "-c",
+                    "commit.gpgsign=false",
+                ])
+                .args(args)
+                .current_dir(dir)
+                .output()
+                .unwrap()
+                .status
+                .success();
+            assert!(ok, "git {args:?}");
+        };
+        git(&repo, &["init", "-q", "-b", "main"]);
+        git(&repo, &["commit", "-q", "--allow-empty", "-m", "x"]);
+        let wt = tmp.path().join("tyba-slug-123");
+        git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "feat/y",
+                wt.to_str().unwrap(),
+            ],
+        );
+
+        assert_eq!(
+            place_of(&wt),
+            (Some("origem".to_string()), Some("feat/y".to_string()))
+        );
+        git(&repo, &["checkout", "-q", "--detach"]);
+        let (project, branch) = place_of(&repo);
+        assert_eq!(project.as_deref(), Some("origem"));
+        let sha = branch.unwrap();
+        assert!(
+            sha != "HEAD" && sha.len() >= 7 && sha.chars().all(|c| c.is_ascii_hexdigit()),
+            "{sha}"
+        );
     }
 
     #[test]

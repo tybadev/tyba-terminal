@@ -1221,6 +1221,16 @@ impl LayoutManager {
         self.persist()
     }
 
+    /// Foca o pane da sessão (workspace, aba e pane). `false` quando ela não
+    /// está em pane nenhum — nada muda.
+    pub fn focus_session(&self, session: SessionId) -> Result<bool, LayoutError> {
+        let pane = find_session_pane(&self.inner.read().workspaces, session).map(|(_, _, p)| p);
+        match pane {
+            Some(pane) => self.focus_pane(pane).map(|()| true),
+            None => Ok(false),
+        }
+    }
+
     pub fn set_split_ratio(
         &self,
         pane: PaneId,
@@ -2708,6 +2718,24 @@ mod tests {
             Some(diff_view(s)),
             "foco continua na sessão do diff — o painel não pode fechar"
         );
+    }
+
+    #[test]
+    fn focus_session_goes_to_its_workspace_and_pane() {
+        let mgr = manager();
+        let s = sid();
+        mgr.create_workspace("api", None, s).unwrap();
+        let s_pane = mgr.state().workspaces[0].tabs[0].active_pane.unwrap();
+        let s2 = sid();
+        let s2_pane = mgr.split_pane(s_pane, SplitKind::V, s2).unwrap();
+        mgr.focus_pane(s2_pane).unwrap();
+        mgr.create_workspace("web", None, sid()).unwrap();
+
+        assert!(mgr.focus_session(s).unwrap());
+
+        assert_eq!(mgr.active_session(), Some(s));
+        assert!(!mgr.focus_session(sid()).unwrap());
+        assert_eq!(mgr.active_session(), Some(s));
     }
 
     #[test]
