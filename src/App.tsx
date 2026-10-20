@@ -77,13 +77,7 @@ import { ConfirmHost } from "./components/ConfirmHost";
 import { ToastHost } from "./components/ToastHost";
 import { requestConfirm } from "./lib/confirm";
 import { translateError } from "./lib/errors";
-import {
-  agentBinaryName,
-  noticeKey,
-  showShellAgentNotice,
-  showUnjailedNotice,
-  ungatedReason,
-} from "./lib/shellAgentNotice";
+import { agentBinaryName } from "./lib/shellAgentNotice";
 import { resumeCandidates, showAgentResumeInvite } from "./lib/agentResume";
 import {
   paneRunningAgent,
@@ -271,7 +265,6 @@ import {
   focusSubagent,
   onSubagentsChanged,
   detectedAgent,
-  killShellAgent,
   canResumeAgentSession,
   resumeAgentSession,
   resumeShellConversation,
@@ -279,8 +272,6 @@ import {
   type AgentRunner,
   onAgentDetected,
   type AgentDetectedPayload,
-  type ShimRoute,
-  type NoJailReason,
   type DetectedAgent,
   type SubagentSnapshot,
   renameWorkspace,
@@ -367,7 +358,6 @@ import {
 import {
   agentsPanelActionableIds,
   agentsPanelSession,
-  agentsPanelUngated,
   deadAgentsPanels,
   mainColumn,
   showAgentsButton,
@@ -702,8 +692,6 @@ function IconAction({
 type DetectedAgentState = DetectedAgent & {
   hosting: boolean;
   jailed: boolean;
-  shim: ShimRoute | null;
-  noJail: NoJailReason | null;
   suggestPlugin: boolean;
 };
 
@@ -713,8 +701,6 @@ const withHostingState = (p: AgentDetectedPayload): DetectedAgentState | null =>
         ...p.detected,
         hosting: p.hosting,
         jailed: p.jailed,
-        shim: p.shim ?? null,
-        noJail: p.no_jail ?? null,
         suggestPlugin: p.suggest_plugin ?? false,
       }
     : null;
@@ -754,11 +740,6 @@ export default function App() {
   >(() => new Map());
   const [detectedBySession, setDetectedBySession] = useState<
     Map<SessionId, DetectedAgentState>
-  >(() => new Map());
-  // F2/F3 do detectar-agente-no-shell: "Ignorar" esconde o aviso só pra
-  // aquela instância de processo (pid+start) — um agente novo re-avisa.
-  const [dismissedShellNotices, setDismissedShellNotices] = useState<
-    Map<SessionId, string>
   >(() => new Map());
   // Veredito do core sobre retomar a conversa nativa de uma sessão de agente
   // morta. `undefined` = ainda não perguntado; o convite só nasce do `true`.
@@ -1937,17 +1918,6 @@ export default function App() {
       }
       return changed ? next : prev;
     });
-    setDismissedShellNotices((prev) => {
-      let changed = false;
-      const next = new Map(prev);
-      for (const key of [...next.keys()]) {
-        if (!live.has(key)) {
-          next.delete(key);
-          changed = true;
-        }
-      }
-      return changed ? next : prev;
-    });
     for (const id of [...probedDetection.current]) {
       if (!live.has(id)) probedDetection.current.delete(id);
     }
@@ -2063,26 +2033,14 @@ export default function App() {
     }
   }, [activeId, activeWorkspace, sideView, subagentsBySession]);
 
-  // O `hosting` do shim v2 (tech-spec §7), por sessão — projeção de
-  // `detectedBySession` porque `agentsBoard.buildRows`/`AgentRow` só
-  // precisam do booleano, nunca do `pid`/`start_ms`/`jailed` que o resto do
-  // App usa. É o que decide o selo "sem gate" no quadro, na fila e na barra
-  // lateral (ver `agentsBoard.rowShowsNoGate`): hospedado já está dentro do
-  // gate, mesmo continuando `kind.type === "shell"`.
-  const hostingBySession = useMemo(() => {
-    const map = new Map<SessionId, boolean>();
-    for (const [id, d] of detectedBySession) map.set(id, d.hosting);
-    return map;
-  }, [detectedBySession]);
-
-  // Conta as duas seções do quadro: o agente sem gate também pede alguém, e o
+  // Conta as duas seções do quadro: o agente deduzido da tela também pede alguém, e o
 
   // Uma lista só, consumida pelo contador e pela seção da barra lateral. Duas
   // derivações independentes do mesmo estado dariam contador e lista que
   // discordam — e é exatamente o número em cima da lista que denuncia.
   const agentRows = useMemo(
-    () => boardOrder(buildAgentRows(sessions, layout, hostingBySession)),
-    [sessions, layout, hostingBySession],
+    () => boardOrder(buildAgentRows(sessions, layout)),
+    [sessions, layout],
   );
   const agentsWaiting = useMemo(
     () => agentRows.filter(wantsAttention).length,
@@ -2172,17 +2130,14 @@ export default function App() {
     [],
   );
 
-  // Sessão de AGENTE na pasta que já existe — nunca uma sessão de shell com o
-  // binário digitado dentro. Digitar `claude` num shell sobe o agente sem
-  // sandbox, com o env inteiro do usuário e, sobretudo, sem os hooks: sem
-  // PreToolUse não há gate, e um agente fora do inbox faz o que quiser.
+  // Sessão de AGENTE na pasta que já existe (review, conflitos): o core sobe o
+  // claude com os hooks do observador — monitor, conversa, subagentes e o
+  // guarda-corpo de push/merge —, como o claude digitado.
   const spawnAgentSession = useCallback(
     async (
       title: string,
       cwd: string,
       runner?: AgentRunner,
-      openedByGate = false,
-      resumeConversation?: string,
     ) => {
       const fresh = await createSession({
         kind: { type: "agent", runner: runner ?? runnerFromCommand(reviewAgent) },
@@ -2191,8 +2146,6 @@ export default function App() {
         attach_existing: true,
         cols: 100,
         rows: 30,
-        opened_by_gate: openedByGate,
-        resume_conversation: resumeConversation,
       });
       setSessions((prev) => [...prev, fresh]);
       try {
@@ -2234,74 +2187,12 @@ export default function App() {
     [sessions, goToSession, spawnAgentSession, typeIntoSession],
   );
 
-  const dismissShellAgentNotice = useCallback(
-    (sessionId: SessionId) => {
-      const detected = detectedBySession.get(sessionId);
-      if (!detected) return;
-      setDismissedShellNotices((prev) =>
-        new Map(prev).set(sessionId, noticeKey(detected)),
-      );
-    },
-    [detectedBySession],
-  );
-
   // Entrega C, F3: a outra metade do "some" -- dispensa manual. A metade de
   // recovery (sessão volta a `running`) mora no `useEffect` que observa
   // `sessions` logo abaixo, porque só ele já escuta status de sessão.
   const dismissRuntimeAuthAlert = useCallback((sessionId: SessionId) => {
     setRuntimeAuthAlerts((prev) => withoutAuthAlert(prev, sessionId));
   }, []);
-
-  const reopeningShellAgents = useRef<Set<SessionId>>(new Set());
-  const reopenShellAgentManaged = useCallback(
-    async (sessionId: SessionId) => {
-      const detected = detectedBySession.get(sessionId);
-      if (!detected || reopeningShellAgents.current.has(sessionId)) return;
-      reopeningShellAgents.current.add(sessionId);
-      try {
-        const binary = agentBinaryName(detected.kind);
-        const proceed = await requestConfirm({
-          title: t("shellAgentReopenTitle"),
-          detail: t("shellAgentReopenDetail", { binary }),
-          confirmLabel: t("shellAgentReopen"),
-          destructive: true,
-        });
-        if (!proceed) return;
-        let cwd: string;
-        let conversationId: string | null;
-        try {
-          ({ cwd, conversation_id: conversationId } =
-            await killShellAgent(sessionId));
-        } catch (e) {
-          toastError(t("shellAgentReopenFailed"), translateError(e, t));
-          return;
-        }
-        try {
-          const title = cwd.split("/").filter(Boolean).pop() ?? binary;
-          // A aba que o TYBA abre aqui é a que ele mesmo se propõe a fechar
-          // de novo quando o agente sair depois de trabalhar — ver
-          // `opened_by_gate` no core. Review e resolução de conflitos NÃO
-          // marcam isto: só este fluxo reabre por trás de uma confirmação
-          // explícita ("gate") e é dono da aba que criou.
-          // Com o id, a sessão gerenciada retoma a MESMA conversa (M1 do
-          // claude-monitor) em vez de nascer vazia e deixar a original órfã.
-          const sid = await spawnAgentSession(
-            title,
-            cwd,
-            detected.kind,
-            true,
-            conversationId ?? undefined,
-          );
-          goToSession(sid);
-        } catch (e) {
-          toastError(t("shellAgentReopenSpawnFailed"), translateError(e, t));
-        }
-      } finally {
-        reopeningShellAgents.current.delete(sessionId);
-      }
-    },
-    [detectedBySession, spawnAgentSession, goToSession, t],
-  );
 
   // Pergunta ao core, uma vez por sessão candidata, se dá pra retomar a conversa
   // nativa daquele agente. Quem decide é ele: só o core sabe se o id foi
@@ -6185,7 +6076,6 @@ export default function App() {
                         sessions={sessions}
                         layout={layout}
                         activeSessionId={activeId}
-                        hostingBySession={hostingBySession}
                         nextAttentionCombo={bindings.nextAttentionSession}
                         onJump={jumpToAgent}
                         onNextAttention={goToNextAttention}
@@ -6315,28 +6205,6 @@ export default function App() {
                     const detected = detectedBySession.get(s.id) ?? null;
                     const sshHostId =
                       s.kind.type === "ssh" ? s.kind.host_id : null;
-                    const hosting = detected?.hosting ?? false;
-                    const jailed = detected?.jailed ?? false;
-                    const shim = detected?.shim ?? null;
-                    const notice = showShellAgentNotice(
-                      s.kind,
-                      detected,
-                      hosting,
-                      dismissedShellNotices.get(s.id),
-                      shim,
-                    );
-                    const ungated = ungatedReason(
-                      s.kind,
-                      detected,
-                      hosting,
-                      shim,
-                    );
-                    const unjailedNotice = showUnjailedNotice(
-                      s.kind,
-                      detected,
-                      hosting,
-                      jailed,
-                    );
                     const resumeInvite = showAgentResumeInvite(
                       s,
                       resumableAgents.get(s.id),
@@ -6383,31 +6251,6 @@ export default function App() {
                             key={`${s.id}:${paneEpochs.get(s.id) ?? 0}`}
                             sessionId={s.id}
                             transport={transports[s.id] ?? INITIAL_TRANSPORT}
-                            agentNotice={
-                              notice && detected
-                                ? { binary: agentBinaryName(detected.kind) }
-                                : null
-                            }
-                            onReopenManaged={() =>
-                              void reopenShellAgentManaged(s.id)
-                            }
-                            onDismissNotice={() => dismissShellAgentNotice(s.id)}
-                            ungatedNotice={
-                              ungated && detected
-                                ? {
-                                    binary: agentBinaryName(detected.kind),
-                                    reason: ungated,
-                                  }
-                                : null
-                            }
-                            unjailedNotice={
-                              unjailedNotice && detected
-                                ? {
-                                    binary: agentBinaryName(detected.kind),
-                                    reason: detected.noJail,
-                                  }
-                                : null
-                            }
                             remoteNotice={remoteNotice}
                             resumeNotice={
                               resumeInvite && s.kind.type === "agent"
@@ -6949,8 +6792,7 @@ export default function App() {
                           sessions={sessions}
                           layout={layout}
                           approvals={approvals}
-                          hostingBySession={hostingBySession}
-                          onJump={jumpToAgent}
+                            onJump={jumpToAgent}
                           onReviewDiff={(id) =>
                             void openDiffContentTab(id).catch(() => {})
                           }
@@ -6969,10 +6811,6 @@ export default function App() {
                               subagentsBySession.get(agentsTarget.id) ?? null
                             }
                             approvals={approvals}
-                            ungated={agentsPanelUngated(
-                              agentsTarget.kind,
-                              hostingBySession.get(agentsTarget.id) ?? false,
-                            )}
                             orchestratorTitle={
                               agentsTarget.kind.type === "shell"
                                 ? (() => {

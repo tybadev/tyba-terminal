@@ -6,7 +6,7 @@
 //! de quem estava fazendo outra coisa. Por isso o caminho até o barulho tem três
 //! guardas, e as três precisam passar:
 //!
-//! 1. **Só `AwaitingInput`.** Nunca `Idle`, nunca `Running`. Um agente sem gate
+//! 1. **Só `AwaitingInput`.** Nunca `Idle`, nunca `Running`. Um agente sem hook
 //!    que terminou não interrompe ninguém: não há nada a responder, e o trabalho
 //!    já aconteceu. O que justifica o aviso é o agente estar **parado à espera
 //!    de alguém** — quem lê a tela não pode oferecer menos do que isso.
@@ -294,7 +294,7 @@ mod tests {
         assert_eq!(b.avisos(), ["codex"]);
     }
 
-    /// Guarda 1. Conclusão de agente sem gate não interrompe ninguém, e agente
+    /// Guarda 1. Conclusão de agente sem hook não interrompe ninguém, e agente
     /// trabalhando muito menos.
     #[test]
     fn idle_e_running_nunca_notificam() {

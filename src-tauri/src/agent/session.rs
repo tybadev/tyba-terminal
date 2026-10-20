@@ -9,7 +9,6 @@ use crate::agent::notify;
 
 use crate::agent::claude_settings::claude_settings_are_broad;
 use crate::agent::hooks_settings::{claude_session_settings, hook_command};
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::agent::hooks_settings::{observer_hook_command, observer_session_settings};
 use crate::agent::subagents::SharedSubagents;
 use crate::agent::usage::{AgentAlert, AgentUsage, EVENT_AGENT_ALERT, STATUSLINE_HOOK_EVENT};
@@ -237,16 +236,6 @@ fn short_head(top: &Path) -> Option<String> {
     (out.status.success() && !sha.is_empty()).then_some(sha)
 }
 
-/// Fatia 5: o pedido de permissão que o app mostra dentro dele (o card com
-/// "Ir"). Só pedidos de permissão emitem isto.
-pub const EVENT_AGENT_ASKING: &str = "agent://asking";
-
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct AgentAsking {
-    pub session_id: SessionId,
-    pub body: String,
-}
-
 /// Fatia 5: "o Claude está pedindo algo · projeto · branch" — o card dentro
 /// do app e o aviso do sistema (mesma política do pedido). Nada aqui aprova:
 /// a resposta é no prompt do próprio agente, e o texto não leva nada do
@@ -265,13 +254,7 @@ pub(crate) fn notify_asking(
         branch.as_deref(),
     );
     let body = crate::session::redact::redact(&body).into_owned();
-    let _ = app.emit(
-        EVENT_AGENT_ASKING,
-        AgentAsking {
-            session_id: id,
-            body: body.clone(),
-        },
-    );
+    crate::agent::asking::record(app, id, body.clone());
     notify_native_shown(
         app,
         sessions,
@@ -283,26 +266,84 @@ pub(crate) fn notify_asking(
 }
 
 /// Claude cru (plugin): o pedido marca a sessão como "pedindo" — o mesmo
-/// estado do caminho hospedado — e avisa. O plugin manda o par
+/// estado do caminho hospedado —, entra no histórico como a linha deduzida do
+/// prompt nativo (`native_approval`) e avisa. O plugin manda o par
 /// `PermissionRequest` + `Notification(permission_prompt)` do mesmo prompt:
-/// só um aviso do sistema sai.
+/// uma linha só no histórico e um aviso só do sistema.
+///
+/// `summary` é o resumo já redigido que o plugin mandou (`Bash: ls`); sem ele,
+/// a ferramenta. O risco fica amarelo: o payload inteiro não atravessa o
+/// canal, e o amarelo é o do prompt nativo.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) fn plugin_asking(
     app: &AppHandle,
     sessions: &SharedSessionManager,
     store: &Store,
     id: SessionId,
+    summary: Option<String>,
 ) {
-    crate::agent::claude_plugin::mark_plugin_ask(id);
     if sessions
         .get(id)
         .is_some_and(|s| !crate::status::agent_events::is_native_prompt(&s.status))
     {
+        let command = summary.unwrap_or_else(|| "permissão".to_string());
+        let key = format!("plugin:{}", uuid::Uuid::new_v4());
+        let inferred = store
+            .insert_pending_inferred(
+                &id.to_string(),
+                &command,
+                None,
+                risk_label(RiskLevel::Yellow),
+                &key,
+                crate::approvals::now_ms(),
+            )
+            .ok();
+        if let Some(row) = inferred {
+            crate::notifications::record(app, |n| {
+                n.native_prompt_opened(id, row, RiskLevel::Yellow, &command)
+            });
+        }
+        crate::agent::claude_plugin::mark_plugin_ask(id, inferred.map(|row| (row, key)));
         sessions.set_status(app, id, native_prompt_status(None));
+    } else {
+        crate::agent::claude_plugin::mark_plugin_ask_kept(id);
     }
     crate::agent::claude_plugin::with_ask_slot(id, std::time::Instant::now(), || {
         notify_asking(app, sessions, store, &AgentRunnerKind::ClaudeCode, id)
     });
+}
+
+/// Claude cru (plugin): o pedido fechou. `approved` quando o claude seguiu
+/// trabalhando (a tela mostrou trabalho, ou o `Stop` — negar no prompt nativo
+/// não dispara `Stop`); negado quando a sessão recomeçou. É dedução, como a
+/// do caminho hospedado.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) fn plugin_ask_settled(
+    app: &AppHandle,
+    sessions: &SharedSessionManager,
+    store: &Store,
+    id: SessionId,
+    approved: bool,
+) {
+    let Some(inferred) = crate::agent::claude_plugin::take_plugin_ask(id) else {
+        return;
+    };
+    sessions.leave_native_prompt(app, id);
+    let Some((row, key)) = inferred else {
+        return;
+    };
+    let session = id.to_string();
+    let now = crate::approvals::now_ms();
+    if approved {
+        if let Ok(Some(_)) = store.resolve_inferred_by_call_key(&session, &key, "approved", now) {
+            crate::notifications::record(app, |n| n.native_prompt_approved(row));
+        }
+    } else if store
+        .deny_pending_inferred_for_session(&session, now)
+        .is_ok_and(|n| n > 0)
+    {
+        crate::notifications::record(app, |n| n.native_prompts_denied(id));
+    }
 }
 
 /// O aviso do sistema, com a política já resolvida.
@@ -1453,6 +1494,7 @@ pub fn create_agent_session(
         worktree.clone(),
         task,
         None,
+        false,
         on_exit,
     );
     if result.is_err() {
@@ -1465,10 +1507,9 @@ pub fn create_agent_session(
 /// conflitado) em vez de criar um worktree novo.
 ///
 /// Existe para que os fluxos de review e de resolução de conflitos passem pelo
-/// mesmo `spawn_prepared` das sessões normais. Antes o front criava uma sessão de
-/// **shell** e digitava `claude` nela: o agente subia sem sandbox, com o env
-/// inteiro do usuário e — pior — **sem os hooks**, logo sem `PreToolUse`, logo
-/// sem gate de aprovação. Um agente fora do inbox faz o que quiser.
+/// mesmo `spawn_prepared` das sessões normais — com os hooks do TYBA (monitor,
+/// conversa, subagentes e o guarda-corpo de push/merge), que um `claude`
+/// digitado numa sessão de shell crua não teria.
 pub fn attach_agent_session(
     ctx: &AgentSessionCtx,
     opts: CreateSessionOpts,
@@ -1496,8 +1537,12 @@ pub fn attach_agent_session(
         .clone()
         .or_else(|| opts.title.clone())
         .unwrap_or_else(|| worktree.branch.clone());
-    let resume = attach_resume(opts.resume_conversation.as_deref(), runner.as_ref())?;
 
+    // Agente livre, fatia 6: o claude em attach (review, conflitos, launch
+    // config sem `isolate`) só é observado — hooks `_hook --observe`, sem card;
+    // quem pergunta é o prompt do próprio Claude. A jaula continua. O Codex
+    // segue no gate: o `PermissionRequest` dele é o protocolo de aprovação.
+    let observe = attach_observes(&runner_kind);
     // Sem `worktree::remove` no erro: a pasta é do usuário, não nossa.
     spawn_prepared(
         ctx,
@@ -1507,28 +1552,15 @@ pub fn attach_agent_session(
         root,
         worktree,
         task,
-        resume,
+        None,
+        observe,
         on_exit,
     )
 }
 
-/// O id de conversa que o attach do gate pede para retomar, já validado. Ele
-/// volta do webview, então é dado não confiável: só passa o que
-/// [`crate::agent::conversation::is_plausible`] aceita — nada com espaço,
-/// aspas ou `-` inicial chega ao argv. Implausível recusa o spawn em vez de
-/// cair calado numa sessão vazia (o core devolveu um id válido; um inválido
-/// aqui é adulteração ou bug). Runner que não retoma por id ignora.
-fn attach_resume(
-    requested: Option<&str>,
-    runner: &dyn AgentRunner,
-) -> Result<Option<String>, String> {
-    let Some(id) = requested else {
-        return Ok(None);
-    };
-    if !crate::agent::conversation::is_plausible(id) {
-        return Err("id de conversa inválido para retomar".into());
-    }
-    Ok(runner.resumes_conversations().then(|| id.to_string()))
+/// Se a sessão em attach deste runner roda no modelo do agente livre.
+fn attach_observes(runner: &AgentRunnerKind) -> bool {
+    matches!(runner, AgentRunnerKind::ClaudeCode)
 }
 
 // A partir daqui, e até o fim de `prepare_hosted_agent`, todo o código é
@@ -1543,8 +1575,7 @@ const LAUNCH_PLAN_FILE: &str = "launch.json";
 /// digitado — só o que desligaria os hooks dele (`CLAUDE_CODE_SIMPLE` é o
 /// modo `--bare` e `CLAUDE_CODE_SAFE_MODE` é o `--safe-mode`: os dois pulam
 /// os hooks do `--settings`, e com eles o guarda-corpo; por isso as flags já
-/// são recusadas) ou mentiria sobre a rota (`TYBA_SHIM` marca claude cru,
-/// "sem gate").
+/// são recusadas) — e o `TYBA_SHIM` que versões antigas punham no env.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 const HOSTED_ENV_REMOVE: &[&str] = &[
     "CLAUDE_CODE_SIMPLE",
@@ -1784,11 +1815,6 @@ pub fn resume_agent_session(
         shell: None,
         inherit_cwd_from: None,
         initial_prompt: None,
-        // Nunca `true` aqui: a origem do gate não é desta chamada, é da
-        // sessão anterior que ocupava o mesmo `SessionId` — `spawn_session`
-        // é quem herda de `previous`. Ver `Session::opened_by_gate`.
-        opened_by_gate: false,
-        resume_conversation: None,
         agent_model: None,
         prepared_worktree: None,
     };
@@ -1801,6 +1827,7 @@ pub fn resume_agent_session(
         worktree,
         task,
         Some(target.conversation_id),
+        false,
         on_exit,
     )
 }
@@ -2017,6 +2044,7 @@ fn spawn_prepared(
     worktree: crate::worktree::Worktree,
     task: String,
     resume: Option<String>,
+    observe: bool,
     on_exit: impl FnOnce(SessionId) + Send + 'static,
 ) -> Result<Session, String> {
     let runtime = runtime_dir(id)?;
@@ -2026,12 +2054,19 @@ fn spawn_prepared(
     }
 
     let exe = std::env::current_exe().map_err(|e| format!("exe do Tyba: {e}"))?;
-    let hook_cmd = hook_command(&exe);
+    let hook_cmd = if observe {
+        observer_hook_command(&exe)
+    } else {
+        hook_command(&exe)
+    };
     if matches!(runner.kind(), AgentRunnerKind::ClaudeCode) {
-        let settings = claude_session_settings(
-            &hook_cmd,
-            session_statusline(&exe, &std::env::vars().collect(), &[&worktree.path, &root]),
-        );
+        let status_line =
+            session_statusline(&exe, &std::env::vars().collect(), &[&worktree.path, &root]);
+        let settings = if observe {
+            observer_session_settings(&hook_cmd, status_line)
+        } else {
+            claude_session_settings(&hook_cmd, status_line)
+        };
         let settings_body = serde_json::to_string_pretty(&settings)
             .map_err(|e| format!("settings de hooks: {e}"))?;
         crate::session::write_private(&runtime, HOOK_SETTINGS_FILE, &settings_body)
@@ -2141,7 +2176,7 @@ fn spawn_prepared(
         agent_home: agent_home(&env),
         turn_settle: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         seen_transcript: Arc::new(Mutex::new(None)),
-        observe_only: false,
+        observe_only: observe,
     };
     let server = HookServer::bind(
         &socket_path,
@@ -2168,7 +2203,6 @@ fn spawn_prepared(
             jail,
             opts.cols,
             opts.rows,
-            opts.opened_by_gate,
             on_exit,
         )
         .map_err(|e| {
@@ -2573,31 +2607,13 @@ mod session_end_tests {
 }
 
 #[cfg(test)]
-mod attach_resume_tests {
+mod attach_tests {
     use super::*;
 
     #[test]
-    fn no_requested_id_attaches_a_fresh_conversation() {
-        assert_eq!(attach_resume(None, &ClaudeCodeRunner), Ok(None));
-    }
-
-    #[test]
-    fn plausible_id_becomes_the_resume_target() {
-        let id = "11111111-2222-3333-4444-555555555555";
-        assert_eq!(
-            attach_resume(Some(id), &ClaudeCodeRunner),
-            Ok(Some(id.to_string()))
-        );
-    }
-
-    #[test]
-    fn implausible_id_refuses_instead_of_reaching_argv() {
-        for bad in ["--dangerously-skip-permissions", "a b c d e f g h", "x"] {
-            assert!(
-                attach_resume(Some(bad), &ClaudeCodeRunner).is_err(),
-                "{bad}"
-            );
-        }
+    fn only_claude_attach_runs_observed() {
+        assert!(attach_observes(&AgentRunnerKind::ClaudeCode));
+        assert!(!attach_observes(&AgentRunnerKind::Codex));
     }
 }
 

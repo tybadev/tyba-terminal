@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ArrowRight, CheckCircle, Warning, XCircle } from "@phosphor-icons/react";
 
-import { nextAsk, pruneAsks, recordAsk, type Ask } from "@/lib/asking";
+import { visibleAsk } from "@/lib/asking";
 
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -22,14 +22,17 @@ import {
 import { RISK_DOT, RISK_LABEL, approvalActions, decideApproval } from "@/lib/notifications";
 import { toastIsPointerOnly } from "@/lib/approvalPanel";
 import {
+  agentAsks,
+  dismissAsk,
   focusSession,
-  onAgentAsking,
+  onAgentAsks,
   onApprovalRequested,
   onApprovalResolved,
   onSessionTunnels,
   openTunnelsPanel,
   resolveApproval,
   sessionMarkSeen,
+  type AgentAsk,
   type ApprovalDecision,
   type ApprovalRequest,
   type Session,
@@ -131,9 +134,9 @@ export function NotificationToaster({
     });
 
   const [outcomes, setOutcomes] = useState<OutcomeToast[]>([]);
-  // Fatia 5: pedidos de permissão em aberto, um por sessão. O card mostra o
-  // mais antigo fora da tela; só o clique no "Ir" troca de pane.
-  const [asks, setAsks] = useState<ReadonlyMap<SessionId, Ask>>(() => new Map());
+  // Fatia 5: os pedidos de permissão em aberto, como o core os guarda. O card
+  // mostra o mais antigo fora da tela; só o clique no "Ir" troca de pane.
+  const [asks, setAsks] = useState<AgentAsk[]>([]);
   const outcomeTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
   const settleTimers = useRef(new Map<SessionId, ReturnType<typeof setTimeout>>());
   const prevStates = useRef(
@@ -233,18 +236,11 @@ export function NotificationToaster({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessions]);
 
-  useEffect(() => {
-    setAsks((prev) => pruneAsks(prev, sessions));
-  }, [sessions]);
-
-  const dropAsk = (sessionId: SessionId) =>
-    setAsks((prev) => {
-      if (!prev.has(sessionId)) return prev;
-      const next = new Map(prev);
-      next.delete(sessionId);
-      return next;
-    });
-  const ask = nextAsk(asks, sessions, activeSessionId);
+  const ask = visibleAsk(
+    asks,
+    activeSessionId,
+    new Set(sessions.map((s) => s.id)),
+  );
 
   useEffect(() => {
     const pending = settleTimers.current;
@@ -343,11 +339,12 @@ export function NotificationToaster({
         });
       }),
     );
-    track(
-      onAgentAsking(({ session_id, body }) => {
-        setAsks((prev) => recordAsk(prev, session_id, body, Date.now()));
-      }),
-    );
+    track(onAgentAsks(setAsks));
+    void agentAsks()
+      .then((list) => {
+        if (!disposed) setAsks(list);
+      })
+      .catch(() => {});
     track(
       onApprovalRequested((request) => {
         setToasts((prev) => addApprovalToast(prev, request));
@@ -659,9 +656,9 @@ export function NotificationToaster({
       ))}
       {ask && (
         <Toast
-          key={`asking:${ask.sessionId}`}
+          key={`asking:${ask.session_id}`}
           onOpenChange={(nextOpen) => {
-            if (!nextOpen) dropAsk(ask.sessionId);
+            if (!nextOpen) void dismissAsk(ask.session_id).catch(() => {});
           }}
         >
           {/* Sem atalho de teclado e sem clique no card inteiro: um Enter
@@ -681,9 +678,7 @@ export function NotificationToaster({
                   <Button
                     size="sm"
                     onClick={() => {
-                      const id = ask.sessionId;
-                      dropAsk(id);
-                      void focusSession(id).catch(() => {});
+                      void focusSession(ask.session_id).catch(() => {});
                     }}
                     className="h-6 rounded-[4px] px-2.5 text-[11px]"
                   >

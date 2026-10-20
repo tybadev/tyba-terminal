@@ -197,11 +197,11 @@ fi
 
 # --- Shim de agente v2 (passo 2: canal shim<->core) -------------------------
 #
-# POR QUE FUNCAO DE SHELL, e nao OSC. O gate do TYBA e montado no spawn do
-# agente: jaula, env por allowlist e a config de hook que faz ele pedir licenca
-# antes de agir. Nada disso da para pendurar num processo ja nascido, entao
-# `claude` digitado no shell fica para sempre sem gate — e a unica oferta
-# possivel depois e matar e subir de novo, que o dono nao aceita.
+# POR QUE FUNCAO DE SHELL, e nao OSC. O TYBA observa o claude pelos hooks
+# que entram por `--settings` no spawn: monitor, conversa, subagentes, aviso
+# de pedido e o guarda-corpo fixo (push para main/master e merge de PR). Nada
+# disso da para pendurar num processo ja nascido, entao o `claude` digitado
+# precisa passar pelo TYBA antes do exec.
 #
 # Interceptar exige um ponto de BLOQUEIO antes do exec. OSC 133/633 dispara no
 # preexec, sim, mas OSC e saida, mao unica: quando o core le o byte o exec ja
@@ -212,8 +212,9 @@ fi
 # `claude`, `claude -c`, `claude --resume <id>`, `claude -p "..."`. Os args vao
 # como "$@" depois de `--` (argv, um por argumento — nunca string de shell), e
 # quem decide o caminho e o `_jail` e, de novo, o core: sessao de agente sobe
-# hospedada com gate; versao, ajuda e subcomandos de configuracao passam crus;
-# flag que desligaria o gate e recusada.
+# hospedada (sem jaula, com o env deste shell; a permissao e do prompt do
+# proprio Claude); versao, ajuda e subcomandos de configuracao passam crus;
+# flag que desligaria os hooks e o guarda-corpo e recusada.
 #
 # WRAPPER NO PATH. A funcao so pega o que a shell interativa digita. `command
 # claude`, scripts e Makefiles procuram `claude` no PATH — por isso o
@@ -223,24 +224,24 @@ fi
 # verdade pelo caminho resolvido (`$TYBA_REAL_CLAUDE`), nunca o wrapper.
 #
 # SEM exec: `"$TYBA_BIN" _jail` roda como FILHO desta funcao, no MESMO pane. O
-# `exec` substituiria o PROPRIO shell — sair do agente mataria a aba. A cadeia
-# tyba -> _seccomp-exec -> bwrap -> claude e mutacao-exec de UM UNICO filho da
-# shell; a shell em si nunca e tocada.
+# `exec` substituiria o PROPRIO shell — sair do agente mataria a aba. O
+# `_jail` troca a si mesmo pelo claude (exec no filho); a shell em si nunca e
+# tocada.
 #
 # FALHA ABERTA e a regra permanente: sem TYBA_BIN, o shim inteiro nem se
 # instala (bloco abaixo). Com TYBA_BIN setado mas inalcancavel (arquivo sumiu,
 # sem permissao de execucao), o `else` cai pro binario de verdade e sai do
 # caminho. Sem o core respondendo, quem cai pro binario de verdade e o
-# PROPRIO `tyba _jail` — avisando, e marcando o processo para o pane mostrar
-# "sem gate" em vermelho. Um terminal que se recusa a rodar o que foi
-# digitado esta quebrado, e ligado por padrao o raio disso e todo mundo.
+# PROPRIO `tyba _jail`, avisando que o claude roda sem os hooks do TYBA. Um
+# terminal que se recusa a rodar o que foi digitado esta quebrado, e ligado
+# por padrao o raio disso e todo mundo.
 #
 # NUNCA `"$TYBA_BIN" _jail || command claude`: o `_jail` da `exec` na cadeia
 # hospedada, entao o status que volta pra shell e o do claude HOSPEDADO. Um
 # agente que saiu com codigo diferente de zero (erro, Ctrl-C, crash) faria o
-# `||` relancar um claude CRU, sem gate e sem jaula, sem ninguem ter digitado
-# nada — e a sessao seguinte nasceria fora do gate. A decisao de cair pro
-# binario de verdade e tomada ANTES de lancar, nunca pelo status de saida.
+# `||` relancar um claude CRU, sem os hooks do TYBA, sem ninguem ter digitado
+# nada. A decisao de cair pro binario de verdade e tomada ANTES de lancar,
+# nunca pelo status de saida.
 if [ -n "${TYBA_BIN:-}" ] && [ "${TYBA_AGENT_SHIM:-1}" = "1" ]; then
   __tyba_shim_record() {
     # Rastro so quando alguem pede (o teste pede). Em uso normal a variavel nao

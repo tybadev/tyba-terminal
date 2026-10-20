@@ -2,11 +2,9 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   ArrowCounterClockwise,
   Info,
-  Shield,
   ShieldSlash,
   WarningOctagon,
 } from "@phosphor-icons/react";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
@@ -15,8 +13,6 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
 
 import i18n from "../i18n";
-import { noJailMessageKey, ungatedMessageKey } from "../lib/shellAgentNotice";
-import type { NoJailReason } from "../lib/ipc";
 import { CanoStatus } from "./CanoStatus";
 import { ApprovalPanel } from "./ApprovalPanel";
 import type { ApprovalRequest } from "../lib/ipc";
@@ -264,24 +260,6 @@ interface Props {
   /** Clique sem seleção devolve o foco para a linha. */
   onReclaimFocus?: () => void;
   onSplit?: (kind: "v" | "h") => void;
-  /** Agente cru detectado no shell (F2 do detectar-agente-no-shell). */
-  agentNotice?: { binary: string } | null;
-  onReopenManaged?: () => void;
-  onDismissNotice?: () => void;
-  /**
-   * Shim v2, Track C (tech-spec §7/§9): agente HOSPEDADO (o gate já ligou
-   * pelo canal shim↔core) mas fora da jaula. Decisão do dono: não é faixa,
-   * é um escudo pequeno e discreto no canto do pane, com o motivo (M7) no
-   * tooltip — o gate está de pé, o usuário não precisa ser interrompido. O
-   * vermelho "sem gate" continua faixa.
-   */
-  unjailedNotice?: { binary: string; reason: NoJailReason | null } | null;
-  /** M6-A: claude que passou pelo TYBA mas roda sem gate. Vermelho, sem
-   * dispensar. */
-  ungatedNotice?: {
-    binary: string;
-    reason: "ungated" | "fallback" | "raw";
-  } | null;
   /**
    * A faixa da SSH Session: por que a sessão abriu como terminal comum (regras
    * 8, 12 e 13) ou que há um agente rodando no servidor sem jaula (regra 26).
@@ -294,9 +272,7 @@ interface Props {
    * Convite de retomar a conversa nativa do agente numa sessão que morreu com o
    * app anterior. Só o core decide se ele aparece — ver `canResumeAgentSession`.
    *
-   * O par do `agentNotice`, no outro lado da vida da sessão: aquele avisa de
-   * agente vivo fora do gate, este oferece religar um agente morto. Por isso
-   * este só existe com `exited`, e os dois nunca dividem a tela.
+   * Só existe com `exited`: oferece religar um agente morto.
    */
   resumeNotice?: { binary: string } | null;
   onResumeAgent?: () => void;
@@ -504,11 +480,6 @@ export function TerminalView({
   readOnly,
   onReclaimFocus,
   onSplit,
-  agentNotice,
-  onReopenManaged,
-  onDismissNotice,
-  unjailedNotice,
-  ungatedNotice,
   remoteNotice,
   resumeNotice,
   onResumeAgent,
@@ -1321,53 +1292,6 @@ export function TerminalView({
 
   return (
     <>
-    {agentNotice && rect && visible && !exited && (
-      <SessionNoticeBar
-        rect={rect}
-        tone="amber"
-        icon={<ShieldSlash size={12} weight="fill" />}
-        message={i18n.t("shellAgentNotice", { binary: agentNotice.binary })}
-        actionLabel={onReopenManaged ? i18n.t("shellAgentReopen") : undefined}
-        onAction={onReopenManaged}
-        dismissLabel={onDismissNotice ? i18n.t("shellAgentIgnore") : undefined}
-        onDismiss={onDismissNotice}
-      />
-    )}
-    {ungatedNotice && rect && visible && !exited && (
-      <SessionNoticeBar
-        rect={rect}
-        tone="red"
-        icon={<ShieldSlash size={12} weight="fill" />}
-        message={i18n.t(ungatedMessageKey(ungatedNotice.reason), {
-          binary: ungatedNotice.binary,
-        })}
-      />
-    )}
-    {unjailedNotice && rect && visible && !exited && (
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <span
-            role="img"
-            aria-label={i18n.t(noJailMessageKey(unjailedNotice.reason), {
-              binary: unjailedNotice.binary,
-            })}
-            className="z-10 flex h-5 w-5 items-center justify-center rounded-[4px] text-tyba-amber/60 transition-colors hover:bg-tyba-text/[.05] hover:text-tyba-amber"
-            style={{
-              position: "absolute",
-              left: `calc(${rect.left + rect.width}% - 26px)`,
-              top: `calc(${rect.top}% + 4px)`,
-            }}
-          >
-            <Shield size={13} weight="duotone" />
-          </span>
-        </TooltipTrigger>
-        <TooltipContent side="left" className="max-w-72">
-          {i18n.t(noJailMessageKey(unjailedNotice.reason), {
-            binary: unjailedNotice.binary,
-          })}
-        </TooltipContent>
-      </Tooltip>
-    )}
     {remoteNotice && rect && visible && !exited && (
       <SessionNoticeBar
         rect={rect}

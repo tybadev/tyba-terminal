@@ -1053,8 +1053,12 @@ pub fn resolve_plugin_event(
 pub enum PluginSignal {
     /// Pedido de permissão: marca e avisa.
     Asking,
-    /// O turno fechou ou a sessão recomeçou: o pedido não está mais aberto.
-    Settled,
+    /// O pedido não está mais aberto: o turno fechou (`Stop`, aprovado —
+    /// negar no prompt nativo não dispara `Stop`) ou a sessão recomeçou
+    /// (`SessionStart`, negado).
+    Settled {
+        approved: bool,
+    },
     None,
 }
 
@@ -1065,7 +1069,8 @@ pub fn plugin_signal(event: &str, notification_type: Option<&str>) -> PluginSign
     match (event, notification_type) {
         ("PermissionRequest", _) => PluginSignal::Asking,
         ("Notification", Some("permission_prompt")) => PluginSignal::Asking,
-        ("Stop" | "SessionStart", _) => PluginSignal::Settled,
+        ("Stop", _) => PluginSignal::Settled { approved: true },
+        ("SessionStart", _) => PluginSignal::Settled { approved: false },
         _ => PluginSignal::None,
     }
 }
@@ -1105,24 +1110,39 @@ pub fn with_ask_slot(
     shown
 }
 
-static PLUGIN_ASKING: std::sync::Mutex<
-    Option<std::collections::HashSet<crate::session::SessionId>>,
-> = std::sync::Mutex::new(None);
+/// A linha deduzida do histórico (`approval_history` id + chave) de um pedido
+/// do plugin; `None` quando a gravação falhou.
+pub type PluginInferred = Option<(i64, String)>;
+
+type PluginAsks = std::collections::HashMap<crate::session::SessionId, PluginInferred>;
+
+static PLUGIN_ASKING: std::sync::Mutex<Option<PluginAsks>> = std::sync::Mutex::new(None);
 
 /// Panes cujo "pedindo" veio do plugin (claude cru). Só esses a tela pode
 /// limpar: o hospedado tem os próprios eventos.
-pub fn mark_plugin_ask(session: crate::session::SessionId) {
-    if let Ok(mut set) = PLUGIN_ASKING.lock() {
-        set.get_or_insert_with(Default::default).insert(session);
+pub fn mark_plugin_ask(session: crate::session::SessionId, inferred: PluginInferred) {
+    if let Ok(mut map) = PLUGIN_ASKING.lock() {
+        map.get_or_insert_with(Default::default)
+            .insert(session, inferred);
     }
 }
 
-pub fn take_plugin_ask(session: crate::session::SessionId) -> bool {
+/// O par do mesmo prompt chegou com a sessão já "pedindo": mantém a linha
+/// que o primeiro gravou.
+pub fn mark_plugin_ask_kept(session: crate::session::SessionId) {
+    if let Ok(mut map) = PLUGIN_ASKING.lock() {
+        map.get_or_insert_with(Default::default)
+            .entry(session)
+            .or_insert(None);
+    }
+}
+
+/// Tira a marca do pane: `None` quando ele não estava pedindo pelo plugin.
+pub fn take_plugin_ask(session: crate::session::SessionId) -> Option<PluginInferred> {
     PLUGIN_ASKING
         .lock()
         .ok()
-        .and_then(|mut set| set.as_mut().map(|s| s.remove(&session)))
-        .unwrap_or(false)
+        .and_then(|mut map| map.as_mut().and_then(|m| m.remove(&session)))
 }
 
 /// O `notification_type` do payload, só se tiver cara de identificador.
@@ -1829,8 +1849,14 @@ mod tests {
             PluginSignal::None
         );
         assert_eq!(plugin_signal("Notification", None), PluginSignal::None);
-        assert_eq!(plugin_signal("Stop", None), PluginSignal::Settled);
-        assert_eq!(plugin_signal("SessionStart", None), PluginSignal::Settled);
+        assert_eq!(
+            plugin_signal("Stop", None),
+            PluginSignal::Settled { approved: true }
+        );
+        assert_eq!(
+            plugin_signal("SessionStart", None),
+            PluginSignal::Settled { approved: false }
+        );
         assert_eq!(plugin_signal("SubagentStop", None), PluginSignal::None);
     }
 
@@ -1870,10 +1896,12 @@ mod tests {
     #[test]
     fn plugin_ask_mark_is_taken_once() {
         let s = crate::session::SessionId::new_v4();
-        assert!(!take_plugin_ask(s));
-        mark_plugin_ask(s);
-        assert!(take_plugin_ask(s));
-        assert!(!take_plugin_ask(s));
+        assert_eq!(take_plugin_ask(s), None);
+        mark_plugin_ask(s, Some((7, "plugin:x".into())));
+        // O par do mesmo prompt não apaga a linha gravada pelo primeiro.
+        mark_plugin_ask_kept(s);
+        assert_eq!(take_plugin_ask(s), Some(Some((7, "plugin:x".into()))));
+        assert_eq!(take_plugin_ask(s), None);
     }
 
     #[test]

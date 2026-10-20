@@ -311,6 +311,7 @@ fn install_screen_observers(
     let observed_app = app.clone();
     let observed_sessions = Arc::clone(sessions);
     let observed_hold = Arc::clone(observed_hold);
+    let observed_store = Arc::clone(store);
     let notify_app = app.clone();
     let notify_sessions = Arc::clone(sessions);
     let notify_store = Arc::clone(store);
@@ -338,11 +339,17 @@ fn install_screen_observers(
             // Fatia 5: o claude cru que pediu permissão voltou a trabalhar —
             // o "pedindo" do plugin sai.
             #[cfg(any(target_os = "linux", target_os = "macos"))]
-            if working && agent::claude_plugin::take_plugin_ask(id) {
-                observed_sessions.leave_native_prompt(&observed_app, id);
+            if working {
+                agent::session::plugin_ask_settled(
+                    &observed_app,
+                    &observed_sessions,
+                    &observed_store,
+                    id,
+                    true,
+                );
             }
             #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-            let _ = working;
+            let _ = (working, &observed_store);
         }),
         // O palpite sai pelo mesmo `notify_native` do agente com hook — mesma
         // checagem de foco, mesma redação, mesma leitura de preferência.
@@ -460,22 +467,17 @@ fn poll_agent_probers(app: &AppHandle) {
     }
     state.observed_hold.retain(&live);
     for (session_id, detected) in changes {
-        if detected.is_none() {
-            state.agent_prober.clear_raw_plugin(session_id);
-        }
         let _ = app.emit(
             agent::process_probe::EVENT_CHANGED,
-            agent_payload(&state, session_id, detected),
+            agent_payload(session_id, detected),
         );
     }
 }
 
 /// O payload de detecção de uma sessão. Track C (tech-spec §7): derivado do
 /// env do PID detectado a cada leitura — nunca armazenado (§5 da spec,
-/// decisão 5). `(false, false)` quando não há agente nenhum. M6-B: um claude
-/// sem marcador do shim que o plugin avisou como cru vira `shim: "raw"`.
+/// decisão 5). `(false, false)` quando não há agente nenhum.
 fn agent_payload(
-    state: &AppState,
     session_id: SessionId,
     detected: Option<agent::process_probe::DetectedAgent>,
 ) -> agent::process_probe::AgentDetectedPayload {
@@ -483,18 +485,6 @@ fn agent_payload(
         .as_ref()
         .map(|d| agent::process_probe::hosting_markers(d.pid))
         .unwrap_or((false, false));
-    let shim = detected.as_ref().and_then(|d| {
-        agent::process_probe::shim_marker(d.pid).or_else(|| {
-            state
-                .agent_prober
-                .is_raw_plugin(session_id)
-                .then(|| "raw".to_string())
-        })
-    });
-    let no_jail = detected
-        .as_ref()
-        .filter(|_| hosting && !jailed)
-        .and_then(|d| agent::process_probe::no_jail_marker(d.pid));
     let suggest_plugin = detected
         .as_ref()
         .is_some_and(|d| wants_plugin_chip(&d.kind, hosting) && plugin_suggested(d.pid));
@@ -503,8 +493,6 @@ fn agent_payload(
         detected,
         hosting,
         jailed,
-        shim,
-        no_jail,
         suggest_plugin,
     }
 }
@@ -547,7 +535,7 @@ fn reemit_agent_payloads(app: &AppHandle) {
         if let Some(detected) = state.agent_prober.detected(session_id) {
             let _ = app.emit(
                 agent::process_probe::EVENT_CHANGED,
-                agent_payload(&state, session_id, Some(detected)),
+                agent_payload(session_id, Some(detected)),
             );
         }
     }
@@ -591,15 +579,26 @@ fn handle_plugin_event(
     match agent::claude_plugin::plugin_signal(event, request.notification_type.as_deref()) {
         agent::claude_plugin::PluginSignal::Asking => {
             let app = app.clone();
+            let summary = request.summary.clone().or_else(|| request.tool.clone());
             std::thread::spawn(move || {
                 let state = app.state::<AppState>();
-                agent::session::plugin_asking(&app, &state.sessions, &state.store, session);
+                agent::session::plugin_asking(
+                    &app,
+                    &state.sessions,
+                    &state.store,
+                    session,
+                    summary,
+                );
             });
         }
-        agent::claude_plugin::PluginSignal::Settled => {
-            if agent::claude_plugin::take_plugin_ask(session) {
-                state.sessions.leave_native_prompt(app, session);
-            }
+        agent::claude_plugin::PluginSignal::Settled { approved } => {
+            agent::session::plugin_ask_settled(
+                app,
+                &state.sessions,
+                &state.store,
+                session,
+                approved,
+            );
         }
         agent::claude_plugin::PluginSignal::None => {}
     }
@@ -818,18 +817,6 @@ fn dispose_all(app: &AppHandle, state: &State<'_, AppState>, ids: &[SessionId]) 
     }
 }
 
-/// Entrega F: a aba que o TYBA abriu pelo gate se recolhe sozinha quando o
-/// agente sai — mas só se ele chegou a trabalhar. Os dois fatos, e só eles:
-/// nunca o exit code, que **não existe** neste ponto (`session_exited` não o
-/// recebe; o `-1` do ramo abaixo é sentinela hard-coded, não um código real).
-///
-/// Separada do `else` de [`session_exited`] para poder testar a decisão sem
-/// `AppState` inteiro — que exige um `AppHandle` de runtime real e não se
-/// constrói só com `tauri::test::mock_app()`.
-fn should_auto_close_gate_tab(session: &Session) -> bool {
-    session.opened_by_gate && session.did_work
-}
-
 fn session_exited(app: &AppHandle, id: SessionId) {
     let state = app.state::<AppState>();
     let Some(session) = state.sessions.get(id) else {
@@ -841,19 +828,10 @@ fn session_exited(app: &AppHandle, id: SessionId) {
         let _ = state.layout.session_disposed(id);
         emit_layout(app, &state);
     } else {
-        let should_close = should_auto_close_gate_tab(&session);
         state
             .sessions
             .set_status(app, id, SessionStatus::Exited { code: -1 });
         let _ = state.repo_reconcile.send(());
-        // Só o LAYOUT: `session_disposed` tira a aba do workspace sem tocar a
-        // linha da sessão. NUNCA `sessions.dispose` aqui — apagaria a linha
-        // e, com ela, `agent_conversation_id`: mataria o resume da MESMA
-        // conversa que este fechamento automático existe para não estragar.
-        if should_close {
-            let _ = state.layout.session_disposed(id);
-            emit_layout(app, &state);
-        }
     }
 }
 
@@ -1362,8 +1340,6 @@ fn resume_startup(
             shell: None,
             inherit_cwd_from: None,
             initial_prompt: None,
-            opened_by_gate: false,
-            resume_conversation: None,
             agent_model: None,
             prepared_worktree: None,
         };
@@ -3634,8 +3610,6 @@ async fn forge_pr_open_session(
                 shell: None,
                 inherit_cwd_from: None,
                 initial_prompt: None,
-                opened_by_gate: false,
-                resume_conversation: None,
                 agent_model: None,
                 prepared_worktree: Some(prepared),
             },
@@ -4808,8 +4782,6 @@ async fn spawn_slot(
                 shell: None,
                 inherit_cwd_from: None,
                 initial_prompt: slot.initial_prompt.clone(),
-                opened_by_gate: false,
-                resume_conversation: None,
                 agent_model: slot.agent_model().map(str::to_string),
                 prepared_worktree: None,
             },
@@ -4859,8 +4831,6 @@ async fn spawn_slot(
             shell: None,
             inherit_cwd_from: None,
             initial_prompt: slot.initial_prompt.clone(),
-            opened_by_gate: false,
-            resume_conversation: None,
             agent_model: slot.agent_model().map(str::to_string),
             prepared_worktree: None,
         },
@@ -5474,6 +5444,20 @@ async fn update_check(state: State<'_, AppState>) -> Result<Option<update::Updat
 #[tauri::command]
 fn update_dismiss(state: State<'_, AppState>, version: String) -> Result<(), String> {
     update::dismiss(&state.store, &version)
+}
+
+/// Fatia 5: os pedidos de permissão em aberto (o card "pedindo algo"), mais
+/// antigo primeiro. A mesma lista sai em `agent://asks` a cada mudança.
+#[tauri::command]
+fn agent_asks() -> Vec<agent::asking::Ask> {
+    agent::asking::book().list()
+}
+
+/// Fatia 5: o dono dispensou o card. O pedido segue aberto no prompt do
+/// agente; só o card some.
+#[tauri::command]
+fn dismiss_ask(app: AppHandle, id: SessionId) {
+    agent::asking::clear(&app, id);
 }
 
 /// Fatia 5: o "Ir" do card de pedido — workspace, aba e pane da sessão. Só
@@ -6985,8 +6969,6 @@ fn docker_open_project(
                 shell: None,
                 inherit_cwd_from: None,
                 initial_prompt: None,
-                opened_by_gate: false,
-                resume_conversation: None,
                 agent_model: None,
                 prepared_worktree: None,
             },
@@ -7213,56 +7195,6 @@ fn focus_subagent(
 ) -> agent::subagents::SubagentSnapshot {
     state.subagents.focus(&app, session_id, agent_id);
     state.subagents.snapshot(session_id)
-}
-
-/// Mata o agente cru detectado numa sessão de shell (F3 do
-/// detectar-agente-no-shell) e devolve o cwd do agente pro front encadear o
-/// attach gerenciado. Valida ANTES de matar que a pasta é um repo git — nunca
-/// derruba o agente pra depois falhar o reopen. O shell da sessão sobrevive.
-///
-/// Devolve também o id da conversa que o disk observer tinha ligado (M1 do
-/// claude-monitor), colhido antes do kill: o attach sobe com `--resume` nele e
-/// a conversa do usuário continua, em vez de ficar órfã no disco. `None` (sem
-/// bind, sessão hospedada) cai no comportamento antigo: sessão nova vazia.
-#[tauri::command]
-async fn kill_shell_agent(
-    state: State<'_, AppState>,
-    session_id: SessionId,
-) -> Result<ShellAgentReopen, crate::error::AppError> {
-    let agent = state
-        .agent_prober
-        .detected(session_id)
-        .ok_or_else(|| crate::error::AppError::new("agent.reopen_not_detected"))?;
-    let leader = state.pty_pool.leader_pid(session_id);
-    let cwd = repo::process_cwd(agent.pid)
-        .or_else(|| leader.and_then(repo::process_cwd))
-        .ok_or_else(|| crate::error::AppError::new("agent.reopen_no_cwd"))?;
-    if repo::toplevel(&cwd).is_none() {
-        return Err(
-            crate::error::AppError::new("agent.reopen_not_git").with("path", cwd.to_string_lossy())
-        );
-    }
-    let conversation_id = state.disk_observer.bound_conversation(session_id);
-    // O grace do SIGTERM (~1,5s) roda fora da thread do command — mesmo padrão
-    // do painel remoto: worker do Tokio nunca dorme.
-    tauri::async_runtime::spawn_blocking(move || {
-        agent::process_probe::terminate_detected(agent.pid, agent.start_ms, leader)
-    })
-    .await
-    .map_err(|e| {
-        crate::error::AppError::new("agent.reopen_kill_failed").with("detail", e.to_string())
-    })??;
-    Ok(ShellAgentReopen {
-        cwd: cwd.to_string_lossy().into_owned(),
-        conversation_id,
-    })
-}
-
-/// O que o front precisa para encadear o attach depois do [`kill_shell_agent`].
-#[derive(serde::Serialize)]
-struct ShellAgentReopen {
-    cwd: String,
-    conversation_id: Option<String>,
 }
 
 /// M6-B: estado da integração com o Claude Code (o plugin do TYBA).
@@ -7590,7 +7522,7 @@ async fn detected_agent(
     Ok(state
         .agent_prober
         .detected(session_id)
-        .map(|detected| agent_payload(&state, session_id, Some(detected))))
+        .map(|detected| agent_payload(session_id, Some(detected))))
 }
 
 #[tauri::command]
@@ -9628,7 +9560,6 @@ pub fn run() {
             subagent_transcript,
             open_agents_panel,
             toggle_agent_queue,
-            kill_shell_agent,
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             claude_plugin_status,
             #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -9654,6 +9585,8 @@ pub fn run() {
             session_blocks,
             wipe_blocks,
             focus_session,
+            agent_asks,
+            dismiss_ask,
             search_command_history,
             scan_shell_history_sources,
             import_shell_history,
@@ -10448,8 +10381,6 @@ mod tests {
             agent_model: None,
             status_note: None,
             subagents_working: false,
-            opened_by_gate: false,
-            did_work: false,
             agent_usage: None,
             shell_resume_offer: false,
             agent_conversation_cwd: None,
@@ -10805,100 +10736,6 @@ mod tests {
         let json = serde_json::to_string(&info).expect("serializa sem git");
         assert!(json.contains("\"commit\":\"\""));
         assert!(json.contains("\"commit_date\":\"\""));
-    }
-
-    /// A costura do `session_exited`, Entrega F: item 1 do contrato de
-    /// cobertura — agente de gate que trabalhou (atingiu `Idle`) e saiu fecha
-    /// a própria aba sozinho.
-    #[test]
-    fn gate_agent_that_did_work_auto_closes() {
-        let mut s = agent_session(uuid::Uuid::new_v4(), None);
-        s.opened_by_gate = true;
-        s.did_work = true;
-        assert!(should_auto_close_gate_tab(&s));
-    }
-
-    /// Item 2: agente de gate que nunca atingiu `Idle` (não trabalhou) sai —
-    /// a aba fica.
-    #[test]
-    fn gate_agent_that_never_worked_stays_open() {
-        let mut s = agent_session(uuid::Uuid::new_v4(), None);
-        s.opened_by_gate = true;
-        s.did_work = false;
-        assert!(!should_auto_close_gate_tab(&s));
-    }
-
-    /// Item 3: sessão de review (`opened_by_gate=false`) que trabalhou e saiu
-    /// — a aba fica. Trabalhar sozinho não basta; a origem tem de ser o gate.
-    #[test]
-    fn review_session_that_worked_stays_open() {
-        let mut s = agent_session(uuid::Uuid::new_v4(), None);
-        s.opened_by_gate = false;
-        s.did_work = true;
-        assert!(!should_auto_close_gate_tab(&s));
-    }
-
-    /// Item 4: mesma coisa para resolução de conflitos — a chamada que a
-    /// origina nunca passa `opened_by_gate: true`.
-    #[test]
-    fn conflict_resolution_session_that_worked_stays_open() {
-        let mut s = agent_session(uuid::Uuid::new_v4(), None);
-        s.opened_by_gate = false;
-        s.did_work = true;
-        assert!(!should_auto_close_gate_tab(&s));
-    }
-
-    /// Item 5: sessão de agente aberta manualmente (nunca passa por
-    /// `opened_by_gate: true`) que trabalhou e saiu — a aba fica.
-    #[test]
-    fn manually_opened_agent_session_that_worked_stays_open() {
-        let mut s = agent_session(uuid::Uuid::new_v4(), None);
-        s.did_work = true;
-        assert!(!s.opened_by_gate);
-        assert!(!should_auto_close_gate_tab(&s));
-    }
-
-    /// Item 6: nem `opened_by_gate` nem `did_work` chegam a `true` fora de
-    /// sessão de agente (o latch de `did_work` está preso a
-    /// `SessionKind::Agent` em `apply_status`) — então o `else` de
-    /// `session_exited`, que também recebe `Container`, nunca autofecha um.
-    #[test]
-    fn container_kind_never_auto_closes_even_if_the_gate_flag_were_set() {
-        let s = Session {
-            kind: SessionKind::Container {
-                host_id: None,
-                container_id: "c1".into(),
-            },
-            // Hipotético — não há call site que ligue isto para Container —,
-            // mas mesmo assim a decisão não fecha sem `did_work`, que este
-            // kind nunca latcha.
-            opened_by_gate: true,
-            did_work: false,
-            agent_usage: None,
-            shell_resume_offer: false,
-            agent_conversation_cwd: None,
-            ..agent_session(uuid::Uuid::new_v4(), None)
-        };
-        assert!(!should_auto_close_gate_tab(&s));
-    }
-
-    /// Item 12: a decisão é EXCLUSIVAMENTE `opened_by_gate && did_work` — o
-    /// exit code (aqui sempre o sentinela `-1`, mas a função nem o recebe)
-    /// nunca entra na conta. Varre a tabela-verdade inteira.
-    #[test]
-    fn the_decision_is_exclusively_the_two_flags() {
-        for opened_by_gate in [false, true] {
-            for did_work in [false, true] {
-                let mut s = agent_session(uuid::Uuid::new_v4(), None);
-                s.opened_by_gate = opened_by_gate;
-                s.did_work = did_work;
-                assert_eq!(
-                    should_auto_close_gate_tab(&s),
-                    opened_by_gate && did_work,
-                    "opened_by_gate={opened_by_gate} did_work={did_work}"
-                );
-            }
-        }
     }
 
     // --- Bug do retest: `claude` hospedado (shim v2) contava subagente

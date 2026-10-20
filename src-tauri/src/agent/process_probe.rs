@@ -41,15 +41,6 @@ pub struct AgentDetectedPayload {
     /// `detected` é `None`: sem agente, não há o que hospedar.
     pub hosting: bool,
     pub jailed: bool,
-    /// M6-A: o claude cru passou pelo `tyba _jail` (`TYBA_SHIM` no env):
-    /// `passthrough` (versão, ajuda, `mcp`...), `ungated` (sessão em segundo
-    /// plano) ou `fallback` (o core não hospedou). Um claude que passou pelo
-    /// TYBA nunca ganha a faixa "Reabrir com gate"; `ungated`/`fallback`
-    /// mostram "sem gate" em vermelho. `None` = não passou pelo shim.
-    pub shim: Option<String>,
-    /// M7: por que um claude hospedado está sem jaula (`TYBA_NOJAIL`):
-    /// `home`, `hidden_dir`, `outside_home` ou `sandbox`. `None` com jaula.
-    pub no_jail: Option<String>,
     /// Agente livre, fatia 4: claude no pane sem o plugin do TYBA (e com os
     /// hooks livres) — o pane mostra o chip de instalar. Decidido aqui, no
     /// core; o front só mostra.
@@ -175,72 +166,6 @@ pub fn hosting_markers(pid: u32) -> (bool, bool) {
         Ok(bytes) => parse_environ_markers(&bytes),
         Err(_) => (false, false),
     }
-}
-
-/// O marcador `TYBA_SHIM=<rota>` que o `_jail` põe no env do claude cru
-/// (M6-A). Só os três valores conhecidos contam; qualquer outra coisa é
-/// `None` — um valor inventado nunca esconde um aviso.
-pub fn parse_shim_marker(environ: &[u8]) -> Option<String> {
-    parse_env_choice(
-        environ,
-        b"TYBA_SHIM=",
-        &["passthrough", "ungated", "fallback"],
-    )
-}
-
-/// O `TYBA_NOJAIL=<motivo>` que o core põe no claude hospedado sem jaula
-/// (M7). Mesma regra: só os motivos conhecidos.
-pub fn parse_no_jail_marker(environ: &[u8]) -> Option<String> {
-    parse_env_choice(
-        environ,
-        b"TYBA_NOJAIL=",
-        &["home", "hidden_dir", "outside_home", "sandbox"],
-    )
-}
-
-fn parse_env_choice(environ: &[u8], prefix: &[u8], allowed: &[&str]) -> Option<String> {
-    environ
-        .split(|b| *b == 0)
-        .filter_map(|entry| entry.strip_prefix(prefix))
-        .find_map(|value| {
-            allowed
-                .iter()
-                .find(|a| a.as_bytes() == value)
-                .map(|a| a.to_string())
-        })
-}
-
-/// [`parse_shim_marker`] sobre o env real do processo, lido como o de
-/// [`hosting_markers`].
-#[cfg(target_os = "linux")]
-pub fn shim_marker(pid: u32) -> Option<String> {
-    parse_shim_marker(&std::fs::read(format!("/proc/{pid}/environ")).ok()?)
-}
-
-#[cfg(target_os = "macos")]
-pub fn shim_marker(pid: u32) -> Option<String> {
-    parse_shim_marker(procargs2_environ(&procargs2(pid)?)?)
-}
-
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
-pub fn shim_marker(_pid: u32) -> Option<String> {
-    None
-}
-
-/// [`parse_no_jail_marker`] sobre o env real do processo.
-#[cfg(target_os = "linux")]
-pub fn no_jail_marker(pid: u32) -> Option<String> {
-    parse_no_jail_marker(&std::fs::read(format!("/proc/{pid}/environ")).ok()?)
-}
-
-#[cfg(target_os = "macos")]
-pub fn no_jail_marker(pid: u32) -> Option<String> {
-    parse_no_jail_marker(procargs2_environ(&procargs2(pid)?)?)
-}
-
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
-pub fn no_jail_marker(_pid: u32) -> Option<String> {
-    None
 }
 
 /// macOS (M3 do claude-monitor): sem `/proc`, o env de um processo do mesmo
@@ -458,9 +383,6 @@ pub fn find_owning_session(
 #[derive(Default)]
 pub struct AgentProber {
     detected: Mutex<HashMap<SessionId, DetectedAgent>>,
-    /// M6-B: panes em que o plugin do Claude Code avisou um claude CRU
-    /// (`SessionStart` sem gate). Some quando o agente do pane some.
-    raw_plugin: Mutex<std::collections::HashSet<SessionId>>,
 }
 
 pub type SharedAgentProber = Arc<AgentProber>;
@@ -468,14 +390,6 @@ pub type SharedAgentProber = Arc<AgentProber>;
 impl AgentProber {
     pub fn detected(&self, session: SessionId) -> Option<DetectedAgent> {
         self.detected.lock().get(&session).cloned()
-    }
-
-    pub fn clear_raw_plugin(&self, session: SessionId) {
-        self.raw_plugin.lock().remove(&session);
-    }
-
-    pub fn is_raw_plugin(&self, session: SessionId) -> bool {
-        self.raw_plugin.lock().contains(&session)
     }
 
     /// Sonda cada shell vivo contra um único snapshot de processos, grava o novo
@@ -509,76 +423,6 @@ impl AgentProber {
         }
         changes
     }
-}
-
-#[cfg(unix)]
-const TERMINATE_GRACE: Duration = Duration::from_millis(1500);
-#[cfg(unix)]
-const TERMINATE_POLL: Duration = Duration::from_millis(100);
-
-/// Encerra o agente detectado numa sessão de shell, cirurgicamente:
-/// - re-verifica a identidade num snapshot fresco (pid + start_ms) — um pid
-///   reciclado ou um agente que já saiu nunca é morto, e ambos contam como
-///   sucesso (o objetivo é "não está mais rodando");
-/// - mata o process group DO AGENTE (`getpgid`), nunca o do shell nem o
-///   nosso: se o agente compartilha grupo com o líder do shell (shell sem job
-///   control) ou com o próprio TYBA, mata só o pid;
-/// - SIGTERM, grace de ~1,5s com poll de liveness, SIGKILL no que sobrar.
-///
-/// O princípio 9 (killpg da sessão inteira) vale pro kill de SESSÃO; aqui o
-/// shell sobrevive de propósito — só o agente cru sai.
-#[cfg(unix)]
-pub fn terminate_detected(
-    pid: u32,
-    start_ms: u64,
-    shell_leader_pid: Option<u32>,
-) -> Result<(), crate::error::AppError> {
-    let rows = snapshot();
-    let Some(row) = rows.iter().find(|r| r.pid == pid) else {
-        return Ok(());
-    };
-    if row.start_ms != start_ms {
-        return Ok(());
-    }
-    let pid_i = pid as i32;
-    let pgid = unsafe { libc::getpgid(pid_i) };
-    let shell_pgid = shell_leader_pid.map(|lp| unsafe { libc::getpgid(lp as i32) });
-    let own_pgid = unsafe { libc::getpgid(0) };
-    let group_kill = pgid > 0 && Some(pgid) != shell_pgid && pgid != own_pgid;
-    let send = |sig: i32| {
-        if group_kill {
-            unsafe { libc::killpg(pgid, sig) }
-        } else {
-            unsafe { libc::kill(pid_i, sig) }
-        }
-    };
-    if send(libc::SIGTERM) != 0 {
-        let err = std::io::Error::last_os_error();
-        if err.raw_os_error() == Some(libc::ESRCH) {
-            return Ok(());
-        }
-        return Err(
-            crate::error::AppError::new("agent.reopen_kill_failed").with("detail", err.to_string())
-        );
-    }
-    let deadline = std::time::Instant::now() + TERMINATE_GRACE;
-    while std::time::Instant::now() < deadline {
-        if unsafe { libc::kill(pid_i, 0) } != 0 {
-            return Ok(());
-        }
-        std::thread::sleep(TERMINATE_POLL);
-    }
-    let _ = send(libc::SIGKILL);
-    Ok(())
-}
-
-#[cfg(not(unix))]
-pub fn terminate_detected(
-    _pid: u32,
-    _start_ms: u64,
-    _shell_leader_pid: Option<u32>,
-) -> Result<(), crate::error::AppError> {
-    Err(crate::error::AppError::new("agent.reopen_unsupported"))
 }
 
 /// Snapshot de todos os processos vivos (pid, ppid, comm, start_ms). macOS via
@@ -985,31 +829,6 @@ mod tests {
     }
 
     #[test]
-    fn shim_marker_reads_only_the_known_routes() {
-        for route in ["passthrough", "ungated", "fallback"] {
-            let env = environ_of(&["HOME=/x", &format!("TYBA_SHIM={route}")]);
-            assert_eq!(parse_shim_marker(&env).as_deref(), Some(route));
-        }
-        for env in [
-            environ_of(&["HOME=/x"]),
-            environ_of(&["TYBA_SHIM=hosted"]),
-            environ_of(&["X=TYBA_SHIM=fallback"]),
-        ] {
-            assert_eq!(parse_shim_marker(&env), None);
-        }
-    }
-
-    #[test]
-    fn no_jail_marker_reads_only_the_known_reasons() {
-        for reason in ["home", "hidden_dir", "outside_home", "sandbox"] {
-            let env = environ_of(&[&format!("TYBA_NOJAIL={reason}")]);
-            assert_eq!(parse_no_jail_marker(&env).as_deref(), Some(reason));
-        }
-        assert_eq!(parse_no_jail_marker(&environ_of(&["TYBA_NOJAIL=x"])), None);
-        assert_eq!(parse_no_jail_marker(&environ_of(&["HOME=/x"])), None);
-    }
-
-    #[test]
     fn env_var_reads_only_the_exact_entry() {
         let env = environ_of(&[
             "XCLAUDE_CONFIG_DIR=/no",
@@ -1250,114 +1069,5 @@ mod tests {
         let changes = prober.reconcile(&[], &[]);
         assert!(changes.is_empty(), "sessão morta não gera evento");
         assert_eq!(prober.detected(s), None, "estado da sessão morta é limpo");
-    }
-
-    #[cfg(unix)]
-    fn spawn_sleeper_in_own_group() -> std::process::Child {
-        use std::os::unix::process::CommandExt;
-        let mut cmd = std::process::Command::new("sleep");
-        cmd.arg("30");
-        unsafe {
-            cmd.pre_exec(|| {
-                if libc::setpgid(0, 0) != 0 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                Ok(())
-            });
-        }
-        cmd.spawn().expect("spawn sleep")
-    }
-
-    #[cfg(unix)]
-    fn snapshot_start_ms(pid: u32) -> Option<u64> {
-        for _ in 0..50 {
-            if let Some(row) = snapshot().into_iter().find(|r| r.pid == pid) {
-                return Some(row.start_ms);
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        None
-    }
-
-    #[cfg(unix)]
-    fn wait_gone(child: &mut std::process::Child) -> bool {
-        for _ in 0..100 {
-            if let Ok(Some(_)) = child.try_wait() {
-                return true;
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        }
-        false
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn terminate_kills_the_verified_agent() {
-        let mut child = spawn_sleeper_in_own_group();
-        let pid = child.id();
-        let start_ms = snapshot_start_ms(pid).expect("sleeper no snapshot");
-
-        terminate_detected(pid, start_ms, None).expect("terminate");
-        assert!(wait_gone(&mut child), "sleeper deveria morrer no TERM");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn terminate_refuses_a_recycled_pid() {
-        // start_ms divergente = o pid não é mais o agente detectado; nada morre
-        // e a chamada é sucesso (o agente detectado já não existe).
-        let mut child = spawn_sleeper_in_own_group();
-        let pid = child.id();
-        let start_ms = snapshot_start_ms(pid).expect("sleeper no snapshot");
-
-        terminate_detected(pid, start_ms + 999_999, None).expect("mismatch é ok");
-        assert!(
-            matches!(child.try_wait(), Ok(None)),
-            "sleeper deveria seguir vivo"
-        );
-
-        let _ = child.kill();
-        let _ = child.wait();
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn terminate_spares_the_group_when_the_agent_shares_it_with_the_shell() {
-        // Shell sem job control: o agente herda o pgid do líder. killpg aqui
-        // levaria o shell (e o grupo inteiro) junto — o kill degrada pra pid
-        // único. O espectador no mesmo grupo prova que não houve killpg: se
-        // houvesse, ele (e o próprio runner de teste) morreria no TERM.
-        let mut agent = std::process::Command::new("sleep")
-            .arg("30")
-            .spawn()
-            .expect("spawn agente");
-        let mut bystander = std::process::Command::new("sleep")
-            .arg("30")
-            .spawn()
-            .expect("spawn espectador");
-        let pid = agent.id();
-        let start_ms = snapshot_start_ms(pid).expect("agente no snapshot");
-
-        terminate_detected(pid, start_ms, Some(std::process::id())).expect("terminate");
-        assert!(wait_gone(&mut agent), "agente deveria morrer no TERM");
-        assert!(
-            matches!(bystander.try_wait(), Ok(None)),
-            "irmão de grupo deveria sobreviver — killpg teria levado o grupo"
-        );
-
-        let _ = bystander.kill();
-        let _ = bystander.wait();
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn terminate_of_a_dead_pid_is_success() {
-        let mut child = spawn_sleeper_in_own_group();
-        let pid = child.id();
-        let start_ms = snapshot_start_ms(pid).expect("sleeper no snapshot");
-        child.kill().expect("kill");
-        child.wait().expect("wait");
-
-        terminate_detected(pid, start_ms, None).expect("morto é sucesso");
     }
 }
