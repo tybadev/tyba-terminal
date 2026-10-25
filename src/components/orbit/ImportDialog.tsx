@@ -23,6 +23,7 @@ import {
   type ImportItem,
   type ImportPreview,
   type Integration,
+  type RoleChoice,
 } from "@/lib/orbit";
 
 /** Texto que vai rodar: inteiro, com o invisível à vista. Nunca resumo. */
@@ -229,13 +230,15 @@ export function ImportDialog({
   const unused = unusedImportIntegrations(preview);
   const variables = Object.entries(graph.variables);
   const [chosen, setChosen] = useState<Record<string, string>>({});
+  // Papel do arquivo diferente do daqui: a escolha do dono (padrão: cópia).
+  const [roleChoices, setRoleChoices] = useState<Record<string, RoleChoice>>({});
   const pending = missingImportDirs(preview.dirs, chosen);
   const dirOf = new Map(preview.dirs.map((d) => [d.nodeId, d]));
 
   const confirm = async () => {
     setBusy(true);
     try {
-      onImported(await importConfirm(path, preview.hash, defaultDir, chosen));
+      onImported(await importConfirm(path, preview.hash, defaultDir, chosen, roleChoices));
     } catch (e) {
       setError(String(e));
       setBusy(false);
@@ -319,6 +322,54 @@ export function ImportDialog({
               );
             })}
           </Section>
+
+          {preview.roles.length > 0 && (
+            <Section title={t("orbitImportRoles", { count: preview.roles.length })}>
+              {preview.roles.map((role) => {
+                const status =
+                  preview.roleStatuses.find((r) => r.name === role.name)?.status ?? "new";
+                const choice = roleChoices[role.name] ?? "rename";
+                return (
+                  <div key={role.name} className="flex flex-col gap-1.5">
+                    <span className="flex items-baseline gap-2 text-[12px] text-tyba-text">
+                      <span className="font-medium">{revealHidden(role.name)}</span>
+                      <span
+                        className={`text-[11px] ${
+                          status === "different" ? "text-tyba-amber" : "text-tyba-text-faint"
+                        }`}
+                      >
+                        {t(`orbitImportRole_${status}`)}
+                      </span>
+                    </span>
+                    {status === "different" && (
+                      <div
+                        role="radiogroup"
+                        aria-label={revealHidden(role.name)}
+                        className="flex flex-wrap gap-x-4 gap-y-1 text-[11.5px]"
+                      >
+                        {(["rename", "file", "mine"] as const).map((c) => (
+                          <label key={c} className="flex items-center gap-1.5 text-tyba-text-muted">
+                            <input
+                              type="radio"
+                              name={`orbit-role-${role.name}`}
+                              checked={choice === c}
+                              onChange={() => setRoleChoices((m) => ({ ...m, [role.name]: c }))}
+                            />
+                            {c === "rename"
+                              ? t("orbitImportRoleRename", {
+                                  name: `${revealHidden(role.name)} (importado)`,
+                                })
+                              : t(c === "file" ? "orbitImportRoleFile" : "orbitImportRoleMine")}
+                          </label>
+                        ))}
+                      </div>
+                    )}
+                    <Code>{role.instructions}</Code>
+                  </div>
+                );
+              })}
+            </Section>
+          )}
 
           {unused.length > 0 && (
             <Section title={t("orbitImportUnused")}>

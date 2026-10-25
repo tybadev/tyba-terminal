@@ -22,12 +22,12 @@ import {
   Elapsed,
   NodeDir,
   NodeFrame,
-  fieldClass,
   termClass,
   useOrbit,
   type OrbitFlowNode,
 } from "./NodeFrame";
 import { NodeTerminal } from "./NodeTerminal";
+import { RolePicker } from "./RolePicker";
 
 type AgentKind = Extract<NodeKind, { type: "agent" }>;
 
@@ -36,7 +36,8 @@ const RUNNERS: Runner[] = ["claude", "codex"];
 /** Nó de agente: Claude (âmbar) ou Codex (ciano), papel, pasta e a tarefa. */
 export function AgentNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
   const { t } = useTranslation();
-  const { updateNode, run, live, subagents, createdBy, graphDir, telemetry, graph } = useOrbit();
+  const { updateNode, run, live, subagents, createdBy, graphDir, telemetry, graph, roles, openRoles } =
+    useOrbit();
   const node = data.node;
   const kind = node.kind as AgentKind;
   const session = nodeSession(kind, run, id, live);
@@ -194,16 +195,14 @@ export function AgentNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
               </button>
             ))}
           </div>
-          <input
-            aria-label={t("orbitRole")}
-            placeholder={t("orbitRole")}
-            spellCheck={false}
-            autoCorrect="off"
-            autoCapitalize="off"
+          <RolePicker
             value={kind.role}
-            onChange={(e) => set({ role: e.target.value })}
-            className={`${fieldClass} min-w-0 flex-1`}
+            roles={roles}
+            onChange={(role) => set({ role })}
+            onNew={(name) => openRoles({ newName: name, assignTo: id })}
+            onManage={() => openRoles()}
           />
+          <span className="min-w-0 flex-1" />
           <NodeDir id={id} kind={kind} />
         </div>
       )}

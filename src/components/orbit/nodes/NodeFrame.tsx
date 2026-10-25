@@ -62,6 +62,7 @@ import {
   type WaitingYou,
   type NodeStatus,
   type Run,
+  type Role,
 } from "@/lib/orbit";
 import type { ApprovalDecision, ApprovalRequest, SubagentRun } from "@/lib/ipc";
 import {
@@ -116,6 +117,13 @@ export interface CanvasActions {
   closeTerminal: (nodeId: string) => void;
   /** O id vivo do contêiner que o card do serviço mostra (`null`: saiu). */
   reportContainer: (nodeId: string, containerId: string | null) => void;
+  /** A biblioteca de papéis desta máquina (quadro OrbitPapeis). */
+  roles: readonly Role[];
+  /**
+   * Abre o painel Papéis; `newName` já num papel novo com esse nome, e
+   * `assignTo` põe o papel salvo nesse nó ("Novo papel…" do card).
+   */
+  openRoles: (opts?: { newName?: string; assignTo?: string }) => void;
 }
 
 export interface CanvasState {
@@ -163,6 +171,8 @@ export const CanvasActionsContext = createContext<CanvasActions>({
   openTerminal: async () => {},
   closeTerminal: () => {},
   reportContainer: () => {},
+  roles: [],
+  openRoles: () => {},
 });
 
 export const CanvasStateContext = createContext<CanvasState>({

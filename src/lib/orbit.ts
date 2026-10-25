@@ -283,6 +283,91 @@ export const saveIntegration = (integration: Integration) =>
 export const deleteIntegration = (id: string) =>
   invoke<void>("orbit_delete_integration", { id });
 
+// ------------------------------------------------------------- papéis
+
+/**
+ * Papel reutilizável da biblioteca desta máquina (quadro OrbitPapeis). O nome
+ * é a chave: o nó guarda só o nome, e as instruções entram no começo do
+ * prompt de cada agente com este papel. Nome fora da biblioteca é só rótulo.
+ */
+export interface Role {
+  name: string;
+  instructions: string;
+}
+
+/** Tetos do core (`MAX_ROLE_NAME_CHARS`, `MAX_ROLE_INSTRUCTIONS_CHARS`). */
+export const MAX_ROLE_NAME_CHARS = 40;
+export const MAX_ROLE_INSTRUCTIONS_CHARS = 4000;
+
+export const listRoles = () => invoke<Role[]>("orbit_list_roles");
+
+export const saveRole = (role: Role) => invoke<void>("orbit_save_role", { role });
+
+/** Apagar deixa o nome como rótulo nos nós que o usavam. */
+export const deleteRole = (name: string) => invoke<void>("orbit_delete_role", { name });
+
+/** Renomear leva os nós de todos os grafos junto (o core regrava os grafos). */
+export const renameRole = (from: string, to: string) =>
+  invoke<void>("orbit_rename_role", { from, to });
+
+export type RoleProblem =
+  | "emptyName"
+  | "nameOneLine"
+  | "nameTooLong"
+  | "instructionsTooLong"
+  | "controlChars";
+
+/** Quebra de linha ou controle (o `breaks_line` do core): o nome é uma linha só. */
+const ROLE_NAME_BREAK = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/u;
+/** Controle fora de `\n` e `\t` (o `has_control_chars` do core). */
+const ROLE_CONTROL = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/u;
+
+/**
+ * Por que o core recusaria o papel (`validate_role`), ou `null`. O front
+ * avisa antes de salvar; quem decide continua sendo o core.
+ */
+export function roleProblem(role: Role): RoleProblem | null {
+  if (role.name.trim() === "") return "emptyName";
+  if (ROLE_NAME_BREAK.test(role.name)) return "nameOneLine";
+  if ([...role.name].length > MAX_ROLE_NAME_CHARS) return "nameTooLong";
+  if ([...role.instructions].length > MAX_ROLE_INSTRUCTIONS_CHARS) return "instructionsTooLong";
+  if (ROLE_CONTROL.test(role.instructions)) return "controlChars";
+  return null;
+}
+
+/** Quantos nós de agente usam o papel, em quantos grafos (a biblioteca é por máquina). */
+export function roleUsage(
+  graphs: readonly { nodes: readonly OrbitNode[] }[],
+  name: string,
+): { nodes: number; graphs: number } {
+  let nodes = 0;
+  let inGraphs = 0;
+  for (const graph of graphs) {
+    const here = graph.nodes.filter((n) => n.kind.type === "agent" && n.kind.role === name).length;
+    nodes += here;
+    if (here > 0) inGraphs += 1;
+  }
+  return { nodes, graphs: inGraphs };
+}
+
+/** A primeira linha com texto das instruções, para a lista do seletor. */
+export const roleSummary = (instructions: string): string =>
+  instructions
+    .split("\n")
+    .map((l) => l.trim())
+    .find(Boolean) ?? "";
+
+/** "Nome (cópia)" que não existe ainda, dentro do teto do nome. */
+export function copyName(name: string, taken: readonly string[]): string {
+  for (let n = 1; n < 100; n += 1) {
+    const suffix = n === 1 ? " (cópia)" : ` (cópia ${n})`;
+    const room = MAX_ROLE_NAME_CHARS - [...suffix].length;
+    const candidate = `${[...name].slice(0, room).join("").trimEnd()}${suffix}`;
+    if (!taken.includes(candidate)) return candidate;
+  }
+  return name;
+}
+
 // ---------------------------------------------------- regra de ligação
 
 type IntegrationsById = ReadonlyMap<string, Integration>;
@@ -1535,11 +1620,11 @@ export const integrationTest = (integrationId: string, graphId: string, nodeId: 
 
 /** Campo que saiu no arquivo com segredo literal (o core não reescreve o texto). */
 export interface SecretField {
-  owner: "node" | "integration";
+  owner: "node" | "integration" | "role";
   id: string;
   /** Título do nó ou nome da integração. */
   name: string;
-  field: "prompt" | "command" | "markdown" | "script";
+  field: "prompt" | "command" | "markdown" | "script" | "instructions";
 }
 
 /** O que avisar depois de exportar. */
@@ -1576,7 +1661,22 @@ export interface ImportPreview {
   renamedIntegrations: string[];
   /** A pasta de cada nó executável e se ela existe aqui. */
   dirs: ImportDir[];
+  /** Papéis do arquivo, com as instruções inteiras. */
+  roles: Role[];
+  /** Cada papel do arquivo comparado com a biblioteca daqui. */
+  roleStatuses: ImportRole[];
 }
+
+/** Como um papel do arquivo se compara com o daqui. */
+export type RoleStatus = "new" | "same" | "different";
+
+export interface ImportRole {
+  name: string;
+  status: RoleStatus;
+}
+
+/** A escolha do dono para um papel diferente do daqui (padrão: cópia "(importado)"). */
+export type RoleChoice = "rename" | "file" | "mine";
 
 export const importPreview = (path: string) =>
   invoke<ImportPreview>("orbit_import_preview", { path });
@@ -1591,7 +1691,8 @@ export const importConfirm = (
   hash: string,
   dir: string,
   dirs: Record<string, string>,
-) => invoke<string>("orbit_import_confirm", { path, hash, dir, dirs });
+  roles: Record<string, RoleChoice> = {},
+) => invoke<string>("orbit_import_confirm", { path, hash, dir, dirs, roles });
 
 /** Nós cuja pasta não existe aqui e ainda não ganharam uma escolhida. Confirmar só com zero. */
 export const missingImportDirs = (

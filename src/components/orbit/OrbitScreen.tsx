@@ -24,6 +24,7 @@ import {
   MapTrifold,
   PencilSimple,
   Play,
+  IdentificationBadge,
   PlugsConnected,
   Plus,
   Stop,
@@ -70,6 +71,7 @@ import {
   lastGraphId,
   listGraphs,
   listIntegrations,
+  listRoles,
   newNode,
   onRun,
   pickGraph,
@@ -95,6 +97,7 @@ import {
   type Graph,
   type ImportPreview,
   type Integration,
+  type Role,
   type OrbitNode,
   type Plan,
   runElapsed,
@@ -105,6 +108,7 @@ import { browserRetain } from "@/lib/orbitBrowser";
 import { roomAgents } from "@/lib/orbitTalk";
 import { ConfirmDelete } from "./ConfirmDelete";
 import { ImportDialog } from "./ImportDialog";
+import { RolesPanel } from "./RolesPanel";
 import { IntegrationsPanel } from "./IntegrationsPanel";
 import { OrbitCanvas, type CreatedView, type OrbitFlowEdge } from "./OrbitCanvas";
 import { RunTimeline } from "./RunTimeline";
@@ -243,6 +247,7 @@ function OrbitInner({
   const edgesRef = useRef(edges);
   edgesRef.current = edges;
   const [integrations, setIntegrations] = useState<Integration[]>([]);
+  const [roles, setRoles] = useState<Role[]>([]);
   const [error, setError] = useState<string | null>(null);
   // O erro que o salvar automático pôs (e só ele o apaga ao salvar de novo).
   const saveError = useRef<string | null>(null);
@@ -259,6 +264,10 @@ function OrbitInner({
   const [runView, dispatchRun] = useReducer(runReducer, EMPTY_RUN_VIEW);
   const [now, setNow] = useState(() => Date.now());
   const [showInts, setShowInts] = useState(false);
+  // Painel Papéis aberto: `newName`/`assignTo` vêm do "Novo papel…" do card.
+  const [showRoles, setShowRoles] = useState<{ newName?: string; assignTo?: string } | null>(
+    null,
+  );
   const [notice, setNotice] = useState<{ text: string; warn: boolean; undo?: boolean } | null>(
     null,
   );
@@ -278,8 +287,8 @@ function OrbitInner({
     let alive = true;
     setMeta(null);
     dispatchRun({ type: "reset" });
-    void Promise.all([listGraphs(), listIntegrations()])
-      .then(([list, ints]) => {
+    void Promise.all([listGraphs(), listIntegrations(), listRoles()])
+      .then(([list, ints, roleList]) => {
         if (!alive) return;
         setGraphs(list);
         const found = want.fresh ? null : pickGraph(list, want.id);
@@ -293,6 +302,7 @@ function OrbitInner({
         loadedAt.current = Date.now();
         appliedPlans.current = new Map();
         setIntegrations(ints);
+        setRoles(roleList);
         setNodes(flow.nodes as OrbitFlowNode[]);
         setEdges(flow.edges);
         // Outro grafo: o ⌘Z começa do zero (o retrato dele entra no próximo assentar).
@@ -740,6 +750,30 @@ function OrbitInner({
         : [...list, saved],
     );
 
+  const roleSaved = (saved: Role) =>
+    setRoles((list) =>
+      (list.some((r) => r.name === saved.name)
+        ? list.map((r) => (r.name === saved.name ? saved : r))
+        : [...list, saved]
+      ).sort((a, b) => a.name.localeCompare(b.name)),
+    );
+
+  // Renomear na biblioteca leva os nós junto: o core regravou os grafos
+  // salvos; o canvas aberto acompanha aqui, senão o salvar automático dele
+  // traria o nome antigo de volta.
+  const roleRenamed = (from: string, to: string) => {
+    setRoles((list) => list.filter((r) => r.name !== from));
+    for (const n of nodesRef.current) {
+      const kind = n.data.node.kind;
+      if (kind.type === "agent" && kind.role === from) {
+        updateNode(n.id, (node) => ({ ...node, kind: { ...kind, role: to } }));
+      }
+    }
+    void listGraphs()
+      .then(setGraphs)
+      .catch(() => {});
+  };
+
   const exportFile = async () => {
     if (!meta) return;
     try {
@@ -977,9 +1011,12 @@ function OrbitInner({
       openTerminal,
       closeTerminal,
       reportContainer,
+      roles,
+      openRoles: (opts?: { newName?: string; assignTo?: string }) => setShowRoles(opts ?? {}),
     }),
     [
       integrations,
+      roles,
       updateNode,
       graphDir,
       graphId,
@@ -1324,6 +1361,18 @@ function OrbitInner({
             <PlugsConnected size={13} />
             {t("orbitIntegrations")}
           </button>
+          <button
+            type="button"
+            disabled={!meta}
+            aria-pressed={!!showRoles}
+            aria-expanded={!!showRoles}
+            aria-controls="orbit-roles"
+            onClick={() => setShowRoles((v) => (v ? null : {}))}
+            className={tbtn}
+          >
+            <IdentificationBadge size={13} />
+            {t("orbitRoles")}
+          </button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <button
@@ -1462,6 +1511,38 @@ function OrbitInner({
                 onDeleted={(gone) => setIntegrations((list) => list.filter((i) => i.id !== gone))}
                 onTest={testIntegration}
                 onClose={() => setShowInts(false)}
+              />
+            </>
+          )}
+          {showRoles && meta && (
+            <>
+              <div
+                aria-hidden
+                onMouseDown={() => setShowRoles(null)}
+                className="absolute inset-0 z-10 bg-tyba-bg/55"
+              />
+              <RolesPanel
+                roles={roles}
+                graphs={graphs}
+                currentGraphId={meta.id}
+                currentNodes={graph.nodes}
+                start={showRoles}
+                onSaved={(role) => {
+                  roleSaved(role);
+                  // "Novo papel…" do card: o papel salvo vai para aquele nó.
+                  const assignTo = showRoles.assignTo;
+                  if (assignTo) {
+                    updateNode(assignTo, (node) =>
+                      node.kind.type === "agent"
+                        ? { ...node, kind: { ...node.kind, role: role.name } }
+                        : node,
+                    );
+                    setShowRoles({});
+                  }
+                }}
+                onRenamed={roleRenamed}
+                onDeleted={(gone) => setRoles((list) => list.filter((r) => r.name !== gone))}
+                onClose={() => setShowRoles(null)}
               />
             </>
           )}
