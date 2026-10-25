@@ -8888,6 +8888,92 @@ fn orbit_delete_integration(state: State<'_, AppState>, id: String) -> Result<()
         .map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+fn orbit_list_roles(state: State<'_, AppState>) -> Result<Vec<orbit::Role>, String> {
+    state.store.list_orbit_roles().map_err(|e| e.to_string())
+}
+
+/// Grava o papel na biblioteca desta máquina (o nome é a chave). Instruções
+/// que mudaram marcam "↻ para aplicar" nos agentes rodando com esse papel.
+#[tauri::command]
+fn orbit_save_role(
+    state: State<'_, AppState>,
+    runs: State<'_, orbit::run::SharedRuns>,
+    role: orbit::Role,
+) -> Result<(), String> {
+    orbit::validate_role(&role).map_err(|e| e.to_string())?;
+    let before = state
+        .store
+        .get_orbit_role(&role.name)
+        .map_err(|e| e.to_string())?;
+    state
+        .store
+        .save_orbit_role(&role, None)
+        .map_err(|e| e.to_string())?;
+    if before.as_ref() != Some(&role) {
+        runs.role_saved(&role.name);
+    }
+    Ok(())
+}
+
+/// Apagar deixa o nome como rótulo nos nós que o usavam.
+#[tauri::command]
+fn orbit_delete_role(state: State<'_, AppState>, name: String) -> Result<(), String> {
+    state
+        .store
+        .delete_orbit_role(&name)
+        .map_err(|e| e.to_string())
+}
+
+/// Renomear leva junto os nós de todos os grafos desta máquina (e dos runs
+/// abertos, sem marcar nada). Recusa nome que já existe.
+#[tauri::command]
+fn orbit_rename_role(
+    state: State<'_, AppState>,
+    runs: State<'_, orbit::run::SharedRuns>,
+    from: String,
+    to: String,
+) -> Result<(), String> {
+    let to = to.trim().to_string();
+    if to == from {
+        return Ok(());
+    }
+    orbit::validate_role(&orbit::Role {
+        name: to.clone(),
+        instructions: String::new(),
+    })
+    .map_err(|e| e.to_string())?;
+    if state
+        .store
+        .get_orbit_role(&to)
+        .map_err(|e| e.to_string())?
+        .is_some()
+    {
+        return Err(format!("já existe um papel chamado \"{to}\""));
+    }
+    state
+        .store
+        .rename_orbit_role(&from, &to)
+        .map_err(|e| e.to_string())?;
+    let graphs = state.store.list_orbit_graphs().map_err(|e| e.to_string())?;
+    for mut graph in graphs {
+        if orbit::rename_role_in(&mut graph, &from, &to) == 0 {
+            continue;
+        }
+        let consented = state
+            .store
+            .get_orbit_graph(&graph.id)
+            .map_err(|e| e.to_string())?
+            .is_none_or(|s| s.consented);
+        state
+            .store
+            .save_orbit_graph(&graph, consented, None)
+            .map_err(|e| e.to_string())?;
+    }
+    runs.role_renamed(&from, &to);
+    Ok(())
+}
+
 /// ▶ Executar. Recusa no core grafo importado e não confirmado, e revalida o
 /// grafo antes de rodar — o banco não é prova de que ele ainda é válido.
 /// Fora da main thread: parar o run anterior e gravar o novo não seguram a
@@ -9339,7 +9425,8 @@ fn orbit_export(
         .store
         .list_orbit_integrations()
         .map_err(|e| e.to_string())?;
-    orbit::export::export_to(std::path::Path::new(&path), &graph, &integrations)
+    let roles = state.store.list_orbit_roles().map_err(|e| e.to_string())?;
+    orbit::export::export_to(std::path::Path::new(&path), &graph, &integrations, &roles)
         .map_err(|e| e.to_string())
 }
 
@@ -9365,12 +9452,19 @@ fn orbit_import_preview(
     )?
     .renamed;
     let dirs = orbit::export::import_dirs(&imported.graph);
+    let role_statuses =
+        orbit::export::role_statuses(&imported.roles, |name| local_orbit_role(&state, name))?;
     Ok(orbit::export::ImportPreview {
         imported,
         replaces_graph,
         renamed_integrations,
         dirs,
+        role_statuses,
     })
+}
+
+fn local_orbit_role(state: &AppState, name: &str) -> Result<Option<orbit::Role>, String> {
+    state.store.get_orbit_role(name).map_err(|e| e.to_string())
 }
 
 fn local_orbit_integration(
@@ -9389,7 +9483,9 @@ fn local_orbit_integration(
 /// Cada nó roda na pasta que o dono escolheu em `dirs` (id do nó → pasta) ou
 /// na do arquivo, se ela existe aqui; pasta inexistente sem escolha recusa.
 /// `dir` vira a pasta padrão do grafo. Integração local de mesmo id e outro
-/// conteúdo nunca é sobrescrita — a do arquivo entra com id novo.
+/// conteúdo nunca é sobrescrita — a do arquivo entra com id novo. Papel do
+/// arquivo diferente do daqui segue a escolha do dono em `roles` (nome →
+/// escolha; sem escolha, entra como cópia).
 #[tauri::command]
 fn orbit_import_confirm(
     state: State<'_, AppState>,
@@ -9397,6 +9493,7 @@ fn orbit_import_confirm(
     hash: String,
     dir: String,
     dirs: std::collections::HashMap<String, String>,
+    roles: std::collections::HashMap<String, orbit::export::RoleChoice>,
 ) -> Result<String, String> {
     let mut imported = orbit::export::read_confirmed(std::path::Path::new(&path), &hash)
         .map_err(|e| e.to_string())?;
@@ -9406,11 +9503,19 @@ fn orbit_import_confirm(
         |id| local_orbit_integration(&state, id),
         || uuid::Uuid::new_v4().to_string(),
     )?;
+    let roles =
+        orbit::export::resolve_roles(&mut imported, |name| local_orbit_role(&state, name), &roles)?;
     orbit::validate_graph(&imported.graph, &imported.integrations).map_err(|e| e.to_string())?;
     for integration in &resolved.to_save {
         state
             .store
             .save_orbit_integration(integration, true, Some(&imported.hash))
+            .map_err(|e| e.to_string())?;
+    }
+    for role in &roles.to_save {
+        state
+            .store
+            .save_orbit_role(role, Some(&imported.hash))
             .map_err(|e| e.to_string())?;
     }
     state
@@ -10439,6 +10544,10 @@ pub fn run() {
             orbit_list_integrations,
             orbit_save_integration,
             orbit_delete_integration,
+            orbit_list_roles,
+            orbit_save_role,
+            orbit_delete_role,
+            orbit_rename_role,
             orbit_run_start,
             orbit_run_node,
             orbit_integration_test,

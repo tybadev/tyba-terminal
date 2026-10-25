@@ -17,6 +17,8 @@ use super::{EdgeKind, Runner};
 use crate::agent::session::{SharedTurnTail, TurnTail};
 use crate::session::{AgentRunnerKind, AwaitingReason, SessionStatus};
 
+use super::{Edge, Integration, Node, NodeKind};
+
 /// Teto do texto do turno que vira `context.md`.
 const CONTEXT_MAX_CHARS: usize = 32_000;
 const TURN_POLL: Duration = Duration::from_millis(300);
@@ -82,16 +84,52 @@ pub fn read_context(path: &Path) -> Option<String> {
 /// Contexto vai no corpo, e não só como caminho: uma nota ligada a um agente
 /// é a instrução dele, e listada como arquivo o agente a ignorava (teste do
 /// dono, 15/10: a nota pedia 6 subagentes e ele rodou 3).
-pub fn build_prompt(
-    prompt: &str,
-    contexts: &[(String, String)],
-    inputs: &[(EdgeKind, PathBuf)],
-) -> String {
-    if inputs.is_empty() && contexts.is_empty() {
-        return prompt.to_string();
+/// As partes do prompt do agente, na ordem do quadro OrbitPapeis: papel,
+/// tarefa, ligados a você, contexto e entradas.
+pub struct PromptParts<'a> {
+    /// Nome e instruções (já com as variáveis) do papel da biblioteca.
+    pub role: Option<(&'a str, &'a str)>,
+    pub task: &'a str,
+    pub contexts: &'a [(String, String)],
+    pub inputs: &'a [(EdgeKind, PathBuf)],
+    /// Uma linha por nó ligado ([`linked_lines`]).
+    pub links: &'a [String],
+}
+
+/// Monta o prompt. Sem papel nem ligação, é a tarefa seguida de contexto e
+/// entradas, como sempre foi; com papel, abre com "Papel: <nome>" e as
+/// instruções, e a tarefa ganha o cabeçalho "Tarefa:".
+pub fn build_prompt(parts: &PromptParts) -> String {
+    if parts.role.is_none()
+        && parts.links.is_empty()
+        && parts.inputs.is_empty()
+        && parts.contexts.is_empty()
+    {
+        return parts.task.to_string();
     }
-    let mut out = prompt.trim_end().to_string();
-    for (heading, body) in contexts {
+    let mut out = String::new();
+    match parts.role {
+        Some((name, instructions)) => {
+            out.push_str(&format!("Papel: {name}\n{}", instructions.trim()));
+            let task = parts.task.trim();
+            if !task.is_empty() {
+                out.push_str("\n\nTarefa:\n");
+                out.push_str(task);
+            }
+        }
+        None => out.push_str(parts.task.trim_end()),
+    }
+    if !parts.links.is_empty() {
+        if !out.is_empty() {
+            out.push_str("\n\n");
+        }
+        out.push_str("Ligados a você:");
+        for line in parts.links {
+            out.push_str("\n- ");
+            out.push_str(line);
+        }
+    }
+    for (heading, body) in parts.contexts {
         if !out.is_empty() {
             out.push_str("\n\n");
         }
@@ -99,15 +137,152 @@ pub fn build_prompt(
         out.push_str(":\n");
         out.push_str(body);
     }
-    if inputs.is_empty() {
+    if parts.inputs.is_empty() {
         return out;
     }
     if !out.is_empty() {
         out.push_str("\n\n");
     }
     out.push_str("Entradas (arquivos em $TYBA_IN):");
-    for (kind, path) in inputs {
+    for (kind, path) in parts.inputs {
         out.push_str(&format!("\n- {} ({})", path.display(), kind_label(*kind)));
+    }
+    out
+}
+
+/// "Ligados a você": uma linha por nó ligado a `me`, na ordem das ligações
+/// — `<título> · <o que ele é> → <o que a ligação faz>`. Dado que chega:
+/// "manda contexto para você"; que sai: "recebe diff de você"; conversa:
+/// "conversa com você"; memória: "você lê e escreve" (nota com cadeado:
+/// "você lê"); plano: "você escreve o plano nela"; controla: "você controla".
+pub fn linked_lines(
+    nodes: &[Node],
+    edges: &[Edge],
+    integrations: &std::collections::HashMap<String, Integration>,
+    me: &str,
+) -> Vec<String> {
+    let mut order: Vec<&str> = Vec::new();
+    let mut incoming: std::collections::HashMap<&str, Vec<EdgeKind>> = Default::default();
+    let mut outgoing: std::collections::HashMap<&str, Vec<EdgeKind>> = Default::default();
+    for e in edges {
+        let (other, bucket) = if e.to == me && e.from != me {
+            (e.from.as_str(), &mut incoming)
+        } else if e.from == me && e.to != me {
+            (e.to.as_str(), &mut outgoing)
+        } else {
+            continue;
+        };
+        if !order.contains(&other) {
+            order.push(other);
+        }
+        let kinds = bucket.entry(other).or_default();
+        if !kinds.contains(&e.kind) {
+            kinds.push(e.kind);
+        }
+    }
+    order
+        .into_iter()
+        .filter_map(|id| {
+            let node = nodes.iter().find(|n| n.id == id)?;
+            let inc = incoming.get(id).cloned().unwrap_or_default();
+            let out = outgoing.get(id).cloned().unwrap_or_default();
+            let mut phrases: Vec<String> = Vec::new();
+            let data_in: Vec<&str> = inc
+                .iter()
+                .filter(|k| k.carries_data())
+                .map(|k| kind_label(*k))
+                .collect();
+            if !data_in.is_empty() {
+                phrases.push(format!("manda {} para você", join_and(&data_in)));
+            }
+            let data_out: Vec<&str> = out
+                .iter()
+                .filter(|k| k.carries_data())
+                .map(|k| kind_label(*k))
+                .collect();
+            if !data_out.is_empty() {
+                phrases.push(format!("recebe {} de você", join_and(&data_out)));
+            }
+            if inc.contains(&EdgeKind::Talk) || out.contains(&EdgeKind::Talk) {
+                phrases.push("conversa com você".into());
+            }
+            if out.contains(&EdgeKind::Memory) {
+                let locked = matches!(&node.kind, NodeKind::Note { locked: true, .. });
+                phrases.push(
+                    if locked {
+                        "você lê"
+                    } else {
+                        "você lê e escreve"
+                    }
+                    .into(),
+                );
+            }
+            if out.contains(&EdgeKind::Plan) {
+                phrases.push("você escreve o plano nela".into());
+            }
+            if out.contains(&EdgeKind::Control) {
+                phrases.push("você controla".into());
+            }
+            if phrases.is_empty() {
+                return None;
+            }
+            Some(format!(
+                "{} · {} → {}",
+                super::talk::clean_title(&node.title).trim(),
+                describe(&node.kind, integrations),
+                phrases.join(" · ")
+            ))
+        })
+        .collect()
+}
+
+fn join_and(items: &[&str]) -> String {
+    match items.len() {
+        0 => String::new(),
+        1 => items[0].to_string(),
+        n => format!("{} e {}", items[..n - 1].join(", "), items[n - 1]),
+    }
+}
+
+/// O que o nó é, para a linha de "Ligados a você": o papel do agente (ou
+/// "agente") e o runner, a primeira linha do comando, o nome da integração.
+fn describe(
+    kind: &NodeKind,
+    integrations: &std::collections::HashMap<String, Integration>,
+) -> String {
+    match kind {
+        NodeKind::Agent { runner, role, .. } => {
+            let runner = match runner {
+                Runner::Claude => "Claude",
+                Runner::Codex => "Codex",
+            };
+            let role = super::talk::clean_title(role.trim());
+            if role.is_empty() {
+                format!("agente ({runner})")
+            } else {
+                format!("{role} ({runner})")
+            }
+        }
+        NodeKind::Process { command, .. } => format!("processo \"{}\"", short_line(command)),
+        NodeKind::Note { .. } => "nota".into(),
+        NodeKind::Integration { integration_id, .. } => format!(
+            "integração \"{}\"",
+            integrations
+                .get(integration_id)
+                .map_or(integration_id.as_str(), |i| i.name.as_str())
+        ),
+        NodeKind::Browser { .. } => "navegador".into(),
+        NodeKind::Service { .. } => "serviço".into(),
+        NodeKind::Terminal { .. } => "terminal".into(),
+    }
+}
+
+/// A primeira linha do texto, até 60 caracteres.
+fn short_line(text: &str) -> String {
+    let line = text.lines().next().unwrap_or("").trim();
+    let mut out: String = line.chars().take(60).collect();
+    if line.chars().count() > 60 {
+        out.push('…');
     }
     out
 }
@@ -395,9 +570,19 @@ mod tests {
         assert_eq!(waiting_you(None), None);
     }
 
+    fn prompt(task: &str, contexts: &[(String, String)], inputs: &[(EdgeKind, PathBuf)]) -> String {
+        build_prompt(&PromptParts {
+            role: None,
+            task,
+            contexts,
+            inputs,
+            links: &[],
+        })
+    }
+
     #[test]
     fn prompt_lists_each_input_in_one_line() {
-        let p = build_prompt(
+        let p = prompt(
             "Revise o diff.\n",
             &[],
             &[
@@ -411,16 +596,16 @@ mod tests {
              - /r/n/in/diff.patch (diff)\n\
              - /r/n/in/context.md (contexto)"
         );
-        assert_eq!(build_prompt("só isto", &[], &[]), "só isto");
+        assert_eq!(prompt("só isto", &[], &[]), "só isto");
         assert_eq!(
-            build_prompt("", &[], &[(EdgeKind::Log, PathBuf::from("/i/log.txt"))]),
+            prompt("", &[], &[(EdgeKind::Log, PathBuf::from("/i/log.txt"))]),
             "Entradas (arquivos em $TYBA_IN):\n- /i/log.txt (log)"
         );
     }
 
     #[test]
     fn context_goes_into_the_prompt_body() {
-        let p = build_prompt(
+        let p = prompt(
             "",
             &[("Contexto".into(), "rode 6 subagentes com sleep 10".into())],
             &[(EdgeKind::Context, PathBuf::from("/r/n/in/context.md"))],
@@ -431,6 +616,167 @@ mod tests {
              Entradas (arquivos em $TYBA_IN):\n\
              - /r/n/in/context.md (contexto)"
         );
+    }
+
+    /// Quadro OrbitPapeis C: o papel abre o prompt, a tarefa vem depois com
+    /// cabeçalho, os ligados antes do contexto; sem papel e sem ligação, o
+    /// prompt é o de sempre (sem "Tarefa:").
+    #[test]
+    fn role_opens_the_prompt_and_links_come_before_the_context() {
+        let links = vec!["dev · Desenvolvedor (Claude) → manda contexto para você".to_string()];
+        let p = build_prompt(&PromptParts {
+            role: Some(("Revisor", "Você revisa o diff de outro agente.\n")),
+            task: "Revise o diff contra main.\n",
+            contexts: &[("Contexto".into(), "pronto".into())],
+            inputs: &[(EdgeKind::Context, PathBuf::from("/r/in/context.md"))],
+            links: &links,
+        });
+        assert_eq!(
+            p,
+            "Papel: Revisor\nVocê revisa o diff de outro agente.\n\n\
+             Tarefa:\nRevise o diff contra main.\n\n\
+             Ligados a você:\n- dev · Desenvolvedor (Claude) → manda contexto para você\n\n\
+             Contexto:\npronto\n\n\
+             Entradas (arquivos em $TYBA_IN):\n- /r/in/context.md (contexto)"
+        );
+        // Papel sem tarefa: só o papel.
+        assert_eq!(
+            build_prompt(&PromptParts {
+                role: Some(("QA", "Reproduza o bug.")),
+                task: "  ",
+                contexts: &[],
+                inputs: &[],
+                links: &[],
+            }),
+            "Papel: QA\nReproduza o bug."
+        );
+        // Ligação sem papel: a tarefa segue abrindo, sem "Tarefa:".
+        assert_eq!(
+            build_prompt(&PromptParts {
+                role: None,
+                task: "Suba a api.",
+                contexts: &[],
+                inputs: &[],
+                links: &links,
+            }),
+            "Suba a api.\n\nLigados a você:\n- dev · Desenvolvedor (Claude) → manda contexto para você"
+        );
+    }
+
+    fn node(id: &str, title: &str, kind: NodeKind) -> Node {
+        Node {
+            id: id.into(),
+            title: title.into(),
+            kind,
+            position: super::super::Position { x: 0.0, y: 0.0 },
+            size: super::super::Size { w: 1.0, h: 1.0 },
+        }
+    }
+
+    fn edge(from: &str, to: &str, kind: EdgeKind) -> Edge {
+        Edge {
+            id: format!("{from}-{to}-{kind:?}"),
+            from: from.into(),
+            to: to.into(),
+            kind,
+        }
+    }
+
+    /// Quadro OrbitPapeis C: cada nó ligado numa linha, com nome e papel; os
+    /// dados agrupados por sentido; nota com cadeado é só leitura; nó ligado
+    /// a outros, não a mim, não aparece; título é saneado.
+    #[test]
+    fn linked_lines_name_each_neighbour_with_its_role_and_direction() {
+        let agent = |role: &str, runner| NodeKind::Agent {
+            runner,
+            role: role.into(),
+            prompt: "x".into(),
+            dir: String::new(),
+            no_create: false,
+        };
+        let nodes = vec![
+            node("rev", "rev", agent("Revisor", Runner::Claude)),
+            node("dev", "dev", agent("Desenvolvedor", Runner::Claude)),
+            node(
+                "testes",
+                "testes",
+                NodeKind::Process {
+                    command: "cargo test\n# segunda linha".into(),
+                    output: Default::default(),
+                    file: None,
+                    dir: String::new(),
+                },
+            ),
+            node(
+                "notas",
+                "no[tas]\u{2028}",
+                NodeKind::Note {
+                    markdown: String::new(),
+                    locked: false,
+                },
+            ),
+            node(
+                "regras",
+                "regras",
+                NodeKind::Note {
+                    markdown: String::new(),
+                    locked: true,
+                },
+            ),
+            node("qa", "qa", agent("", Runner::Codex)),
+            node(
+                "lint",
+                "lint",
+                NodeKind::Integration {
+                    integration_id: "i-1".into(),
+                    dir: String::new(),
+                },
+            ),
+            node("web", "web", NodeKind::Browser { url: String::new() }),
+        ];
+        let edges = vec![
+            edge("dev", "rev", EdgeKind::Context),
+            edge("dev", "rev", EdgeKind::Diff),
+            edge("testes", "rev", EdgeKind::Log),
+            edge("rev", "notas", EdgeKind::Memory),
+            edge("rev", "regras", EdgeKind::Memory),
+            edge("rev", "qa", EdgeKind::Talk),
+            edge("rev", "lint", EdgeKind::Diff),
+            edge("rev", "web", EdgeKind::Control),
+            edge("dev", "qa", EdgeKind::Context),
+        ];
+        let integrations = std::collections::HashMap::from([(
+            "i-1".to_string(),
+            Integration {
+                id: "i-1".into(),
+                name: "Lint".into(),
+                script: String::new(),
+                trigger: super::super::Trigger::Manual,
+                output: Default::default(),
+                file: None,
+            },
+        )]);
+        assert_eq!(
+            linked_lines(&nodes, &edges, &integrations, "rev"),
+            vec![
+                "dev · Desenvolvedor (Claude) → manda contexto e diff para você",
+                "testes · processo \"cargo test\" → manda log para você",
+                "notas · nota → você lê e escreve",
+                "regras · nota → você lê",
+                "qa · agente (Codex) → conversa com você",
+                "lint · integração \"Lint\" → recebe diff de você",
+                "web · navegador → você controla",
+            ]
+        );
+        // Do outro lado: quem manda vê "recebe … de você", com o papel de quem recebe.
+        assert_eq!(
+            linked_lines(&nodes, &edges, &integrations, "dev"),
+            vec![
+                "rev · Revisor (Claude) → recebe contexto e diff de você",
+                "qa · agente (Codex) → recebe contexto de você",
+            ]
+        );
+        assert!(linked_lines(&nodes, &[], &integrations, "rev").is_empty());
     }
 
     #[test]

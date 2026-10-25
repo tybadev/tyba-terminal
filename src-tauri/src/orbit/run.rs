@@ -1812,6 +1812,8 @@ struct Start {
     created: bool,
     /// A tentativa do nó ao subir ([`NodeRun::attempt`]).
     attempt: u32,
+    /// "Ligados a você" do prompt do agente ([`super::agent::linked_lines`]).
+    links: Vec<String>,
 }
 
 enum Launched {
@@ -2753,9 +2755,12 @@ impl<H: RunHost> Runs<H> {
                 Some(i) => self.launch_script(run_id, &start, &i.script, i.output, false),
                 None => Launched::Finished(Outcome::failed("integração não encontrada")),
             },
-            NodeKind::Agent { runner, prompt, .. } => {
-                self.launch_agent(run_id, &start, *runner, prompt)
-            }
+            NodeKind::Agent {
+                runner,
+                role,
+                prompt,
+                ..
+            } => self.launch_agent(run_id, &start, *runner, role, prompt),
             NodeKind::Process {
                 command, output, ..
             } => self.launch_script(run_id, &start, command, *output, true),
@@ -3030,7 +3035,14 @@ impl<H: RunHost> Runs<H> {
     /// publica as saídas no fim do primeiro turno e segue podendo criar nós
     /// e reescrever o plano. O criado por outro agente fecha no fim do turno
     /// e não tem as `orbit_create_*` (sem cascata).
-    fn launch_agent(&self, run_id: &str, start: &Start, runner: Runner, prompt: &str) -> Launched {
+    fn launch_agent(
+        &self,
+        run_id: &str,
+        start: &Start,
+        runner: Runner,
+        role: &str,
+        prompt: &str,
+    ) -> Launched {
         let holds = !start.created;
         let written = match materialize(&start.in_dir, &start.inputs) {
             Ok(w) => w,
@@ -3059,7 +3071,25 @@ impl<H: RunHost> Runs<H> {
                 _ => None,
             })
             .collect();
-        let prompt = super::agent::build_prompt(&prompt, &contexts, &inputs);
+        // O papel da biblioteca (o nome é a chave) abre o prompt com as
+        // instruções, pelas mesmas variáveis; nome fora dela é só rótulo.
+        let role = match role.trim() {
+            "" => None,
+            name => self.store.get_orbit_role(name).ok().flatten(),
+        };
+        let instructions = role
+            .as_ref()
+            .map(|r| crate::snippet::render(&r.instructions, &start.variables));
+        let prompt = super::agent::build_prompt(&super::agent::PromptParts {
+            role: role
+                .as_ref()
+                .zip(instructions.as_deref())
+                .map(|(r, i)| (r.name.as_str(), i)),
+            task: &prompt,
+            contexts: &contexts,
+            inputs: &inputs,
+            links: &start.links,
+        });
         let snapshot = super::agent::snapshot(&start.node_dir);
         let me = self.me.clone();
         let (run, node, out_dir, attempt) = (
@@ -3290,8 +3320,8 @@ impl<H: RunHost> Runs<H> {
             ToolCall::Connect { from, to, kind } => {
                 self.connect(run_id, orchestrator, &from, &to, kind)
             }
-            ToolCall::Reassign { node, prompt } => {
-                self.reassign(run_id, orchestrator, &node, &prompt)
+            ToolCall::Reassign { node, prompt, role } => {
+                self.reassign(run_id, orchestrator, &node, &prompt, role.as_deref())
             }
             ToolCall::Wait {
                 node,
@@ -3471,6 +3501,7 @@ impl<H: RunHost> Runs<H> {
                 serde_json::json!({
                     "id": n.id,
                     "title": n.title,
+                    "role": agent_role(n),
                     "state": state,
                     "queued": a.talk.waiting(&n.id),
                 })
@@ -3520,7 +3551,17 @@ impl<H: RunHost> Runs<H> {
                 .find(|n| n.id == id)
                 .map_or_else(|| id.to_string(), |n| n.title.clone())
         };
-        let (from, to_title) = (title(agent), title(to));
+        // A mensagem chega assinada "título · papel" (quadro OrbitPapeis C).
+        let signed = |id: &str| {
+            a.graph.nodes.iter().find(|n| n.id == id).map_or_else(
+                || id.to_string(),
+                |n| match agent_role(n) {
+                    "" => n.title.clone(),
+                    role => format!("{} · {role}", n.title),
+                },
+            )
+        };
+        let (from, to_title) = (signed(agent), title(to));
         let waiting = a.talk.push(
             to,
             talk::Message {
@@ -4776,11 +4817,18 @@ impl<H: RunHost> Runs<H> {
         caller: &str,
         node_id: &str,
         prompt: &str,
+        role: Option<&str>,
     ) -> Result<serde_json::Value, String> {
-        let set = |a: &mut Active, text: &str| {
+        let set = |a: &mut Active, text: &str, role: Option<&str>| {
             let put = |n: &mut Node| {
-                if let NodeKind::Agent { prompt: p, .. } = &mut n.kind {
+                if let NodeKind::Agent {
+                    prompt: p, role: r, ..
+                } = &mut n.kind
+                {
                     *p = text.to_string();
+                    if let Some(role) = role {
+                        *r = role.to_string();
+                    }
                 }
             };
             if let Some(n) = a.graph.nodes.iter_mut().find(|n| n.id == node_id) {
@@ -4814,24 +4862,29 @@ impl<H: RunHost> Runs<H> {
                 .find(|n| n.id == node_id)
                 .cloned()
                 .ok_or_else(|| format!("nó não existe neste run: {node_id}"))?;
-            let NodeKind::Agent { prompt: old, .. } = &node.kind else {
+            let NodeKind::Agent {
+                prompt: old,
+                role: old_role,
+                ..
+            } = &node.kind
+            else {
                 return Err(format!(
                     "{node_id} não é agente: orbit_reassign é só para agente"
                 ));
             };
-            let old = old.clone();
+            let old = (old.clone(), old_role.clone());
             a.sched.can_rerun(node_id)?;
             let mut next = node.clone();
             if let NodeKind::Agent { prompt: p, .. } = &mut next.kind {
                 *p = prompt.to_string();
             }
             node_missing_variable(&next, None, &a.graph.variables)?;
-            set(a, prompt);
+            set(a, prompt, role);
             old
         };
         if let Err(e) = self.restart_node_by(run_id, node_id, Some(caller)) {
             if let Some(a) = self.active.lock().get_mut(run_id) {
-                set(a, &old);
+                set(a, &old.0, Some(&old.1));
             }
             return Err(e);
         }
@@ -5454,6 +5507,61 @@ impl<H: RunHost> Runs<H> {
         }
     }
 
+    /// As instruções de um papel mudaram na biblioteca com execução aberta:
+    /// o agente que ainda espera sobe com as novas; o que já começou fica
+    /// "↻ para aplicar" (quadro OrbitPapeis A).
+    pub fn role_saved(&self, name: &str) {
+        let mut touched = Vec::new();
+        {
+            let mut active = self.active.lock();
+            for (run_id, a) in active.iter_mut() {
+                let users: Vec<String> = a
+                    .graph
+                    .nodes
+                    .iter()
+                    .filter(|n| agent_role(n) == name)
+                    .map(|n| n.id.clone())
+                    .collect();
+                let mut changed = false;
+                for id in &users {
+                    changed |= a.sched.mark_changed(id, StaleReason::Config);
+                }
+                if changed {
+                    touched.push(run_id.clone());
+                }
+            }
+        }
+        for run_id in touched {
+            self.publish_current(&run_id);
+        }
+    }
+
+    /// O papel mudou de nome na biblioteca: os nós dos runs abertos
+    /// acompanham, sem marcar nada — o que roda não mudou.
+    pub fn role_renamed(&self, from: &str, to: &str) {
+        let mut touched = Vec::new();
+        {
+            let mut active = self.active.lock();
+            for (run_id, a) in active.iter_mut() {
+                let mut n = super::rename_role_in(&mut a.graph, from, to);
+                for c in a.sched.run.created.iter_mut() {
+                    if let NodeKind::Agent { role, .. } = &mut c.node.kind {
+                        if role == from {
+                            *role = to.to_string();
+                            n += 1;
+                        }
+                    }
+                }
+                if n > 0 {
+                    touched.push(run_id.clone());
+                }
+            }
+        }
+        for run_id in touched {
+            self.publish_current(&run_id);
+        }
+    }
+
     /// Os nós criados ainda não mantidos do run (o "Manter no grafo"): do
     /// ativo ou do retrato guardado — o run terminado, parado ou do histórico
     /// também os deixa manter.
@@ -6029,10 +6137,19 @@ fn prepare_start(a: &Active, id: &str) -> Option<Start> {
         graph_id: a.graph.id.clone(),
         created: is_created(a, id),
         attempt: a.sched.attempt(id).unwrap_or(0),
+        links: super::agent::linked_lines(&a.graph.nodes, &a.graph.edges, &a.integrations, id),
     })
 }
 
 /// O nó foi criado por um agente neste run (não é do grafo do dono).
+/// O papel do nó de agente (vazio nos outros nós e no agente sem papel).
+fn agent_role(node: &Node) -> &str {
+    match &node.kind {
+        NodeKind::Agent { role, .. } => role.trim(),
+        _ => "",
+    }
+}
+
 /// Os agentes ligados a `agent` por `talk`, nos dois sentidos, sem repetir.
 fn talk_peers(edges: &[Edge], agent: &str) -> Vec<String> {
     let mut peers: Vec<String> = Vec::new();
@@ -6562,6 +6679,7 @@ mod tests {
                     graph_id: "g".into(),
                     created: false,
                     attempt: 0,
+                    links: Vec::new(),
                 },
                 own,
             )
@@ -7415,12 +7533,26 @@ mod tests {
 
         let launches = host.agents.lock().clone();
         let la = launches.iter().find(|l| l.title == "a").unwrap();
-        assert_eq!(la.prompt, "Faça o plano.");
+        // Os ligados entram depois da tarefa (quadro OrbitPapeis C).
+        assert!(
+            la.prompt.starts_with("Faça o plano.\n\nLigados a você:\n"),
+            "{}",
+            la.prompt
+        );
+        assert!(
+            la.prompt
+                .contains("- b · agente (Claude) → recebe contexto de você"),
+            "{}",
+            la.prompt
+        );
+        assert!(la.prompt.contains("- q · processo \"cat"), "{}", la.prompt);
         assert_eq!(la.cwd, repo);
         let lb = launches.iter().find(|l| l.title == "b").unwrap();
         // O contexto entra no corpo do prompt, já redigido.
         assert!(
-            lb.prompt.starts_with("Revise.\n\nContexto:\npronto"),
+            lb.prompt.starts_with(
+                "Revise.\n\nLigados a você:\n- a · agente (Claude) → manda contexto para você\n\nContexto:\npronto"
+            ),
             "{}",
             lb.prompt
         );
@@ -8010,6 +8142,104 @@ mod tests {
                 no_create: false,
             },
         )
+    }
+
+    /// Quadro OrbitPapeis C: o papel da biblioteca abre o prompt com as
+    /// instruções (com as variáveis do grafo) e a tarefa vem depois; nome
+    /// fora da biblioteca é só rótulo; `orbit_peers` devolve o papel; e o
+    /// `role` de `orbit_create_agent` fica no nó criado e chega ao prompt dele.
+    #[cfg(unix)]
+    #[test]
+    fn library_role_opens_the_prompt_and_reaches_peers() {
+        let dir = tempfile::tempdir().unwrap();
+        let work = dir.path().to_string_lossy().into_owned();
+        let (runs, host, _app) = pty_runs(dir.path().join("runs"));
+        runs.store
+            .save_orbit_role(
+                &crate::orbit::Role {
+                    name: "Revisor".into(),
+                    instructions: "Você revisa o diff contra {{alvo}}.\n".into(),
+                },
+                None,
+            )
+            .unwrap();
+        let with_role = |id: &str, role: &str, prompt: &str| {
+            let mut n = agent(id, prompt);
+            if let NodeKind::Agent { role: r, .. } = &mut n.kind {
+                *r = role.into();
+            }
+            n
+        };
+        let mut g = graph(
+            vec![
+                with_role("a", "Revisor", "Revise."),
+                with_role("b", "QA", "Teste."),
+            ],
+            vec![edge("t", "a", "b", EdgeKind::Talk)],
+        );
+        g.dir = work.clone();
+        g.variables.insert("alvo".into(), "main".into());
+        runs.store.save_orbit_graph(&g, true, None).unwrap();
+        let run = runs.start_now(g, vec![]).unwrap();
+        wait_orchestrating(&runs, &run.id, "a");
+        wait_orchestrating(&runs, &run.id, "b");
+
+        let launches = host.agents.lock().clone();
+        let la = launches.iter().find(|l| l.title == "a").unwrap();
+        assert!(
+            la.prompt.starts_with(
+                "Papel: Revisor\nVocê revisa o diff contra main.\n\nTarefa:\nRevise.\n\n\
+                 Ligados a você:\n- b · QA (Claude) → conversa com você"
+            ),
+            "{}",
+            la.prompt
+        );
+        // "QA" não está na biblioteca: só rótulo, nada entra no prompt dele.
+        let lb = launches.iter().find(|l| l.title == "b").unwrap();
+        assert!(
+            lb.prompt.starts_with(
+                "Teste.\n\nLigados a você:\n- a · Revisor (Claude) → conversa com você"
+            ),
+            "{}",
+            lb.prompt
+        );
+
+        let peers = tools_of(&host, "b")
+            .call("orbit_peers", &serde_json::json!({}))
+            .unwrap();
+        assert_eq!(peers["peers"][0]["id"], "a", "{peers}");
+        assert_eq!(peers["peers"][0]["role"], "Revisor", "{peers}");
+
+        let created = tools_of(&host, "a")
+            .call(
+                "orbit_create_agent",
+                &serde_json::json!({"title": "rev2", "runner": "claude", "prompt": "x", "dir": work, "role": "Revisor"}),
+            )
+            .unwrap()["node_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        wait_status(&runs, &run.id, &created, NodeStatus::Done);
+        let l2 = host
+            .agents
+            .lock()
+            .iter()
+            .find(|l| l.title == "rev2")
+            .cloned()
+            .unwrap();
+        assert!(l2.prompt.starts_with("Papel: Revisor\n"), "{}", l2.prompt);
+        let node = runs.get(&run.id).unwrap();
+        let kind = &node
+            .created
+            .iter()
+            .find(|c| c.node.id == created)
+            .unwrap()
+            .node
+            .kind;
+        assert!(
+            matches!(kind, NodeKind::Agent { role, .. } if role == "Revisor"),
+            "{kind:?}"
+        );
     }
 
     /// Espera o orquestrador fechar o primeiro turno (segue rodando).

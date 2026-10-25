@@ -15,13 +15,19 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use super::{validate_integration, validate_structure, Graph, Integration, NodeKind, OrbitError};
+use super::{
+    validate_integration, validate_role, validate_structure, Graph, Integration, NodeKind,
+    OrbitError, Role,
+};
 use crate::session::redact::contains_secret;
+use std::collections::BTreeMap;
 
 /// Teto do arquivo importado, em bytes.
 pub const MAX_FILE_BYTES: u64 = 1024 * 1024;
 /// Teto de integrações num arquivo importado.
 pub const MAX_INTEGRATIONS: usize = 100;
+/// Teto de papéis num arquivo importado.
+pub const MAX_ROLES: usize = 50;
 /// Versão do formato do arquivo.
 pub const FORMAT_VERSION: u32 = 1;
 
@@ -37,6 +43,8 @@ pub enum ExportError {
     TooManyIntegrations(usize),
     #[error("integração repetida no arquivo: {0}")]
     DuplicateIntegration(String),
+    #[error("arquivo com {0} papéis passa do teto de {MAX_ROLES}")]
+    TooManyRoles(usize),
     #[error("versão do arquivo não suportada: {0}")]
     UnsupportedVersion(u32),
     #[error("o arquivo mudou desde a prévia: revise de novo antes de confirmar")]
@@ -55,8 +63,9 @@ pub enum ExportError {
     Io(#[from] std::io::Error),
 }
 
-/// Conteúdo do `.tyba-orbit.toml`: o grafo inteiro e as integrações que ele
-/// usa.
+/// Conteúdo do `.tyba-orbit.toml`: o grafo inteiro, as integrações que ele
+/// usa e os papéis dos agentes dele que existem na biblioteca
+/// (`[roles.<nome>]`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct OrbitFile {
@@ -64,6 +73,15 @@ struct OrbitFile {
     graph: Graph,
     #[serde(default)]
     integrations: Vec<Integration>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    roles: BTreeMap<String, RoleFile>,
+}
+
+/// Um papel no arquivo: a chave da tabela é o nome.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RoleFile {
+    instructions: String,
 }
 
 /// Arquivo lido e validado, ainda não gravado. `hash` é o SHA-256 dos bytes
@@ -77,6 +95,41 @@ pub struct Imported {
     pub graph: Graph,
     /// Integrações do arquivo, com o script inteiro.
     pub integrations: Vec<Integration>,
+    /// Papéis do arquivo, com as instruções inteiras, por nome.
+    pub roles: Vec<Role>,
+}
+
+/// Como um papel do arquivo se compara com a biblioteca daqui.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RoleStatus {
+    /// Não existe aqui: entra.
+    New,
+    /// Igual ao daqui: usa o daqui, nada é regravado.
+    Same,
+    /// Existe aqui com outras instruções: o dono escolhe ([`RoleChoice`]).
+    Different,
+}
+
+/// Um papel do arquivo na prévia.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportRole {
+    pub name: String,
+    pub status: RoleStatus,
+}
+
+/// A escolha do dono para um papel do arquivo diferente do daqui.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RoleChoice {
+    /// Entra como "<nome> (importado)" e os nós do grafo apontam para ele.
+    #[default]
+    Rename,
+    /// As instruções do arquivo substituem as daqui.
+    File,
+    /// Nada muda: os nós usam o daqui.
+    Mine,
 }
 
 /// O que a tela de importação mostra antes do Confirmar.
@@ -92,6 +145,9 @@ pub struct ImportPreview {
     pub renamed_integrations: Vec<String>,
     /// A pasta de cada nó executável e se ela existe nesta máquina.
     pub dirs: Vec<ImportDir>,
+    /// Cada papel do arquivo e como ele se compara com a biblioteca daqui
+    /// (`roles`, achatado de `imported`, traz as instruções inteiras).
+    pub role_statuses: Vec<ImportRole>,
 }
 
 /// Pasta de um nó do arquivo importado.
@@ -133,6 +189,7 @@ pub fn import_dirs(graph: &Graph) -> Vec<ImportDir> {
 pub enum SecretOwner {
     Node,
     Integration,
+    Role,
 }
 
 /// Campo que saiu no arquivo com algo que parece segredo literal. O texto do
@@ -142,9 +199,9 @@ pub enum SecretOwner {
 pub struct SecretField {
     pub owner: SecretOwner,
     pub id: String,
-    /// Título do nó ou nome da integração.
+    /// Título do nó, nome da integração ou nome do papel.
     pub name: String,
-    /// `prompt`, `command`, `markdown` ou `script`.
+    /// `prompt`, `command`, `markdown`, `script` ou `instructions`.
     pub field: String,
 }
 
@@ -158,7 +215,7 @@ pub struct ExportReport {
     pub secret_fields: Vec<SecretField>,
 }
 
-fn secret_fields(graph: &Graph, integrations: &[Integration]) -> Vec<SecretField> {
+fn secret_fields(graph: &Graph, integrations: &[Integration], roles: &[Role]) -> Vec<SecretField> {
     let mut found = Vec::new();
     let mut check = |owner, id: &str, name: &str, field: &str, text: &str| {
         if contains_secret(text) {
@@ -191,14 +248,26 @@ fn secret_fields(graph: &Graph, integrations: &[Integration]) -> Vec<SecretField
             &integration.script,
         );
     }
+    for role in roles {
+        check(
+            SecretOwner::Role,
+            &role.name,
+            &role.name,
+            "instructions",
+            &role.instructions,
+        );
+    }
     found
 }
 
-/// Gera o TOML do grafo com as integrações que ele usa. Devolve também o que
-/// o front avisa: variáveis zeradas e campos com segredo literal.
+/// Gera o TOML do grafo com as integrações que ele usa e os papéis dos
+/// agentes dele que existem na biblioteca (papel que é só rótulo não vai).
+/// Devolve também o que o front avisa: variáveis zeradas e campos com
+/// segredo literal.
 pub fn export_toml(
     graph: &Graph,
     integrations: &[Integration],
+    roles: &[Role],
 ) -> Result<(String, ExportReport), ExportError> {
     let mut graph = graph.clone();
     // Cada nó sai com a própria pasta, mesmo o que herdava a padrão.
@@ -232,14 +301,41 @@ pub fn export_toml(
         }
     }
 
+    let used_roles: Vec<Role> = graph
+        .nodes
+        .iter()
+        .filter_map(|n| match &n.kind {
+            NodeKind::Agent { role, .. } if !role.trim().is_empty() => {
+                roles.iter().find(|r| r.name == role.trim())
+            }
+            _ => None,
+        })
+        .fold(Vec::new(), |mut acc, r| {
+            if !acc.contains(r) {
+                acc.push(r.clone());
+            }
+            acc
+        });
+
     let report = ExportReport {
         cleared,
-        secret_fields: secret_fields(&graph, &used),
+        secret_fields: secret_fields(&graph, &used, &used_roles),
     };
     let file = OrbitFile {
         version: FORMAT_VERSION,
         graph,
         integrations: used,
+        roles: used_roles
+            .into_iter()
+            .map(|r| {
+                (
+                    r.name,
+                    RoleFile {
+                        instructions: r.instructions,
+                    },
+                )
+            })
+            .collect(),
     };
     let text = toml::to_string_pretty(&file).map_err(|e| ExportError::Serialize(e.to_string()))?;
     Ok((text, report))
@@ -250,8 +346,9 @@ pub fn export_to(
     path: &Path,
     graph: &Graph,
     integrations: &[Integration],
+    roles: &[Role],
 ) -> Result<ExportReport, ExportError> {
-    let (text, report) = export_toml(graph, integrations)?;
+    let (text, report) = export_toml(graph, integrations, roles)?;
     std::fs::write(path, text)?;
     Ok(report)
 }
@@ -281,6 +378,20 @@ pub fn parse_import(bytes: &[u8]) -> Result<Imported, ExportError> {
         }
         validate_integration(integration)?;
     }
+    if file.roles.len() > MAX_ROLES {
+        return Err(ExportError::TooManyRoles(file.roles.len()));
+    }
+    let roles: Vec<Role> = file
+        .roles
+        .into_iter()
+        .map(|(name, r)| Role {
+            name,
+            instructions: r.instructions,
+        })
+        .collect();
+    for role in &roles {
+        validate_role(role)?;
+    }
     // O grafo só enxerga as integrações do próprio arquivo: o que roda é o que
     // está na prévia, não o que por acaso já existe no TYBA do dono. A pasta
     // é de outra máquina: só se confere no Confirmar, depois da escolha.
@@ -289,6 +400,7 @@ pub fn parse_import(bytes: &[u8]) -> Result<Imported, ExportError> {
         hash,
         graph: file.graph,
         integrations: file.integrations,
+        roles,
     })
 }
 
@@ -397,6 +509,88 @@ pub fn resolve_integration_ids<E>(
     Ok(resolved)
 }
 
+/// Cada papel do arquivo comparado com a biblioteca daqui (a prévia).
+pub fn role_statuses<E>(
+    roles: &[Role],
+    mut local: impl FnMut(&str) -> Result<Option<Role>, E>,
+) -> Result<Vec<ImportRole>, E> {
+    roles
+        .iter()
+        .map(|role| {
+            let status = match local(&role.name)? {
+                None => RoleStatus::New,
+                Some(mine) if mine.instructions == role.instructions => RoleStatus::Same,
+                Some(_) => RoleStatus::Different,
+            };
+            Ok(ImportRole {
+                name: role.name.clone(),
+                status,
+            })
+        })
+        .collect()
+}
+
+/// Resultado de `resolve_roles`.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RolesResolved {
+    /// O que o Confirmar grava: papéis novos, renomeados e os que o dono
+    /// mandou substituir.
+    pub to_save: Vec<Role>,
+    /// Nome do arquivo → nome com que entrou, nos que viraram cópia.
+    pub renamed: Vec<(String, String)>,
+}
+
+/// "<nome> (importado)" dentro do teto do nome; `n > 1` numera.
+fn imported_name(base: &str, n: usize) -> String {
+    let suffix = if n > 1 {
+        format!(" (importado {n})")
+    } else {
+        " (importado)".to_string()
+    };
+    let room = super::MAX_ROLE_NAME_CHARS.saturating_sub(suffix.chars().count());
+    let base: String = base.chars().take(room).collect();
+    format!("{}{suffix}", base.trim_end())
+}
+
+/// Papel do arquivo que não existe aqui entra; igual ao daqui não é
+/// regravado; diferente segue a escolha do dono (`choices`, por nome; sem
+/// escolha, vira cópia "<nome> (importado)" e os nós do grafo importado
+/// passam a apontar para ela). Importar nunca troca um papel local sem o
+/// dono pedir ([`RoleChoice::File`]).
+pub fn resolve_roles<E>(
+    imported: &mut Imported,
+    mut local: impl FnMut(&str) -> Result<Option<Role>, E>,
+    choices: &HashMap<String, RoleChoice>,
+) -> Result<RolesResolved, E> {
+    let mut out = RolesResolved::default();
+    for role in imported.roles.iter_mut() {
+        match local(&role.name)? {
+            None => out.to_save.push(role.clone()),
+            Some(mine) if mine.instructions == role.instructions => {}
+            Some(_) => match choices.get(&role.name).copied().unwrap_or_default() {
+                RoleChoice::File => out.to_save.push(role.clone()),
+                RoleChoice::Mine => {}
+                RoleChoice::Rename => {
+                    let mut n = 1;
+                    let mut name = imported_name(&role.name, n);
+                    // Uma cópia anterior igual serve; diferente, numera.
+                    while matches!(local(&name)?, Some(ref l) if l.instructions != role.instructions)
+                        && n < 20
+                    {
+                        n += 1;
+                        name = imported_name(&role.name, n);
+                    }
+                    let old = std::mem::replace(&mut role.name, name);
+                    super::rename_role_in(&mut imported.graph, &old, &role.name);
+                    out.renamed.push((old, role.name.clone()));
+                    out.to_save.push(role.clone());
+                }
+            },
+        }
+    }
+    Ok(out)
+}
+
 /// Relê para o Confirmar: o hash tem que ser o mesmo que o dono viu na prévia.
 pub fn read_confirmed(path: &Path, hash: &str) -> Result<Imported, ExportError> {
     let imported = read_import(path)?;
@@ -503,10 +697,213 @@ mod tests {
         (graph, vec![unused, integration()])
     }
 
+    fn role(name: &str, instructions: &str) -> Role {
+        Role {
+            name: name.into(),
+            instructions: instructions.into(),
+        }
+    }
+
+    /// Quadro OrbitPapeis D: só os papéis usados no grafo e que existem na
+    /// biblioteca vão no arquivo, em `[roles.<nome>]`; rótulo fora dela não.
+    #[test]
+    fn export_carries_only_the_used_library_roles() {
+        let (mut graph, integrations) = sample();
+        graph.nodes.push(node(
+            "b",
+            NodeKind::Agent {
+                runner: Runner::Codex,
+                role: "só rótulo".into(),
+                prompt: "x".into(),
+                dir: "/tmp/repo".into(),
+                no_create: false,
+            },
+        ));
+        let library = vec![
+            role("revisor", "Você revisa o diff contra {{alvo}}."),
+            role("QA", "Reproduza o bug."),
+        ];
+        let (text, _) = export_toml(&graph, &integrations, &library).unwrap();
+        assert!(text.contains("[roles.revisor]"), "{text}");
+        assert!(
+            text.contains("Você revisa o diff contra {{alvo}}."),
+            "{text}"
+        );
+        assert!(!text.contains("[roles.QA]"), "{text}");
+        assert!(!text.contains("rótulo]"), "{text}");
+        let imported = parse_import(text.as_bytes()).unwrap();
+        assert_eq!(
+            imported.roles,
+            vec![role("revisor", "Você revisa o diff contra {{alvo}}.")]
+        );
+        // Grafo sem papel da biblioteca: sem a tabela.
+        let (text, _) = export_toml(&graph, &integrations, &[]).unwrap();
+        assert!(!text.contains("[roles"), "{text}");
+        assert!(parse_import(text.as_bytes()).unwrap().roles.is_empty());
+    }
+
+    #[test]
+    fn secret_in_role_instructions_is_reported_not_rewritten() {
+        let (graph, integrations) = sample();
+        let key = format!("sk-{}", "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6");
+        let library = vec![role("revisor", format!("use {key}").as_str())];
+        let (text, report) = export_toml(&graph, &integrations, &library).unwrap();
+        assert!(text.contains(&key), "o texto do dono não é reescrito");
+        assert_eq!(
+            report.secret_fields,
+            vec![SecretField {
+                owner: SecretOwner::Role,
+                id: "revisor".into(),
+                name: "revisor".into(),
+                field: "instructions".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn import_refuses_too_many_or_invalid_roles() {
+        let (graph, integrations) = sample();
+        let mut many: Vec<Role> = (0..=MAX_ROLES)
+            .map(|i| role(&format!("p{i}"), "x"))
+            .collect();
+        let mut g = graph.clone();
+        for (i, r) in many.iter().enumerate() {
+            g.nodes.push(node(
+                &format!("n{i}"),
+                NodeKind::Agent {
+                    runner: Runner::Claude,
+                    role: r.name.clone(),
+                    prompt: "x".into(),
+                    dir: "/tmp/repo".into(),
+                    no_create: false,
+                },
+            ));
+        }
+        let (text, _) = export_toml(&g, &integrations, &many).unwrap();
+        let err = parse_import(text.as_bytes()).unwrap_err();
+        assert!(
+            matches!(err, ExportError::TooManyRoles(n) if n == MAX_ROLES + 1),
+            "{err}"
+        );
+
+        many.truncate(1);
+        let bad = format!(
+            "{}\n[roles.revisor]\ninstructions = \"a\\u001bb\"\n",
+            export_toml(&graph, &integrations, &[]).unwrap().0
+        );
+        let err = parse_import(bad.as_bytes()).unwrap_err();
+        assert!(err.to_string().contains("controle"), "{err}");
+    }
+
+    /// Quadro OrbitPapeis D: novo entra, igual usa o daqui, diferente segue a
+    /// escolha — cópia "(importado)" por padrão, com os nós apontando para
+    /// ela; "usar o do arquivo" substitui; "manter o meu" não grava nada.
+    #[test]
+    fn import_roles_follow_the_owner_choice_on_conflict() {
+        let (mut graph, integrations) = sample();
+        for (id, name) in [("d", "Desenvolvedor"), ("q", "QA"), ("x", "Novo")] {
+            graph.nodes.push(node(
+                id,
+                NodeKind::Agent {
+                    runner: Runner::Claude,
+                    role: name.into(),
+                    prompt: "x".into(),
+                    dir: "/tmp/repo".into(),
+                    no_create: false,
+                },
+            ));
+        }
+        let file_roles = vec![
+            role("Desenvolvedor", "implementa"),
+            role("QA", "do arquivo"),
+            role("Novo", "novo aqui"),
+        ];
+        let (text, _) = export_toml(&graph, &integrations, &file_roles).unwrap();
+        let imported = parse_import(text.as_bytes()).unwrap();
+        let local = |name: &str| -> Result<Option<Role>, ()> {
+            Ok(match name {
+                "Desenvolvedor" => Some(role("Desenvolvedor", "implementa")),
+                "QA" => Some(role("QA", "o meu")),
+                "QA (importado)" => Some(role("QA (importado)", "outra cópia")),
+                _ => None,
+            })
+        };
+        assert_eq!(
+            role_statuses(&imported.roles, local).unwrap(),
+            vec![
+                ImportRole {
+                    name: "Desenvolvedor".into(),
+                    status: RoleStatus::Same
+                },
+                ImportRole {
+                    name: "Novo".into(),
+                    status: RoleStatus::New
+                },
+                ImportRole {
+                    name: "QA".into(),
+                    status: RoleStatus::Different
+                },
+            ]
+        );
+
+        // Padrão: cópia numerada (a "(importado)" já existe com outro texto).
+        let mut by_default = imported.clone();
+        let resolved = resolve_roles(&mut by_default, local, &HashMap::new()).unwrap();
+        assert_eq!(
+            resolved.to_save,
+            vec![
+                role("Novo", "novo aqui"),
+                role("QA (importado 2)", "do arquivo")
+            ]
+        );
+        assert_eq!(
+            resolved.renamed,
+            vec![("QA".to_string(), "QA (importado 2)".to_string())]
+        );
+        let q = by_default.graph.nodes.iter().find(|n| n.id == "q").unwrap();
+        assert!(matches!(&q.kind, NodeKind::Agent { role, .. } if role == "QA (importado 2)"));
+
+        let mut from_file = imported.clone();
+        let resolved = resolve_roles(
+            &mut from_file,
+            local,
+            &HashMap::from([("QA".to_string(), RoleChoice::File)]),
+        )
+        .unwrap();
+        assert_eq!(
+            resolved.to_save,
+            vec![role("Novo", "novo aqui"), role("QA", "do arquivo")]
+        );
+        assert!(resolved.renamed.is_empty());
+
+        let mut mine = imported.clone();
+        let resolved = resolve_roles(
+            &mut mine,
+            local,
+            &HashMap::from([("QA".to_string(), RoleChoice::Mine)]),
+        )
+        .unwrap();
+        assert_eq!(resolved.to_save, vec![role("Novo", "novo aqui")]);
+        let q = mine.graph.nodes.iter().find(|n| n.id == "q").unwrap();
+        assert!(matches!(&q.kind, NodeKind::Agent { role, .. } if role == "QA"));
+    }
+
+    #[test]
+    fn imported_name_stays_within_the_name_ceiling() {
+        let long = "x".repeat(super::super::MAX_ROLE_NAME_CHARS);
+        let name = imported_name(&long, 1);
+        assert!(
+            name.chars().count() <= super::super::MAX_ROLE_NAME_CHARS,
+            "{name}"
+        );
+        assert!(name.ends_with(" (importado)"), "{name}");
+        assert_eq!(imported_name("QA", 3), "QA (importado 3)");
+    }
+
     #[test]
     fn round_trip_keeps_graph_and_integrations() {
         let (graph, integrations) = sample();
-        let (text, report) = export_toml(&graph, &integrations).unwrap();
+        let (text, report) = export_toml(&graph, &integrations, &[]).unwrap();
         assert_eq!(report, ExportReport::default());
         let imported = parse_import(text.as_bytes()).unwrap();
         assert_eq!(imported.graph, graph);
@@ -520,7 +917,7 @@ mod tests {
     #[test]
     fn old_orchestrate_flag_is_ignored_on_import() {
         let (graph, integrations) = sample();
-        let (text, _) = export_toml(&graph, &integrations).unwrap();
+        let (text, _) = export_toml(&graph, &integrations, &[]).unwrap();
         assert!(!text.contains("orchestrate"), "{text}");
         let line = text
             .lines()
@@ -571,7 +968,7 @@ mod tests {
             to: "b".into(),
             kind: EdgeKind::Url,
         });
-        let (text, _) = export_toml(&graph, &integrations).unwrap();
+        let (text, _) = export_toml(&graph, &integrations, &[]).unwrap();
         let imported = parse_import(text.as_bytes()).unwrap();
         assert_eq!(imported.graph, graph);
         // Navegador e serviço não têm pasta: não entram na escolha de pastas.
@@ -607,7 +1004,7 @@ mod tests {
                 kind: EdgeKind::Control,
             },
         ]);
-        let (text, _) = export_toml(&graph, &integrations).unwrap();
+        let (text, _) = export_toml(&graph, &integrations, &[]).unwrap();
         assert!(text.contains("kind = \"plan\""), "{text}");
         assert!(text.contains("kind = \"control\""), "{text}");
         let imported = parse_import(text.as_bytes()).unwrap();
@@ -641,7 +1038,7 @@ mod tests {
                 kind: EdgeKind::Memory,
             },
         ]);
-        let (text, _) = export_toml(&graph, &integrations).unwrap();
+        let (text, _) = export_toml(&graph, &integrations, &[]).unwrap();
         assert!(text.contains("kind = \"talk\""), "{text}");
         assert!(text.contains("kind = \"memory\""), "{text}");
         assert!(text.contains("locked = true"), "{text}");
@@ -661,7 +1058,7 @@ mod tests {
         graph
             .variables
             .insert("API_KEY".into(), "sk-FAKEfakeFAKEfakeFAKEfake0000".into());
-        let (text, report) = export_toml(&graph, &integrations).unwrap();
+        let (text, report) = export_toml(&graph, &integrations, &[]).unwrap();
         assert_eq!(report.cleared, vec!["API_KEY".to_string()]);
         assert!(!text.contains("sk-FAKE"));
         let imported = parse_import(text.as_bytes()).unwrap();
@@ -686,7 +1083,7 @@ mod tests {
         for i in integrations.iter_mut() {
             i.script = format!("export TOKEN={fake}\n");
         }
-        let (text, report) = export_toml(&graph, &integrations).unwrap();
+        let (text, report) = export_toml(&graph, &integrations, &[]).unwrap();
         assert!(report.cleared.is_empty());
         // O texto do dono não é reescrito: sai como está, com aviso.
         assert!(text.contains(fake));
@@ -710,7 +1107,7 @@ mod tests {
     #[test]
     fn import_never_overwrites_local_integration_with_other_content() {
         let (graph, integrations) = sample();
-        let (text, _) = export_toml(&graph, &integrations).unwrap();
+        let (text, _) = export_toml(&graph, &integrations, &[]).unwrap();
         let mut imported = parse_import(text.as_bytes()).unwrap();
 
         // Aqui já existe uma "i-1" com outro script, usada por outro grafo.
@@ -760,7 +1157,7 @@ mod tests {
         if let Some(dir) = graph.nodes[0].kind.dir_mut() {
             *dir = "/tmp/outra".into();
         }
-        let (text, _) = export_toml(&graph, &integrations).unwrap();
+        let (text, _) = export_toml(&graph, &integrations, &[]).unwrap();
         let imported = parse_import(text.as_bytes()).unwrap();
         let dirs: Vec<(&str, Option<&str>)> = imported
             .graph
@@ -793,7 +1190,7 @@ mod tests {
         if let Some(dir) = graph.nodes[2].kind.dir_mut() {
             *dir = "relativa".into();
         }
-        let (text, _) = export_toml(&graph, &integrations).unwrap();
+        let (text, _) = export_toml(&graph, &integrations, &[]).unwrap();
         let imported = parse_import(text.as_bytes()).unwrap();
         assert_eq!(
             import_dirs(&imported.graph),
@@ -834,7 +1231,7 @@ mod tests {
                 };
             }
         }
-        let (text, _) = export_toml(&graph, &integrations).unwrap();
+        let (text, _) = export_toml(&graph, &integrations, &[]).unwrap();
         let imported = parse_import(text.as_bytes()).unwrap();
 
         // Sem escolher a pasta do nó p: recusa, nada muda.
@@ -879,7 +1276,7 @@ mod tests {
     fn export_with_missing_integration_is_refused() {
         let (graph, _) = sample();
         assert!(matches!(
-            export_toml(&graph, &[]),
+            export_toml(&graph, &[], &[]),
             Err(ExportError::MissingIntegration(id)) if id == "i-1"
         ));
     }
@@ -889,7 +1286,7 @@ mod tests {
         let (graph, integrations) = sample();
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("revisao.tyba-orbit.toml");
-        export_to(&path, &graph, &integrations).unwrap();
+        export_to(&path, &graph, &integrations, &[]).unwrap();
         let preview = read_import(&path).unwrap();
         assert!(read_confirmed(&path, &preview.hash).is_ok());
 
@@ -911,7 +1308,7 @@ mod tests {
         let (graph, integrations) = sample();
         let dir = tempfile::tempdir().unwrap();
         let orbit = dir.path().join("revisao.tyba-orbit.toml");
-        export_to(&orbit, &graph, &integrations).unwrap();
+        export_to(&orbit, &graph, &integrations, &[]).unwrap();
         let legacy = dir.path().join("revisao.tyba-maestro.toml");
         std::fs::copy(&orbit, &legacy).unwrap();
 
@@ -924,7 +1321,7 @@ mod tests {
     #[test]
     fn file_over_ceiling_is_refused() {
         let (graph, integrations) = sample();
-        let (text, _) = export_toml(&graph, &integrations).unwrap();
+        let (text, _) = export_toml(&graph, &integrations, &[]).unwrap();
         let mut big = text.into_bytes();
         big.extend(std::iter::repeat_n(b'#', MAX_FILE_BYTES as usize));
         assert!(matches!(parse_import(&big), Err(ExportError::FileTooLarge)));
@@ -938,7 +1335,7 @@ mod tests {
     #[test]
     fn control_chars_are_refused_on_import() {
         let (graph, integrations) = sample();
-        let (text, _) = export_toml(&graph, &integrations).unwrap();
+        let (text, _) = export_toml(&graph, &integrations, &[]).unwrap();
         // TOML aceita o escape; a validação do core recusa o caractere.
         let bad = text.replace("cargo test", "cargo test\\u001b[2J");
         assert_ne!(bad, text);
@@ -962,6 +1359,7 @@ mod tests {
             version: FORMAT_VERSION,
             graph: graph.clone(),
             integrations: many,
+            roles: Default::default(),
         };
         let text = toml::to_string(&file).unwrap();
         assert!(matches!(
@@ -973,6 +1371,7 @@ mod tests {
             version: FORMAT_VERSION,
             graph,
             integrations: vec![integration(), integration()],
+            roles: Default::default(),
         };
         let text = toml::to_string(&file).unwrap();
         assert!(matches!(
@@ -988,6 +1387,7 @@ mod tests {
             version: FORMAT_VERSION,
             graph,
             integrations: vec![],
+            roles: Default::default(),
         };
         let text = toml::to_string(&file).unwrap();
         assert!(matches!(
@@ -999,7 +1399,7 @@ mod tests {
     #[test]
     fn unknown_version_is_refused() {
         let (graph, integrations) = sample();
-        let (text, _) = export_toml(&graph, &integrations).unwrap();
+        let (text, _) = export_toml(&graph, &integrations, &[]).unwrap();
         let bad = text.replacen("version = 1", "version = 2", 1);
         assert!(matches!(
             parse_import(bad.as_bytes()),

@@ -145,10 +145,12 @@ pub enum ToolCall {
         to: String,
         kind: super::EdgeKind,
     },
-    /// Trocar a tarefa de um agente criado por quem chama e reiniciá-lo.
+    /// Trocar a tarefa (e, se vier, o papel) de um agente criado por quem
+    /// chama e reiniciá-lo.
     Reassign {
         node: String,
         prompt: String,
+        role: Option<String>,
     },
     /// Esperar `node` abrir porta, terminar ou fechar o turno, até `timeout_s`.
     Wait {
@@ -247,6 +249,9 @@ struct AgentArgs {
     runner: Runner,
     prompt: String,
     dir: String,
+    /// Papel da biblioteca do dono (o nome é a chave); fora dela, rótulo.
+    #[serde(default)]
+    role: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -414,6 +419,9 @@ struct ConnectArgs {
 struct ReassignArgs {
     node: String,
     prompt: String,
+    /// Papel novo; sem ele, o nó fica com o que tem.
+    #[serde(default)]
+    role: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -505,6 +513,17 @@ fn node_title(value: &str) -> Result<(), String> {
     }
 }
 
+/// O `role` opcional de `orbit_create_agent`/`orbit_reassign`: uma linha, até
+/// [`super::MAX_ROLE_NAME_CHARS`], sem espaço nas pontas. Vazio tira o papel.
+fn role_label(value: Option<&str>) -> Result<Option<String>, String> {
+    let Some(value) = value else { return Ok(None) };
+    let value = value.trim();
+    match super::role_name_problem(value) {
+        Some(reason) => Err(format!("role: {reason}")),
+        None => Ok(Some(value.to_string())),
+    }
+}
+
 /// Pasta absoluta que existe nesta máquina (a régua do salvar e do importar).
 fn existing_dir(dir: &str) -> Result<(), String> {
     text("dir", dir)?;
@@ -547,13 +566,14 @@ pub fn parse_call(tool: &str, value: &Value) -> Result<ToolCall, String> {
             node_title(&a.title)?;
             required("prompt", &a.prompt)?;
             existing_dir(&a.dir)?;
+            let role = role_label(a.role.as_deref())?.unwrap_or_default();
             Ok(ToolCall::Create {
                 title: a.title,
                 // O agente criado tem as ferramentas menos as de criar
                 // (sem cascata): o run sabe que ele é criado.
                 kind: NodeKind::Agent {
                     runner: a.runner,
-                    role: String::new(),
+                    role,
                     prompt: a.prompt,
                     dir: a.dir,
                     no_create: false,
@@ -667,9 +687,11 @@ pub fn parse_call(tool: &str, value: &Value) -> Result<ToolCall, String> {
             let a: ReassignArgs = args(tool, value)?;
             required("node", &a.node)?;
             required("prompt", &a.prompt)?;
+            let role = role_label(a.role.as_deref())?;
             Ok(ToolCall::Reassign {
                 node: a.node,
                 prompt: a.prompt,
+                role,
             })
         }
         "orbit_wait" => {
@@ -2045,13 +2067,28 @@ Binary files a/logo.png and b/logo.png differ
             .unwrap(),
             ToolCall::Reassign {
                 node: "r".into(),
-                prompt: "revise de novo\nsó o front".into()
+                prompt: "revise de novo\nsó o front".into(),
+                role: None,
+            }
+        );
+        // O papel é opcional: vem aparado, uma linha, até o teto do nome.
+        assert_eq!(
+            parse_call(
+                "orbit_reassign",
+                &json!({"node": "r", "prompt": "x", "role": " QA "})
+            )
+            .unwrap(),
+            ToolCall::Reassign {
+                node: "r".into(),
+                prompt: "x".into(),
+                role: Some("QA".into()),
             }
         );
         for bad in [
             json!({"node": "r", "prompt": " "}),
             json!({"node": "r", "prompt": "x\u{1b}[2J"}),
-            json!({"node": "r", "prompt": "x", "role": "y"}),
+            json!({"node": "r", "prompt": "x", "role": "a\nb"}),
+            json!({"node": "r", "prompt": "x", "role": "x".repeat(41)}),
         ] {
             assert!(parse_call("orbit_reassign", &bad).is_err(), "{bad}");
         }

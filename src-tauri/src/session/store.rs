@@ -269,6 +269,12 @@ CREATE TABLE IF NOT EXISTS orbit_integration (
     imported_hash TEXT,
     consented INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS orbit_role (
+    name TEXT PRIMARY KEY,
+    body_json TEXT NOT NULL,
+    updated_at_ms INTEGER NOT NULL,
+    imported_hash TEXT
+);
 CREATE TABLE IF NOT EXISTS orbit_run (
     id TEXT PRIMARY KEY,
     graph_id TEXT NOT NULL,
@@ -3299,6 +3305,98 @@ impl Store {
     pub fn delete_orbit_integration(&self, id: &str) -> Result<(), StoreError> {
         let conn = self.conn.lock();
         conn.execute("DELETE FROM orbit_integration WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    /// A biblioteca de papéis desta máquina, por nome (sem diferenciar caixa).
+    pub fn list_orbit_roles(&self) -> Result<Vec<crate::orbit::Role>, StoreError> {
+        let conn = self.conn.lock();
+        let mut stmt =
+            conn.prepare("SELECT body_json FROM orbit_role ORDER BY name COLLATE NOCASE")?;
+        let bodies = stmt
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(bodies
+            .iter()
+            .map(|b| serde_json::from_str(b))
+            .collect::<Result<_, _>>()?)
+    }
+
+    pub fn get_orbit_role(&self, name: &str) -> Result<Option<crate::orbit::Role>, StoreError> {
+        use rusqlite::OptionalExtension;
+        let conn = self.conn.lock();
+        let body = conn
+            .query_row(
+                "SELECT body_json FROM orbit_role WHERE name = ?1",
+                params![name],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        Ok(body.map(|b| serde_json::from_str(&b)).transpose()?)
+    }
+
+    /// Grava (ou substitui) o papel. `imported_hash = None` mantém o que já
+    /// estava, como no grafo.
+    pub fn save_orbit_role(
+        &self,
+        role: &crate::orbit::Role,
+        imported_hash: Option<&str>,
+    ) -> Result<(), StoreError> {
+        let body = serde_json::to_string(role)?;
+        let conn = self.conn.lock();
+        conn.execute(
+            "INSERT INTO orbit_role (name, body_json, updated_at_ms, imported_hash)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(name) DO UPDATE SET
+                 body_json = ?2, updated_at_ms = ?3,
+                 imported_hash = COALESCE(?4, imported_hash)",
+            params![
+                role.name,
+                body,
+                crate::approvals::now_ms() as i64,
+                imported_hash,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_orbit_role(&self, name: &str) -> Result<(), StoreError> {
+        let conn = self.conn.lock();
+        conn.execute("DELETE FROM orbit_role WHERE name = ?1", params![name])?;
+        Ok(())
+    }
+
+    /// Troca a chave do papel numa transação: a linha nova nasce com o corpo
+    /// renomeado e a antiga sai. Quem chama já conferiu que `to` não existe.
+    pub fn rename_orbit_role(&self, from: &str, to: &str) -> Result<(), StoreError> {
+        use rusqlite::OptionalExtension;
+        let conn = self.conn.lock();
+        let body = conn
+            .query_row(
+                "SELECT body_json FROM orbit_role WHERE name = ?1",
+                params![from],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        let Some(body) = body else { return Ok(()) };
+        let mut role: crate::orbit::Role = serde_json::from_str(&body)?;
+        role.name = to.to_string();
+        let body = serde_json::to_string(&role)?;
+        conn.execute_batch("BEGIN")?;
+        let done = conn
+            .execute(
+                "INSERT INTO orbit_role (name, body_json, updated_at_ms, imported_hash)
+                 SELECT ?2, ?3, ?4, imported_hash FROM orbit_role WHERE name = ?1",
+                params![from, to, body, crate::approvals::now_ms() as i64],
+            )
+            .and_then(|_| conn.execute("DELETE FROM orbit_role WHERE name = ?1", params![from]));
+        match done {
+            Ok(_) => conn.execute_batch("COMMIT")?,
+            Err(e) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                return Err(e.into());
+            }
+        }
         Ok(())
     }
 
@@ -7940,5 +8038,60 @@ mod tests {
         store.delete_orbit_integration("i-1").unwrap();
         assert!(store.list_orbit_integrations().unwrap().is_empty());
         assert!(store.get_orbit_integration("i-1").unwrap().is_none());
+    }
+
+    /// Biblioteca de papéis (quadro OrbitPapeis B): o nome é a chave, a
+    /// lista sai por nome sem diferenciar caixa, renomear troca a chave e o
+    /// corpo numa transação, apagar some.
+    #[test]
+    fn orbit_role_round_trip_rename_and_delete() {
+        use crate::orbit::Role;
+        let store = Store::open_in_memory().unwrap();
+        let revisor = Role {
+            name: "Revisor".into(),
+            instructions: "lê o diff".into(),
+        };
+        let qa = Role {
+            name: "qa".into(),
+            instructions: "reproduz o bug".into(),
+        };
+        store.save_orbit_role(&revisor, None).unwrap();
+        store.save_orbit_role(&qa, Some("h1")).unwrap();
+        assert_eq!(
+            store.list_orbit_roles().unwrap(),
+            vec![qa.clone(), revisor.clone()]
+        );
+        assert_eq!(
+            store.get_orbit_role("Revisor").unwrap(),
+            Some(revisor.clone())
+        );
+        assert_eq!(store.get_orbit_role("revisor").unwrap(), None);
+
+        let revisor2 = Role {
+            instructions: "lê o diff e aponta risco".into(),
+            ..revisor.clone()
+        };
+        store.save_orbit_role(&revisor2, None).unwrap();
+        assert_eq!(
+            store.get_orbit_role("Revisor").unwrap(),
+            Some(revisor2.clone())
+        );
+
+        store.rename_orbit_role("Revisor", "Revisora").unwrap();
+        assert_eq!(store.get_orbit_role("Revisor").unwrap(), None);
+        assert_eq!(
+            store.get_orbit_role("Revisora").unwrap(),
+            Some(Role {
+                name: "Revisora".into(),
+                instructions: revisor2.instructions.clone(),
+            })
+        );
+        // Renomear o que não existe não faz nada.
+        store.rename_orbit_role("não existe", "x").unwrap();
+        assert_eq!(store.list_orbit_roles().unwrap().len(), 2);
+
+        store.delete_orbit_role("qa").unwrap();
+        assert_eq!(store.list_orbit_roles().unwrap().len(), 1);
+        assert_eq!(store.get_orbit_role("qa").unwrap(), None);
     }
 }

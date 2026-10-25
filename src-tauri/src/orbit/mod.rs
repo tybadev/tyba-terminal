@@ -282,6 +282,22 @@ pub enum Trigger {
     Manual,
 }
 
+/// Teto do nome de um papel: uma linha curta, é a chave da biblioteca.
+pub const MAX_ROLE_NAME_CHARS: usize = 40;
+/// Teto das instruções de um papel (entram no começo do prompt).
+pub const MAX_ROLE_INSTRUCTIONS_CHARS: usize = 4000;
+
+/// Papel reutilizável da biblioteca desta máquina (quadro OrbitPapeis). O
+/// nome é a chave — o nó Agente guarda só o nome — e as instruções entram
+/// no começo do prompt de cada agente com esse papel. Nome que não está na
+/// biblioteca é só rótulo no nó.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Role {
+    pub name: String,
+    pub instructions: String,
+}
+
 /// Grafo ou integração como saiu do banco. `consented = false` é conteúdo
 /// importado que o dono ainda não confirmou: não roda.
 #[derive(Debug, Clone, PartialEq)]
@@ -341,6 +357,12 @@ pub enum OrbitError {
     DuplicateTalk(String),
     #[error("título do nó {node}: {reason}")]
     InvalidTitle { node: String, reason: String },
+    #[error("papel sem nome")]
+    EmptyRoleName,
+    #[error("nome do papel: {0}")]
+    InvalidRoleName(String),
+    #[error("instruções do papel {0} passam do teto de {MAX_ROLE_INSTRUCTIONS_CHARS} caracteres")]
+    RoleInstructionsTooLong(String),
 }
 
 /// O título do nó entra no bloco que outro agente recebe ("mensagem de
@@ -410,6 +432,71 @@ pub fn validate_integration(integration: &Integration) -> Result<(), OrbitError>
         || format!("integração {}", integration.id),
         integration.file.as_deref(),
     )
+}
+
+/// O nome do papel entra no prompt ("Papel: <nome>"), na assinatura da
+/// mensagem ("<título> · <papel>") e no `orbit_peers`: uma linha só, até
+/// [`MAX_ROLE_NAME_CHARS`]. Vale para o nome na biblioteca e para o `role`
+/// que um agente passa em `orbit_create_agent`/`orbit_reassign`.
+pub(crate) fn role_name_problem(name: &str) -> Option<String> {
+    if name.chars().any(breaks_line) {
+        return Some("sem quebra de linha nem caractere de controle".into());
+    }
+    let n = name.chars().count();
+    if n > MAX_ROLE_NAME_CHARS {
+        return Some(format!(
+            "{n} caracteres passa do teto de {MAX_ROLE_NAME_CHARS}"
+        ));
+    }
+    None
+}
+
+pub fn validate_role(role: &Role) -> Result<(), OrbitError> {
+    if role.name.trim().is_empty() {
+        return Err(OrbitError::EmptyRoleName);
+    }
+    if let Some(reason) = role_name_problem(&role.name) {
+        return Err(OrbitError::InvalidRoleName(reason));
+    }
+    if role.instructions.chars().count() > MAX_ROLE_INSTRUCTIONS_CHARS {
+        return Err(OrbitError::RoleInstructionsTooLong(role.name.clone()));
+    }
+    check_text(
+        || format!("instruções do papel {}", role.name),
+        &role.instructions,
+    )
+}
+
+/// Quantos nós de agente usam o papel `name`, em quantos grafos.
+pub fn role_usage(graphs: &[Graph], name: &str) -> (usize, usize) {
+    let mut nodes = 0;
+    let mut in_graphs = 0;
+    for graph in graphs {
+        let here = graph
+            .nodes
+            .iter()
+            .filter(|n| matches!(&n.kind, NodeKind::Agent { role, .. } if role == name))
+            .count();
+        nodes += here;
+        if here > 0 {
+            in_graphs += 1;
+        }
+    }
+    (nodes, in_graphs)
+}
+
+/// Troca o nome do papel nos nós de agente do grafo. Devolve quantos mudaram.
+pub fn rename_role_in(graph: &mut Graph, from: &str, to: &str) -> usize {
+    let mut n = 0;
+    for node in graph.nodes.iter_mut() {
+        if let NodeKind::Agent { role, .. } = &mut node.kind {
+            if role == from {
+                *role = to.to_string();
+                n += 1;
+            }
+        }
+    }
+    n
 }
 
 /// O que o nó produz (tabela de rules).

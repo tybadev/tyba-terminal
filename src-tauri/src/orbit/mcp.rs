@@ -633,7 +633,12 @@ pub fn tool_list(caller: Caller) -> Vec<Value> {
                     "title": string_prop("Short name shown on the node."),
                     "runner": {"type": "string", "enum": ["claude", "codex"]},
                     "prompt": string_prop("The task for the agent."),
-                    "dir": dir
+                    "dir": dir,
+                    "role": string_prop(
+                        "Optional: a role from the owner's library (the name is the key; its \
+                         instructions open the agent's prompt). A name outside the library is \
+                         only a label. One line, up to 40 characters."
+                    )
                 },
                 "required": ["title", "runner", "prompt", "dir"],
                 "additionalProperties": false
@@ -942,7 +947,11 @@ pub fn tool_list(caller: Caller) -> Vec<Value> {
                 "type": "object",
                 "properties": {
                     "node": string_prop("node_id of the agent you created."),
-                    "prompt": string_prop("The new task for the agent.")
+                    "prompt": string_prop("The new task for the agent."),
+                    "role": string_prop(
+                        "Optional: a new role (library name or label); omit to keep the \
+                         current one."
+                    )
                 },
                 "required": ["node", "prompt"],
                 "additionalProperties": false
