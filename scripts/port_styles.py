@@ -72,7 +72,7 @@ header = '''@import "tailwindcss";
 
 '''
 
-tail = '''
+tail = r'''
 
 /* dark: do Tailwind segue o esquema do tema — todo tema claro
    termina em "light" (light, solarized-light, monokai-light...) */
@@ -491,9 +491,58 @@ samp {
 .tyba-pulse {
   animation: tyba-pulse 1.6s ease-in-out infinite;
 }
+/* "Em andamento" no cartão da sessão: o meio círculo pinta um lado, depois o
+   outro, alternando — o movimento é o sinal de que está rodando. */
+@keyframes tyba-half-flip {
+  0%, 49.9% { transform: scaleX(1); }
+  50%, 100% { transform: scaleX(-1); }
+}
+.tyba-half-flip {
+  animation: tyba-half-flip 1.2s steps(1, end) infinite;
+}
 @media (prefers-reduced-motion: reduce) {
   .tyba-flow-line--live,
-  .tyba-pulse { animation: none; }
+  .tyba-pulse,
+  .tyba-half-flip { animation: none; }
+}
+
+/* Esqueleto de carregamento (feature carregamento): a forma final do que vai
+   chegar, num véu do texto do tema — derivado, vale nos 18 temas, claro e
+   escuro. O brilho corre devagar; parado em reduzir movimento. */
+.tyba-skeleton {
+  display: inline-block;
+  flex: none;
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--tyba-text) 6%, transparent) 0%,
+    color-mix(in srgb, var(--tyba-text) 11%, transparent) 50%,
+    color-mix(in srgb, var(--tyba-text) 6%, transparent) 100%
+  );
+  background-size: 200% 100%;
+  animation: tyba-skeleton 1.6s ease-in-out infinite;
+}
+@keyframes tyba-skeleton {
+  from { background-position: 150% 0; }
+  to { background-position: -50% 0; }
+}
+/* Progresso numérico (só quando o core sabe o total): trilho no véu, o
+   filamento enchendo. Contorno nenhum, barra inteira — nunca um lado só. */
+.tyba-load-bar {
+  display: block;
+  height: 3px;
+  border-radius: 2px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--tyba-text) 6%, transparent);
+}
+.tyba-load-bar > span {
+  display: block;
+  height: 100%;
+  background: var(--tyba-filament);
+  transition: width 200ms ease-out;
+}
+@media (prefers-reduced-motion: reduce) {
+  .tyba-skeleton { animation: none; }
+  .tyba-load-bar > span { transition: none; }
 }
 
 @keyframes tyba-pop-in {
@@ -696,6 +745,35 @@ samp {
 }
 .files-markdown tbody tr:nth-child(even) {
   background: color-mix(in srgb, var(--tyba-text) 3%, transparent);
+}
+
+/* Busca das Configurações: a linha encontrada acende por um instante. */
+.tyba-setting-flash {
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--tyba-green) 12%, transparent);
+  transition: background 0.6s ease;
+}
+
+/* Configurações: o título de cada grupo corre num filete até a borda, como
+   nas outras telas cheias — é ele que separa os grupos, não uma caixa. */
+.tyba-settings .tyba-label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.tyba-settings .tyba-label::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--tyba-border-soft);
+}
+
+/* ⌘ (Ctrl fora do mac) apertado sobre um link do terminal: mão, como no Warp.
+   Por cima do cursor do xterm, que com o mouse tracking do programa é o padrão. */
+.tyba-link-armed,
+.tyba-link-armed .xterm,
+.tyba-link-armed .xterm * {
+  cursor: pointer !important;
 }
 '''
 
