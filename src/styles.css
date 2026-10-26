@@ -114,6 +114,21 @@
      Aresta iluminada no topo de cada superfície + verniz vertical:
      é isso que separa as camadas, não cinzas mais claros. */
   --tyba-edge: inset 0 1px 0 rgba(255, 255, 255, 0.07);
+
+  /* ---------- Vidro v2 (material do claro; neutro nos outros) ----------
+     Regra: lente no que flutua, papel no que se lê. Fora do claro do TYBA
+     estes tokens caem nas superfícies de sempre, então usá-los não muda
+     nada no escuro nem nos temas importados. */
+  --tyba-field: var(--tyba-bg);                   /* o que fica atrás do vidro */
+  --tyba-glass-window: var(--tyba-glass-bg);      /* a janela inteira */
+  --tyba-glass-section: var(--tyba-glass-bg);     /* lateral, peça da tela */
+  --tyba-glass-piece: var(--tyba-raised);         /* faixa, cápsula, campo */
+  --tyba-glass-float: var(--tyba-overlay);        /* pílula, gaveta, popover */
+  --tyba-glass-active: var(--tyba-raised);        /* item ativo */
+  --tyba-card-glass: var(--tyba-raised);          /* corpo do card do Orbit */
+  --tyba-card-blur: 0px;
+  --tyba-lens: var(--tyba-edge);                  /* aresta do que flutua */
+  --tyba-lens-shadow: var(--tyba-shadow-md);
   /* Aba acesa (ícone do header, mockup PainelGit): tinta e brilho na cor
      da área — `currentColor`, então quem pinta é a classe de texto da área.
      A luz é estado: só o aceso usa. */
@@ -412,6 +427,31 @@
   --tyba-filament: linear-gradient(90deg, #3d8a17, #0f9d8c, #7a4ce8);
   --tyba-filament-v: linear-gradient(180deg, #3d8a17, #0f9d8c, #7a4ce8);
   --tyba-flow-gradient: linear-gradient(90deg, transparent, #3d8a17 15%, #0f9d8c 45%, #7a4ce8 75%, transparent);
+
+  /* Vidro v2 (página Vidro do canvas, validado 2026-10-26): o campo do
+     bem-medical em força total atrás, camadas de branco translúcido por cima
+     e a aresta de lente — realce branco em cima e à esquerda, fio escuro
+     embaixo e à direita. Mancha pequena com borda atrás do vidro vira
+     borrão: o campo é sempre degradê grande e liso. */
+  --tyba-field:
+    radial-gradient(44% 54% at 14% 10%, rgba(122, 43, 240, 0.34), transparent 70%),
+    radial-gradient(38% 48% at 92% 90%, rgba(14, 158, 112, 0.26), transparent 70%),
+    radial-gradient(52% 62% at 78% 22%, rgba(29, 29, 82, 0.20), transparent 70%),
+    #eceef7;
+  --tyba-glass-window: rgba(255, 255, 255, 0.46);
+  --tyba-glass-section: rgba(255, 255, 255, 0.36);
+  --tyba-glass-piece: rgba(255, 255, 255, 0.56);
+  --tyba-glass-float: rgba(255, 255, 255, 0.88);
+  --tyba-glass-active: rgba(255, 255, 255, 0.94);
+  --tyba-card-glass: rgba(255, 255, 255, 0.50);
+  --tyba-card-blur: 24px;
+  --tyba-lens:
+    inset 0 1.5px 0 rgba(255, 255, 255, 0.95),
+    inset 1.5px 0 0 rgba(255, 255, 255, 0.70),
+    inset 0 -1px 0 rgba(20, 20, 58, 0.08),
+    inset -1px 0 0 rgba(20, 20, 58, 0.04),
+    0 0 0 1px rgba(20, 20, 58, 0.07);
+  --tyba-lens-shadow: 0 24px 60px -20px rgba(20, 20, 58, 0.30);
 }
 
 /* ============================================================
