@@ -1650,3 +1650,17 @@ samp {
 .tyba-link-armed .xterm * {
   cursor: pointer !important;
 }
+
+/* ---------- Vidro v2 · material (só o claro do TYBA) ----------
+   Página Aurora do canvas, validada em 2026-10-26. Regra: lente no que
+   flutua, papel no que se lê — terminal, diff, editor e listas seguem
+   opacos. Aqui só o fundo e o vidro do cromo; layout igual ao de hoje.
+   O seletor deixa o escuro e os temas importados exatamente como estão. */
+[data-theme='light']:not([data-imported]) .tyba-aurora {
+  background: var(--tyba-field);
+}
+[data-theme='light']:not([data-imported]) .tyba-glass {
+  background: var(--tyba-glass-section);
+  backdrop-filter: blur(var(--tyba-glass-blur)) saturate(140%);
+  -webkit-backdrop-filter: blur(var(--tyba-glass-blur)) saturate(140%);
+}
