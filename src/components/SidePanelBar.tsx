@@ -21,17 +21,16 @@ import type { PanelIndicator, PanelKind } from "../lib/sidePanel";
 
 /**
  * Cor de cada área (classes literais: o Tailwind só gera o que lê no fonte).
- * A tinta, o brilho e o sublinhado do ícone aceso saem de `currentColor`
- * (`--tyba-lit-bg`/`--tyba-lit-glow`), então basta a cor de texto da área.
+ * O ícone aceso é a pastilha quase opaca (`tyba-pill-on`) com a cor da área.
  */
-const AREA: Record<PanelKind, { text: string; bar: string }> = {
-  history: { text: "text-tyba-green", bar: "bg-tyba-green-fill" },
-  docker: { text: "text-tyba-blue", bar: "bg-tyba-blue" },
-  git: { text: "text-tyba-blue", bar: "bg-tyba-blue" },
-  files: { text: "text-tyba-cyan", bar: "bg-tyba-cyan" },
-  services: { text: "text-tyba-blue", bar: "bg-tyba-blue" },
-  agents: { text: "text-tyba-amber", bar: "bg-tyba-amber-fill" },
-  diff: { text: "text-tyba-violet", bar: "bg-tyba-violet" },
+const AREA: Record<PanelKind, { text: string }> = {
+  history: { text: "text-tyba-green" },
+  docker: { text: "text-tyba-blue" },
+  git: { text: "text-tyba-blue" },
+  files: { text: "text-tyba-cyan" },
+  services: { text: "text-tyba-blue" },
+  agents: { text: "text-tyba-amber" },
+  diff: { text: "text-tyba-violet" },
 };
 
 /**
@@ -122,7 +121,7 @@ export function SidePanelBar({
                 onClick={() => onClick(tab.kind)}
                 className={`relative flex h-7 w-[30px] items-center justify-center rounded-[6px] outline-none focus-visible:ring-2 focus-visible:ring-tyba-cyan ${
                   on
-                    ? `${area.text} bg-[var(--tyba-lit-bg)] shadow-[var(--tyba-lit-glow)]`
+                    ? `${area.text} tyba-pill-on`
                     : "text-tyba-text-faint hover:text-tyba-text"
                 }`}
               >
@@ -140,12 +139,6 @@ export function SidePanelBar({
                   >
                     {tab.indicator.count > 9 ? "9+" : tab.indicator.count}
                   </span>
-                )}
-                {on && (
-                  <span
-                    aria-hidden
-                    className={`absolute inset-x-[7px] -bottom-px h-0.5 rounded-[1px] ${area.bar}`}
-                  />
                 )}
               </button>
             </TooltipTrigger>

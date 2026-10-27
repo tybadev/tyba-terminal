@@ -15,7 +15,6 @@ import {
   GitBranch,
   GitDiff,
   HardDrives,
-  Keyboard,
   MagnifyingGlass,
   Plus,
   Prohibit,
@@ -23,7 +22,7 @@ import {
   SquaresFour,
   Stack,
   TerminalWindow,
-  User,
+  Tray,
   X,
   XCircle,
 } from "@phosphor-icons/react";
@@ -35,8 +34,6 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuGroup,
-  DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuSub,
   DropdownMenuSubContent,
@@ -1029,6 +1026,7 @@ export default function App() {
   const [approvals, setApprovals] = useState<ApprovalRequest[]>([]);
   const sessionPorts = useSessionPorts();
   const [inboxOpen, setInboxOpen] = useState(false);
+  const [inboxBadge, setInboxBadge] = useState(0);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [version, setVersion] = useState("");
   const [update, setUpdate] = useState<UpdateStatus | null>(null);
@@ -4867,29 +4865,19 @@ export default function App() {
               }
             : undefined
         }
-        // Ativa = o cartão que SOBE (mockup Proposta): `raised` com o contorno
-        // do tema e o filamento vertical no meio da aresta esquerda.
-        className={`group relative flex shrink-0 items-center gap-2 overflow-hidden rounded-[6px] text-[13px] transition-colors ${
-          showDetails ? "h-[3.75rem]" : "h-[33px]"
+        // Ativa = a pastilha quase opaca (quadro PropostaClaro); sem fio na
+        // aresta, que barra de um lado só não entra em card.
+        className={`group relative flex shrink-0 items-center gap-2.5 overflow-hidden rounded-[6px] text-[13px] font-medium transition-colors ${
+          showDetails ? "min-h-[3.75rem] py-1.5" : "h-9"
         } ${open ? "px-2.5" : "justify-center px-0"} ${
           isActive
-            ? `text-tyba-text ${w.color ? "" : "bg-tyba-raised shadow-[var(--tyba-raised-ring)]"}`
+            ? `text-tyba-text ${w.color ? "" : "tyba-pill-on"}`
             : "text-tyba-text-muted hover:bg-tyba-text/[.03] hover:text-tyba-text"
         }`}
       >
-        {isActive && (
-          // O fio pega só o meio da aresta: de ponta a ponta pesava mais que o
-          // próprio cartão.
-          <span
-            className="absolute left-0 top-1/2 h-6 w-0.5 -translate-y-1/2 rounded-r-full"
-            style={{
-              background: w.color
-                ? `var(--tyba-${w.color})`
-                : "var(--tyba-filament-v)",
-            }}
-          />
-        )}
-        <span className="relative shrink-0">
+        {/* Aberta, a sessão é só texto e o ponto de estado (quadro); o ícone
+            fica para o trilho recolhido, onde não há texto. */}
+        <span className={`relative shrink-0 ${open ? "hidden" : ""}`}>
           {isWtView ? (
             <SquaresFour
               size={16}
@@ -5039,14 +5027,6 @@ export default function App() {
                 </span>
               )}
             </span>
-            {!isConfig && !isWtView && w.tabs.length > 0 && (
-              <span
-                title={t("sessionPanes", { count: w.tabs.length })}
-                className="shrink-0 font-mono text-[10px] text-tyba-text-faint"
-              >
-                {w.tabs.length}
-              </span>
-            )}
             {!isConfig && !isWtView && (
               <span
                 role="img"
@@ -5330,186 +5310,114 @@ export default function App() {
       />
       <div className="tyba-aurora flex h-screen flex-col text-tyba-text">
         <WindowResizeEdges />
+        <div className="tyba-window">
         <header
           data-tauri-drag-region
           // Build de dev: listras diagonais no header, como os apps do GNOME em
           // desenvolvimento, para nunca confundir com o app instalado. O build
           // de release não tem `import.meta.env.DEV`.
           style={DEV_HEADER_STYLE}
-          // Sem vidro: o header é transparente sobre o canvas, e é por ele que a
-          // aurora tripla aparece no topo da janela (mockup Proposta/PropostaClaro).
-          className={`tyba-lift-b flex h-[38px] shrink-0 items-center gap-1 pr-2.5 ${
-            IS_MAC ? "pl-20" : "pl-2.5"
+          // Barra B do quadro PropostaClaro: seção de vidro na largura toda,
+          // semáforos, marca, migalha, branch e, à direita, os ícones do painel.
+          // Os semáforos nativos ficam dentro dela (`trafficLightPosition`).
+          className={`tyba-section tyba-bar flex h-10 shrink-0 items-center gap-3 pr-2.5 ${
+            IS_MAC ? "pl-[84px]" : "pl-2.5"
           }`}
         >
           {/* Marca + wordmark. Sem eventos: o clique cai no header, que
               arrasta a janela. */}
-          <span className="pointer-events-none mr-2 flex shrink-0 items-center gap-2">
-            <TybaMark size={18} />
-            <span className="font-sans text-[13px] font-bold tracking-[0.02em] text-tyba-text">
+          <span className="pointer-events-none flex shrink-0 items-center gap-3">
+            <TybaMark size={16} />
+            <span className="font-sans text-[13px] font-semibold tracking-[0.02em] text-tyba-text">
               TYBA
             </span>
+            <span aria-hidden className="h-[18px] w-px bg-tyba-border" />
           </span>
 
-          <IconAction
-            label={t("panelToggle")}
-            shortcut={bindings.panel}
-            onClick={toggleSidebar}
+          <nav
+            aria-label={t("breadcrumb")}
+            className="flex min-w-0 items-center gap-2 text-[13px] font-medium text-tyba-text-faint"
           >
-            <SidebarSimple size={16} />
-          </IconAction>
-
-          <IconAction
-            label={t("commandPalette")}
-            shortcut={bindings.paletteActions}
-            onClick={() => openPalette("actions")}
-          >
-            <MagnifyingGlass size={16} />
-          </IconAction>
-
-          <div className="pointer-events-none absolute inset-x-0 top-0 flex h-[38px] items-center justify-center">
-            <div className="pointer-events-auto flex items-center gap-0.5 rounded-[8px] bg-[var(--tyba-segment-bg)] p-[3px] shadow-[var(--tyba-edge)]">
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <button
-                    aria-label={t("terminalView")}
-                    aria-pressed
-                    className="flex h-6 items-center gap-1.5 rounded-[6px] bg-tyba-raised px-3 text-[13px] text-tyba-text shadow-[var(--tyba-row-raised)]"
-                  >
-                    <TerminalWindow size={14} aria-hidden />
-                    {t("terminalView")}
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent side="bottom">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span className="tyba-pill-on flex h-[26px] shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full pl-2 pr-2.5 text-tyba-text">
+                  <span className="font-mono text-tyba-green">❯</span>
                   {t("terminalView")}
-                </TooltipContent>
-              </Tooltip>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <button
-                    aria-label={`${t("workspaceView")} — ${t("comingSoon")}`}
-                    aria-disabled
-                    disabled
-                    className="flex h-6 cursor-not-allowed items-center gap-1.5 rounded-[6px] px-3 text-[13px] text-tyba-text-faint"
-                  >
-                    <Stack size={14} aria-hidden />
-                    {t("workspaceView")}
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent side="bottom">
-                  {t("comingSoon")}
-                </TooltipContent>
-              </Tooltip>
-            </div>
-          </div>
+                  <kbd className="rounded-[4px] bg-tyba-text/[.05] px-[5px] font-sans text-[10px] text-tyba-text-faint">
+                    ⌘1
+                  </kbd>
+                </span>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">
+                {t("workspaceView")} — {t("comingSoon")}
+              </TooltipContent>
+            </Tooltip>
+            {activeWorkspace && (
+              <>
+                <span aria-hidden>/</span>
+                <span className="truncate">{activeWorkspace.name}</span>
+              </>
+            )}
+            {activeSession && (
+              <>
+                <span aria-hidden>/</span>
+                <b className="truncate font-medium text-tyba-text">
+                  {activeSession.title}
+                </b>
+              </>
+            )}
+          </nav>
+          {activeChips.branch?.state === "known" && (
+            <span className="flex h-[22px] shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full bg-tyba-blue/[.10] pl-2 pr-[9px] text-[11.5px] font-medium text-tyba-blue">
+              <span aria-hidden className="size-1.5 rounded-full bg-current" />
+              {activeChips.branch.label}
+            </span>
+          )}
 
           <div className="h-full flex-1" data-tauri-drag-region />
 
-          <SidePanelBar
-            tabs={panelTabs}
-            lit={
-              activeContent?.kind === "session-diff"
-                ? "diff"
-                : litPanel(sideView, fileSessionId)
-            }
-            onClick={onPanelClick}
-            onEscape={() => {
-              if (activeWorkspace) {
-                void closeSideView(activeWorkspace.id).catch(() => {});
+          {/* Ícones do painel lateral num grupo de vidro (quadro). */}
+          <div className="tyba-segment items-center">
+            <SidePanelBar
+              tabs={panelTabs}
+              lit={
+                activeContent?.kind === "session-diff"
+                  ? "diff"
+                  : litPanel(sideView, fileSessionId)
               }
-            }}
-          />
-
-          <ErrorBoundary region="forge">
-            <ForgePanel
-              sessionId={activeId}
-              repoRoot={activeGitStatus?.root ?? null}
+              onClick={onPanelClick}
+              onEscape={() => {
+                if (activeWorkspace) {
+                  void closeSideView(activeWorkspace.id).catch(() => {});
+                }
+              }}
             />
-          </ErrorBoundary>
 
-          {/* A pasta do header abre a tela de Arquivos da sessão (pedido do dono,
-              2026-10-14); "Abrir pasta do projeto" fica no menu, na paleta e no
-              atalho. */}
-          <IconAction
-            label={t("filesPanel")}
-            shortcut={bindings.files}
-            onClick={() => {
-              if (fileSessionId) void openFilesPanel(fileSessionId).catch(() => {});
-            }}
-          >
-            <FolderOpen size={16} />
-          </IconAction>
+            <ErrorBoundary region="forge">
+              <ForgePanel
+                sessionId={activeId}
+                repoRoot={activeGitStatus?.root ?? null}
+              />
+            </ErrorBoundary>
 
-          <ErrorBoundary region="notificações">
-            <NotificationsInbox
-              sessions={sessions}
-              approvals={approvals}
-              open={inboxOpen}
-              onOpenChange={setInboxOpen}
-              onGoToSession={goToSession}
-            />
-          </ErrorBoundary>
-
-          {/* Divisória antes da conta (mockup): 1px × 18px, a linha fina. */}
-          <span aria-hidden className="mx-1.5 h-[18px] w-px bg-tyba-border" />
-
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <button
-                aria-label={t("account")}
-                className="ml-1 rounded-full p-px"
-                style={{ background: "var(--tyba-gradient)" }}
-              >
-                <span className="flex size-5 items-center justify-center rounded-full bg-tyba-raised text-tyba-text-muted">
-                  <User size={11} weight="bold" />
-                </span>
-              </button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent
-              align="end"
-              className="w-56"
+            {/* A pasta do header abre a tela de Arquivos da sessão (pedido do dono,
+                2026-10-14); "Abrir pasta do projeto" fica no menu, na paleta e no
+                atalho. */}
+            <IconAction
+              label={t("filesPanel")}
+              shortcut={bindings.files}
+              onClick={() => {
+                if (fileSessionId) void openFilesPanel(fileSessionId).catch(() => {});
+              }}
             >
-              <DropdownMenuLabel className="flex min-w-0 flex-col">
-                <span className="truncate text-xs font-medium text-tyba-text">
-                  {accountName || t("localAccount")}
-                </span>
-                {accountName && (
-                  <span className="truncate text-[11px] font-normal text-tyba-text-faint">
-                    {t("localAccount")}
-                  </span>
-                )}
-              </DropdownMenuLabel>
-              <DropdownMenuSeparator />
-              <DropdownMenuGroup>
-                <DropdownMenuItem
-                  className="text-xs"
-                  onSelect={() => void openViewTab("settings").catch(() => {})}
-                >
-                  <GearSix size={16} className="opacity-60" />
-                  {t("settings")}
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  className="text-xs"
-                  onSelect={() => openPalette("actions")}
-                >
-                  <MagnifyingGlass size={16} className="opacity-60" />
-                  {t("commandPalette")}
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  className="text-xs"
-                  onSelect={() => setShortcutsOpen(true)}
-                >
-                  <Keyboard size={16} className="opacity-60" />
-                  {t("shortcuts")}
-                </DropdownMenuItem>
-              </DropdownMenuGroup>
-            </DropdownMenuContent>
-          </DropdownMenu>
+              <FolderOpen size={16} />
+            </IconAction>
+          </div>
 
           <WindowControls />
         </header>
 
-        <div className="flex min-h-0 flex-1">
+        <div className="flex min-h-0 flex-1 gap-2">
           <>
             {sidebar !== "hidden" && (
                 <aside
@@ -5519,11 +5427,11 @@ export default function App() {
                   // `sunken` distam 5/255. E acima do terminal ela encosta na
                   // faixa de abas, que é `surface` também: mesma cor, zero
                   // separação, em TODO tema.
-                  className="tyba-lift-r tyba-glass flex shrink-0 flex-col"
+                  className="tyba-section flex shrink-0 flex-col overflow-hidden"
                   style={{ width: SIDEBAR_WIDTH[sidebar] }}
                 >
                   {open && (
-                    <label className="mx-2 mt-3 flex h-[31px] items-center gap-1.5 rounded-[6px] bg-tyba-raised px-2.5 shadow-[var(--tyba-raised-ring)] focus-within:shadow-[inset_0_0_0_1px_var(--tyba-border-strong)]">
+                    <label className="tyba-piece mx-2 mt-2 flex h-8 shrink-0 items-center gap-2 !rounded-[6px] px-2.5 focus-within:outline focus-within:outline-1 focus-within:outline-tyba-border-strong">
                       <MagnifyingGlass
                         size={12}
                         className="shrink-0 text-tyba-text-faint"
@@ -5535,93 +5443,98 @@ export default function App() {
                         value={sessionQuery}
                         onChange={(e) => setSessionQuery(e.target.value)}
                         placeholder={t("searchSessions")}
-                        className="w-full bg-transparent text-[13px] text-tyba-text outline-none placeholder:text-tyba-text-faint"
+                        className="w-full bg-transparent text-[12.5px] text-tyba-text outline-none placeholder:text-tyba-text-faint"
                       />
+                      <kbd className="shrink-0 rounded-[4px] bg-tyba-text/[.05] px-1.5 py-px font-sans text-[11px] text-tyba-text-faint">
+                        {formatCombo(bindings.paletteSessions)}
+                      </kbd>
                     </label>
                   )}
-                  <nav
-                    className="tyba-scroll-fade mt-3 flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto px-2 pb-2"
-                  >
-                    {layout.workspaces.some(isConfigWorkspace) && (
-                      <div className="mb-1 flex flex-col gap-px rounded-[6px] border border-tyba-border/70 bg-tyba-text/[.015] p-1">
-                        {open && (
-                          <span className="flex items-center gap-2 px-1.5 pt-1 pb-1.5">
-                            <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-tyba-text-faint">
-                              {t("systemGroup")}
-                            </span>
-                            <span className="h-px min-w-0 flex-1 bg-tyba-border" />
-                          </span>
-                        )}
-                        <Tooltip>
+                  <div className="mt-1 flex shrink-0 flex-col gap-0.5 px-2">
+                      <Tooltip>
                         <TooltipTrigger asChild>
-                        <button
-                          onClick={() =>
-                            void openViewTab("settings").catch(() => {})
-                          }
-                          aria-label={t("settings")}
-                          className={`group relative flex h-8 shrink-0 items-center gap-2 rounded-[4px] text-[13px] transition-colors ${
-                            open ? "px-2" : "justify-center px-0"
-                          } ${
-                            activeTab?.view === "settings"
-                              ? "bg-tyba-text/[.05] text-tyba-text"
-                              : "text-tyba-text-faint hover:bg-tyba-text/[.03] hover:text-tyba-text-muted"
-                          }`}
-                        >
-                          <GearSix size={16} className="shrink-0" />
-                          {open && (
-                            <span className="min-w-0 flex-1 truncate text-left">
-                              {t("settings")}
-                            </span>
-                          )}
-                        </button>
+                          <Button
+                            variant="ghost"
+                            onClick={() => openNewSession()}
+                            aria-label={t("newSession")}
+                            className={`h-[33px] shrink-0 gap-2 rounded-[6px] text-[13px] font-medium text-tyba-text-muted hover:bg-tyba-text/[.03] hover:text-tyba-text ${
+                              open ? "justify-start px-2.5" : "justify-center px-0"
+                            }`}
+                          >
+                            <Plus size={14} className="shrink-0 text-tyba-green" />
+                            {open && (
+                              <>
+                                <span className="flex-1 text-left">{t("newSession")}</span>
+                                <span className="text-[12px] text-tyba-text-faint">
+                                  {formatCombo(bindings.newSession)}
+                                </span>
+                              </>
+                            )}
+                          </Button>
                         </TooltipTrigger>
-                        {!open && (
-                          <TooltipContent side="right">
-                            {t("settings")}
-                          </TooltipContent>
-                        )}
-                        </Tooltip>
-                      </div>
-                    )}
-                    {layout.workspaces.some(isWorktreesWorkspace) && (
-                      <div className="mb-1 flex flex-col gap-px rounded-[6px] border border-tyba-border/70 bg-tyba-text/[.015] p-1">
-                        {open && (
-                          <span className="flex items-center gap-2 px-1.5 pt-1 pb-1.5">
-                            <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-tyba-text-faint">
-                              {t("codeGroup")}
-                            </span>
-                            <span className="h-px min-w-0 flex-1 bg-tyba-border" />
-                          </span>
-                        )}
-                        <button
-                          disabled
-                          aria-disabled
-                          aria-label={`${t("worktreesTitle")} — ${t("comingSoon")}`}
-                          title={t("comingSoon")}
-                          className={`group relative flex h-8 shrink-0 cursor-not-allowed items-center gap-2 rounded-[4px] text-[13px] text-tyba-text-faint/50 ${
-                            open ? "px-2" : "justify-center px-0"
-                          }`}
+                        <TooltipContent
+                          side={open ? "bottom" : "right"}
+                          className="flex items-center gap-2"
                         >
-                          <SquaresFour size={16} className="shrink-0" />
-                          {open && (
-                            <>
-                              <span className="min-w-0 flex-1 truncate text-left">
-                                {t("worktreesTitle")}
-                              </span>
-                              <span className="shrink-0 rounded-[3px] bg-tyba-text/[.06] px-1.5 py-0.5 text-[9px] uppercase tracking-wider">
-                                {t("comingSoon")}
-                              </span>
-                            </>
-                          )}
-                        </button>
-                      </div>
-                    )}
+                          {t("newSession")}
+                          <span className="font-mono text-tyba-text-faint">
+                            {formatCombo(bindings.newSession)}
+                          </span>
+                        </TooltipContent>
+                      </Tooltip>
+                      {/* Workspace (Orbit) segue bloqueado: visível, desabilitado
+                          e com "em breve" (workspaceBlocked.test). */}
+                      <button
+                        disabled
+                        aria-disabled
+                        aria-label={`${t("workspaceView")} — ${t("comingSoon")}`}
+                        title={t("comingSoon")}
+                        className={`flex h-[33px] shrink-0 cursor-not-allowed items-center gap-2.5 rounded-[6px] text-[13px] font-medium text-tyba-text-faint ${
+                          open ? "px-2.5" : "justify-center px-0"
+                        }`}
+                      >
+                        <Stack size={14} className="shrink-0 text-tyba-violet/60" />
+                        {open && (
+                          <>
+                            <span className="flex-1 text-left">{t("workspaceView")}</span>
+                            <span className="text-[11px]">{t("comingSoon")}</span>
+                          </>
+                        )}
+                      </button>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Button
+                            variant="ghost"
+                            onClick={() =>
+                              void openViewTab("connections").catch(() => {})
+                            }
+                            aria-label={t("connectionsTitle")}
+                            className={`h-[33px] shrink-0 gap-2.5 rounded-[6px] text-[13px] font-medium ${
+                              open ? "justify-start px-2.5" : "justify-center px-0"
+                            } ${
+                              activeTab?.view === "connections"
+                                ? "tyba-pill-on text-tyba-text"
+                                : "text-tyba-text-muted hover:bg-tyba-text/[.03] hover:text-tyba-text"
+                            }`}
+                          >
+                            <HardDrives size={14} className="shrink-0 text-tyba-cyan" />
+                            {open && t("connectionsTitle")}
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent side={open ? "bottom" : "right"}>
+                          {t("connectionsTitle")}
+                        </TooltipContent>
+                      </Tooltip>
+                  </div>
+                  <nav
+                    className="tyba-scroll-fade mt-2 flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto px-2 pb-2"
+                  >
                     {groupedWorkspaces.groups.map(([name, list]) => (
                       <div
                         key={name}
-                        className="mb-1 flex flex-col gap-px rounded-[6px] border border-tyba-border/70 bg-tyba-text/[.015] p-1"
+                        className="flex flex-col gap-0.5"
                       >
-                        <span className="flex items-center gap-2 px-1.5 pt-1 pb-1.5">
+                        <span className="flex items-center gap-2 px-2.5 pt-3.5 pb-1.5">
                           <button
                             aria-label={name}
                             aria-expanded={!collapsedGroups[name]}
@@ -5638,11 +5551,11 @@ export default function App() {
                             ) : (
                               <CaretDown size={9} weight="bold" />
                             )}
-                            <span className="truncate text-[10px] font-medium uppercase tracking-[0.14em]">
-                              {name}
+                            <span className="truncate text-[11px] font-medium uppercase tracking-[0.06em]">
+                              {t("sessionsGroup", { name })}
                             </span>
                           </button>
-                          <span className="h-px min-w-0 flex-1 bg-tyba-border" />
+                          <span className="min-w-0 flex-1" />
                           <span className="font-mono text-[9px] text-tyba-text-faint">
                             {list.length}
                           </span>
@@ -5664,6 +5577,19 @@ export default function App() {
                         {!collapsedGroups[name] && list.map(renderWorkspace)}
                       </div>
                     ))}
+                    {open &&
+                      groupedWorkspaces.loose.some(
+                        (w) =>
+                          !isConfigWorkspace(w) &&
+                          !isWorktreesWorkspace(w) &&
+                          !isConnectionsWorkspace(w) &&
+                          !isStatsWorkspace(w) &&
+                          !isAgentBoardWorkspace(w),
+                      ) && (
+                      <span className="px-2.5 pt-3.5 pb-1.5 text-[11px] font-medium uppercase tracking-[0.06em] text-tyba-text-faint">
+                        {t("sessionsTitle")}
+                      </span>
+                    )}
                     {groupedWorkspaces.loose
                       .filter(
                         (w) =>
@@ -5674,54 +5600,6 @@ export default function App() {
                           !isAgentBoardWorkspace(w),
                       )
                       .map(renderWorkspace)}
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <Button
-                          variant="ghost"
-                          onClick={() => openNewSession()}
-                          aria-label={t("newSession")}
-                          className={`h-[33px] shrink-0 gap-2 rounded-[6px] text-[13px] font-normal text-tyba-text-faint hover:bg-tyba-text/[.03] hover:text-tyba-text ${
-                            open ? "justify-start px-2.5" : "justify-center px-0"
-                          }`}
-                        >
-                          {/* Aberta, só o texto (mockup Proposta); o ícone fica
-                              para o trilho recolhido, onde não há texto. */}
-                          {open ? t("newSession") : <Plus size={14} />}
-                        </Button>
-                      </TooltipTrigger>
-                      <TooltipContent
-                        side={open ? "bottom" : "right"}
-                        className="flex items-center gap-2"
-                      >
-                        {t("newSession")}
-                        <span className="font-mono text-tyba-text-faint">
-                          {formatCombo(bindings.newSession)}
-                        </span>
-                      </TooltipContent>
-                    </Tooltip>
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <Button
-                          variant="ghost"
-                          onClick={() =>
-                            void openViewTab("connections").catch(() => {})
-                          }
-                          aria-label={t("connectionsTitle")}
-                          className={`h-[33px] shrink-0 gap-2 rounded-[6px] text-[13px] font-normal ${
-                            open ? "justify-start px-2.5" : "justify-center px-0"
-                          } ${
-                            activeTab?.view === "connections"
-                              ? "bg-tyba-text/[.05] text-tyba-text"
-                              : "text-tyba-text-faint hover:bg-tyba-text/[.03] hover:text-tyba-text"
-                          }`}
-                        >
-                          {open ? t("connectionsTitle") : <HardDrives size={14} />}
-                        </Button>
-                      </TooltipTrigger>
-                      <TooltipContent side={open ? "bottom" : "right"}>
-                        {t("connectionsTitle")}
-                      </TooltipContent>
-                    </Tooltip>
                   </nav>
                   {/* Sem divisa: quem marca a fronteira de rolagem é o fade
                       no `nav` acima. A linha aqui ficava 21px acima da borda da
@@ -5730,23 +5608,62 @@ export default function App() {
                       valor escolhido hoje quebra quando uma delas mudar.
                       O fade resolve por deleção, e informa mais: ele só existe
                       quando há conteúdo escondido acima. */}
-                  <div className="flex shrink-0 flex-col px-2 pt-1 pb-2">
+                  <div className="flex shrink-0 flex-col gap-0.5 px-2 pt-1 pb-2">
+                    {/* Inbox (quadro PropostaClaro): bandeja e contagem; abre a
+                        coluna encostada na lateral. */}
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          variant="ghost"
+                          aria-label={inboxBadge > 0 ? t("notifAria", { count: inboxBadge }) : t("inbox")}
+                          aria-pressed={inboxOpen}
+                          onClick={() => setInboxOpen((o) => !o)}
+                          className={`relative h-[33px] shrink-0 gap-2.5 rounded-[6px] text-[13px] font-medium ${
+                            open ? "justify-start px-2.5" : "justify-center px-0"
+                          } ${
+                            inboxOpen
+                              ? "tyba-pill-on text-tyba-text"
+                              : "bg-tyba-text/[.05] text-tyba-text hover:bg-tyba-text/[.07]"
+                          }`}
+                        >
+                          <Tray size={16} className="shrink-0" />
+                          {open && <span className="flex-1 text-left">{t("inbox")}</span>}
+                          {inboxBadge > 0 && (
+                            <span
+                              className={
+                                open
+                                  ? "flex h-[22px] items-center gap-1.5 rounded-full bg-tyba-blue/[.10] pl-2 pr-[9px] text-[11.5px] font-medium text-tyba-blue before:size-1.5 before:rounded-full before:bg-current before:content-['']"
+                                  : "absolute right-1 top-1 size-1.5 rounded-full bg-tyba-blue"
+                              }
+                            >
+                              {open ? (inboxBadge > 9 ? "9+" : inboxBadge) : null}
+                            </span>
+                          )}
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent side={open ? "bottom" : "right"}>
+                        {t("inbox")}
+                      </TooltipContent>
+                    </Tooltip>
                     <Tooltip>
                       <TooltipTrigger asChild>
                         <Button
                           variant="ghost"
                           onClick={openAgentsFromSidebar}
                           aria-label={t("agentsQueue")}
-                          className={`relative h-[33px] shrink-0 gap-2 rounded-[6px] text-[13px] font-normal ${
+                          // Peça de vidro (quadro): o painel Agentes é o que
+                          // flutua, então a entrada dele já tem a lente.
+                          className={`relative h-[33px] shrink-0 gap-2.5 rounded-[6px] text-[13px] font-medium ${
                             open ? "justify-start px-2.5" : "justify-center px-0"
                           } ${
                             activeWorkspace?.side_view === "agent-queue" ||
                             activeWorkspace?.side_view?.startsWith("agents:")
-                              ? "bg-tyba-text/[.05] text-tyba-text"
-                              : "text-tyba-text hover:bg-tyba-text/[.03]"
+                              ? "tyba-pill-on text-tyba-text"
+                              : "tyba-piece text-tyba-text"
                           }`}
                         >
-                          {open ? t("agentsQueue") : <AgentIcon size={14} />}
+                          <AgentIcon size={14} className="shrink-0 text-tyba-amber" />
+                          {open && <span className="flex-1 text-left">{t("agentsQueue")}</span>}
                           {/* Pílula do mockup: conta APROVAÇÕES pendentes. Sem
                               nenhuma, mas com agente pedindo alguém, cai no
                               número de antes — a atenção não some da tela. */}
@@ -5792,9 +5709,49 @@ export default function App() {
                         />
                       </div>
                     )}
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          variant="ghost"
+                          onClick={() => void openViewTab("settings").catch(() => {})}
+                          aria-label={t("settings")}
+                          className={`h-[33px] shrink-0 gap-2.5 rounded-[6px] text-[13px] font-medium ${
+                            open ? "justify-start px-2.5" : "justify-center px-0"
+                          } ${
+                            activeTab?.view === "settings"
+                              ? "tyba-pill-on text-tyba-text"
+                              : "text-tyba-text-muted hover:bg-tyba-text/[.03] hover:text-tyba-text"
+                          }`}
+                        >
+                          <GearSix size={16} className="shrink-0" />
+                          {open && (
+                            <>
+                              <span className="flex-1 text-left">{t("settings")}</span>
+                              <span className="text-[12px] text-tyba-text-faint">
+                                {formatCombo(bindings.settings)}
+                              </span>
+                            </>
+                          )}
+                        </Button>
+                      </TooltipTrigger>
+                      {!open && (
+                        <TooltipContent side="right">{t("settings")}</TooltipContent>
+                      )}
+                    </Tooltip>
                   </div>
                 </aside>
               )}
+
+              <ErrorBoundary region="notificações">
+                <NotificationsInbox
+                  sessions={sessions}
+                  approvals={approvals}
+                  open={inboxOpen}
+                  onOpenChange={setInboxOpen}
+                  onGoToSession={goToSession}
+                  onBadgeChange={setInboxBadge}
+                />
+              </ErrorBoundary>
 
               <main ref={mainAreaRef} className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden">
                 {gitScreenSession && activeWorkspace && (
@@ -5961,7 +5918,9 @@ export default function App() {
                 )}
                 <div
                   ref={paneAreaRef}
-                  className="relative min-h-0 flex-1 overflow-hidden"
+                  // Peça de vidro (quadro PropostaClaro): o terminal lê sobre
+                  // vidro-3, mono por dentro.
+                  className="tyba-piece relative min-h-0 flex-1 overflow-hidden"
                 >
                   {searchOpen && activeId && (
                     <TerminalSearch
@@ -6943,6 +6902,7 @@ export default function App() {
             sessionId={activeId ?? null}
           />
         )}
+        </div>
       </div>
     </TooltipProvider>
   );

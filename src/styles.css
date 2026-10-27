@@ -1651,16 +1651,87 @@ samp {
   cursor: pointer !important;
 }
 
-/* ---------- Vidro v2 · material (só o claro do TYBA) ----------
-   Página Aurora do canvas, validada em 2026-10-26. Regra: lente no que
-   flutua, papel no que se lê — terminal, diff, editor e listas seguem
-   opacos. Aqui só o fundo e o vidro do cromo; layout igual ao de hoje.
-   O seletor deixa o escuro e os temas importados exatamente como estão. */
+/* ---------- Vidro v2 · janela (quadro PropostaClaro, validado 26/10) ----------
+   Estrutura dos dois temas; o material sai dos tokens --tyba-glass-*, que
+   são vidro só no claro do TYBA e caem nas superfícies de sempre no resto.
+   campo (.tyba-aurora) → janela (.tyba-window) → seção (.tyba-section:
+   barra, lateral, Inbox) → peça (.tyba-piece: terminal, composer, busca).
+   Flutuante (padrão): a janela solta do campo, 14px em volta e raio 14.
+   Encostado (`data-window="docked"` no root): colada nas bordas, sem raio. */
+.tyba-window {
+  position: relative;
+  isolation: isolate;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 14px;
+  padding: 8px;
+  min-height: 0;
+  flex: 1;
+  border-radius: 14px;
+  background: var(--tyba-glass-window);
+  box-shadow: var(--tyba-lens), var(--tyba-lens-shadow);
+}
+.tyba-window::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  backdrop-filter: blur(30px) saturate(150%);
+  -webkit-backdrop-filter: blur(30px) saturate(150%);
+}
+[data-window='docked'] .tyba-window {
+  margin: 0;
+  border-radius: 0;
+}
+.tyba-section {
+  border-radius: 10px;
+  background: var(--tyba-glass-section);
+  box-shadow: var(--tyba-lens);
+  backdrop-filter: blur(12px) saturate(140%);
+  -webkit-backdrop-filter: blur(12px) saturate(140%);
+}
+.tyba-bar {
+  backdrop-filter: blur(16px) saturate(140%);
+  -webkit-backdrop-filter: blur(16px) saturate(140%);
+}
+.tyba-piece {
+  border-radius: 10px;
+  background: var(--tyba-glass-piece);
+  box-shadow: var(--tyba-lens), var(--tyba-piece-shadow);
+  backdrop-filter: blur(12px) saturate(140%);
+  -webkit-backdrop-filter: blur(12px) saturate(140%);
+}
+/* Grupo de botões (ícones do painel, trilho): seção com fio claro por dentro;
+   o aceso é a pastilha quase opaca. */
+.tyba-segment {
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 8px;
+  background: var(--tyba-glass-section);
+  box-shadow: inset 0 0 0 1px var(--tyba-glass-rim);
+}
+.tyba-pill-on {
+  background: var(--tyba-glass-active);
+  box-shadow: var(--tyba-pill-on);
+}
+/* `html` e não `:root`: o bloco `:root` é um só (themeFrame.test). */
+html {
+  --tyba-piece-shadow: 0 0 transparent;
+  --tyba-glass-rim: var(--tyba-border);
+  --tyba-pill-on: var(--tyba-edge);
+}
+[data-theme='light']:not([data-imported]) {
+  --tyba-glass-rim: rgba(255, 255, 255, 0.6);
+  --tyba-pill-on: inset 0 1px 0 rgba(255, 255, 255, 0.95), 0 1px 2px rgba(20, 20, 58, 0.04), 0 8px 24px -12px rgba(20, 20, 58, 0.14);
+}
+/* No claro a sans do quadro no cromo; o mono segue em tudo que é de máquina. */
+[data-theme='light']:not([data-imported]) {
+  --tyba-piece-shadow: 0 1px 2px rgba(20, 20, 58, 0.04), 0 8px 24px -12px rgba(20, 20, 58, 0.14);
+  --tyba-font-ui: 'Inter', ui-sans-serif, system-ui, -apple-system, sans-serif;
+}
 [data-theme='light']:not([data-imported]) .tyba-aurora {
   background: var(--tyba-field);
-}
-[data-theme='light']:not([data-imported]) .tyba-glass {
-  background: var(--tyba-glass-section);
-  backdrop-filter: blur(var(--tyba-glass-blur)) saturate(140%);
-  -webkit-backdrop-filter: blur(var(--tyba-glass-blur)) saturate(140%);
 }

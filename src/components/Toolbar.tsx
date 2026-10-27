@@ -265,7 +265,7 @@ export function Toolbar({
   }
 
   return (
-    <div className="tyba-lift-t flex h-[26px] min-w-0 shrink-0 items-center justify-between gap-4 px-3.5 text-[11px] text-tyba-text-faint">
+    <div className="flex h-[26px] min-w-0 shrink-0 items-center justify-between gap-4 px-3.5 text-[11px] text-tyba-text-faint">
       <div className="flex min-w-0 items-center gap-4 overflow-hidden">
         {showRichInput && (
           <button

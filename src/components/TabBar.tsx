@@ -69,14 +69,6 @@ function containerSession(tab: Tab, sessions: Map<SessionId, Session>): Session 
   return null;
 }
 
-/** Aba de container (logs ou shell): ícone e filete em azul docker. */
-function isContainerTab(tab: Tab, sessions: Map<SessionId, Session>): boolean {
-  return (
-    parseContentView(tab.view)?.kind === "container-logs" ||
-    containerSession(tab, sessions) !== null
-  );
-}
-
 // Só os glifos que os mockups mostram: selo de linguagem no editor, docker
 // azul no container, git no diff/histórico e o glifo do agente. Terminal e as
 // demais abas são só texto (mockup Proposta) — `null` aqui.
@@ -221,9 +213,10 @@ export function TabBar({
   }, [activeTab, tabs.length]);
 
   return (
-    // Sem fundo: a faixa é transparente e a aurora do canvas passa por ela
-    // (mockup Proposta/PropostaClaro). Só a aba ativa pinta, com `sunken`.
-    <div className="tyba-divide-b relative">
+    // Trilho de vidro (quadro PropostaClaro): as abas são pastilhas numa seção,
+    // a ativa quase opaca. Fica acima da peça do terminal, com o respiro da
+    // janela entre os dois.
+    <div className="relative mb-2 flex min-w-0">
       <div
         ref={faixaRef}
         onScroll={aoRolar}
@@ -232,7 +225,7 @@ export function TabBar({
           if (passo === 0 || !faixaRef.current) return;
           faixaRef.current.scrollLeft += passo;
         }}
-        className={`tyba-sem-barra flex h-[34px] items-stretch gap-px overflow-x-auto pr-1 ${
+        className={`tyba-segment tyba-sem-barra flex h-[34px] min-w-0 items-stretch overflow-x-auto ${
           borda.antes ? "tyba-fade-x--ini" : ""
         } ${borda.depois ? "tyba-fade-x--fim" : ""}`}
       >
@@ -254,39 +247,12 @@ export function TabBar({
               const cwd = tabCwd(tab, cwds);
               return cwd ? `${compactPath(cwd)} · ${combo}` : combo;
             })()}
-            className={`group relative flex max-w-44 min-w-24 shrink-0 items-center gap-1.5 px-3.5 text-[13px] transition-colors ${
+            className={`group relative flex max-w-44 min-w-24 shrink-0 items-center gap-1.5 rounded-[6px] px-3 text-[13px] font-medium transition-colors ${
               isActive
-                // `sunken`, a cor do CONTEÚDO, e não `bg`. Com `bg` havia três
-                // superfícies empilhadas — a faixa em `surface`, a aba em `bg`,
-                // o painel em `sunken` — e a aba ficava boiando numa cor que
-                // não era de ninguém. No `tyba-dark` isso não aparecia porque
-                // `bg` e `sunken` distam 5/255.
-                // E é o que faz a aba ABRIR na linha: como ela ocupa a altura
-                // toda da faixa (`items-stretch`), o fundo dela cobre a divisa
-                // `inset` do container justamente sob a aba ativa. A linha
-                // deixa de passar por baixo dela.
-                ? "bg-tyba-sunken text-tyba-text"
+                ? "tyba-pill-on text-tyba-text"
                 : "text-tyba-text-faint hover:bg-tyba-text/[.03] hover:text-tyba-text-muted"
             }`}
           >
-            {isActive &&
-              (isContainerTab(tab, byId) ? (
-                // Aba de container: o filete é azul docker — "isto roda lá".
-                <span
-                  aria-hidden
-                  className="absolute inset-x-0 top-0 h-[2px] rounded-[2px] bg-tyba-blue"
-                />
-              ) : (
-                // A linha viva estática: "esta é a selecionada". A mesma do
-                // painel ativo, para os dois lerem como uma coisa só.
-                // O filamento cheio, de ponta a ponta da aba (mockup): o
-                // `flow-line` some nas pontas e é o fio de quem executa.
-                <span
-                  aria-hidden
-                  className="absolute inset-x-0 top-0 h-[2px]"
-                  style={{ background: "var(--tyba-filament)" }}
-                />
-              ))}
             {icon ? (
               <span
                 className={`relative shrink-0 ${
@@ -316,7 +282,7 @@ export function TabBar({
             {attention && (
               <span className="sr-only">{t(attention.labelKey)}</span>
             )}
-            <span className="min-w-0 flex-1 truncate text-left font-mono text-[13px]">
+            <span className="min-w-0 flex-1 truncate text-left text-[13px]">
               {tabLabel(tab, byId, cwds)}
             </span>
             {isEditorDirty(tab.view) && (
@@ -345,7 +311,7 @@ export function TabBar({
         onClick={onNew}
         aria-label={t("newTab")}
         
-        className="flex w-8 shrink-0 items-center justify-center rounded-[4px] text-tyba-text-faint transition-colors hover:bg-tyba-text/[.03] hover:text-tyba-text"
+        className="flex w-8 shrink-0 items-center justify-center rounded-[6px] text-tyba-text-faint transition-colors hover:bg-tyba-text/[.03] hover:text-tyba-text"
       >
         <Plus size={13} weight="bold" />
       </button>
