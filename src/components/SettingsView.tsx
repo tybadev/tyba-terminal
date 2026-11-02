@@ -273,7 +273,7 @@ function SettingsRail({
             collapsed ? "w-9 justify-center" : "px-2.5"
           } ${
             active
-              ? "bg-tyba-green/[.12] text-tyba-green"
+              ? "tyba-pill-on text-tyba-green"
               : "text-tyba-text-muted hover:bg-tyba-text/[.04] hover:text-tyba-text"
           }`}
         >
@@ -297,7 +297,7 @@ function SettingsRail({
   return (
     <nav
       aria-label={t("settings")}
-      className={`flex shrink-0 flex-col gap-0.5 border-l border-tyba-border bg-tyba-raised px-2 pt-3 pb-2.5 ${
+      className={`flex shrink-0 flex-col gap-0.5 border-l border-[var(--tyba-line)] bg-tyba-raised px-2 pt-3 pb-2.5 ${
         collapsed ? "w-[52px] items-center" : "w-[188px]"
       }`}
     >
@@ -982,7 +982,7 @@ export function SettingsView({
   return (
     <div className="flex min-h-0 flex-1">
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="flex h-[46px] shrink-0 items-center gap-3 border-b border-tyba-border bg-tyba-raised px-[18px] text-[12px]">
+        <header className="flex h-[46px] shrink-0 items-center gap-3 border-b border-[var(--tyba-line)] bg-tyba-raised px-[18px] text-[12px]">
           <span className="shrink-0 text-tyba-green">{current.icon}</span>
           <span className="text-[14px] font-medium text-tyba-text">{t("settings")}</span>
           <span className="min-w-0 flex-1 truncate text-tyba-text-faint">
@@ -1013,7 +1013,7 @@ export function SettingsView({
         </header>
         <div
           ref={contentRef}
-          className="tyba-settings min-h-0 flex-1 overflow-y-auto bg-tyba-sunken px-8 pt-4 pb-8"
+          className="tyba-settings min-h-0 flex-1 overflow-y-auto px-8 pt-4 pb-8"
         >
         {query.trim() && (
           <section className="mx-auto w-full max-w-[860px]">
@@ -1385,7 +1385,7 @@ export function SettingsView({
         </>)}
         </div>
         {configPath && (
-          <footer className="flex h-[26px] shrink-0 items-center gap-2.5 border-t border-tyba-border bg-tyba-raised px-[18px] text-[11px] text-tyba-text-faint">
+          <footer className="flex h-[26px] shrink-0 items-center gap-2.5 border-t border-[var(--tyba-line)] bg-tyba-raised px-[18px] text-[11px] text-tyba-text-faint">
             <FileText size={12} className="shrink-0" />
             <span className="truncate">
               {t("settingsFileIn")}{" "}

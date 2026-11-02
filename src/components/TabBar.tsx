@@ -1,6 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { GitPullRequest, Plus, X } from "@phosphor-icons/react";
+import { CaretDown, GitPullRequest, Plus, X } from "@phosphor-icons/react";
+
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuTrigger,
+} from "./ui/dropdown-menu";
 
 import { AgentIcon } from "./icons/AgentIcon";
 import { DockerIcon } from "./icons/DockerIcon";
@@ -19,6 +27,7 @@ import {
   type TabId,
 } from "../lib/ipc";
 import { tabAttention } from "../lib/sessionStatus";
+import { splitTabs } from "../lib/tabOverflow";
 import {
   baseName,
   containerName,
@@ -212,11 +221,15 @@ export function TabBar({
     el.scrollTo({ left: destino, behavior: "smooth" });
   }, [activeTab, tabs.length]);
 
+  const { shown, hidden } = splitTabs(tabs, (tab) => tab.id === activeTab);
+  const attentionOf = (tab: Tab) =>
+    tab.root ? tabAttention(leafSessions(tab.root).map((sid) => byId.get(sid))) : null;
+  const hiddenAttention = hidden.some((tab) => attentionOf(tab));
+
   return (
-    // Trilho de vidro (quadro PropostaClaro): as abas são pastilhas numa seção,
-    // a ativa quase opaca. Fica acima da peça do terminal, com o respiro da
-    // janela entre os dois.
-    <div className="relative mb-2 flex min-w-0">
+    // Opção G: as abas moram na migalha da barra, num degrau de tinta; a
+    // ativa é a placa. Passou de 6, o resto vai para a lista do `+N`.
+    <div className="relative flex min-w-0">
       <div
         ref={faixaRef}
         onScroll={aoRolar}
@@ -225,17 +238,16 @@ export function TabBar({
           if (passo === 0 || !faixaRef.current) return;
           faixaRef.current.scrollLeft += passo;
         }}
-        className={`tyba-segment tyba-sem-barra flex h-[34px] min-w-0 items-stretch overflow-x-auto ${
+        className={`tyba-segment tyba-sem-barra flex h-7 min-w-0 items-stretch overflow-x-auto ${
           borda.antes ? "tyba-fade-x--ini" : ""
         } ${borda.depois ? "tyba-fade-x--fim" : ""}`}
       >
-      {tabs.map((tab, i) => {
+      {shown.map((tab) => {
+        const i = tabs.indexOf(tab);
         const isActive = tab.id === activeTab;
         // Selo de "parou por sua causa" — decidido em `tabAttention` (testado);
         // aqui só se pinta, no mesmo desenho do ponto da barra lateral.
-        const attention = tab.root
-          ? tabAttention(leafSessions(tab.root).map((sid) => byId.get(sid)))
-          : null;
+        const attention = attentionOf(tab);
         const icon = tabIcon(tab, byId);
         return (
           <button
@@ -247,10 +259,10 @@ export function TabBar({
               const cwd = tabCwd(tab, cwds);
               return cwd ? `${compactPath(cwd)} · ${combo}` : combo;
             })()}
-            className={`group relative flex max-w-44 min-w-24 shrink-0 items-center gap-1.5 rounded-[6px] px-3 text-[13px] font-medium transition-colors ${
+            className={`group relative flex max-w-40 shrink-0 items-center gap-1.5 rounded-[5px] px-2.5 text-[12.5px] font-medium transition-colors ${
               isActive
                 ? "tyba-pill-on text-tyba-text"
-                : "text-tyba-text-faint hover:bg-tyba-text/[.03] hover:text-tyba-text-muted"
+                : "text-tyba-text-muted hover:text-tyba-text"
             }`}
           >
             {icon ? (
@@ -282,7 +294,7 @@ export function TabBar({
             {attention && (
               <span className="sr-only">{t(attention.labelKey)}</span>
             )}
-            <span className="min-w-0 flex-1 truncate text-left text-[13px]">
+            <span className="min-w-0 flex-1 truncate text-left">
               {tabLabel(tab, byId, cwds)}
             </span>
             {isEditorDirty(tab.view) && (
@@ -307,13 +319,56 @@ export function TabBar({
           </button>
         );
       })}
+      {hidden.length > 0 && (
+        <DropdownMenu>
+          <DropdownMenuTrigger
+            aria-label={t("moreTabs", { count: hidden.length })}
+            className="flex shrink-0 items-center gap-1.5 rounded-[5px] bg-tyba-text/[.07] px-2.5 text-[12.5px] font-medium text-tyba-text"
+          >
+            {hiddenAttention && (
+              <span aria-hidden className="size-1.5 rounded-full bg-tyba-amber" />
+            )}
+            +{hidden.length}
+            <CaretDown size={10} weight="bold" />
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="w-64">
+            <DropdownMenuLabel className="text-[11px] tracking-[0.08em] text-tyba-text-faint">
+              {t("moreTabs", { count: hidden.length })}
+            </DropdownMenuLabel>
+            {hidden.map((tab) => {
+              const attention = attentionOf(tab);
+              const cwd = tabCwd(tab, cwds);
+              return (
+                <DropdownMenuItem
+                  key={tab.id}
+                  onSelect={() => onActivate(tab.id)}
+                  className="gap-2.5 text-[13px]"
+                >
+                  <span
+                    aria-hidden
+                    className={`size-1.5 shrink-0 rounded-full ${
+                      attention ? attention.dotClass : "bg-tyba-text-faint"
+                    }`}
+                  />
+                  {attention && <span className="sr-only">{t(attention.labelKey)}</span>}
+                  <span className="min-w-0 flex-1 truncate">{tabLabel(tab, byId, cwds)}</span>
+                  {cwd && (
+                    <span className="max-w-24 truncate text-[11px] text-tyba-text-faint">
+                      {compactPath(cwd)}
+                    </span>
+                  )}
+                </DropdownMenuItem>
+              );
+            })}
+          </DropdownMenuContent>
+        </DropdownMenu>
+      )}
       <button
         onClick={onNew}
         aria-label={t("newTab")}
-        
-        className="flex w-8 shrink-0 items-center justify-center rounded-[6px] text-tyba-text-faint transition-colors hover:bg-tyba-text/[.03] hover:text-tyba-text"
+        className="flex w-7 shrink-0 items-center justify-center rounded-[5px] text-tyba-text-faint transition-colors hover:text-tyba-text"
       >
-        <Plus size={13} weight="bold" />
+        <Plus size={12} weight="bold" />
       </button>
       </div>
       {/* Fora da faixa que rola: dentro dele o filete rolaria junto e a

@@ -173,7 +173,7 @@ export function GitScreen({
       tabIndex={-1}
       aria-label={t("gitScreenTitle")}
       data-exiting={exiting}
-      className="tyba-git-screen absolute inset-0 z-30 flex outline-none flex-row-reverse bg-tyba-bg"
+      className="tyba-git-screen absolute inset-0 z-30 flex outline-none flex-row-reverse bg-tyba-paper-solid"
       onKeyDown={(e) => {
         if (e.key !== "Escape" || e.defaultPrevented) return;
         const target = e.target as HTMLElement;

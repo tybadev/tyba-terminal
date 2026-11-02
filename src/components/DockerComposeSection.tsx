@@ -57,7 +57,7 @@ const UNREACHABLE: Record<Exclude<PathStatus, "ok">, string> = {
 };
 
 const CHIP =
-  "shrink-0 whitespace-nowrap rounded-[5px] border border-tyba-border-strong px-[9px] py-[3px] text-[11px] text-tyba-text-muted hover:text-tyba-text disabled:opacity-40 disabled:hover:text-tyba-text-muted";
+  "shrink-0 whitespace-nowrap rounded-[6px] border border-tyba-border-strong px-[9px] py-[3px] text-[11px] text-tyba-text-muted hover:text-tyba-text disabled:opacity-40 disabled:hover:text-tyba-text-muted";
 
 const GRID = "grid grid-cols-[150px_180px_minmax(0,1fr)_190px_150px_120px] gap-3";
 
@@ -87,7 +87,7 @@ function ComposeOutputPanel({ run }: { run: ComposeRun }) {
       ? { text: t("dockerScreenComposeFailed"), tone: "text-tyba-red" }
       : { text: t("dockerScreenComposeDone"), tone: "text-tyba-green" };
   return (
-    <div className="flex h-[200px] shrink-0 flex-col border-t border-[var(--tyba-border-soft)]">
+    <div className="flex h-[200px] shrink-0 flex-col border-t border-[var(--tyba-line)]">
       <div className="flex shrink-0 items-center gap-2.5 bg-[var(--tyba-panel-bg)] px-[18px] py-1.5 text-[11px] text-tyba-text-faint">
         <span className="text-tyba-text-muted">
           {t("dockerScreenComposeOutput", { op: t(OP_LABEL[run.last_op]) })}
@@ -193,7 +193,7 @@ export function DockerComposeSection({
         title={p.workingDir ?? p.name}
         // Escolhido = fundo elevado com contorno inteiro; nunca barra lateral.
         className={`flex w-full flex-col gap-[5px] rounded-[6px] px-3 py-2.5 text-left text-tyba-text outline-none focus-visible:ring-2 focus-visible:ring-tyba-blue ${
-          on ? "bg-tyba-raised shadow-[var(--tyba-raised-ring)]" : "hover:bg-tyba-text/[.03]"
+          on ? "tyba-pill-on" : "hover:bg-tyba-text/[.03]"
         }`}
       >
         <span className="flex w-full items-center justify-between gap-2">
@@ -250,7 +250,7 @@ export function DockerComposeSection({
     return (
       <div
         key={c.id}
-        className={`${GRID} items-center border-b border-[var(--tyba-border-soft)] px-[18px] py-[9px] text-[12.5px]`}
+        className={`${GRID} items-center border-b border-[var(--tyba-line)] px-[18px] py-[9px] text-[12.5px]`}
       >
         <span className="truncate text-tyba-text">{c.service ?? c.name}</span>
         <span className="truncate text-tyba-text-muted" title={c.name}>
@@ -315,7 +315,7 @@ export function DockerComposeSection({
     );
     return (
       <>
-        <div className="flex shrink-0 items-center gap-2.5 border-b border-[var(--tyba-border-soft)] bg-[var(--tyba-panel-bg)] px-[18px] py-3 text-[12px] text-tyba-text-muted">
+        <div className="flex shrink-0 items-center gap-2.5 border-b border-[var(--tyba-line)] bg-[var(--tyba-panel-bg)] px-[18px] py-3 text-[12px] text-tyba-text-muted">
           <span className="shrink-0 text-[14px] text-tyba-text">{p.name}</span>
           <span className="min-w-0 truncate" title={p.workingDir ?? undefined}>
             {p.workingDir ? compactPath(p.workingDir) : "—"}
@@ -342,23 +342,23 @@ export function DockerComposeSection({
           >
             {t("openProject")}
           </button>
-          <span aria-hidden className="h-[18px] w-px shrink-0 bg-[var(--tyba-border-soft)]" />
+          <span aria-hidden className="h-[18px] w-px shrink-0 bg-[var(--tyba-line)]" />
           {opChip("up", t("composeUp"), "text-tyba-green")}
           {opChip("restart", t("composeRestart"))}
           {opChip("down", t("composeDown"), "text-tyba-red")}
         </div>
         {lastError && (
-          <p className="shrink-0 border-b border-[var(--tyba-border-soft)] px-[18px] py-2 text-[11px] text-tyba-red">
+          <p className="shrink-0 border-b border-[var(--tyba-line)] px-[18px] py-2 text-[11px] text-tyba-red">
             {lastError}
           </p>
         )}
         {unreachable && (
-          <p className="shrink-0 border-b border-[var(--tyba-border-soft)] px-[18px] py-2 text-[11px] text-tyba-text-faint">
+          <p className="shrink-0 border-b border-[var(--tyba-line)] px-[18px] py-2 text-[11px] text-tyba-text-faint">
             {t(UNREACHABLE[unreachable])}
           </p>
         )}
         <div
-          className={`${GRID} shrink-0 border-b border-[var(--tyba-border-soft)] px-[18px] py-2 text-[11px] text-tyba-text-faint`}
+          className={`${GRID} shrink-0 border-b border-[var(--tyba-line)] px-[18px] py-2 text-[11px] text-tyba-text-faint`}
         >
           <span>{t("dockerScreenColService")}</span>
           <span>{t("dockerScreenColContainer")}</span>
@@ -373,7 +373,7 @@ export function DockerComposeSection({
           <span className="text-tyba-text">{t("dockerScreenComposeDownCardTitle")}</span>
           <span>{t("dockerScreenComposeDownCardBody")}</span>
         </div>
-        <div className="flex h-[26px] shrink-0 items-center gap-4 border-t border-[var(--tyba-border-soft)] bg-[var(--tyba-panel-bg)] px-[18px] text-[11px] text-tyba-text-faint">
+        <div className="flex h-[26px] shrink-0 items-center gap-4 border-t border-[var(--tyba-line)] bg-[var(--tyba-panel-bg)] px-[18px] text-[11px] text-tyba-text-faint">
           <span>{t("dockerScreenComposeFooter", { file, count: p.services.length })}</span>
           <span className="flex-1" />
           <span>{t("dockerScreenComposeFooterHint")}</span>
@@ -384,7 +384,7 @@ export function DockerComposeSection({
 
   return (
     <div className="flex min-h-0 flex-1 flex-row-reverse">
-      <div className="flex w-[300px] shrink-0 flex-col border-l border-[var(--tyba-border-soft)] bg-[var(--tyba-panel-bg)]">
+      <div className="flex w-[300px] shrink-0 flex-col border-l border-[var(--tyba-line)] bg-[var(--tyba-panel-bg)]">
         <div className="shrink-0 px-3.5 pb-1.5 pt-3 text-[11px] text-tyba-text-faint">
           {t("dockerScreenProjectsCount", { count: visible.length })}
         </div>
@@ -399,11 +399,11 @@ export function DockerComposeSection({
             visible.map(card)
           )}
         </div>
-        <p className="shrink-0 border-t border-[var(--tyba-border-soft)] px-3.5 py-2.5 text-[11px] leading-4 text-tyba-text-faint">
+        <p className="shrink-0 border-t border-[var(--tyba-line)] px-3.5 py-2.5 text-[11px] leading-4 text-tyba-text-faint">
           {t("dockerScreenComposeNote")}
         </p>
       </div>
-      <div className="flex min-w-0 flex-1 flex-col bg-tyba-sunken">
+      <div className="flex min-w-0 flex-1 flex-col">
         {current ? (
           content(current)
         ) : loaded ? (

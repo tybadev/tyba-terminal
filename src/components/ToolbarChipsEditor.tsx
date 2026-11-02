@@ -93,7 +93,7 @@ function ToolbarPreview({ pref }: { pref: ToolbarPref }) {
           <span key={id}>{sample(id)}</span>
         ))}
       </div>
-      <div className="h-9 bg-tyba-sunken px-3 pt-2 font-mono text-[12px] text-tyba-text-ghost">❯ _</div>
+      <div className="h-9 px-3 pt-2 font-mono text-[12px] text-tyba-text-ghost">❯ _</div>
     </div>
   );
 }

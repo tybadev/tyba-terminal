@@ -53,6 +53,12 @@ interface Props {
   suggestPlugin: boolean;
   /** O pane do chip: o core instala no config do Claude daquele claude. */
   sessionId: string | null;
+  /**
+   * Dicas de acesso no canto esquerdo (como as do Warp): tecla + o que faz.
+   * Clicáveis — a mesma ação do atalho. `combo` vem dos bindings do usuário,
+   * nunca fixo, para a dica não ensinar uma tecla que ele trocou.
+   */
+  hints?: { key: string; label: string; combo?: string; onClick: () => void }[];
 }
 
 /** O chip de instalar o plugin: só emite a intenção. Quem decide se ainda
@@ -111,6 +117,7 @@ export function Toolbar({
   richInputCombo,
   onOpenRichInput,
   suggestPlugin,
+  hints = [],
   sessionId,
 }: Props) {
   const { t } = useTranslation();
@@ -265,7 +272,9 @@ export function Toolbar({
   }
 
   return (
-    <div className="flex h-[26px] min-w-0 shrink-0 items-center justify-between gap-4 px-3.5 text-[11px] text-tyba-text-faint">
+    // Opção G: o rodapé é cromo — o mesmo acrílico da barra e da lateral, com
+    // o fio em cima. Transparente, ele mostrava a aurora crua por trás.
+    <div className="tyba-section flex h-[26px] min-w-0 shrink-0 items-center justify-between gap-4 px-3.5 text-[11px] text-tyba-text-faint shadow-[inset_0_1px_0_var(--tyba-line)]">
       <div className="flex min-w-0 items-center gap-4 overflow-hidden">
         {showRichInput && (
           <button
@@ -279,6 +288,16 @@ export function Toolbar({
           </button>
         )}
         {suggestPlugin && <PluginChip sessionId={sessionId} />}
+        {hints.map((hint) => (
+          <button
+            key={hint.key}
+            onClick={hint.onClick}
+            className="flex shrink-0 items-center gap-1.5 rounded-[4px] px-1 py-0.5 text-tyba-text-faint transition-colors hover:bg-tyba-text/[.06] hover:text-tyba-text"
+          >
+            {hint.combo && <Shortcut combo={hint.combo} />}
+            <span>{hint.label}</span>
+          </button>
+        ))}
         {left}
       </div>
       <div className="flex shrink-0 items-center gap-4">{right}</div>

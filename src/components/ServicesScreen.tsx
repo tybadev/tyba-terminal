@@ -65,7 +65,7 @@ const SLOW_REMOTE_MS = 10000;
 const GRID = "grid grid-cols-[90px_170px_minmax(0,1fr)_150px_90px_120px_250px] items-center gap-3";
 
 const CHIP =
-  "shrink-0 whitespace-nowrap rounded-[5px] border border-tyba-border-strong px-[9px] py-[3px] text-[11px] text-tyba-text-muted hover:text-tyba-text disabled:opacity-50";
+  "shrink-0 whitespace-nowrap rounded-[6px] border border-tyba-border-strong px-[9px] py-[3px] text-[11px] text-tyba-text-muted hover:text-tyba-text disabled:opacity-50";
 const CHIP_DANGER = `${CHIP} text-tyba-red hover:text-tyba-red`;
 
 const DOT: Record<ReturnType<typeof portTone>, string> = {
@@ -407,9 +407,9 @@ export function ServicesScreen({
           }
         }}
         title={p.addresses.join(", ")}
-        // Escolhida = fundo elevado com contorno inteiro; nunca barra lateral.
+        // Escolhida = a placa (contorno inteiro); nunca barra lateral.
         className={`${GRID} cursor-default rounded-[6px] px-[18px] py-2.5 text-[12.5px] outline-none focus-visible:ring-2 focus-visible:ring-tyba-blue ${
-          on ? "bg-tyba-raised shadow-[var(--tyba-raised-ring)]" : "hover:bg-tyba-text/[.03]"
+          on ? "tyba-pill-on" : "hover:bg-tyba-text/[.03]"
         }`}
       >
         <span className="text-[14px] text-tyba-text">
@@ -670,7 +670,7 @@ export function ServicesScreen({
           <span>{t("servicesColUsage")}</span>
           <span />
         </div>
-        <div role="grid" aria-label={t("servicesPorts")} className="flex flex-col bg-tyba-sunken py-1">
+        <div role="grid" aria-label={t("servicesPorts")} className="flex flex-col py-1">
           {visible.length === 0 ? (
             <p className="px-[18px] py-3 text-[12px] text-tyba-text-faint">
               {state.only_mine && (localPorts?.length ?? 0) > 0
@@ -697,7 +697,7 @@ export function ServicesScreen({
       return <p className="px-[18px] py-3 text-[12px] text-tyba-text-faint">{t("servicesNoSessions")}</p>;
     }
     return (
-      <div className="min-h-0 flex-1 overflow-y-auto bg-tyba-sunken py-1">
+      <div className="min-h-0 flex-1 overflow-y-auto py-1">
         {procs.map((group) => (
           <div key={group.session_id} className="flex flex-col py-1.5">
             <div className="flex items-center gap-2 px-[18px] py-1.5 text-[11px] text-tyba-text-faint">
@@ -723,7 +723,8 @@ export function ServicesScreen({
       tabIndex={-1}
       aria-label={t("servicesTitle")}
       data-exiting={exiting}
-      className="tyba-git-screen absolute inset-0 z-30 flex flex-row-reverse bg-tyba-bg outline-none"
+      // Cobre a folha do terminal: papel opaco, senão o shell vaza por baixo.
+      className="tyba-git-screen absolute inset-0 z-30 flex flex-row-reverse bg-tyba-paper-solid outline-none"
       onKeyDown={(e) => {
         if (
           escClosesScreen({
@@ -753,7 +754,7 @@ export function ServicesScreen({
               title={t(label)}
               onClick={() => go(key)}
               className={`relative flex size-9 items-center justify-center rounded-[8px] transition-colors ${
-                on ? "bg-tyba-blue/[.12] text-tyba-blue" : "text-tyba-text-faint hover:text-tyba-text"
+                on ? "tyba-pill-on text-tyba-blue" : "text-tyba-text-faint hover:text-tyba-text"
               }`}
             >
               <SectionIcon size={17} />

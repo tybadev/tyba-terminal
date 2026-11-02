@@ -103,7 +103,7 @@ function FilesFooter({
   }, [refresh]);
   if (!stat || stat.state === "unsupported") return null;
   return (
-    <div className="flex shrink-0 items-center gap-1.5 border-t border-[var(--tyba-border-soft)] px-3.5 py-2 text-[11px] text-tyba-text-faint">
+    <div className="flex shrink-0 items-center gap-1.5 border-t border-[var(--tyba-line)] px-3.5 py-2 text-[11px] text-tyba-text-faint">
       <LspStatusChip stat={stat} truncated={false} onRetry={retry} />
     </div>
   );
@@ -523,7 +523,7 @@ export function FilesTree({
       )}
 
       {/* Mockup ArquivosTela: filtro com o atalho do buscador à direita. */}
-      <div className="flex shrink-0 items-center gap-1.5 border-b border-[var(--tyba-border-soft)] px-3 py-2.5">
+      <div className="flex shrink-0 items-center gap-1.5 border-b border-[var(--tyba-line)] px-3 py-2.5">
         <label className="flex min-w-0 flex-1 items-center gap-2 rounded-[6px] border border-tyba-border-field bg-tyba-sunken px-2.5 py-[5px] text-[12px] text-tyba-text-faint">
           <MagnifyingGlass size={13} className="shrink-0" />
           <input
@@ -579,7 +579,7 @@ export function FilesTree({
         )}
       </div>
       {remote && info?.host && (
-        <div className="flex shrink-0 items-center gap-1.5 border-b border-[var(--tyba-border-soft)] px-3.5 py-1.5 text-[11px] text-tyba-text-muted">
+        <div className="flex shrink-0 items-center gap-1.5 border-b border-[var(--tyba-line)] px-3.5 py-1.5 text-[11px] text-tyba-text-muted">
           <HardDrives size={12} className="text-tyba-green" />
           <span className="min-w-0 truncate font-mono" title={t("filesRemoteHost", { host: info.host })}>
             {info.host}
@@ -734,11 +734,11 @@ export function FilesTree({
                     if (!entry.is_dir) openFile(entry.rel_path, false);
                   }}
                   aria-selected={isSelected}
-                  // Seleção = fundo elevado com contorno inteiro, nunca barra
-                  // de um lado só.
+                  // Seleção = a placa (`.tyba-pill-on`, opção G), contorno
+                  // inteiro, nunca barra de um lado só.
                   className={`group flex h-[26px] cursor-pointer items-center gap-[7px] rounded-[5px] pr-2.5 text-[12.5px] ${
                     isSelected
-                      ? "bg-tyba-raised text-tyba-text shadow-[var(--tyba-raised-ring)]"
+                      ? "tyba-pill-on text-tyba-text"
                       : deco === "deleted"
                         ? "text-tyba-red hover:bg-tyba-text/[.04]"
                         : isOpenDir || (deco && deco !== "untracked")

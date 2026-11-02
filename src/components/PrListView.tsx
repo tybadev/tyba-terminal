@@ -210,7 +210,7 @@ export function PrListView({
         onKeyDown={(e) => {
           if (e.key === "Enter") onOpenPr(item.number);
         }}
-        className={`${GRID} group/pr cursor-pointer tyba-divide-b py-3 text-[13px] outline-none hover:bg-tyba-raised hover:shadow-[var(--tyba-row-raised)] focus-visible:bg-tyba-raised ${
+        className={`${GRID} group/pr cursor-pointer shadow-[inset_0_-1px_0_var(--tyba-line)] py-3 text-[13px] outline-none hover:bg-tyba-raised focus-visible:bg-tyba-raised ${
           dim ? "opacity-75" : ""
         }`}
       >
@@ -287,9 +287,9 @@ export function PrListView({
   };
 
   return (
-    <div className="absolute inset-0 flex min-w-0 flex-col bg-tyba-sunken">
-      <header className="flex h-12 shrink-0 items-center gap-2.5 tyba-divide-b bg-[var(--tyba-panel-bg)] px-4 text-[12px] text-tyba-text-muted">
-        <div role="tablist" className="flex gap-0.5 rounded-[7px] bg-tyba-sunken p-0.5 shadow-[inset_0_0_0_1px_var(--tyba-border)]">
+    <div className="absolute inset-0 flex min-w-0 flex-col">
+      <header className="flex h-12 shrink-0 items-center gap-2.5 shadow-[inset_0_-1px_0_var(--tyba-line)] px-4 text-[12px] text-tyba-text-muted">
+        <div role="tablist" className="tyba-segment">
           {FILTERS.map((f) => {
             const on = filter === f.key;
             const count = f.count && page ? page.counts[f.count] : null;
@@ -303,7 +303,7 @@ export function PrListView({
                   setLimit(PR_PAGE_LIMIT);
                 }}
                 className={`flex items-center gap-1.5 rounded-[5px] px-2.5 py-1 ${
-                  on ? "bg-tyba-raised text-tyba-text shadow-[var(--tyba-raised-ring)]" : "hover:text-tyba-text"
+                  on ? "tyba-pill-on text-tyba-text" : "hover:text-tyba-text"
                 }`}
               >
                 {t(f.label)}
@@ -360,7 +360,7 @@ export function PrListView({
       </header>
 
       {rateNotice && (
-        <p role="status" className="shrink-0 tyba-divide-b px-4 py-1.5 text-[11px] text-tyba-amber">
+        <p role="status" className="shrink-0 shadow-[inset_0_-1px_0_var(--tyba-line)] px-4 py-1.5 text-[11px] text-tyba-amber">
           {t(rateNotice.key, rateNotice.params)}
         </p>
       )}
@@ -393,7 +393,7 @@ export function PrListView({
         {page && filter === "ci" && <CiTab sessionId={session.id} wide />}
         {page && filter !== "ci" && (
           <>
-            <div className={`${GRID} tyba-divide-b py-2 text-[11px] text-tyba-text-faint`}>
+            <div className={`${GRID} shadow-[inset_0_-1px_0_var(--tyba-line)] py-2 text-[11px] text-tyba-text-faint`}>
               <span />
               <span>
                 {filter === "open"
@@ -436,7 +436,7 @@ export function PrListView({
         )}
       </div>
 
-      <footer className="flex shrink-0 justify-between gap-4 tyba-divide-t bg-[var(--tyba-panel-bg)] px-4 py-2.5 text-[11px] text-tyba-text-faint">
+      <footer className="flex shrink-0 justify-between gap-4 shadow-[inset_0_1px_0_var(--tyba-line)] px-4 py-2.5 text-[11px] text-tyba-text-faint">
         <span>{t("prListNote")}</span>
         <span>{t("prListNotePush")}</span>
       </footer>

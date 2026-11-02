@@ -58,7 +58,11 @@ const LINE: Record<string, string> = {
 };
 
 const SMALL_BTN =
-  "shrink-0 whitespace-nowrap rounded-[5px] border border-tyba-border-strong px-2 py-0.5 text-[11px] text-tyba-text-muted hover:text-tyba-text disabled:opacity-50";
+  "shrink-0 whitespace-nowrap rounded-[6px] border border-tyba-border-strong px-2 py-0.5 text-[11px] text-tyba-text-muted hover:text-tyba-text disabled:opacity-50";
+
+// Descartar perde trabalho: âmbar com contorno, como as ações destrutivas da main.
+const DANGER_BTN =
+  "shrink-0 whitespace-nowrap rounded-[6px] border border-tyba-amber/45 px-2 py-0.5 text-[11px] text-tyba-amber hover:bg-tyba-amber/[.08] disabled:opacity-50";
 
 type Pick = { path: string; scope: DiffScope; oldPath: string | null; untracked: boolean };
 
@@ -243,7 +247,7 @@ export function GitChangesView({
         }}
         className={`group/row flex cursor-pointer items-center gap-2 rounded-[6px] px-2 py-[5px] text-[12.5px] outline-none ${
           on
-            ? "bg-tyba-raised shadow-[var(--tyba-raised-ring)]"
+            ? "tyba-pill-on"
             : "hover:bg-tyba-raised/60 focus-visible:bg-tyba-raised/60"
         }`}
       >
@@ -315,7 +319,7 @@ export function GitChangesView({
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1">
-      <div className="flex w-[360px] shrink-0 flex-col tyba-divide-r">
+      <div className="flex w-[360px] shrink-0 flex-col shadow-[inset_-1px_0_0_var(--tyba-line)]">
         <div className="min-h-0 flex-1 overflow-y-auto p-2">
           {loadError && !diff && <p className="p-3 text-[12px] text-tyba-text-faint">{t("gitPanelNoRepo")}</p>}
           {!loadError && !diff && (
@@ -364,7 +368,7 @@ export function GitChangesView({
 
         <form
           aria-label={t("gitPanelCommitMessage")}
-          className="flex shrink-0 flex-col gap-2 tyba-divide-t bg-tyba-raised px-3.5 py-3"
+          className="flex shrink-0 flex-col gap-2 shadow-[inset_0_1px_0_var(--tyba-line)] px-3.5 py-3"
           onSubmit={(e) => {
             e.preventDefault();
             void commit();
@@ -436,7 +440,7 @@ export function GitChangesView({
       <div className="flex min-w-0 flex-1 flex-col">
         {pick ? (
           <>
-            <div className="flex shrink-0 items-center gap-2 tyba-divide-b px-[18px] py-2 text-[12px]">
+            <div className="flex shrink-0 items-center gap-2 shadow-[inset_0_-1px_0_var(--tyba-line)] px-[18px] py-2 text-[12px]">
               <span className="min-w-0 flex-1 truncate" title={pick.path}>
                 <span className="text-tyba-text">{split(pick.path).name}</span>
                 <span className="pl-1.5 text-[11px] text-tyba-text-faint">{split(pick.path).dir}</span>
@@ -453,7 +457,7 @@ export function GitChangesView({
                 {t("gitChangesEditor")}
               </button>
               {pick.scope === "unstaged" && !pick.untracked && (
-                <button type="button" className={SMALL_BTN} onClick={() => void discardFile(pick.path)}>
+                <button type="button" className={DANGER_BTN} onClick={() => void discardFile(pick.path)}>
                   {t("gitChangesDiscard")}
                 </button>
               )}
@@ -490,7 +494,7 @@ export function GitChangesView({
                         </button>
                         <button
                           type="button"
-                          className={SMALL_BTN}
+                          className={DANGER_BTN}
                           onClick={() => void hunkAction(index, hunk.header, "discard")}
                         >
                           {t("gitChangesDiscardHunk")}

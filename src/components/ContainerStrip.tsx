@@ -144,7 +144,7 @@ export function ContainerStrip({ containerId, current, host, onRestarted, inScre
       : t("containerState", { state: detail.state });
   const sep = <span className="shrink-0 text-tyba-text-ghost">·</span>;
   const chip =
-    "shrink-0 whitespace-nowrap rounded-[5px] border border-tyba-border-field bg-transparent px-[9px] py-[3px] text-[11px] text-tyba-text-muted hover:bg-tyba-text/[.06] hover:text-tyba-text disabled:opacity-50";
+    "shrink-0 whitespace-nowrap rounded-[6px] border border-tyba-border-field bg-transparent px-[9px] py-[3px] text-[11px] text-tyba-text-muted hover:bg-tyba-text/[.06] hover:text-tyba-text disabled:opacity-50";
 
   const restart = {
     key: "restart",
@@ -257,7 +257,7 @@ export function ContainerStrip({ containerId, current, host, onRestarted, inScre
       )}
       <button
         type="button"
-        className={`${chip} border-tyba-red/35 text-tyba-red hover:bg-tyba-red/10 hover:text-tyba-red`}
+        className={`${chip} border-tyba-amber/35 text-tyba-amber hover:bg-tyba-amber/10 hover:text-tyba-amber`}
         disabled={busy !== null || !running}
         onClick={() => void act("stop")}
       >

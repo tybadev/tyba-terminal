@@ -101,7 +101,8 @@ export function cmEditorTheme(dark: boolean): ReturnType<typeof EditorView.theme
     {
       "&": {
         color: "var(--tyba-text)",
-        backgroundColor: "var(--tyba-sunken)",
+        // Opção G: quem pinta é a folha (ou a tela) em volta.
+        backgroundColor: "transparent",
         height: "100%",
       },
       ".cm-scroller": {
@@ -120,7 +121,8 @@ export function cmEditorTheme(dark: boolean): ReturnType<typeof EditorView.theme
         },
       ".cm-activeLine": { backgroundColor: "color-mix(in srgb, var(--tyba-text) 3%, transparent)" },
       ".cm-gutters": {
-        backgroundColor: "var(--tyba-sunken)",
+        // Opaca: a calha fica sticky quando o código rola na horizontal.
+        backgroundColor: "var(--tyba-paper-solid)",
         color: "var(--tyba-text-ghost)",
         border: "none",
       },

@@ -129,6 +129,12 @@
   --tyba-card-blur: 0px;
   --tyba-lens: var(--tyba-edge);                  /* aresta do que flutua */
   --tyba-lens-shadow: var(--tyba-shadow-md);
+  /* Opção G: o fio que separa as peças coladas, e o papel do terminal —
+     acrílico no TYBA, o sunken de sempre nos temas importados. `paper-solid`
+     é a mesma cor opaca, para faixa fixa por cima de texto que rola. */
+  --tyba-line: var(--tyba-border);
+  --tyba-paper: var(--tyba-sunken);
+  --tyba-paper-solid: var(--tyba-sunken);
   /* Aba acesa (ícone do header, mockup PainelGit): tinta e brilho na cor
      da área — `currentColor`, então quem pinta é a classe de texto da área.
      A luz é estado: só o aceso usa. */
@@ -405,6 +411,12 @@
   --tyba-ghost-mix: 46%;          /* fantasma ≈ #3a3a3f (mockups) */
   --tyba-diff-add-text: #c9ecaa;
   --tyba-diff-del-text: #f3b2a8;
+  /* Opção G no BLACKOUT: o cromo é acrílico encorpado sobre a aurora do
+     escuro, e o terminal é preto translúcido. */
+  --tyba-glass-section: color-mix(in srgb, var(--tyba-surface) 80%, transparent);
+  --tyba-paper: rgba(0, 0, 0, 0.72);
+  --tyba-paper-solid: #030304;
+  --tyba-panel-bg: transparent;
 }
 
 /* Só o claro do TYBA (os outros claros herdam o bloco de cima e têm acentos
@@ -433,25 +445,30 @@
      e a aresta de lente — realce branco em cima e à esquerda, fio escuro
      embaixo e à direita. Mancha pequena com borda atrás do vidro vira
      borrão: o campo é sempre degradê grande e liso. */
+  /* Opção G (quadro "TYBA Vidro Revisão", 2026-11-02): a aurora cobre a
+     tela inteira e forte, porque o acrílico por cima é encorpado (74% no
+     cromo, 80% no terminal) — fraca, ela some e o claro fica cinza. O teal
+     fica embaixo à direita, atrás do terminal, para a lateral sair da mesma
+     cor da barra (o L contínuo). Fios e sombras puxam para o violeta. */
   --tyba-field:
-    radial-gradient(44% 54% at 14% 10%, rgba(122, 43, 240, 0.34), transparent 70%),
-    radial-gradient(38% 48% at 92% 90%, rgba(14, 158, 112, 0.26), transparent 70%),
-    radial-gradient(52% 62% at 78% 22%, rgba(29, 29, 82, 0.20), transparent 70%),
-    #eceef7;
-  --tyba-glass-window: rgba(255, 255, 255, 0.46);
-  --tyba-glass-section: rgba(255, 255, 255, 0.36);
-  --tyba-glass-piece: rgba(255, 255, 255, 0.56);
-  --tyba-glass-float: rgba(255, 255, 255, 0.88);
-  --tyba-glass-active: rgba(255, 255, 255, 0.94);
-  --tyba-card-glass: rgba(255, 255, 255, 0.50);
+    radial-gradient(75% 65% at 90% -8%, rgba(122, 76, 232, 0.55), transparent 64%),
+    radial-gradient(65% 75% at 100% 108%, rgba(15, 157, 140, 0.42), transparent 64%),
+    radial-gradient(55% 50% at 38% -4%, rgba(78, 150, 34, 0.2), transparent 60%),
+    #fafbff;
+  --tyba-glass-window: transparent;
+  --tyba-glass-section: rgba(255, 255, 255, 0.74);
+  --tyba-glass-piece: rgba(255, 255, 255, 0.8);
+  --tyba-glass-float: rgba(255, 255, 255, 0.97);
+  --tyba-glass-active: #ffffff;
+  --tyba-card-glass: rgba(255, 255, 255, 0.8);
   --tyba-card-blur: 24px;
-  --tyba-lens:
-    inset 0 1.5px 0 rgba(255, 255, 255, 0.95),
-    inset 1.5px 0 0 rgba(255, 255, 255, 0.70),
-    inset 0 -1px 0 rgba(20, 20, 58, 0.08),
-    inset -1px 0 0 rgba(20, 20, 58, 0.04),
-    0 0 0 1px rgba(20, 20, 58, 0.07);
-  --tyba-lens-shadow: 0 24px 60px -20px rgba(20, 20, 58, 0.30);
+  --tyba-lens: 0 0 0 1px rgba(60, 40, 120, 0.08);
+  --tyba-lens-shadow: 0 0 transparent;
+  --tyba-line: rgba(60, 40, 120, 0.12);
+  --tyba-paper: rgba(255, 255, 255, 0.8);
+  --tyba-paper-solid: #fdfcff;
+  /* As faixas das telas cheias são a própria folha: separa o fio. */
+  --tyba-panel-bg: transparent;
 }
 
 /* ============================================================
@@ -960,6 +977,7 @@
   --color-tyba-raised: var(--tyba-raised);
   --color-tyba-overlay: var(--tyba-overlay);
   --color-tyba-sunken: var(--tyba-sunken);
+  --color-tyba-paper-solid: var(--tyba-paper-solid);
   --color-tyba-border: var(--tyba-border);
   --color-tyba-border-strong: var(--tyba-border-strong);
   --color-tyba-border-field: var(--tyba-border-field);
@@ -1651,85 +1669,120 @@ samp {
   cursor: pointer !important;
 }
 
-/* ---------- Vidro v2 · janela (quadro PropostaClaro, validado 26/10) ----------
-   Estrutura dos dois temas; o material sai dos tokens --tyba-glass-*, que
-   são vidro só no claro do TYBA e caem nas superfícies de sempre no resto.
+/* ---------- Opção G · janela (quadro "TYBA Vidro Revisão", 2026-11-02) ----------
+   Os componentes e a paleta da main, com o acrílico do muriki-ds no cromo e
+   no terminal, e TUDO COLADO: sem margem, sem vão e sem raio entre as peças —
+   o que separa é fio (`--tyba-line`). A barra e a lateral são o mesmo
+   acrílico (um L contínuo); o terminal é a folha, também acrílica.
+   Cada peça tem o próprio `backdrop-filter` direto sobre o campo: acrílico
+   dentro de acrílico só amostraria a cor do pai.
    campo (.tyba-aurora) → janela (.tyba-window) → seção (.tyba-section:
-   barra, lateral, Inbox) → peça (.tyba-piece: terminal, composer, busca).
-   Flutuante (padrão): a janela solta do campo, 14px em volta e raio 14.
-   Encostado (`data-window="docked"` no root): colada nas bordas, sem raio. */
+   barra, lateral, Inbox) → folha ([data-terminal-piece]) → placa
+   (.tyba-pill-on: o que está aceso). */
 .tyba-window {
   position: relative;
   isolation: isolate;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  margin: 14px;
-  padding: 8px;
+  gap: 0;
+  margin: 0;
+  padding: 0;
   min-height: 0;
   flex: 1;
-  border-radius: 14px;
   background: var(--tyba-glass-window);
-  box-shadow: var(--tyba-lens), var(--tyba-lens-shadow);
-}
-.tyba-window::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  z-index: -1;
-  border-radius: inherit;
-  backdrop-filter: blur(30px) saturate(150%);
-  -webkit-backdrop-filter: blur(30px) saturate(150%);
-}
-[data-window='docked'] .tyba-window {
-  margin: 0;
-  border-radius: 0;
 }
 .tyba-section {
-  border-radius: 10px;
   background: var(--tyba-glass-section);
-  box-shadow: var(--tyba-lens);
-  backdrop-filter: blur(12px) saturate(140%);
-  -webkit-backdrop-filter: blur(12px) saturate(140%);
+  backdrop-filter: blur(28px) saturate(150%);
+  -webkit-backdrop-filter: blur(28px) saturate(150%);
 }
-.tyba-bar {
+.tyba-window .tyba-bar {
+  box-shadow: inset 0 -1px 0 var(--tyba-line);
+}
+.tyba-window [data-inbox-section] {
+  box-shadow: inset 1px 0 0 var(--tyba-line);
+}
+/* A folha do terminal: encosta na barra (as abas moram nela) e na lateral,
+   e o fio da esquerda é a única fronteira com o L. O fio é um `::after`
+   POR CIMA do conteúdo: como sombra inset ele ficava embaixo dos filhos, e
+   o cabeçalho fixo do bloco (opaco) o apagava — o `❯ ls -la` parecia sair
+   da lateral. */
+.tyba-window [data-terminal-piece] {
+  background: var(--tyba-paper);
+  backdrop-filter: blur(28px) saturate(150%);
+  -webkit-backdrop-filter: blur(28px) saturate(150%);
+}
+.tyba-window [data-terminal-piece]::after {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  z-index: 40;
+  width: 1px;
+  background: var(--tyba-line);
+  pointer-events: none;
+}
+/* Tela cheia aberta (.tyba-git-screen cobre o <main> inteiro, opaca): a
+   folha embaixo não aparece, e o desfoque dela é custo puro a cada quadro —
+   o Docker, com logs seguindo, redesenha sem parar (trava de 2026-11-02).
+   `:not(.hidden)` porque Arquivos fica montado com `hidden` quando fechado. */
+.tyba-window main:has(> .tyba-git-screen:not(.hidden)) [data-terminal-piece] {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+/* Cabeçalho fixo do bloco (a saída rola por baixo dele): com a folha colada
+   na barra, opaco e só com o fio ele lia como parte da barra. Vira placa —
+   acrílico sobre a própria saída, fio e uma sombra curta embaixo. */
+.tyba-pinned {
+  background: color-mix(in srgb, var(--tyba-paper-solid) 94%, transparent);
+  box-shadow: 0 1px 0 var(--tyba-line), 0 6px 14px -10px rgba(60, 40, 120, 0.28);
   backdrop-filter: blur(16px) saturate(140%);
   -webkit-backdrop-filter: blur(16px) saturate(140%);
 }
+:root:not([data-theme]):not([data-imported]) .tyba-pinned {
+  box-shadow: 0 1px 0 var(--tyba-line), 0 6px 14px -10px rgba(0, 0, 0, 0.8);
+}
+/* O painel lateral (diff ao lado do terminal) é outra folha, com o fio. */
+.tyba-window .tyba-side-sheet {
+  background: var(--tyba-paper);
+  box-shadow: inset 1px 0 0 var(--tyba-line);
+  backdrop-filter: blur(28px) saturate(150%);
+  -webkit-backdrop-filter: blur(28px) saturate(150%);
+}
 .tyba-piece {
-  border-radius: 10px;
+  border-radius: 6px;
   background: var(--tyba-glass-piece);
   box-shadow: var(--tyba-lens), var(--tyba-piece-shadow);
-  backdrop-filter: blur(12px) saturate(140%);
-  -webkit-backdrop-filter: blur(12px) saturate(140%);
 }
-/* Grupo de botões (ícones do painel, trilho): seção com fio claro por dentro;
-   o aceso é a pastilha quase opaca. */
+/* Grupo de botões (as abas na barra): um degrau de tinta, sem fio. */
 .tyba-segment {
   display: flex;
   gap: 2px;
-  padding: 3px;
-  border-radius: 8px;
-  background: var(--tyba-glass-section);
-  box-shadow: inset 0 0 0 1px var(--tyba-glass-rim);
+  padding: 2px;
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--tyba-text) 5%, transparent);
 }
+/* A placa: o que está aceso (pílula Terminal, aba ativa, sessão, busca). */
 .tyba-pill-on {
-  background: var(--tyba-glass-active);
+  background-color: var(--tyba-glass-active);
+  background-image: var(--tyba-pill-sheen);
   box-shadow: var(--tyba-pill-on);
 }
 /* `html` e não `:root`: o bloco `:root` é um só (themeFrame.test). */
 html {
   --tyba-piece-shadow: 0 0 transparent;
-  --tyba-glass-rim: var(--tyba-border);
-  --tyba-pill-on: var(--tyba-edge);
+  --tyba-pill-on: var(--tyba-edge), inset 0 0 0 1px var(--tyba-border);
+  --tyba-pill-sheen: var(--tyba-sheen);
 }
 [data-theme='light']:not([data-imported]) {
-  --tyba-glass-rim: rgba(255, 255, 255, 0.6);
-  --tyba-pill-on: inset 0 1px 0 rgba(255, 255, 255, 0.95), 0 1px 2px rgba(20, 20, 58, 0.04), 0 8px 24px -12px rgba(20, 20, 58, 0.14);
+  --tyba-pill-on: inset 0 0 0 1px rgba(60, 40, 120, 0.08), 0 1px 2px rgba(60, 40, 120, 0.06), 0 4px 12px -6px rgba(60, 40, 120, 0.1);
+  --tyba-pill-sheen: none;
+  --tyba-piece-shadow: 0 1px 2px rgba(60, 40, 120, 0.05);
+  /* Placa de painel/modal no claro: brilho na aresta de cima e sombra violeta. */
+  --tyba-plate-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9), 0 1px 2px rgba(60, 40, 120, 0.06), 0 24px 60px -12px rgba(60, 40, 120, 0.22);
 }
-/* No claro a sans do quadro no cromo; o mono segue em tudo que é de máquina. */
-[data-theme='light']:not([data-imported]) {
-  --tyba-piece-shadow: 0 1px 2px rgba(20, 20, 58, 0.04), 0 8px 24px -12px rgba(20, 20, 58, 0.14);
+/* No claro a sans do cromo é Inter, mas só quando a preferência pede sans:
+   "Fonte da interface: mono" vale também no claro (dono, 2026-11-02). */
+[data-theme='light'][data-font='grotesk']:not([data-imported]) {
   --tyba-font-ui: 'Inter', ui-sans-serif, system-ui, -apple-system, sans-serif;
 }
 [data-theme='light']:not([data-imported]) .tyba-aurora {

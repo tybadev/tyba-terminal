@@ -9,6 +9,7 @@ import {
 } from "@phosphor-icons/react";
 
 import i18n from "../i18n";
+import { PLATE, PLATE_FLOAT, PLATE_LINE } from "./plate";
 import { writeClipboardText } from "../lib/clipboard";
 import { canoDisplay, failureCopy, nextInDrop } from "../lib/canoFailure";
 import type { CanoFailure, ConnectionState } from "../lib/ipc";
@@ -93,7 +94,7 @@ export function CanoStatus({
         className="pointer-events-none z-10 flex items-end justify-center"
         style={paneBox(rect)}
       >
-        <div className="mb-2 flex items-center gap-2 rounded-[4px] border border-tyba-border bg-tyba-sunken/95 px-2.5 py-1">
+        <div className={`mb-2 flex items-center gap-2 rounded-[6px] border ${PLATE_LINE} ${PLATE_FLOAT} px-2.5 py-1`}>
           <CircleNotch
             size={12}
             className="animate-spin text-tyba-text-faint"
@@ -110,7 +111,7 @@ export function CanoStatus({
   if (display.kind === "overlay") {
     return (
       <div
-        className="z-10 flex flex-col items-center justify-center gap-2 rounded-[4px] bg-tyba-sunken/90"
+        className="z-10 flex flex-col items-center justify-center gap-2 bg-tyba-paper-solid/90"
         style={paneBox(rect)}
       >
         {display.spinner && (
@@ -130,7 +131,7 @@ export function CanoStatus({
           <button
             type="button"
             onClick={onRetry}
-            className="mt-1 rounded-[3px] border border-tyba-border px-2 py-1 font-mono text-[10px] text-tyba-text hover:bg-tyba-raised"
+            className="mt-1 rounded-[6px] border border-tyba-border px-2 py-1 font-mono text-[10px] text-tyba-text hover:bg-tyba-raised"
           >
             {i18n.t("sshReconnect")}
           </button>
@@ -150,7 +151,7 @@ export function CanoStatus({
     >
       <div
         role="alert"
-        className={`pointer-events-auto flex w-full max-w-xl flex-col gap-2 rounded-[6px] border bg-tyba-sunken p-3 ${
+        className={`pointer-events-auto flex w-full max-w-xl flex-col gap-2 p-3 ${PLATE} ${PLATE_FLOAT} ${
           danger ? "border-tyba-red/60" : "border-tyba-amber/50"
         }`}
       >
@@ -194,7 +195,7 @@ export function CanoStatus({
               <button
                 type="button"
                 onClick={onEditHost}
-                className="flex items-center gap-1 rounded-[3px] border border-tyba-border px-2 py-1 font-mono text-[10px] text-tyba-text hover:bg-tyba-raised"
+                className="flex items-center gap-1 rounded-[6px] border border-tyba-border px-2 py-1 font-mono text-[10px] text-tyba-text hover:bg-tyba-raised"
               >
                 <PencilSimple size={11} />
                 {i18n.t("canoEditHost")}
@@ -204,7 +205,7 @@ export function CanoStatus({
               <button
                 type="button"
                 onClick={onRetry}
-                className="flex items-center gap-1 rounded-[3px] border border-tyba-border px-2 py-1 font-mono text-[10px] text-tyba-text hover:bg-tyba-raised"
+                className="flex items-center gap-1 rounded-[6px] border border-tyba-border px-2 py-1 font-mono text-[10px] text-tyba-text hover:bg-tyba-raised"
               >
                 <ArrowClockwise size={11} />
                 {i18n.t("canoRetry")}

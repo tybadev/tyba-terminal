@@ -920,7 +920,7 @@ export function DiffView({
                 onClick={() => (single ? setFocusKey(key) : jumpTo(key))}
                 className={`flex items-center gap-2 rounded-[6px] px-2.5 py-1.5 text-left font-mono text-[12.5px] transition-colors ${
                   active
-                    ? "bg-tyba-raised text-tyba-text shadow-[var(--tyba-raised-ring)]"
+                    ? "tyba-pill-on text-tyba-text"
                     : seen
                       ? "text-tyba-text-faint hover:bg-tyba-text/[.03]"
                       : "text-tyba-text-muted hover:bg-tyba-text/[.03] hover:text-tyba-text"
@@ -1059,7 +1059,7 @@ export function DiffView({
                 toggleFile(row.key, !row.collapsed);
               }
             }}
-            className="group/file flex w-full cursor-pointer items-center gap-2 tyba-divide-t bg-tyba-surface/60 px-4 py-2 text-left hover:bg-tyba-text/[.03]"
+            className="group/file flex w-full cursor-pointer items-center gap-2 shadow-[inset_0_1px_0_var(--tyba-line)] bg-tyba-surface/60 px-4 py-2 text-left hover:bg-tyba-text/[.03]"
           >
             {row.collapsed ? (
               <CaretRight size={11} className="shrink-0 text-tyba-text-faint" />
@@ -1173,7 +1173,7 @@ export function DiffView({
                 <LineText text={entry.text} spans={spans} />
               </span>
               {signKind === "left" && (
-                <span className="w-px shrink-0 bg-tyba-border" />
+                <span className="w-px shrink-0 bg-[var(--tyba-line)]" />
               )}
             </div>
           );
@@ -1226,10 +1226,11 @@ export function DiffView({
   return (
     <div
       ref={containerRef}
-      className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-tyba-sunken"
+      className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
     >
-      {/* Mockup Diff: faixa de 40px na superfície (vidro no claro), 12px. */}
-      <header className="flex h-10 shrink-0 items-center gap-3.5 tyba-divide-b bg-[var(--tyba-panel-bg)] px-4 text-[12px] text-tyba-text-muted">
+      {/* Mockup Diff: faixa de 40px, 12px. Na opção G ela é a própria folha,
+          separada do diff por fio. */}
+      <header className="flex h-10 shrink-0 items-center gap-3.5 shadow-[inset_0_-1px_0_var(--tyba-line)] px-4 text-[12px] text-tyba-text-muted">
         {!asTab && (
           <span className="flex min-w-0 shrink items-center gap-2">
             <GitDiff size={13} className="shrink-0 text-tyba-violet" />
@@ -1265,13 +1266,13 @@ export function DiffView({
             <span className="text-tyba-red">−{totals.deletions}</span>
           </span>
         )}
-        <div className="flex items-center gap-0.5 rounded-[6px] bg-tyba-sunken p-0.5">
+        <div className="tyba-segment items-center">
           <button
             aria-pressed={mode === "unified"}
             onClick={() => setMode("unified")}
             className={`flex h-5 items-center rounded-[4px] px-2 text-[12px] ${
               mode === "unified"
-                ? "bg-tyba-raised text-tyba-text shadow-[var(--tyba-raised-ring)]"
+                ? "tyba-pill-on text-tyba-text"
                 : "text-tyba-text-muted hover:text-tyba-text"
             }`}
           >
@@ -1282,7 +1283,7 @@ export function DiffView({
             onClick={() => setMode("split")}
             className={`flex h-5 items-center rounded-[4px] px-2 text-[12px] ${
               mode === "split"
-                ? "bg-tyba-raised text-tyba-text shadow-[var(--tyba-raised-ring)]"
+                ? "tyba-pill-on text-tyba-text"
                 : "text-tyba-text-muted hover:text-tyba-text"
             }`}
           >
@@ -1315,7 +1316,7 @@ export function DiffView({
 
       {conflicts && !browseBranch && (
         <div
-          className={`flex shrink-0 items-start gap-2 tyba-divide-b px-3 py-2 ${
+          className={`flex shrink-0 items-start gap-2 shadow-[inset_0_-1px_0_var(--tyba-line)] px-3 py-2 ${
             conflicts.files.length > 0 ? "bg-tyba-red/[.06]" : "bg-tyba-amber/[.06]"
           }`}
         >
@@ -1461,7 +1462,7 @@ export function DiffView({
 
       <div className="flex min-h-0 flex-1">
         <aside
-          className={`w-[260px] shrink-0 flex-col overflow-y-auto tyba-divide-r p-2.5 ${
+          className={`w-[260px] shrink-0 flex-col overflow-y-auto shadow-[inset_-1px_0_0_var(--tyba-line)] p-2.5 ${
             expanded ? "flex" : "hidden xl:flex"
           }`}
         >
@@ -1505,7 +1506,7 @@ export function DiffView({
           {stickyFile && !single && (
             <button
               onClick={() => jumpTo(stickyFile.key)}
-              className="absolute inset-x-0 top-0 z-10 flex items-center gap-2 tyba-divide-b bg-tyba-bg/95 px-4 py-1.5 text-left backdrop-blur"
+              className="absolute inset-x-0 top-0 z-10 flex items-center gap-2 shadow-[inset_0_-1px_0_var(--tyba-line)] bg-tyba-paper-solid px-4 py-1.5 text-left"
             >
               <span
                 className={`w-3 shrink-0 text-center font-mono text-[10px] ${STATUS_COLOR[stickyFile.file.status]}`}
@@ -1571,7 +1572,7 @@ export function DiffView({
       </div>
 
       {stagedCount + unstagedCount > 0 && (
-        <div className="flex h-8 shrink-0 items-center gap-2 tyba-divide-t px-4">
+        <div className="flex h-8 shrink-0 items-center gap-2 shadow-[inset_0_1px_0_var(--tyba-line)] px-4">
           <GitCommit size={13} className="shrink-0 text-tyba-text-faint" />
           <input
             spellCheck={false}
@@ -1747,7 +1748,7 @@ export function DiffView({
             />
           </div>
         ) : (
-          <div className="flex shrink-0 items-center gap-2.5 tyba-divide-t bg-[var(--tyba-panel-bg)] px-4 py-3">
+          <div className="flex shrink-0 items-center gap-2.5 shadow-[inset_0_1px_0_var(--tyba-line)] px-4 py-3">
             {leading}
           </div>
         );

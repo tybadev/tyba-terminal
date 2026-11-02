@@ -224,8 +224,10 @@ export function LaunchConfigScreen({
   );
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col bg-tyba-sunken">
-      <header className="flex h-[46px] shrink-0 items-center gap-3 border-b border-tyba-border bg-tyba-raised px-[18px] text-[12px]">
+    // Abre por cima do que estiver na área (shell, Configurações): papel opaco,
+    // senão o conteúdo de baixo vaza pela folha.
+    <div className="flex min-h-0 flex-1 flex-col bg-tyba-paper-solid">
+      <header className="flex h-[46px] shrink-0 items-center gap-3 border-b border-[var(--tyba-line)] bg-tyba-raised px-[18px] text-[12px]">
         <Stack size={16} className="shrink-0 text-tyba-violet" />
         <span className="text-[14px] font-medium text-tyba-text">{t("launchConfigTitle")}</span>
         <Input
@@ -256,7 +258,7 @@ export function LaunchConfigScreen({
       </header>
 
       {(warnings.length > 0 || error) && (
-        <div className="flex items-start gap-2 border-b border-tyba-border bg-tyba-raised px-[18px] py-2 text-[12px]">
+        <div className="flex items-start gap-2 border-b border-[var(--tyba-line)] bg-tyba-raised px-[18px] py-2 text-[12px]">
           <Warning size={15} className={`mt-0.5 shrink-0 ${error ? "text-tyba-red" : "text-tyba-amber"}`} />
           <span className="text-tyba-text">
             {error ?? t("launchSecretWarning", { slots: warnings.join(", ") })}
@@ -272,7 +274,7 @@ export function LaunchConfigScreen({
                 key={item.id}
                 className={`group flex items-center gap-1.5 rounded-[6px] px-2.5 py-1 ${
                   index === activeTab
-                    ? "bg-tyba-raised text-tyba-text shadow-[inset_0_0_0_1px_var(--tyba-border-field)]"
+                    ? "tyba-pill-on text-tyba-text"
                     : "text-tyba-text-faint hover:text-tyba-text-muted"
                 }`}
               >
@@ -318,7 +320,7 @@ export function LaunchConfigScreen({
           )}
         </div>
 
-        <aside className="flex w-[330px] shrink-0 flex-col border-l border-tyba-border bg-tyba-raised">
+        <aside className="flex w-[330px] shrink-0 flex-col border-l border-[var(--tyba-line)] bg-tyba-raised">
           {slot ? (
             <>
               <div className="flex items-center gap-2 border-b border-tyba-border-soft px-4 py-3 text-[13px] text-tyba-text">
@@ -429,7 +431,7 @@ export function LaunchConfigScreen({
         </aside>
       </div>
 
-      <footer className="flex h-[26px] shrink-0 items-center gap-2.5 border-t border-tyba-border bg-tyba-raised px-[18px] text-[11px] text-tyba-text-faint">
+      <footer className="flex h-[26px] shrink-0 items-center gap-2.5 border-t border-[var(--tyba-line)] bg-tyba-raised px-[18px] text-[11px] text-tyba-text-faint">
         {t("launchSummary", { tabs: tabs.length, panes, isolated })}
         <span className="flex-1" />
         {t("launchDragHint")}

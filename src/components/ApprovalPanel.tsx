@@ -4,6 +4,7 @@ import { WarningOctagon } from "@phosphor-icons/react";
 
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { PLATE, PLATE_FLOAT } from "@/components/plate";
 import {
   INITIAL_PANEL_UI,
   panelStep,
@@ -78,7 +79,7 @@ export function ApprovalPanel({ request, rect, focused }: Props) {
           e.stopPropagation();
           dispatch({ type: "escape" });
         }}
-        className="pointer-events-auto flex max-h-full w-full max-w-2xl flex-col gap-2 rounded-[6px] border border-tyba-red/60 bg-tyba-sunken p-3 shadow-2xl"
+        className={`pointer-events-auto flex max-h-full w-full max-w-2xl flex-col gap-2 border-tyba-red/60 p-3 ${PLATE} ${PLATE_FLOAT}`}
       >
         <div className="flex items-start gap-2">
           <WarningOctagon
@@ -141,7 +142,7 @@ export function ApprovalPanel({ request, rect, focused }: Props) {
                 variant={isApprove && ui.confirming ? "default" : "outline"}
                 disabled={sending}
                 onClick={() => dispatch({ type: "action", action: action.id })}
-                className={`h-6 rounded-[4px] px-2.5 text-[11px] ${
+                className={`h-6 rounded-[6px] px-2.5 text-[11px] ${
                   isApprove
                     ? ui.confirming
                       ? "bg-tyba-red text-white hover:bg-tyba-red/90"
@@ -180,7 +181,7 @@ export function ApprovalPanel({ request, rect, focused }: Props) {
                 variant="ghost"
                 disabled={sending}
                 onClick={() => dispatch({ type: "cancelFeedback" })}
-                className="h-6 rounded-[4px] px-2.5 text-[11px] text-tyba-text-muted"
+                className="h-6 rounded-[6px] px-2.5 text-[11px] text-tyba-text-muted"
               >
                 {t("cancel")}
               </Button>
@@ -188,7 +189,7 @@ export function ApprovalPanel({ request, rect, focused }: Props) {
                 size="sm"
                 disabled={sending}
                 onClick={() => dispatch({ type: "sendFeedback" })}
-                className="h-6 rounded-[4px] px-2.5 text-[11px]"
+                className="h-6 rounded-[6px] px-2.5 text-[11px]"
               >
                 {t("denyAndTell")}
               </Button>

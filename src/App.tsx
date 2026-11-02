@@ -1115,6 +1115,16 @@ export default function App() {
     [activeWorkspace],
   );
 
+  // As abas vão na barra (opção G) nas mesmas telas em que a faixa aparecia:
+  // as de tela cheia (Configurações, Conexões…) não têm abas para mostrar.
+  const tabsInBar =
+    !!activeWorkspace &&
+    activeWorkspace.tabs.length > 0 &&
+    activeTab?.view !== "settings" &&
+    activeTab?.view !== "connections" &&
+    activeTab?.view !== "stats" &&
+    activeTab?.view !== "agent-board";
+
   const activeId = useMemo(
     () =>
       activeTab?.root && activeTab.active_pane
@@ -2821,6 +2831,23 @@ export default function App() {
     [sessionById],
   );
 
+  const workspaceCwd = useCallback(
+    (w: Workspace): string | null => resolveWorkspaceCwd(w, sessionCwds)?.cwd ?? null,
+    [sessionCwds],
+  );
+
+  // O nome da sessão como a lateral mostra: segue o cwd vivo (`cd` troca o
+  // contexto), a não ser que o dono tenha renomeado de propósito. A migalha
+  // usava `w.name`, o nome do momento em que a sessão abriu.
+  const activeWorkspaceName = activeWorkspace
+    ? activeWorkspace.name_locked
+      ? activeWorkspace.name
+      : (() => {
+          const dir = workspaceCwd(activeWorkspace) ?? activeWorkspace.repo_root;
+          return dir ? basename(dir) : activeWorkspace.name;
+        })()
+    : null;
+
   const titleBase =
     activeWorkspace &&
     !isConfigWorkspace(activeWorkspace) &&
@@ -2828,7 +2855,7 @@ export default function App() {
     !isConnectionsWorkspace(activeWorkspace) &&
     !isStatsWorkspace(activeWorkspace) &&
     !isAgentBoardWorkspace(activeWorkspace)
-      ? activeWorkspace.name
+      ? (activeWorkspaceName ?? activeWorkspace.name)
       : "Tyba";
   const activeAgentRunning = activeWorkspace
     ? workspaceAgentStatus(activeWorkspace)?.session.status.state === "running"
@@ -2865,11 +2892,6 @@ export default function App() {
     }, SPINNER_INTERVAL_MS);
     return () => window.clearInterval(timer);
   }, [titleBase, activeAgentRunning, unseenAttention]);
-
-  const workspaceCwd = useCallback(
-    (w: Workspace): string | null => resolveWorkspaceCwd(w, sessionCwds)?.cwd ?? null,
-    [sessionCwds],
-  );
 
   const workspaceGitDir = useCallback(
     (w: Workspace): string | null => workspaceMatchDir(w, sessionCwds),
@@ -5352,19 +5374,39 @@ export default function App() {
                 {t("workspaceView")} — {t("comingSoon")}
               </TooltipContent>
             </Tooltip>
-            {activeWorkspace && (
+            {/* Com as abas na barra, o nome da sessão sai da migalha: ele
+                repetia a pasta da aba, e o caminho já está no campo de
+                comando (dono, 2026-11-02). */}
+            {activeWorkspace && !tabsInBar && (
               <>
                 <span aria-hidden>/</span>
-                <span className="truncate">{activeWorkspace.name}</span>
+                <span className="truncate">{activeWorkspaceName}</span>
               </>
             )}
-            {activeSession && (
+            {/* Opção G: as abas moram na migalha, no lugar do título da
+                sessão — a faixa de abas saiu e o terminal ganhou a altura. */}
+            {tabsInBar && activeWorkspace ? (
               <>
                 <span aria-hidden>/</span>
-                <b className="truncate font-medium text-tyba-text">
-                  {activeSession.title}
-                </b>
+                <TabBar
+                  tabs={activeWorkspace.tabs}
+                  activeTab={activeWorkspace.active_tab}
+                  sessions={sessions}
+                  cwds={sessionCwds}
+                  onActivate={(id) => void activateTab(id)}
+                  onClose={(id) => void closeTabAndRefresh(id)}
+                  onNew={() => void newTab()}
+                />
               </>
+            ) : (
+              activeSession && (
+                <>
+                  <span aria-hidden>/</span>
+                  <b className="truncate font-medium text-tyba-text">
+                    {activeSession.title}
+                  </b>
+                </>
+              )
             )}
           </nav>
           {activeChips.branch?.state === "known" && (
@@ -5376,8 +5418,8 @@ export default function App() {
 
           <div className="h-full flex-1" data-tauri-drag-region />
 
-          {/* Ícones do painel lateral num grupo de vidro (quadro). */}
-          <div className="tyba-segment items-center">
+          {/* Ícones do painel lateral: soltos na barra (opção G). */}
+          <div className="flex items-center gap-0.5">
             <SidePanelBar
               tabs={panelTabs}
               lit={
@@ -5417,7 +5459,7 @@ export default function App() {
           <WindowControls />
         </header>
 
-        <div className="flex min-h-0 flex-1 gap-2">
+        <div className="flex min-h-0 flex-1">
           <>
             {sidebar !== "hidden" && (
                 <aside
@@ -5878,22 +5920,6 @@ export default function App() {
                       : undefined
                   }
                 >
-                {activeWorkspace &&
-                  activeWorkspace.tabs.length > 0 &&
-                  activeTab?.view !== "settings" &&
-                  activeTab?.view !== "connections" &&
-                  activeTab?.view !== "stats" &&
-                  activeTab?.view !== "agent-board" && (
-                  <TabBar
-                    tabs={activeWorkspace.tabs}
-                    activeTab={activeWorkspace.active_tab}
-                    sessions={sessions}
-                    cwds={sessionCwds}
-                    onActivate={(id) => void activateTab(id)}
-                    onClose={(id) => void closeTabAndRefresh(id)}
-                    onNew={() => void newTab()}
-                  />
-                )}
                 {containerStrip && (
                   <ContainerStrip
                     key={containerStrip.id}
@@ -5918,9 +5944,10 @@ export default function App() {
                 )}
                 <div
                   ref={paneAreaRef}
-                  // Peça de vidro (quadro PropostaClaro): o terminal lê sobre
-                  // vidro-3, mono por dentro.
-                  className="tyba-piece relative min-h-0 flex-1 overflow-hidden"
+                  // A folha do terminal (opção G): acrílico, colada na barra e
+                  // na lateral — o material está em `[data-terminal-piece]`.
+                  data-terminal-piece
+                  className="relative min-h-0 flex-1 overflow-hidden"
                 >
                   {searchOpen && activeId && (
                     <TerminalSearch
@@ -6118,26 +6145,6 @@ export default function App() {
                       />
                     </div>
                   )}
-                  {/* O painel É a área de terminal, e pinta como tal.
-                      Antes dos terminais no DOM, portanto atrás de todos.
-
-                      Sem isto, tudo que não é coberto pelo terminal nem pela
-                      lista mostra o fundo do app, mais claro: a faixa entre o
-                      último cartão e o bloco em execução, e a margem em volta
-                      dele. Cada pedaço aparece como um degrau de cor. */}
-                  {paneLayout?.panes.map((p) => (
-                    <div
-                      key={`pane-bg-${p.pane}`}
-                      className="pointer-events-none bg-tyba-sunken"
-                      style={{
-                        position: "absolute",
-                        left: `${p.x}%`,
-                        top: `${p.y}%`,
-                        width: `${p.w}%`,
-                        height: `${p.h}%`,
-                      }}
-                    />
-                  ))}
                   {sessions.map((s) => {
                     // Sem painel em aba nenhuma, sem terminal. Ver
                     // `pannedSessions`: a lista de sessões guarda as mortas, e
@@ -6688,8 +6695,8 @@ export default function App() {
                       }
                       className={`flex min-h-0 min-w-0 ${
                         agentsSideNarrow
-                          ? "shrink-0 bg-[var(--tyba-panel-bg)] tyba-divide-l"
-                          : "flex-1 bg-[var(--tyba-panel-bg)] tyba-divide-l"
+                          ? "tyba-side-sheet shrink-0"
+                          : "tyba-side-sheet flex-1"
                       }${
                         renderSideView?.startsWith("agents:")
                           ? agentsMotion.exiting
@@ -6875,6 +6882,31 @@ export default function App() {
             escondida: nada aparece e o foco entra num `display: none`. */}
         {activeTab && activeWorkspace && !(sideVisible && sideExpanded) && (
           <Toolbar
+            hints={[
+              {
+                key: "actions",
+                label: t("hintCommands"),
+                combo: bindings.paletteActions,
+                onClick: () => openPalette("actions"),
+              },
+              {
+                key: "history",
+                label: t("hintHistory"),
+                combo: bindings.paletteHistory,
+                onClick: () => openPalette("history"),
+              },
+              {
+                key: "snippets",
+                label: t("hintSnippets"),
+                combo: bindings.paletteSnippets,
+                onClick: () => openPalette("snippets"),
+              },
+              {
+                key: "shortcuts",
+                label: t("hintShortcuts"),
+                onClick: () => setShortcutsOpen((open) => !open),
+              },
+            ]}
             pref={toolbarPref}
             cwd={activeChips.cwd}
             branch={activeChips.branch}

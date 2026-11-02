@@ -66,7 +66,7 @@ const CMD = "notif-cmd mt-1.5 line-clamp-3 w-fit max-w-full rounded-[4px] px-1.5
 const ACTS = "mt-2 flex flex-wrap items-center gap-3.5";
 const SECTION = "flex justify-between pb-1 text-[11px] text-tyba-text-faint";
 const GROUP_HEAD =
-  "sticky top-0 z-[1] flex min-w-0 items-center gap-2 bg-tyba-surface py-1.5 text-[11px] text-tyba-text-faint";
+  "sticky top-0 z-[1] flex min-w-0 items-center gap-2 bg-[var(--tyba-glass-section)] backdrop-blur-[28px] py-1.5 text-[11px] text-tyba-text-faint";
 
 /** Ícone do pedido (losango) na cor do risco. */
 function RiskGlyph({ risk, label }: { risk: RiskLevel | null; label: string }) {
@@ -471,6 +471,7 @@ export function NotificationsInbox({
           aria-label={t("notifications")}
           // Coluna encostada na lateral, empurrando o terminal (quadro
           // PropostaClaro): a mesma seção de vidro da lateral.
+          data-inbox-section
           className="tyba-section flex w-[320px] shrink-0 flex-col overflow-hidden"
         >
           <div className={PANEL_HEADER}>

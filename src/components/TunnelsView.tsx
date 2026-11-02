@@ -37,9 +37,9 @@ const KIND_LABEL: Record<TunnelKind, string> = {
   dynamic: "tunnelsKindDynamic",
 };
 
-/** O `.btn` dos mockups: 11px, contorno 0,14, cantos de 5px. */
+/** O `.btn` dos mockups: 11px, contorno 0,14; cantos de 6px, como os botões da main. */
 const BTN =
-  "shrink-0 rounded-[5px] border border-tyba-border-strong px-[9px] py-[3px] text-[11px] text-tyba-text-muted hover:text-tyba-text";
+  "shrink-0 rounded-[6px] border border-tyba-border-strong px-[9px] py-[3px] text-[11px] text-tyba-text-muted hover:text-tyba-text";
 
 const FIELD =
   "h-[30px] rounded-[6px] border border-tyba-border-field bg-tyba-sunken px-2 font-mono text-[12px] text-tyba-text outline-none focus:border-tyba-cyan/50";

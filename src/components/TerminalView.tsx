@@ -84,6 +84,8 @@ import {
 } from "../lib/keys";
 import { getTerminalTheme, onTerminalThemeChange } from "../theme";
 
+const TRANSPARENT_BG = "rgba(0, 0, 0, 0)";
+
 export const RELAYOUT_EVENT = "tyba:relayout";
 
 /**
@@ -423,7 +425,7 @@ function SessionNoticeBar({
   const classes = NOTICE_TONE_CLASSES[tone];
   return (
     <div
-      className={`z-10 flex items-center gap-2 border-b ${classes.border} bg-tyba-sunken px-2 py-1`}
+      className={`z-10 flex items-center gap-2 border-b ${classes.border} bg-tyba-paper-solid px-2 py-1`}
       style={{
         position: "absolute",
         left: `${rect.left}%`,
@@ -593,9 +595,12 @@ export function TerminalView({
       openLink(uri);
     };
 
-    const theme = getTerminalTheme();
+    // A folha do terminal é acrílico (opção G): quem pinta o papel é a peça
+    // em volta, e o xterm desenha por cima com fundo transparente.
+    const theme = { ...getTerminalTheme(), background: TRANSPARENT_BG };
     const term = new Terminal({
       theme,
+      allowTransparency: true,
       fontFamily:
         '"JetBrains Mono", "Symbols Nerd Font Mono", "Fira Code", ui-monospace, SFMono-Regular, Menlo, monospace',
       fontSize: defaultFontSize,
@@ -701,8 +706,9 @@ export function TerminalView({
 
     el.style.backgroundColor = theme.background ?? "";
     const offTheme = onTerminalThemeChange((next) => {
-      term.options.theme = next;
-      el.style.backgroundColor = next.background ?? "";
+      const themed = { ...next, background: TRANSPARENT_BG };
+      term.options.theme = themed;
+      el.style.backgroundColor = themed.background;
     });
 
     termRef.current = term;
@@ -1398,7 +1404,7 @@ export function TerminalView({
           // Sem contorno próprio: quem emoldura é o PAINEL (ver `App`). A borda
           // aqui só cercava a caixa do terminal, que em modo prompt é meia
           // altura — o painel focado aparecia com moldura na metade de baixo.
-          className={`overflow-hidden bg-tyba-sunken ${fullBleed ? "" : "rounded-[4px] px-2.5"}`}
+          className={`overflow-hidden bg-transparent ${fullBleed ? "" : "rounded-[4px] px-2.5"}`}
           style={
             visible && rect
               ? {

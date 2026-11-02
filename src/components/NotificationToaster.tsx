@@ -6,6 +6,7 @@ import { askingText, visibleAsk } from "@/lib/asking";
 
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { PLATE, PLATE_FLOAT, PLATE_LINE } from "@/components/plate";
 import {
   Toast,
   ToastAction,
@@ -46,6 +47,8 @@ import {
 } from "@/lib/toastQueue";
 
 const AUTO_DISMISS_MS = 8000;
+// Toast é placa da opção G, quase opaca (passa por cima do terminal).
+const TOAST_PLATE = `${PLATE} ${PLATE_LINE} ${PLATE_FLOAT}`;
 const TURN_END_SETTLE_MS = 2500;
 
 interface OutcomeToast {
@@ -419,6 +422,7 @@ export function NotificationToaster({
         // sessão, onde o painel mostra o texto inteiro. Some sozinho quando o
         // painel da sessão entra na tela (hiddenApprovalIds).
         <Toast
+          className={TOAST_PLATE}
           key={id}
           onOpenChange={(nextOpen) => {
             if (!nextOpen) dismiss(id);
@@ -451,7 +455,7 @@ export function NotificationToaster({
                     size="sm"
                     variant="outline"
                     onClick={() => onGoToSession(approval.session_id)}
-                    className="h-6 rounded-[4px] px-2.5 text-[11px]"
+                    className="h-6 rounded-[6px] px-2.5 text-[11px]"
                   >
                     {t("notificationGoToSession")}
                     <ArrowRight aria-hidden="true" size={12} weight="bold" />
@@ -463,6 +467,7 @@ export function NotificationToaster({
         </Toast>
         ) : (
         <Toast
+          className={TOAST_PLATE}
           key={id}
           onOpenChange={(nextOpen) => {
             if (!nextOpen) dismiss(id);
@@ -519,7 +524,7 @@ export function NotificationToaster({
                         size="sm"
                         variant={action.id === "approve" ? "default" : "outline"}
                         onClick={onClick}
-                        className={`h-6 rounded-[4px] px-2.5 text-[11px] ${
+                        className={`h-6 rounded-[6px] px-2.5 text-[11px] ${
                           action.id === "approve"
                             ? isConfirmApprove
                               ? "bg-tyba-red text-white hover:bg-tyba-red/90"
@@ -558,7 +563,7 @@ export function NotificationToaster({
                     <Button
                       size="sm"
                       onClick={() => decide(approval, "denied", feedback)}
-                      className="h-6 rounded-[4px] px-2.5 text-[11px]"
+                      className="h-6 rounded-[6px] px-2.5 text-[11px]"
                     >
                       {t("denyAndTell")}
                     </Button>
@@ -569,7 +574,7 @@ export function NotificationToaster({
                         setFeedbackFor(null);
                         setFeedback("");
                       }}
-                      className="h-6 rounded-[4px] px-2.5 text-[11px] text-tyba-text-muted"
+                      className="h-6 rounded-[6px] px-2.5 text-[11px] text-tyba-text-muted"
                     >
                       {t("cancel")}
                     </Button>
@@ -583,6 +588,7 @@ export function NotificationToaster({
       )}
       {Object.entries(failedTunnels).map(([id, f]) => (
         <Toast
+          className={TOAST_PLATE}
           key={`tunnel:${id}`}
           onOpenChange={(nextOpen) => {
             if (!nextOpen) dismissTunnel(id);
@@ -605,7 +611,7 @@ export function NotificationToaster({
                     void openTunnelsPanel(f.sessionId).catch(() => {});
                     dismissTunnel(id);
                   }}
-                  className="h-6 rounded-[4px] px-2.5 text-[11px]"
+                  className="h-6 rounded-[6px] px-2.5 text-[11px]"
                 >
                   {t("tunnelFailedAction")}
                 </Button>
@@ -615,7 +621,7 @@ export function NotificationToaster({
                   size="sm"
                   variant="outline"
                   onClick={() => dismissTunnel(id)}
-                  className="h-6 rounded-[4px] px-2.5 text-[11px] text-tyba-text-muted"
+                  className="h-6 rounded-[6px] px-2.5 text-[11px] text-tyba-text-muted"
                 >
                   {t("dismiss")}
                 </Button>
@@ -627,6 +633,7 @@ export function NotificationToaster({
 
       {agentReadySessionIds.map((sessionId) => (
         <Toast
+          className={TOAST_PLATE}
           key={`agent-ready:${sessionId}`}
           onOpenChange={(nextOpen) => {
             if (!nextOpen) dismissAgentReady(sessionId);
@@ -645,7 +652,7 @@ export function NotificationToaster({
                   size="sm"
                   variant="outline"
                   onClick={() => dismissAgentReady(sessionId)}
-                  className="h-6 rounded-[4px] px-2.5 text-[11px] text-tyba-text-muted"
+                  className="h-6 rounded-[6px] px-2.5 text-[11px] text-tyba-text-muted"
                 >
                   {t("dismiss")}
                 </Button>
@@ -656,6 +663,7 @@ export function NotificationToaster({
       ))}
       {ask && (
         <Toast
+          className={TOAST_PLATE}
           key={`asking:${ask.session_id}`}
           onOpenChange={(nextOpen) => {
             if (!nextOpen) void dismissAsk(ask.session_id).catch(() => {});
@@ -682,7 +690,7 @@ export function NotificationToaster({
                   onClick={() => {
                     void focusSession(ask.session_id).catch(() => {});
                   }}
-                  className="h-6 rounded-[4px] px-2.5 text-[11px]"
+                  className="h-6 rounded-[6px] px-2.5 text-[11px]"
                 >
                   {t("askingGo")}
                 </Button>
@@ -696,6 +704,7 @@ export function NotificationToaster({
         const branch = session?.worktree?.branch ?? null;
         return (
           <Toast
+            className={TOAST_PLATE}
             key={outcome.key}
             onOpenChange={(nextOpen) => {
               if (!nextOpen) dismissOutcome(outcome.key);

@@ -131,10 +131,10 @@ function GraphCell({
         cy={cy}
         r={head ? 5.5 : 4.5}
         fill={fill}
-        stroke={selected ? "var(--tyba-text)" : "var(--tyba-sunken)"}
+        stroke={selected ? "var(--tyba-text)" : "var(--tyba-paper-solid)"}
         strokeWidth={selected ? 1.5 : 2}
       />
-      {head && <circle cx={cx} cy={cy} r={2} fill="var(--tyba-sunken)" />}
+      {head && <circle cx={cx} cy={cy} r={2} fill="var(--tyba-paper-solid)" />}
     </svg>
   );
 }
@@ -471,8 +471,8 @@ export function GitHistoryView({ session }: { session: Session }) {
   const hasFilter = !!(filter.query || filter.author || filter.path);
 
   return (
-    <div className="absolute inset-0 flex flex-col bg-tyba-sunken font-mono text-[13px] text-tyba-text">
-      <div className="flex h-11 shrink-0 items-center gap-2 border-b border-tyba-border bg-[var(--tyba-panel-bg)] px-3.5 text-[12px] text-tyba-text-muted">
+    <div className="absolute inset-0 flex flex-col font-mono text-[13px] text-tyba-text">
+      <div className="flex h-11 shrink-0 items-center gap-2 border-b border-[var(--tyba-line)] px-3.5 text-[12px] text-tyba-text-muted">
         <label className={`${TB} relative text-tyba-blue`}>
           <GitIcon size={12} />
           <select
@@ -557,7 +557,7 @@ export function GitHistoryView({ session }: { session: Session }) {
 
       <div className="flex min-h-0 flex-1">
         <div className="flex min-w-0 flex-1 flex-col">
-          <div className="flex h-7 shrink-0 items-center gap-3 border-b border-tyba-border-soft px-3.5 text-[11px] text-tyba-text-faint">
+          <div className="flex h-7 shrink-0 items-center gap-3 border-b border-[var(--tyba-line)] px-3.5 text-[11px] text-tyba-text-faint">
             {showGraph && (
               <span className="-ml-3.5 shrink-0 pl-3.5" style={{ width: graphWidth }}>
                 {t("gitLogColGraph")}
@@ -596,7 +596,7 @@ export function GitHistoryView({ session }: { session: Session }) {
                       showGraph ? "" : "pl-3.5"
                     } ${
                       isSel
-                        ? "bg-tyba-raised shadow-[var(--tyba-raised-ring)]"
+                        ? "tyba-pill-on"
                         : "hover:bg-tyba-hover"
                     } ${isFocus && !isSel ? "bg-tyba-hover" : ""}`}
                     style={{ top: item.start, height: ROW_PX }}
@@ -671,7 +671,7 @@ export function GitHistoryView({ session }: { session: Session }) {
               </div>
             )}
           </div>
-          <div className="relative flex shrink-0 items-center gap-2 border-t border-tyba-border-soft px-3.5 py-2.5 text-[11px] text-tyba-text-faint">
+          <div className="relative flex shrink-0 items-center gap-2 border-t border-[var(--tyba-line)] px-3.5 py-2.5 text-[11px] text-tyba-text-faint">
             {/* Mais uma página a caminho: o filamento na aresta e a etapa. O
                 "N de M" ao lado já é o progresso que o core sabe. */}
             {loading && rows.length > 0 && (
@@ -901,9 +901,9 @@ function CommitDetailPanel({
   return (
     <aside
       aria-label={`${t("gitLogCommit")} ${shortSha(sha)}`}
-      className="flex w-[380px] min-w-0 shrink-0 flex-col border-l border-tyba-border bg-[var(--tyba-panel-bg)]"
+      className="flex w-[380px] min-w-0 shrink-0 flex-col border-l border-[var(--tyba-line)]"
     >
-      <header className="flex shrink-0 items-center gap-2.5 border-b border-tyba-border px-4 py-3">
+      <header className="flex shrink-0 items-center gap-2.5 border-b border-[var(--tyba-line)] px-4 py-3">
         <GitCommit size={16} className="shrink-0 text-tyba-blue" />
         <span className="flex-1">
           {t("gitLogCommit")} <span className="text-tyba-blue">{shortSha(sha)}</span>
@@ -920,7 +920,7 @@ function CommitDetailPanel({
       {error && <p className="p-4 text-[12px] text-tyba-red">{error}</p>}
       {detail && (
         <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
-          <div className="flex flex-col gap-2 border-b border-tyba-border-soft px-4 py-3.5">
+          <div className="flex flex-col gap-2 border-b border-[var(--tyba-line)] px-4 py-3.5">
             <div className="font-medium [overflow-wrap:anywhere]">{detail.subject}</div>
             {detail.body && (
               <div className="whitespace-pre-wrap text-[12px] leading-[1.55] text-tyba-text-muted [overflow-wrap:anywhere]">
@@ -928,7 +928,7 @@ function CommitDetailPanel({
               </div>
             )}
           </div>
-          <div className="flex flex-col border-b border-tyba-border-soft px-4 py-2.5 text-[12px]">
+          <div className="flex flex-col border-b border-[var(--tyba-line)] px-4 py-2.5 text-[12px]">
             <div className="flex items-center py-1">
               <span className="w-16 shrink-0 text-tyba-text-faint">{t("gitLogDetailAuthor")}</span>
               <span className="flex min-w-0 flex-1 items-center gap-2" title={detail.author_email}>
@@ -1020,7 +1020,7 @@ function CommitDetailPanel({
               </div>
             )}
           </div>
-          <div className="sticky bottom-0 flex flex-col gap-2 border-t border-tyba-border-soft bg-tyba-surface px-4 py-3">
+          <div className="sticky bottom-0 flex flex-col gap-2 border-t border-[var(--tyba-line)] bg-tyba-paper-solid px-4 py-3">
             <button
               type="button"
               onClick={toggleAll}

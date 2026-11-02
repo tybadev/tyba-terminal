@@ -471,11 +471,11 @@ export function EditorTab({
 
   return (
     <div
-      className={`absolute inset-0 flex min-h-0 min-w-0 flex-col bg-tyba-sunken ${
+      className={`absolute inset-0 flex min-h-0 min-w-0 flex-col ${
         active ? "" : "hidden"
       }`}
     >
-      <div className="flex shrink-0 items-center gap-3.5 border-b border-[var(--tyba-border-soft)] px-4 py-1.5 text-[11px] text-tyba-text-faint">
+      <div className="flex shrink-0 items-center gap-3.5 border-b border-[var(--tyba-line)] px-4 py-1.5 text-[11px] text-tyba-text-faint">
         <nav
           aria-label={t("editorBreadcrumb")}
           className="flex min-w-0 flex-1 items-center gap-1 truncate font-mono"
@@ -498,7 +498,7 @@ export function EditorTab({
           <div
             role="group"
             aria-label={t("editorMode")}
-            className="flex shrink-0 overflow-hidden rounded-[5px] border border-tyba-border-field"
+            className="flex shrink-0 overflow-hidden rounded-[6px] border border-tyba-border-strong"
           >
             {(["edit", "view"] as const).map((m) => (
               <button
@@ -508,7 +508,7 @@ export function EditorTab({
                 onClick={() => switchMode(m)}
                 className={`px-2 py-0.5 ${
                   mode === m
-                    ? "bg-tyba-raised text-tyba-text shadow-[var(--tyba-edge)]"
+                    ? "tyba-pill-on text-tyba-text"
                     : "hover:text-tyba-text"
                 }`}
               >
@@ -541,7 +541,7 @@ export function EditorTab({
           type="button"
           onClick={() => void save()}
           disabled={loaded.kind !== "ready"}
-          className="shrink-0 rounded-[5px] border border-tyba-border-field bg-tyba-raised px-2 py-0.5 text-tyba-text shadow-[var(--tyba-edge)] hover:bg-tyba-text/[.06] disabled:opacity-50"
+          className="shrink-0 rounded-[6px] border border-tyba-border-strong px-2 py-0.5 text-tyba-text hover:bg-tyba-text/[.06] disabled:opacity-50"
         >
           {t("editorSave", { combo: IS_MAC ? "⌘S" : "Ctrl+S" })}
         </button>
@@ -661,8 +661,8 @@ export function EditorTab({
           </div>
         )}
         {conflictDiff && (
-          <div className="absolute inset-0 z-20 flex flex-col bg-tyba-bg">
-            <div className="flex h-7 shrink-0 items-center gap-2 tyba-divide-b px-4">
+          <div className="absolute inset-0 z-20 flex flex-col bg-tyba-paper-solid">
+            <div className="flex h-7 shrink-0 items-center gap-2 shadow-[inset_0_-1px_0_var(--tyba-line)] px-4">
               <span className="min-w-0 flex-1 truncate text-[11px] text-tyba-text-muted">
                 {t("filesConflictDiffTitle")}
               </span>
@@ -694,7 +694,7 @@ export function EditorTab({
                 </div>
               ))}
             </div>
-            <div className="flex shrink-0 items-center gap-3 tyba-divide-t px-4 py-1.5 text-[10px] text-tyba-text-faint">
+            <div className="flex shrink-0 items-center gap-3 shadow-[inset_0_1px_0_var(--tyba-line)] px-4 py-1.5 text-[10px] text-tyba-text-faint">
               <span className="text-tyba-red">− {t("filesConflictDisk")}</span>
               <span className="text-tyba-green">+ {t("filesConflictEdited")}</span>
             </div>
@@ -737,7 +737,7 @@ export function EditorTab({
         )}
       </div>
 
-      <div className="flex h-[26px] shrink-0 items-center gap-4 border-t border-tyba-border bg-[var(--tyba-panel-bg)] px-4 text-[11px] text-tyba-text-faint">
+      <div className="flex h-[26px] shrink-0 items-center gap-4 border-t border-[var(--tyba-line)] bg-[var(--tyba-panel-bg)] px-4 text-[11px] text-tyba-text-faint">
         {!remote && (
           <LspStatusChip stat={lspStat} truncated={diagsTruncated} onRetry={retryLsp} />
         )}

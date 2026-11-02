@@ -343,7 +343,7 @@ export function PrDetailView({
             setForwarded((prev) => new Set(prev).add(id)),
           )
         }
-        className="flex shrink-0 items-center gap-1 rounded-[5px] border border-tyba-border-strong px-2 py-0.5 text-[11px] text-tyba-text-muted hover:text-tyba-text disabled:opacity-60"
+        className="flex shrink-0 items-center gap-1 rounded-[6px] border border-tyba-border-strong px-2 py-0.5 text-[11px] text-tyba-text-muted hover:text-tyba-text disabled:opacity-60"
       >
         {forwarded.has(id) ? <Check size={11} /> : <ArrowRight size={11} />}
         {forwarded.has(id) ? t("prForwarded") : t("prForward")}
@@ -357,7 +357,7 @@ export function PrDetailView({
   );
 
   const reply = (c: PrThreadComment, i: number) => (
-    <div key={i} className="flex gap-2 tyba-divide-t bg-tyba-text/[.015] px-2.5 py-2 text-[12px]">
+    <div key={i} className="flex gap-2 shadow-[inset_0_1px_0_var(--tyba-line)] bg-tyba-text/[.015] px-2.5 py-2 text-[12px]">
       <Avatar name={c.author} />
       <div className="flex min-w-0 flex-col gap-0.5">
         <span>
@@ -377,7 +377,7 @@ export function PrDetailView({
     const [first, ...rest] = thread.comments;
     return (
       <div className="flex flex-col overflow-hidden rounded-[8px] border border-tyba-border bg-tyba-raised/60">
-        <div className="flex items-center gap-2 tyba-divide-b px-2.5 py-2 text-[12px]">
+        <div className="flex items-center gap-2 shadow-[inset_0_-1px_0_var(--tyba-line)] px-2.5 py-2 text-[12px]">
           <Avatar name={first.author} />
           <span>{first.author}</span>
           <span className="text-tyba-text-muted">{t("prReviewedCommented")}</span>
@@ -425,7 +425,7 @@ export function PrDetailView({
   };
 
   const eventDot = (event: TimelineEvent) => {
-    const base = "absolute -left-[26px] top-0.5 flex size-5 items-center justify-center rounded-full bg-tyba-sunken";
+    const base = "absolute -left-[26px] top-0.5 flex size-5 items-center justify-center rounded-full bg-tyba-paper-solid";
     if (event.kind === "commits") return <span className={`${base} text-tyba-text-muted`}><GitCommit size={12} /></span>;
     if (event.kind === "checks") {
       const tone = checksSummary(event.checks).tone;
@@ -520,7 +520,7 @@ export function PrDetailView({
                   <button
                     type="button"
                     onClick={() => void openExternalUrl(c.url as string)}
-                    className="ml-auto rounded-[5px] border border-tyba-border-strong px-2 py-0.5 text-[11px] text-tyba-text-muted hover:text-tyba-text"
+                    className="ml-auto rounded-[6px] border border-tyba-border-strong px-2 py-0.5 text-[11px] text-tyba-text-muted hover:text-tyba-text"
                   >
                     {t("prViewLog")}
                   </button>
@@ -606,7 +606,7 @@ export function PrDetailView({
   ];
 
   return (
-    <div className="absolute inset-0 flex min-w-0 flex-col bg-tyba-sunken">
+    <div className="absolute inset-0 flex min-w-0 flex-col">
       <div className="flex flex-col gap-2.5 px-[22px] pb-2.5 pt-3.5">
         <div className="flex items-baseline gap-2.5">
           <h1 className="min-w-0 truncate text-[17px] font-medium text-tyba-text" title={pr.title}>
@@ -692,7 +692,7 @@ export function PrDetailView({
         )}
       </div>
 
-      <div role="tablist" className="flex shrink-0 gap-1 tyba-divide-b px-[22px] text-[12px]">
+      <div role="tablist" className="flex shrink-0 gap-1 shadow-[inset_0_-1px_0_var(--tyba-line)] px-[22px] text-[12px]">
         {tabs.map((tab) => (
           <button
             key={tab.key}
@@ -718,14 +718,14 @@ export function PrDetailView({
         <div className="min-h-0 flex-1 overflow-y-auto px-[22px] py-4">
           {section === "conversation" && (
             <div className="relative flex flex-col gap-3.5 pl-[30px]">
-              <div className="absolute bottom-0 left-[10px] top-2 w-px bg-tyba-border" />
+              <div className="absolute bottom-0 left-[10px] top-2 w-px bg-[var(--tyba-line)]" />
               {timeline.map(renderEvent)}
             </div>
           )}
           {section === "commits" && (
             <ul className="flex flex-col">
               {pr.commits.map((c) => (
-                <li key={c.sha} className="flex items-center gap-3 tyba-divide-b py-2 text-[12px]">
+                <li key={c.sha} className="flex items-center gap-3 shadow-[inset_0_-1px_0_var(--tyba-line)] py-2 text-[12px]">
                   <span className="shrink-0 font-mono text-tyba-blue">{c.sha.slice(0, 7)}</span>
                   <span className="min-w-0 flex-1 truncate">{c.subject}</span>
                   <span className="shrink-0 text-tyba-text-faint">
@@ -738,7 +738,7 @@ export function PrDetailView({
           {section === "files" && (
             <ul className="flex flex-col">
               {pr.files.map((f) => (
-                <li key={f.path} className="flex items-center gap-3 tyba-divide-b py-2 font-mono text-[12px]">
+                <li key={f.path} className="flex items-center gap-3 shadow-[inset_0_-1px_0_var(--tyba-line)] py-2 font-mono text-[12px]">
                   <span className="min-w-0 flex-1 truncate">{f.path}</span>
                   <span className="text-tyba-green">+{f.additions}</span>
                   <span className="text-tyba-red">−{f.deletions}</span>
@@ -749,7 +749,7 @@ export function PrDetailView({
           {section === "checks" && (
             <ul className="flex flex-col">
               {pr.checks.map((c, i) => (
-                <li key={`${c.name}:${i}`} className="flex items-center gap-3 tyba-divide-b py-2 text-[12px]">
+                <li key={`${c.name}:${i}`} className="flex items-center gap-3 shadow-[inset_0_-1px_0_var(--tyba-line)] py-2 text-[12px]">
                   <CheckMark status={c.status} />
                   <span className="min-w-0 flex-1 truncate">
                     {c.name}
@@ -760,7 +760,7 @@ export function PrDetailView({
                     <button
                       type="button"
                       onClick={() => void openExternalUrl(c.url as string)}
-                      className="rounded-[5px] border border-tyba-border-strong px-2 py-0.5 text-[11px] text-tyba-text-muted hover:text-tyba-text"
+                      className="rounded-[6px] border border-tyba-border-strong px-2 py-0.5 text-[11px] text-tyba-text-muted hover:text-tyba-text"
                     >
                       {t("prViewLog")}
                     </button>
@@ -774,7 +774,7 @@ export function PrDetailView({
         {pr.state !== "merged" && pr.state !== "closed" && (
           <form
             aria-label={t("prReviewForm")}
-            className="flex shrink-0 flex-col gap-2 tyba-divide-t bg-tyba-raised px-[22px] pb-2.5 pt-3"
+            className="flex shrink-0 flex-col gap-2 shadow-[inset_0_1px_0_var(--tyba-line)] px-[22px] pb-2.5 pt-3"
             onSubmit={(e) => {
               e.preventDefault();
               void submitReview();
@@ -849,8 +849,8 @@ export function PrDetailView({
         )}
         </div>
 
-        <aside className="flex min-w-0 flex-[2] flex-col tyba-divide-l bg-[var(--tyba-panel-bg)]">
-          <section className="flex flex-col gap-2 tyba-divide-b px-[18px] py-3.5 text-[12px]">
+        <aside className="flex min-w-0 flex-[2] flex-col shadow-[inset_1px_0_0_var(--tyba-line)]">
+          <section className="flex flex-col gap-2 shadow-[inset_0_-1px_0_var(--tyba-line)] px-[18px] py-3.5 text-[12px]">
             <div className="flex justify-between text-[11px] text-tyba-text-faint">
               <span className="tyba-label">{t("prReviewers")}</span>
               <span>{t("prReviewersApproved", { count: approvedCount, total: reviewers.length })}</span>
@@ -882,7 +882,7 @@ export function PrDetailView({
               </div>
             ))}
           </section>
-          <section className="flex flex-col gap-2 tyba-divide-b px-[18px] py-3.5 text-[12px]">
+          <section className="flex flex-col gap-2 shadow-[inset_0_-1px_0_var(--tyba-line)] px-[18px] py-3.5 text-[12px]">
             <div className="flex justify-between text-[11px] text-tyba-text-faint">
               <span className="tyba-label">{t("prTabChecks")}</span>
               {checks.total > 0 && (
@@ -975,7 +975,7 @@ export function PrDetailView({
             </section>
           )}
           <div className="flex-1" />
-          <p className="tyba-divide-t px-[18px] py-3 text-[11px] text-tyba-text-faint">{t("prExternalNote")}</p>
+          <p className="shadow-[inset_0_1px_0_var(--tyba-line)] px-[18px] py-3 text-[11px] text-tyba-text-faint">{t("prExternalNote")}</p>
         </aside>
       </div>
     </div>
