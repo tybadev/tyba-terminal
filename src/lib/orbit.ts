@@ -1,0 +1,1907 @@
+// Orbit: espelho tipado do modelo e dos commands do core (`src-tauri/src/orbit`).
+// Princípio #1: quem valida e grava é o core (`orbit_save_graph`). O que
+// mora aqui é só tradução — modelo ↔ nós/ligações do canvas — e a regra de
+// ligação válida que o front usa para OFERECER ligações, nunca para decidir.
+
+import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+
+export type Runner = "claude" | "codex";
+
+/** Tipo do valor que uma ligação leva. */
+export type DataKind = "context" | "diff" | "file" | "log" | "json" | "url";
+
+/**
+ * Tipo da ligação (espelha `EdgeKind` do core): um valor, ou `plan` (agente →
+ * a nota de plano dele), `control` (agente → navegador que ele controla),
+ * `talk` (agente ⇄ agente, a conversa; vale nos dois sentidos) e `memory`
+ * (agente → nota que ele lê e escreve), que não levam valor — só dizem quem
+ * é de quem.
+ */
+export type EdgeKind = DataKind | "plan" | "control" | "talk" | "memory";
+
+/** Saída declarada de processo ou integração. `context` só o agente produz. */
+export type OutputKind = "log" | "json" | "file" | "diff";
+
+/** Os tipos que levam valor (o que processo, agente e integração manual aceitam). */
+export const DATA_KINDS: readonly DataKind[] = ["context", "diff", "file", "log", "json", "url"];
+
+export const EDGE_KINDS: readonly EdgeKind[] = [
+  ...DATA_KINDS,
+  "plan",
+  "control",
+  "talk",
+  "memory",
+];
+
+/** Leva valor na execução (espelha `carries_data`): `plan`, `control`, `talk` e `memory` não seguram ninguém. */
+export const carriesData = (kind: EdgeKind): kind is DataKind =>
+  (DATA_KINDS as readonly EdgeKind[]).includes(kind);
+
+export const OUTPUT_KINDS: readonly OutputKind[] = ["log", "json", "file", "diff"];
+
+/**
+ * Agente, processo e integração rodam em `dir` (a pasta do nó). Vazio só em
+ * grafo salvo antes da pasta por nó: aí vale `Graph.dir`.
+ */
+export type NodeKind =
+  | {
+      type: "agent";
+      runner: Runner;
+      role: string;
+      prompt: string;
+      dir: string;
+      /** "Não criar nós": as ferramentas do Orbit sem as `orbit_create_*`. */
+      noCreate?: boolean;
+    }
+  | { type: "process"; command: string; output: OutputKind; file: string | null; dir: string }
+  /** `locked`: cadeado "só leitura" para o agente ligado por `memory`. */
+  | { type: "note"; markdown: string; locked?: boolean }
+  | { type: "integration"; integrationId: string; dir: string }
+  /** Mostra uma página local. Recebe `url` (ou usa a dele); não produz nada. */
+  | { type: "browser"; url: string }
+  /** Serviço que já roda: produz `log` e `url`. */
+  | { type: "service"; source: ServiceSource }
+  /**
+   * Shell do dono no canvas, aberto por `orbit_terminal_open` (sem ▶). Não
+   * aceita ligação nem produz valor (só plano/controla do `claude` dele).
+   */
+  | { type: "terminal"; dir: string };
+
+/** De onde o nó de Serviço lê (espelha `ServiceSource` do core). */
+export type ServiceSource =
+  | {
+      type: "container";
+      containerId: string;
+      name: string;
+      /** Projeto e serviço do compose: a identidade que sobrevive ao contêiner recriado. */
+      project?: string;
+      service?: string;
+    }
+  | { type: "port"; sessionId: string | null; port: number }
+  | {
+      type: "tunnel";
+      sessionId: string;
+      tunnelId: string;
+      /** Host SSH e porta local do `-L`: a identidade que sobrevive à sessão fechada. */
+      hostId?: string;
+      listenPort?: number;
+    };
+
+export type ServiceSourceType = ServiceSource["type"];
+
+export const SERVICE_SOURCES: readonly ServiceSourceType[] = ["container", "port", "tunnel"];
+
+/** Fonte vazia de cada tipo: o nó recém-trocado ainda não escolheu nada. */
+export function emptySource(type: ServiceSourceType): ServiceSource {
+  switch (type) {
+    case "container":
+      return { type, containerId: "", name: "", project: "", service: "" };
+    case "port":
+      return { type, sessionId: null, port: 0 };
+    case "tunnel":
+      return { type, sessionId: "", tunnelId: "", hostId: "", listenPort: 0 };
+  }
+}
+
+/**
+ * Só `http`/`https` para `localhost`, `127.0.0.1` ou `[::1]`, porta opcional
+ * (1–65535). Espelha `service::is_local_url` do core, que é quem decide (no
+ * salvar e na execução); aqui serve para não montar o iframe de URL de fora.
+ */
+/** `*.test` e `*.localhost`: TLDs reservados (RFC 6761), espelho do core. */
+function isDevDomain(host: string): boolean {
+  const m = /^(.+)\.(test|localhost)$/.exec(host);
+  if (!m) return false;
+  return m[1]
+    .split(".")
+    .every((l) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(l));
+}
+
+export function isLocalUrl(url: string): boolean {
+  if (/[\s\\\u0000-\u001f\u007f-\u009f]/.test(url)) return false;
+  const lower = url.toLowerCase();
+  const scheme = lower.startsWith("http://") ? 7 : lower.startsWith("https://") ? 8 : 0;
+  if (!scheme) return false;
+  const rest = lower.slice(scheme);
+  const end = rest.search(/[/?#]/);
+  const authority = end < 0 ? rest : rest.slice(0, end);
+  if (authority.includes("@")) return false;
+  let host: string;
+  let port: string;
+  if (authority.startsWith("[::1]")) {
+    host = "[::1]";
+    port = authority.slice(5);
+  } else {
+    const i = authority.lastIndexOf(":");
+    host = i < 0 ? authority : authority.slice(0, i);
+    port = i < 0 ? "" : authority.slice(i);
+  }
+  if (host !== "localhost" && host !== "127.0.0.1" && host !== "[::1]" && !isDevDomain(host)) {
+    return false;
+  }
+  if (port === "") return true;
+  const digits = port.slice(1);
+  if (!port.startsWith(":") || !/^[0-9]{1,5}$/.test(digits)) return false;
+  const n = Number(digits);
+  return n >= 1 && n <= 65535;
+}
+
+/** Por que o navegador não carrega `url`: `file://` tem explicação própria. */
+export function browserRefusal(url: string): "orbitBrowserFileRefused" | "orbitBrowserRefused" {
+  return /^file:/i.test(url.trim()) ? "orbitBrowserFileRefused" : "orbitBrowserRefused";
+}
+
+/** Quanto tempo o chip "<agente> abriu" fica no navegador. */
+export const OPENED_CHIP_MS = 4000;
+
+/** Quanto falta do chip "<agente> abriu" (0: não mostra). */
+export function openedChipLeft(opened: BrowserOpened | null | undefined, now: number): number {
+  if (!opened) return 0;
+  return Math.max(0, opened.at + OPENED_CHIP_MS - now);
+}
+
+/** O que a fonte aponta, curto: o nome do contêiner, a porta, o túnel. Vazio se nada escolhido. */
+export function sourceDetail(source: ServiceSource): string {
+  switch (source.type) {
+    case "container":
+      return source.name || source.containerId.slice(0, 12);
+    case "port":
+      return source.port > 0 ? `:${source.port}` : "";
+    case "tunnel":
+      if (source.listenPort) return `:${source.listenPort}`;
+      return source.tunnelId ? source.tunnelId.slice(0, 8) : "";
+  }
+}
+
+/** Estado vivo do serviço (espelha `service::ServiceLive` do core). */
+export interface ServiceLive {
+  state: "up" | "down" | "stopped";
+  detail: string | null;
+  canStart: boolean;
+  containerId: string | null;
+}
+
+/** Lê agora: no ar / caiu / parado, e se "Subir" vale. */
+export const serviceProbe = (source: ServiceSource) =>
+  invoke<ServiceLive>("orbit_service_probe", { source });
+
+/** "Subir": o core lê o alvo do grafo salvo, sobe e registra para o ⌘Q. */
+export const serviceStart = (graphId: string, nodeId: string) =>
+  invoke<ServiceLive>("orbit_service_start", { graphId, nodeId });
+
+/** A palavra e o tom da cápsula do serviço; `null` sem leitura ainda. */
+export function serviceLiveLabel(
+  live: ServiceLive | null,
+): { key: string; tone: "green" | "red" | "faint" } | null {
+  if (!live) return null;
+  switch (live.state) {
+    case "up":
+      return { key: "orbitServiceUp", tone: "green" };
+    case "down":
+      return { key: "orbitServiceDown", tone: "red" };
+    case "stopped":
+      return { key: "orbitServiceStopped", tone: "faint" };
+  }
+}
+
+/**
+ * O contêiner recriado (mesmo serviço do compose ou mesmo nome) tem id novo:
+ * o nó passa a guardar o de agora, para o log ao vivo seguir o certo. O core
+ * não conta isso como config mudada (`ServiceSource::same_target`).
+ */
+export function withLiveContainer(source: ServiceSource, live: ServiceLive | null): ServiceSource | null {
+  if (source.type !== "container" || !live?.containerId) return null;
+  return live.containerId === source.containerId ? null : { ...source, containerId: live.containerId };
+}
+
+/** `http://localhost:<porta>` (espelha `service::local_url`). */
+export const localUrl = (port: number) => `http://localhost:${port}`;
+
+/** A porta da URL local, para o chip "porta :5173" (`null` se não há). */
+export function urlPort(url: string | null | undefined): number | null {
+  const m = url?.match(/^https?:\/\/(?:\[::1\]|[^/:?#]+):(\d+)/i);
+  return m ? Number(m[1]) : null;
+}
+
+export interface OrbitNode {
+  id: string;
+  title: string;
+  kind: NodeKind;
+  position: { x: number; y: number };
+  size: { w: number; h: number };
+}
+
+export interface OrbitEdge {
+  id: string;
+  from: string;
+  to: string;
+  kind: EdgeKind;
+}
+
+export interface Graph {
+  id: string;
+  name: string;
+  /** Pasta padrão: vale para nó sem `dir` próprio (grafos de antes da pasta por nó). */
+  dir: string;
+  nodes: OrbitNode[];
+  edges: OrbitEdge[];
+  variables: Record<string, string>;
+}
+
+export type Trigger = { type: "onInput"; kind: EdgeKind } | { type: "manual" };
+
+export interface Integration {
+  id: string;
+  name: string;
+  script: string;
+  trigger: Trigger;
+  output: OutputKind;
+  file: string | null;
+}
+
+// ---------------------------------------------------------------- IPC
+
+export const listGraphs = () => invoke<Graph[]>("orbit_list_graphs");
+
+export const getGraph = (id: string) =>
+  invoke<Graph | null>("orbit_get_graph", { id });
+
+/** Valida no core antes de gravar; o erro de validação volta como string. */
+export const saveGraph = (graph: Graph) =>
+  invoke<void>("orbit_save_graph", { graph });
+
+export const deleteGraph = (id: string) =>
+  invoke<void>("orbit_delete_graph", { id });
+
+export const listIntegrations = () =>
+  invoke<Integration[]>("orbit_list_integrations");
+
+export const saveIntegration = (integration: Integration) =>
+  invoke<void>("orbit_save_integration", { integration });
+
+export const deleteIntegration = (id: string) =>
+  invoke<void>("orbit_delete_integration", { id });
+
+// ------------------------------------------------------------- papéis
+
+/**
+ * Papel reutilizável da biblioteca desta máquina (quadro OrbitPapeis). O nome
+ * é a chave: o nó guarda só o nome, e as instruções entram no começo do
+ * prompt de cada agente com este papel. Nome fora da biblioteca é só rótulo.
+ */
+export interface Role {
+  name: string;
+  instructions: string;
+}
+
+/** Tetos do core (`MAX_ROLE_NAME_CHARS`, `MAX_ROLE_INSTRUCTIONS_CHARS`). */
+export const MAX_ROLE_NAME_CHARS = 40;
+export const MAX_ROLE_INSTRUCTIONS_CHARS = 4000;
+
+export const listRoles = () => invoke<Role[]>("orbit_list_roles");
+
+export const saveRole = (role: Role) => invoke<void>("orbit_save_role", { role });
+
+/** Apagar deixa o nome como rótulo nos nós que o usavam. */
+export const deleteRole = (name: string) => invoke<void>("orbit_delete_role", { name });
+
+/** Renomear leva os nós de todos os grafos junto (o core regrava os grafos). */
+export const renameRole = (from: string, to: string) =>
+  invoke<void>("orbit_rename_role", { from, to });
+
+export type RoleProblem =
+  | "emptyName"
+  | "nameOneLine"
+  | "nameTooLong"
+  | "instructionsTooLong"
+  | "controlChars";
+
+/** Quebra de linha ou controle (o `breaks_line` do core): o nome é uma linha só. */
+const ROLE_NAME_BREAK = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/u;
+/** Controle fora de `\n` e `\t` (o `has_control_chars` do core). */
+const ROLE_CONTROL = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/u;
+
+/**
+ * Por que o core recusaria o papel (`validate_role`), ou `null`. O front
+ * avisa antes de salvar; quem decide continua sendo o core.
+ */
+export function roleProblem(role: Role): RoleProblem | null {
+  if (role.name.trim() === "") return "emptyName";
+  if (ROLE_NAME_BREAK.test(role.name)) return "nameOneLine";
+  if ([...role.name].length > MAX_ROLE_NAME_CHARS) return "nameTooLong";
+  if ([...role.instructions].length > MAX_ROLE_INSTRUCTIONS_CHARS) return "instructionsTooLong";
+  if (ROLE_CONTROL.test(role.instructions)) return "controlChars";
+  return null;
+}
+
+/** Quantos nós de agente usam o papel, em quantos grafos (a biblioteca é por máquina). */
+export function roleUsage(
+  graphs: readonly { nodes: readonly OrbitNode[] }[],
+  name: string,
+): { nodes: number; graphs: number } {
+  let nodes = 0;
+  let inGraphs = 0;
+  for (const graph of graphs) {
+    const here = graph.nodes.filter((n) => n.kind.type === "agent" && n.kind.role === name).length;
+    nodes += here;
+    if (here > 0) inGraphs += 1;
+  }
+  return { nodes, graphs: inGraphs };
+}
+
+/** A primeira linha com texto das instruções, para a lista do seletor. */
+export const roleSummary = (instructions: string): string =>
+  instructions
+    .split("\n")
+    .map((l) => l.trim())
+    .find(Boolean) ?? "";
+
+/** "Nome (cópia)" que não existe ainda, dentro do teto do nome. */
+export function copyName(name: string, taken: readonly string[]): string {
+  for (let n = 1; n < 100; n += 1) {
+    const suffix = n === 1 ? " (cópia)" : ` (cópia ${n})`;
+    const room = MAX_ROLE_NAME_CHARS - [...suffix].length;
+    const candidate = `${[...name].slice(0, room).join("").trimEnd()}${suffix}`;
+    if (!taken.includes(candidate)) return candidate;
+  }
+  return name;
+}
+
+// ---------------------------------------------------- regra de ligação
+
+type IntegrationsById = ReadonlyMap<string, Integration>;
+
+export const integrationsById = (list: readonly Integration[]): IntegrationsById =>
+  new Map(list.map((i) => [i.id, i]));
+
+/** O que o nó produz (tabela de rules; espelha `produces` do core). */
+export function produces(kind: NodeKind, integrations: IntegrationsById): EdgeKind[] {
+  switch (kind.type) {
+    case "agent":
+      return ["context", "diff", "plan", "control", "talk", "memory"];
+    case "process":
+      // A url só fica disponível quando a sessão do processo abre porta.
+      return [kind.output, "url"];
+    case "note":
+      return ["context", "file"];
+    case "integration": {
+      const i = integrations.get(kind.integrationId);
+      return i ? [i.output] : [];
+    }
+    case "browser":
+      return [];
+    case "service":
+      return ["log", "url"];
+    case "terminal":
+      // Só o que o core cria a partir do `claude` digitado nele.
+      return ["plan", "control"];
+  }
+}
+
+/** O que o nó aceita (tabela de rules; espelha `accepts` do core). */
+export function accepts(kind: NodeKind, integrations: IntegrationsById): EdgeKind[] {
+  switch (kind.type) {
+    case "agent":
+      return [...DATA_KINDS, "talk"];
+    case "process":
+      return [...DATA_KINDS];
+    case "note":
+      return ["plan", "memory"];
+    case "service":
+    case "terminal":
+      return [];
+    case "browser":
+      return ["url", "control"];
+    case "integration": {
+      const trigger = integrations.get(kind.integrationId)?.trigger;
+      if (!trigger) return [];
+      if (trigger.type === "manual") return [...DATA_KINDS];
+      return carriesData(trigger.kind) ? [trigger.kind] : [];
+    }
+  }
+}
+
+/** `to` alcança `from` pelas ligações existentes? Então `from → to` fecha ciclo. */
+function reaches(edges: readonly OrbitEdge[], start: string, goal: string): boolean {
+  const seen = new Set<string>();
+  const stack = [start];
+  while (stack.length > 0) {
+    const id = stack.pop()!;
+    if (id === goal) return true;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    // Só o que leva valor segura alguém (espelha `check_acyclic`).
+    for (const e of edges) if (e.from === id && carriesData(e.kind)) stack.push(e.to);
+  }
+  return false;
+}
+
+export type ConnectionProblem =
+  | "unknownNode"
+  | "self"
+  | "notProduced"
+  | "notAccepted"
+  | "duplicate"
+  | "cycle";
+
+/**
+ * Por que a ligação `from → to` do tipo `kind` não vale, ou `null` se vale.
+ * Mesmas regras do `validate_graph` do core; a ligação repetida (mesma
+ * origem, destino e tipo) o core aceitaria, mas não acrescenta nada.
+ */
+export function connectionProblem(
+  nodes: readonly OrbitNode[],
+  edges: readonly OrbitEdge[],
+  integrations: IntegrationsById,
+  from: string,
+  to: string,
+  kind: EdgeKind,
+): ConnectionProblem | null {
+  const source = nodes.find((n) => n.id === from);
+  const target = nodes.find((n) => n.id === to);
+  if (!source || !target) return "unknownNode";
+  if (from === to) return "self";
+  if (!produces(source.kind, integrations).includes(kind)) return "notProduced";
+  if (!accepts(target.kind, integrations).includes(kind)) return "notAccepted";
+  if (edges.some((e) => e.from === from && e.to === to && e.kind === kind)) {
+    return "duplicate";
+  }
+  // Conversa vale nos dois sentidos: uma por par (o core recusa a segunda).
+  if (kind === "talk" && edges.some((e) => e.kind === "talk" && e.from === to && e.to === from)) {
+    return "duplicate";
+  }
+  if (carriesData(kind) && reaches(edges, to, from)) return "cycle";
+  return null;
+}
+
+/**
+ * O tipo de uma ligação nova de `source` para `target` (achado canvas-3): o
+ * que um produz e o outro aceita, com o padrão do par na frente. Vazio = não
+ * ligam. Sem padrão para o par, vale a ordem do que a origem produz (a
+ * primeira saída é a principal: o contexto do agente e da nota, a saída
+ * declarada do processo, o log do serviço). O dono troca depois pela
+ * etiqueta da ligação.
+ */
+export function connectionKinds(
+  source: NodeKind,
+  target: NodeKind,
+  integrations: IntegrationsById,
+): EdgeKind[] {
+  const accepted = accepts(target, integrations);
+  const both = produces(source, integrations).filter((k) => accepted.includes(k));
+  const preferred = PAIR_DEFAULT[`${source.type}>${target.type}`];
+  return preferred && both.includes(preferred)
+    ? [preferred, ...both.filter((k) => k !== preferred)]
+    : both;
+}
+
+/**
+ * Padrão por par quando a primeira saída da origem não é o que o par quer:
+ * agente → processo/integração leva o que mudou (o processo testa, a
+ * integração abre o PR), e agente → nota é memória. Nota → agente, agente → agente (contexto) e
+ * processo/serviço → navegador (url) já saem da ordem do `produces`.
+ */
+const PAIR_DEFAULT: Partial<Record<string, EdgeKind>> = {
+  "agent>process": "diff",
+  "agent>integration": "diff",
+  // Nota comum ligada a agente é memória dele (quadro MaestroConversa); a
+  // nota que já é plano continua plano (ver `pickConnection`).
+  "agent>note": "memory",
+};
+
+/**
+ * A ligação que soltar `from` em `to` cria: o tipo calculado, ou por que não
+ * liga. Uma ligação por par: se já existe uma de `from` para `to`, troca-se
+ * o tipo dela pela etiqueta em vez de criar outra.
+ */
+export function pickConnection(
+  nodes: readonly OrbitNode[],
+  edges: readonly OrbitEdge[],
+  integrations: IntegrationsById,
+  from: string,
+  to: string,
+): { kind: EdgeKind } | { problem: ConnectionProblem } {
+  const source = nodes.find((n) => n.id === from);
+  const target = nodes.find((n) => n.id === to);
+  if (!source || !target) return { problem: "unknownNode" };
+  if (from === to) return { problem: "self" };
+  let kinds = connectionKinds(source.kind, target.kind, integrations);
+  if (kinds.length === 0) return { problem: "notAccepted" };
+  if (edges.some((e) => e.from === from && e.to === to)) return { problem: "duplicate" };
+  // A nota que já recebe plano é plano; a comum, memória (o padrão do par).
+  if (kinds.includes("plan") && edges.some((e) => e.to === to && e.kind === "plan")) {
+    kinds = ["plan", ...kinds.filter((k) => k !== "plan")];
+  }
+  const problem = connectionProblem(nodes, edges, integrations, from, to, kinds[0]);
+  return problem ? { problem } : { kind: kinds[0] };
+}
+
+/**
+ * Os tipos para os quais a ligação `edgeId` pode ser trocada (a etiqueta
+ * "contexto ▾"): o que o par aceita, menos um tipo que outra ligação do
+ * mesmo par já leva. O tipo atual vem junto, para o menu marcá-lo.
+ */
+export function edgeKindChoices(
+  nodes: readonly OrbitNode[],
+  edges: readonly OrbitEdge[],
+  integrations: IntegrationsById,
+  edgeId: string,
+): EdgeKind[] {
+  const edge = edges.find((e) => e.id === edgeId);
+  // A ligação de plano é do Orquestrador (quadro OrbitPlano: "plano", sem ▾).
+  if (!edge || edge.kind === "plan") return [];
+  const source = nodes.find((n) => n.id === edge.from);
+  const target = nodes.find((n) => n.id === edge.to);
+  if (!source || !target) return [];
+  const taken = new Set(
+    edges
+      .filter((e) => e.id !== edgeId && e.from === edge.from && e.to === edge.to)
+      .map((e) => e.kind),
+  );
+  // Conversa vale nos dois sentidos: a de volta já ocupa o par.
+  if (edges.some((e) => e.id !== edgeId && e.kind === "talk" && e.from === edge.to && e.to === edge.from)) {
+    taken.add("talk");
+  }
+  return connectionKinds(source.kind, target.kind, integrations).filter((k) => !taken.has(k));
+}
+
+// ------------------------------------------- modelo ↔ canvas (xyflow)
+
+/**
+ * A porta de saída do nó: uma só, na borda direita (achado canvas-3). O tipo
+ * da ligação não depende mais de qual bolinha se agarra — sai do par.
+ */
+export const OUT_HANDLE = "out";
+
+/** Saída invisível do orquestrador: a ligação tracejada até o que ele criou (só desenho). */
+export const ORCHESTRATOR_HANDLE = "orchestrator";
+
+/** Nó que cria outros (e tem a porta {@link ORCHESTRATOR_HANDLE}): agente ou Terminal. */
+export const isOrchestrator = (kind: Pick<NodeKind, "type"> | undefined): boolean =>
+  kind?.type === "agent" || kind?.type === "terminal";
+
+/** A entrada do nó: todas as ligações chegam nela; o nó inteiro é alvo. */
+export const NEW_IN_HANDLE = "in";
+
+/** O que o canvas guarda em cada nó: o nó do modelo, inteiro. */
+export type FlowNodeData = { node: OrbitNode };
+export type FlowEdgeData = { kind: EdgeKind };
+
+/** Recorte do `Node` do xyflow que a conversão usa (mantém o teste sem DOM). */
+export interface FlowNode {
+  id: string;
+  type: NodeKind["type"];
+  position: { x: number; y: number };
+  width?: number;
+  height?: number;
+  data: FlowNodeData;
+}
+
+export interface FlowEdge {
+  id: string;
+  type: "orbit";
+  source: string;
+  target: string;
+  sourceHandle: string;
+  targetHandle: string;
+  data: FlowEdgeData;
+}
+
+/**
+ * Grafo do core → canvas. Grafos salvos antes da porta única abrem iguais:
+ * a ligação guarda só o tipo, e as portas (uma saída, uma entrada) saem
+ * daqui — nenhuma ligação se perde na troca.
+ */
+export function toFlow(graph: Graph): { nodes: FlowNode[]; edges: FlowEdge[] } {
+  return {
+    nodes: graph.nodes.map((node) => ({
+      id: node.id,
+      type: node.kind.type,
+      position: { ...node.position },
+      width: node.size.w,
+      height: node.size.h,
+      data: { node },
+    })),
+    edges: graph.edges.map((edge) => ({
+      id: edge.id,
+      type: "orbit",
+      source: edge.from,
+      target: edge.to,
+      sourceHandle: OUT_HANDLE,
+      targetHandle: NEW_IN_HANDLE,
+      data: { kind: edge.kind },
+    })),
+  };
+}
+
+/** Recorte da ligação do xyflow que volta para o modelo. */
+export interface FlowEdgeLike {
+  id: string;
+  source: string;
+  target: string;
+  sourceHandle?: string | null;
+  data?: FlowEdgeData;
+}
+
+/**
+ * O grafo que vai para o core: metadados de `base`, nós e ligações do canvas.
+ * Posição e tamanho saem do canvas (é onde o dono arrasta e redimensiona); o
+ * resto do nó sai do `data`.
+ */
+export function fromFlow(
+  base: Pick<Graph, "id" | "name" | "dir" | "variables">,
+  nodes: readonly Pick<FlowNode, "id" | "position" | "width" | "height" | "data">[],
+  edges: readonly FlowEdgeLike[],
+): Graph {
+  return {
+    id: base.id,
+    name: base.name,
+    dir: base.dir,
+    variables: { ...base.variables },
+    nodes: nodes.map((n) => ({
+      ...n.data.node,
+      id: n.id,
+      position: { x: n.position.x, y: n.position.y },
+      size: {
+        w: n.width ?? n.data.node.size.w,
+        h: n.height ?? n.data.node.size.h,
+      },
+    })),
+    edges: edges.flatMap((e) => {
+      const kind = e.data?.kind;
+      return kind ? [{ id: e.id, from: e.source, to: e.target, kind }] : [];
+    }),
+  };
+}
+
+/**
+ * Tamanho inicial de cada tipo de nó (quadro OrbitHarness: nós grandes).
+ * Agente e processo nascem com tamanho de trabalho (nos-9), o mesmo do
+ * `default_size` do core para os nós que o orquestrador cria.
+ */
+export const DEFAULT_SIZE: Record<NodeKind["type"], { w: number; h: number }> = {
+  agent: { w: 560, h: 440 },
+  process: { w: 560, h: 440 },
+  note: { w: 360, h: 170 },
+  integration: { w: 360, h: 200 },
+  browser: { w: 640, h: 420 },
+  service: { w: 380, h: 300 },
+  terminal: { w: 560, h: 440 },
+};
+
+export function newNode(
+  id: string,
+  title: string,
+  kind: NodeKind,
+  position: { x: number; y: number },
+): OrbitNode {
+  return { id, title, kind, position, size: { ...DEFAULT_SIZE[kind.type] } };
+}
+
+/** Grafo novo: vazio, com nome e a pasta padrão dos nós. */
+export function emptyGraph(id: string, name: string, dir: string): Graph {
+  return { id, name, dir, nodes: [], edges: [], variables: {} };
+}
+
+/** Onde o nó roda: a pasta dele, ou a padrão do grafo. `null` em quem não roda nada. */
+export function nodeDir(kind: NodeKind, graphDir: string): string | null {
+  if (kind.type === "note" || kind.type === "browser" || kind.type === "service") return null;
+  return kind.dir || graphDir;
+}
+
+/** "…/projetos/api": as duas últimas partes da pasta (o caminho inteiro vai no title). */
+export function shortDir(dir: string): string {
+  const parts = dir.split(/[\\/]/).filter(Boolean);
+  if (parts.length <= 2) return dir;
+  return `…/${parts.slice(-2).join("/")}`;
+}
+
+/** O grafo a abrir: o último usado, se ainda existe, ou o mais recente. */
+export function pickGraph(graphs: readonly Graph[], lastId: string | null): Graph | null {
+  return graphs.find((g) => g.id === lastId) ?? graphs[0] ?? null;
+}
+
+const LAST_DIR_KEY = "tyba.orbit.lastDir";
+const LAST_GRAPH_KEY = "tyba.orbit.lastGraph";
+/** Chaves de quando o recurso se chamava Maestro: lidas só se a nova falta. */
+const LEGACY_KEYS: Record<string, string> = {
+  [LAST_DIR_KEY]: "tyba.maestro.lastDir",
+  [LAST_GRAPH_KEY]: "tyba.maestro.lastGraph",
+};
+
+// localStorage pode não existir ou recusar (modo privado, cota): é conveniência.
+function readKey(key: string): string | null {
+  try {
+    return localStorage.getItem(key) || localStorage.getItem(LEGACY_KEYS[key] ?? "") || null;
+  } catch {
+    return null;
+  }
+}
+
+function writeKey(key: string, value: string) {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // Sem armazenamento, o nó novo cai na home.
+  }
+}
+
+/** Última pasta escolhida num nó: é onde o nó novo nasce. */
+export const lastDir = () => readKey(LAST_DIR_KEY);
+export const rememberDir = (dir: string) => writeKey(LAST_DIR_KEY, dir);
+/** Último grafo aberto: é o que o Orbit abre. */
+export const lastGraphId = () => readKey(LAST_GRAPH_KEY);
+export const rememberGraph = (id: string) => writeKey(LAST_GRAPH_KEY, id);
+
+// ------------------------------------------------------------ execução
+
+export type RunStatus = "running" | "done" | "failed" | "stopped";
+
+export type NodeStatus = "waiting" | "running" | "done" | "failed" | "skipped" | "stopped";
+
+/** Estado de um nó numa execução, como o core manda (tempos em ms). */
+export interface NodeRun {
+  status: NodeStatus;
+  /** Sessão do terminal do nó. Só aparece no canvas, nunca na grade. */
+  sessionId: string | null;
+  startedAt: number | null;
+  finishedAt: number | null;
+  exitCode: number | null;
+  /** Tipo da saída → caminho do arquivo com o valor. */
+  outputs: Partial<Record<DataKind, string>>;
+  reason: string | null;
+  /**
+   * URL local do nó: a que o navegador mostra, a do serviço, ou a porta que
+   * a sessão do processo abriu (chega com o processo ainda rodando).
+   */
+  url?: string | null;
+  /**
+   * Orquestrador que fechou o primeiro turno: as saídas já valem, mas o nó
+   * segue rodando (e a execução aberta) até a sessão sair.
+   */
+  orchestrating?: boolean;
+  /** Navegador: a última página que um agente abriu nele (`orbit_browser_open`, `$BROWSER`). */
+  opened?: BrowserOpened | null;
+  /** Agente: mensagens de outros agentes esperando ele fechar o turno. */
+  inbox?: number;
+  /** Agente: a mesma fila, por id do nó de quem mandou. */
+  inboxFrom?: Record<string, number>;
+  /** Agente: a última mensagem que ele mandou (`orbit_send`), redigida. */
+  sent?: SentMessage | null;
+  /** Nota: a última escrita de um agente ligado por `memory`, com o texto novo. */
+  written?: NoteWritten | null;
+  /** Agente: a última entrega da fila falhou ("não entregue: <motivo>"); as mensagens seguem na fila. */
+  undelivered?: string | null;
+  /** Quantas vezes o nó foi reiniciado ou rodado de novo neste run. */
+  attempt?: number;
+  /**
+   * "↻ para aplicar": o nó já começou e algo de que ele depende mudou depois.
+   * Não reinicia sozinho.
+   */
+  stale?: boolean;
+  /** Por que ficou "↻ para aplicar" (o último motivo, guardado no core). */
+  staleReason?: StaleReason | null;
+  /**
+   * Terminal: o claude/codex digitado no shell do nó, rodando COM as
+   * ferramentas do Orbit. `null` sem agente ou sem as ferramentas.
+   */
+  hostedAgent?: Runner | null;
+  /** O log da sessão do nó neste run (o ⋯ do card), do mais velho ao mais novo. */
+  events?: NodeEvent[];
+  /**
+   * Agente parado esperando o dono (espelha `run::WaitingYou`): o pedido de
+   * permissão aberto no terminal dele, desde quando (ms) e o resumo redigido.
+   */
+  waitingYou?: WaitingYou | null;
+}
+
+/** Por que o agente espera o dono (espelha `agent::WaitReason`). */
+export type WaitReason = "permission";
+
+export interface WaitingYou {
+  reason: WaitReason;
+  since: number;
+  hint?: string | null;
+}
+
+/** Quem fez (espelha `Actor` do core): o dono, ou o agente pelo nome. */
+export type Actor = "you" | { agent: string };
+
+/** Um evento do log da sessão (espelha `NodeEventKind` do core). */
+export type NodeEventKind =
+  | { type: "created"; by: string }
+  | { type: "createdNode"; title: string }
+  | { type: "started"; command: string | null }
+  | { type: "url"; url: string }
+  | { type: "restarted"; by: Actor; rerun: boolean }
+  | { type: "stopped"; by: Actor }
+  | { type: "exited"; ok: boolean; code: number | null }
+  | { type: "closed"; by: Actor }
+  | { type: "agentStarted"; agent: string }
+  | { type: "discarded"; by: Actor };
+
+export interface NodeEvent {
+  /** ms desde a época. */
+  at: number;
+  what: NodeEventKind;
+}
+
+/** Motivo do "↻ para aplicar": origem rodou de novo, config do nó, ligações ou variável. */
+export type StaleReason = "source" | "config" | "edges" | "variable";
+
+/** A chave i18n da dica do "↻ para aplicar" para o motivo que veio do core. */
+export function staleHintKey(reason: StaleReason | null | undefined): string {
+  return `orbitStaleHint_${reason ?? "source"}`;
+}
+
+/** Quem abriu a página do navegador (título do nó do agente) e quando (ms). */
+export interface BrowserOpened {
+  by: string;
+  at: number;
+}
+
+/** "→ para X: …": título do destino, começo do texto (redigido) e quando (ms). */
+export interface SentMessage {
+  to: string;
+  text: string;
+  at: number;
+}
+
+/** Quem escreveu a nota por último (título do agente), quando (ms) e o texto que ficou. */
+export interface NoteWritten {
+  by: string;
+  at: number;
+  markdown: string;
+}
+
+export interface Run {
+  id: string;
+  graphId: string;
+  startedAt: number;
+  finishedAt: number | null;
+  status: RunStatus;
+  nodes: Record<string, NodeRun>;
+  /** Cresce a cada retrato do core. */
+  version?: number;
+  /** Run de "Testar com a última entrada". */
+  test?: boolean;
+  /** Sessões de agente do run ainda vivas — o run pode já ter fechado. */
+  liveAgents?: string[];
+  /**
+   * Assentada: nada acontece (agentes com o turno fechado, sem fila, nenhum
+   * processo). Segue `running` por baixo — sessões abertas —, mas a tela diz
+   * "concluída · sessões abertas" e `finishedAt` é o momento em que assentou.
+   */
+  settled?: boolean;
+  /** Tempo parado (assentada) que já passou; sai do tempo mostrado. */
+  pausedMs?: number;
+  /** Nós que um orquestrador criou neste run (efêmeros, fora do grafo salvo). */
+  created?: Created[];
+  /** A nota de plano de cada orquestrador do run (`orbit_plan`), como está no grafo salvo. */
+  plans?: Plan[];
+  /** "#N" dado pelo core no ▶ (estável na poda); 0/ausente = gravada antes da numeração. */
+  number?: number;
+  /**
+   * Sessão ao vivo (sem ▶): o id do nó Terminal cujo shell a segura
+   * (`orbit_terminal_open`). Ausente/null no run do ▶.
+   */
+  terminal?: string | null;
+  /** A fila de atenção do core: ids dos nós que esperam o dono, o mais antigo primeiro. */
+  waitingYou?: string[];
+}
+
+/** Estado de um passo do plano (espelha `orchestrator::StepState`). */
+export type StepState = "todo" | "doing" | "done" | "failed";
+
+/** A nota de plano de um orquestrador (espelha `orchestrator::Plan`). */
+export interface Plan {
+  orchestrator: string;
+  note: OrbitNode;
+  edge: OrbitEdge;
+  steps: { text: string; state: StepState; made?: string }[];
+  updatedAt: number;
+}
+
+/** Nó criado por um orquestrador durante o run (espelha `orchestrator::Created`). */
+export interface Created {
+  node: OrbitNode;
+  /** Id do nó orquestrador que o criou. */
+  createdBy: string;
+  createdAt: number;
+  /** Ligações que chegam nele (a `url` do `from_node`). */
+  edges: OrbitEdge[];
+  /** O dono clicou "Manter no grafo": já é nó do grafo salvo. */
+  kept: boolean;
+  /** O dono apagou o nó no canvas (`runDiscardNode`): some da vista. */
+  discarded?: boolean;
+}
+
+/**
+ * Os criados que o canvas desenha como efêmeros: só no run rodando (no ■
+ * Parar ou no fim eles somem) e só os que ainda não foram para o grafo.
+ */
+export const ephemeralCreated = (run: Run | null): Created[] =>
+  run?.status === "running" ? (run.created ?? []).filter((c) => !c.kept) : [];
+
+/**
+ * Quem o orquestrador criou no run à vista e o dono ainda não manteve: id do
+ * nó → id do criador. Mantido, o nó é do dono (decisão de 2026-10-19): sem
+ * contorno violeta tracejado, sem tracejada até o criador e, no agente, com a
+ * porta de orquestrador e o "Não criar nós" de qualquer agente do grafo. A
+ * origem fica no log da sessão do nó.
+ */
+export function createdByOf(run: Run | null): Map<string, string> {
+  return new Map(
+    (run?.created ?? []).filter((c) => !c.kept).map((c) => [c.node.id, c.createdBy]),
+  );
+}
+
+/**
+ * Criado por um agente no run aberto, mantido ou não. O core não deixa esse
+ * agente criar nós até a próxima ▶ (sem cascata, `is_created` não olha o
+ * Manter): a tela não mostra "Não criar nós" nem a porta de orquestrador
+ * enquanto isso vale. Na próxima ▶ ele é nó comum do grafo.
+ */
+export function createdInOpenRun(run: Run | null, id: string): boolean {
+  return (
+    run?.status === "running" &&
+    (run.created ?? []).some((c) => c.node.id === id && !c.discarded)
+  );
+}
+
+/**
+ * O selo "criado pelo X · Manter" do rodapé: só enquanto o nó não foi
+ * mantido. Mantido, o nó é do dono e o cartão perde o selo; a origem fica
+ * no log da sessão do nó (o ⋯, "X criou o nó"). Devolve o id do criador.
+ */
+export function creatorBadge(run: Run | null, id: string): string | undefined {
+  const c = (run?.created ?? []).find((c) => c.node.id === id);
+  return c && !c.kept ? c.createdBy : undefined;
+}
+
+/** O que o canvas desenha a partir dos criados do run à vista (sem DOM, testável). */
+export interface CreatedFlow {
+  /** Os efêmeros: fora do grafo salvo, montados a cada render. */
+  nodes: FlowNode[];
+  /** Ligação tracejada criador → criado (só desenho; não entra no agendamento). */
+  byEdges: { id: string; source: string; target: string; sourceHandle: string; targetHandle: string }[];
+  /** As ligações url dos efêmeros (as dos mantidos já estão no grafo). */
+  edges: FlowEdge[];
+}
+
+/**
+ * Nós e ligações dos criados. A tracejada só sai de um orquestrador do
+ * grafo — agente ou Terminal, os que têm a porta {@link ORCHESTRATOR_HANDLE}
+ * (o claude/codex digitado no Terminal cria em nome dele) — e só chega num
+ * efêmero desenhado: o mantido é do dono e não a tem.
+ */
+export function createdFlow(run: Run | null, graphNodes: readonly OrbitNode[]): CreatedFlow {
+  const ephemeral = ephemeralCreated(run);
+  const inGraph = new Map(graphNodes.map((n) => [n.id, n]));
+  const drawn = new Set([...inGraph.keys(), ...ephemeral.map((c) => c.node.id)]);
+  const orchestrates = (id: string) => isOrchestrator(inGraph.get(id)?.kind);
+  const byEdges: CreatedFlow["byEdges"] = [];
+  for (const c of run?.created ?? []) {
+    // Mantido é do dono: a tracejada até o criador sai junto com a marca.
+    if (c.kept || !drawn.has(c.node.id) || !orchestrates(c.createdBy)) continue;
+    byEdges.push({
+      id: `${c.node.id}:by`,
+      source: c.createdBy,
+      target: c.node.id,
+      sourceHandle: ORCHESTRATOR_HANDLE,
+      targetHandle: NEW_IN_HANDLE,
+    });
+  }
+  return {
+    nodes: ephemeral.map(({ node }) => ({
+      id: node.id,
+      type: node.kind.type,
+      position: node.position,
+      width: node.size.w,
+      height: node.size.h,
+      data: { node },
+    })),
+    byEdges,
+    edges: ephemeral.flatMap((c) =>
+      c.edges
+        .filter((e) => drawn.has(e.from))
+        .map((e) => ({
+          id: e.id,
+          type: "orbit" as const,
+          source: e.from,
+          target: e.to,
+          sourceHandle: OUT_HANDLE,
+          targetHandle: NEW_IN_HANDLE,
+          data: { kind: e.kind },
+        })),
+    ),
+  };
+}
+
+/**
+ * Os criados que o painel "O que o Orquestrador fez" lista: os do run à
+ * vista, em qualquer estado. O fim do run (o orquestrador saiu, ■ Parar) é
+ * justamente quando o dono decide manter; antes o painel sumia ali.
+ */
+export const runCreated = (run: Run | null): Created[] => run?.created ?? [];
+
+/**
+ * Sessão do nó que tem terminal para mostrar: rodando, ou o agente que ficou
+ * vivo depois do primeiro turno para o dono conversar. "Vivo" é o que o core
+ * diz em `liveAgents`: agente `done` cuja sessão saiu (`/exit`, app
+ * reiniciado) não tem terminal, e o nó volta a mostrar o prompt.
+ */
+export function nodeSession(
+  kind: NodeKind,
+  run: Pick<Run, "nodes" | "liveAgents"> | null,
+  nodeId: string,
+  live: boolean,
+): string | null {
+  const nodeRun = run?.nodes[nodeId];
+  if (!nodeRun?.sessionId) return null;
+  if (nodeRun.status === "running") return nodeRun.sessionId;
+  if (
+    kind.type === "agent" &&
+    nodeRun.status === "done" &&
+    live &&
+    (run?.liveAgents ?? []).includes(nodeRun.sessionId)
+  ) {
+    return nodeRun.sessionId;
+  }
+  return null;
+}
+
+/** Tipos de nó que param, reiniciam e rodam de novo pelo ⋯. */
+const CONTROLLED: readonly NodeKind["type"][] = ["agent", "process", "service", "integration", "browser"];
+
+/** O que o ⋯ do nó oferece agora. */
+export interface NodeControls {
+  /** Parar só ele (sem apagar): rodando, ou o agente vivo depois do turno. */
+  stop: boolean;
+  /** Reiniciar: parar e subir de novo com a mesma config. */
+  restart: boolean;
+  /** Rodar de novo o que terminou, falhou ou parou. */
+  rerun: boolean;
+}
+
+/**
+ * Parar / Reiniciar / Rodar de novo conforme o estado que veio do core. O
+ * core só reinicia com a execução aberta (rodando ou "concluída · sessões
+ * abertas", que segue `running` por baixo); fechada, o caminho é o ▶.
+ */
+export function nodeControls(
+  kind: NodeKind,
+  run: Pick<Run, "nodes" | "liveAgents" | "status"> | null,
+  nodeId: string,
+  live: boolean,
+): NodeControls {
+  const n = run?.nodes[nodeId];
+  if (!run || !n || !live || !CONTROLLED.includes(kind.type)) {
+    return { stop: false, restart: false, rerun: false };
+  }
+  const open = run.status === "running";
+  // O navegador não tem sessão: Reiniciar recarrega com a url de agora.
+  if (kind.type === "browser") {
+    return { stop: false, restart: open && n.status !== "waiting" && n.status !== "skipped", rerun: false };
+  }
+  return {
+    stop: (open && n.status === "running") || nodeSession(kind, run, nodeId, live) !== null,
+    restart: open && n.status === "running",
+    rerun: open && (n.status === "done" || n.status === "failed" || n.status === "stopped"),
+  };
+}
+
+/**
+ * Sessão de cada nó de agente com terminal no run à vista (nó → sessão): os
+ * do grafo e os que o orquestrador criou. Daqui saem os subagentes que viram
+ * nós-filhos; sem os criados, o agente que o orquestrador cria nunca mostra
+ * os dele.
+ */
+export function agentSessions(
+  graphNodes: readonly OrbitNode[],
+  run: Run | null,
+  live: boolean,
+): Map<string, string> {
+  const out = new Map<string, string>();
+  if (!run) return out;
+  for (const n of [...graphNodes, ...ephemeralCreated(run).map((c) => c.node)]) {
+    if (n.kind.type !== "agent") continue;
+    const session = nodeSession(n.kind, run, n.id, live);
+    if (session) out.set(n.id, session);
+  }
+  return out;
+}
+
+/** Onde achar o nó de uma sessão: em que execução e qual nó (grafo ou criado). */
+export function findSessionNode(
+  runs: readonly Run[],
+  sessionId: string,
+): { runId: string; nodeId: string } | null {
+  for (const run of runs) {
+    for (const [nodeId, n] of Object.entries(run.nodes)) {
+      if (n.sessionId === sessionId) return { runId: run.id, nodeId };
+    }
+  }
+  return null;
+}
+
+/**
+ * Ligações que deixaram de valer porque o nó mudou de tipo de saída ou de
+ * entrada (a saída do processo trocada, a integração salva com outro output
+ * ou gatilho, apagada). A porta delas some e o xyflow não as desenha, mas o
+ * core recusa o grafo inteiro por elas — todo salvar seguinte falharia.
+ */
+export function invalidEdges(
+  nodes: readonly OrbitNode[],
+  edges: readonly OrbitEdge[],
+  integrations: IntegrationsById,
+): OrbitEdge[] {
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  return edges.filter((e) => {
+    const from = byId.get(e.from);
+    const to = byId.get(e.to);
+    if (!from || !to) return false;
+    return (
+      !produces(from.kind, integrations).includes(e.kind) ||
+      !accepts(to.kind, integrations).includes(e.kind)
+    );
+  });
+}
+
+/**
+ * Para onde vai cada mudança que o xyflow manda sobre os nós: as do grafo vão
+ * ao state salvo; as dos criados pelo orquestrador (arrastar, redimensionar,
+ * selecionar) vão à vista deles, menos apagar — criado não se apaga no
+ * canvas; dos filhos efêmeros dos subagentes só vale arrastar (nos-8), que
+ * vai à vista deles.
+ */
+export function routeNodeChanges<C extends { type: string }>(
+  changes: readonly C[],
+  createdIds: ReadonlySet<string>,
+  isEphemeral: (id: string) => boolean,
+): { graph: C[]; created: C[]; ephemeral: C[] } {
+  const graph: C[] = [];
+  const created: C[] = [];
+  const ephemeral: C[] = [];
+  for (const c of changes) {
+    const id = "id" in c && typeof c.id === "string" ? c.id : null;
+    if (id === null) graph.push(c);
+    else if (createdIds.has(id)) {
+      if (c.type !== "remove") created.push(c);
+    } else if (!isEphemeral(id)) graph.push(c);
+    else if (c.type === "position") ephemeral.push(c);
+  }
+  return { graph, created, ephemeral };
+}
+
+/**
+ * O nó sob o ponteiro (o elemento que `elementFromPoint` devolve), pelo
+ * `data-id` do invólucro do xyflow. O xyflow só informa o nó de destino com o
+ * ponteiro perto de uma porta (`connectionRadius`); soltar no corpo do nó
+ * chega aqui.
+ */
+export function nodeUnderPointer(
+  el: { closest(selector: string): { getAttribute(name: string): string | null } | null } | null,
+): string | null {
+  return el?.closest(".react-flow__node")?.getAttribute("data-id") ?? null;
+}
+
+/**
+ * "Manter": o core grava no grafo o criado `nodeId` (o "Manter" do nó) ou,
+ * sem ele, todos os que `orchestrator` criou no run (o "Manter tudo" do ⋯
+ * dele) e devolve o grafo inteiro.
+ */
+export const keepCreated = (
+  runId: string,
+  nodeId: string | null,
+  orchestrator: string | null = null,
+) => invoke<Graph>("orbit_keep_created", { runId, nodeId, orchestrator });
+
+/** ▶ Executar: o core recusa grafo não consentido ou inválido. Antes de
+ * começar, o core mata os agentes vivos dos runs anteriores do grafo. */
+export const runStart = (graphId: string) => invoke<string>("orbit_run_start", { graphId });
+
+/**
+ * + Terminal / Abrir: o core abre a sessão ao vivo do nó Terminal (sem ▶) e
+ * devolve o run. Recusa o segundo Terminal do grafo e a pasta que não existe.
+ */
+export const terminalOpen = (graphId: string, nodeId: string) =>
+  invoke<Run>("orbit_terminal_open", { graphId, nodeId });
+
+/** ⋯ → Fechar: o core mata o shell do Terminal e fecha a sessão ao vivo dele. */
+export const terminalClose = (graphId: string, nodeId: string) =>
+  invoke<void>("orbit_terminal_close", { graphId, nodeId });
+
+/** A sessão ao vivo de um Terminal, ainda aberta (o core manda `terminal`). */
+export const isLiveRun = (run: Pick<Run, "terminal" | "status"> | null): boolean =>
+  Boolean(run?.terminal) && run?.status === "running";
+
+/** O Terminal `nodeId` está aberto no run à vista: a cápsula diz "ao vivo". */
+export const terminalLive = (
+  run: Pick<Run, "terminal" | "status" | "nodes"> | null,
+  nodeId: string,
+): boolean => isLiveRun(run) && run?.terminal === nodeId && run.nodes[nodeId]?.status === "running";
+
+/**
+ * A sessão ao vivo que segura o Terminal `nodeId`, entre os runs da tela —
+ * qualquer que seja o run à vista (testar uma integração abre run novo e ele
+ * vai para a vista, mas o Terminal continua aberto no dele).
+ */
+export const terminalRun = <R extends Pick<Run, "terminal" | "status" | "nodes">>(
+  runs: readonly R[],
+  nodeId: string,
+): R | null => runs.find((r) => terminalLive(r, nodeId)) ?? null;
+
+/** O agente com as ferramentas do Orbit no shell do Terminal `nodeId` (ver `NodeRun.hostedAgent`). */
+export const hostedAgentOf = (runs: readonly Run[], nodeId: string): Runner | null =>
+  terminalRun(runs, nodeId)?.nodes[nodeId]?.hostedAgent ?? null;
+
+/**
+ * A sessão que o corpo do nó mostra: o Terminal, a do run ao vivo que o
+ * segura ({@link terminalRun}); os demais, a do run à vista.
+ */
+export function shownSession(
+  kind: NodeKind,
+  run: Run | null,
+  runs: readonly Run[],
+  nodeId: string,
+  live: boolean,
+): string | null {
+  if (kind.type !== "terminal") return nodeSession(kind, run, nodeId, live);
+  const held = terminalRun(runs, nodeId);
+  return held ? nodeSession(kind, held, nodeId, true) : null;
+}
+
+/** Os nós da sessão ao vivo na faixa de baixo: o Terminal e, depois, os que ela criou. */
+export function liveRunNodes(
+  graph: Pick<Graph, "nodes">,
+  run: Pick<Run, "terminal" | "nodes">,
+): string[] {
+  const ids = graph.nodes.map((n) => n.id).filter((id) => id in run.nodes);
+  return [
+    ...ids.filter((id) => id === run.terminal),
+    ...ids.filter((id) => id !== run.terminal),
+  ];
+}
+
+/** "Terminal · api": o nome do nó Terminal novo, pela pasta onde ele roda. */
+export function terminalTitle(dir: string): string {
+  const base = dir.split(/[\\/]/).filter(Boolean).pop();
+  return base ? `Terminal · ${base}` : "Terminal";
+}
+
+/** ■ Parar: o core mata o process group de cada nó rodando. */
+export const runStop = (runId: string) => invoke<void>("orbit_run_stop", { runId });
+
+/** Parar ou apagar um nó rodando: o core para só ele (e o agente vivo depois do turno). */
+export const runStopNode = (runId: string, nodeId: string) =>
+  invoke<void>("orbit_run_stop_node", { runId, nodeId });
+
+/**
+ * Apagar um nó criado por agente: o core o marca descartado, registra "você
+ * apagou" (o agente que o criou fica sabendo) e o para se ainda vive.
+ */
+export const runDiscardNode = (runId: string, nodeId: string) =>
+  invoke<void>("orbit_run_discard_node", { runId, nodeId });
+
+/**
+ * ↻ do nó: o core reinicia o que roda ou roda de novo o que terminou, falhou
+ * ou parou (só com a execução aberta). Quem já usou a saída antiga fica
+ * "↻ para aplicar".
+ */
+export const runRestartNode = (runId: string, nodeId: string) =>
+  invoke<void>("orbit_run_restart_node", { runId, nodeId });
+
+export const runGet = (runId: string) => invoke<Run | null>("orbit_run_get", { runId });
+
+/** O fim do `log.txt` do nó (sem cor, redigido pelo core). */
+export const nodeLog = (runId: string, nodeId: string, lines: number) =>
+  invoke<string[]>("orbit_node_log", { runId, nodeId, lines });
+
+/** "Ver log inteiro": o log do nó gravado pelo core (sem cor, redigido). */
+export interface WholeLog {
+  text: string;
+  /** O começo passou do teto da leitura e ficou de fora. */
+  cut: boolean;
+}
+
+export const nodeLogWhole = (runId: string, nodeId: string) =>
+  invoke<WholeLog>("orbit_node_log_whole", { runId, nodeId });
+
+/** As 20 últimas execuções do grafo, mais nova primeiro. */
+export const runsList = (graphId: string) => invoke<Run[]>("orbit_runs_list", { graphId });
+
+/** O ▶ num nó de integração manual: roda assim que as entradas chegarem. */
+export const runNode = (runId: string, nodeId: string) =>
+  invoke<void>("orbit_run_node", { runId, nodeId });
+
+/** Cada mudança de estado do run chega com o run inteiro. */
+export const onRun = (runId: string, handler: (run: Run) => void): Promise<UnlistenFn> =>
+  listen<Run>(`orbit://run/${runId}`, (e) => handler(e.payload));
+
+/** Execuções guardadas por grafo (o core poda o resto). */
+export const KEEP_RUNS = 20;
+
+/** O que a tela sabe das execuções: o histórico e a que está à vista. */
+export interface RunView {
+  /** Mais nova primeiro, no máximo {@link KEEP_RUNS}. */
+  runs: Run[];
+  /** Execução desenhada no canvas e na linha da execução. */
+  selectedId: string | null;
+}
+
+export type RunAction =
+  | { type: "history"; runs: Run[] }
+  | { type: "update"; run: Run }
+  | { type: "select"; runId: string }
+  | { type: "reset" };
+
+export const EMPTY_RUN_VIEW: RunView = { runs: [], selectedId: null };
+
+const NODE_RANK: Record<NodeStatus, number> = {
+  waiting: 0,
+  running: 1,
+  done: 2,
+  failed: 2,
+  skipped: 2,
+  stopped: 2,
+};
+
+/**
+ * Quanto o run já andou. Estado de nó só anda para a frente, então um retrato
+ * com menos progresso que o guardado é velho (evento que chegou depois do
+ * `runGet`, ou o contrário) e não pode desfazer o que já se viu.
+ */
+export function runProgress(run: Run): number {
+  let total = run.status === "running" ? 0 : 1;
+  for (const n of Object.values(run.nodes)) {
+    total += NODE_RANK[n.status] * 2 + (n.sessionId ? 1 : 0);
+  }
+  return total;
+}
+
+const newestFirst = (runs: Run[]) =>
+  [...runs].sort((a, b) => b.startedAt - a.startedAt).slice(0, KEEP_RUNS);
+
+export function runReducer(view: RunView, action: RunAction): RunView {
+  switch (action.type) {
+    case "reset":
+      return EMPTY_RUN_VIEW;
+    case "history": {
+      // O que já chegou por evento pode ser mais novo que a lista.
+      const byId = new Map(view.runs.map((r) => [r.id, r]));
+      const listed = new Set(action.runs.map((r) => r.id));
+      const runs = newestFirst([
+        ...action.runs.map((r) => {
+          const known = byId.get(r.id);
+          return known && runProgress(known) > runProgress(r) ? known : r;
+        }),
+        ...view.runs.filter((r) => !listed.has(r.id)),
+      ]);
+      const keep = runs.some((r) => r.id === view.selectedId);
+      return { runs, selectedId: keep ? view.selectedId : (runs[0]?.id ?? null) };
+    }
+    case "update": {
+      const { run } = action;
+      const old = view.runs.find((r) => r.id === run.id);
+      if (old && runProgress(old) > runProgress(run)) return view;
+      const runs = newestFirst([run, ...view.runs.filter((r) => r.id !== run.id)]);
+      // Run novo vai para a vista; atualização de outro run não tira o dono
+      // de onde ele está olhando.
+      const selectedId = old && view.selectedId ? view.selectedId : run.id;
+      return { runs, selectedId };
+    }
+    case "select":
+      return view.runs.some((r) => r.id === action.runId)
+        ? { ...view, selectedId: action.runId }
+        : view;
+  }
+}
+
+/** O que o ■ Parar alcança: run rodando ou run com agente ainda vivo. */
+export const stoppableRuns = (view: RunView): Run[] =>
+  view.runs.filter((r) => r.status === "running" || (r.liveAgents?.length ?? 0) > 0);
+
+export const selectedRun = (view: RunView): Run | null =>
+  view.runs.find((r) => r.id === view.selectedId) ?? null;
+
+/** Número da execução na lista guardada: a mais antiga é #1. */
+/** O "#N" do core; a execução de antes da numeração conta pela posição. */
+export const runNumber = (view: RunView, runId: string): number => {
+  const i = view.runs.findIndex((r) => r.id === runId);
+  if (i < 0) return 0;
+  return view.runs[i].number || view.runs.length - i;
+};
+
+/** "3m10s", "42s", "1h02m". */
+export function formatDuration(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m${String(s % 60).padStart(2, "0")}s`;
+  return `${Math.floor(m / 60)}h${String(m % 60).padStart(2, "0")}m`;
+}
+
+/**
+ * Tempo do nó: até agora se roda, até o fim se acabou, nada se não começou.
+ * Agente parado numa execução assentada: até o momento em que ela assentou.
+ */
+export function nodeElapsed(
+  n: NodeRun | undefined,
+  now: number,
+  run?: Pick<Run, "settled" | "finishedAt"> | null,
+): number | null {
+  if (!n?.startedAt) return null;
+  const end = settledAgent(run, n) && run?.finishedAt ? run.finishedAt : now;
+  return (n.finishedAt ?? (n.status === "running" ? end : n.startedAt)) - n.startedAt;
+}
+
+/** Tempo ativo da execução: sem o tempo em que ficou assentada. */
+export const runElapsed = (
+  run: Pick<Run, "startedAt" | "finishedAt" | "pausedMs">,
+  now: number,
+): number => (run.finishedAt ?? now) - run.startedAt - (run.pausedMs ?? 0);
+
+/** A chave do estado da execução: assentada é "concluída · sessões abertas". */
+export const runStatusKey = (run: Pick<Run, "status" | "settled">): string =>
+  run.status === "running" && run.settled ? "orbitRunSettled" : `orbitRunStatus_${run.status}`;
+
+/** O estado que a tela mostra: execução assentada aparece como concluída. */
+export const runShownStatus = (run: Pick<Run, "status" | "settled">): RunStatus =>
+  run.status === "running" && run.settled ? "done" : run.status;
+
+/** Agente que segura a execução assentada: turno fechado, nada a fazer. */
+export const settledAgent = (
+  run: Pick<Run, "settled"> | null | undefined,
+  n: Pick<NodeRun, "status" | "orchestrating">,
+): boolean => Boolean(run?.settled && n.status === "running" && n.orchestrating);
+
+/** O estado do nó que a tela mostra: agente parado na assentada é "pronto". */
+export const shownStatus = (
+  run: Pick<Run, "settled"> | null | undefined,
+  n: Pick<NodeRun, "status" | "orchestrating">,
+): NodeStatus => (settledAgent(run, n) ? "done" : n.status);
+
+/** Chave de i18n e parâmetros: o texto sai da tela, a regra fica testável. */
+export interface Label {
+  key: string;
+  params?: Record<string, string | number>;
+}
+
+const baseOf = (path: string) => path.split(/[\\/]/).filter(Boolean).pop() ?? path;
+
+/**
+ * Segunda linha da etiqueta da ligação: em que pé está o valor que ela leva,
+ * a partir do estado do nó de origem na execução à vista.
+ */
+export function edgeDetail(kind: EdgeKind, source: NodeRun | undefined): Label | null {
+  if (!source || !carriesData(kind)) return null;
+  // A url do processo sai antes do fim; as saídas do orquestrador, no fim do turno.
+  if (source.status === "running" && source.outputs[kind]) return { key: "orbitEdgeReady" };
+  if (source.status === "running" && source.orchestrating) return { key: "orbitEdgeEmpty" };
+  switch (source.status) {
+    case "waiting":
+      return { key: "orbitEdgeWaiting" };
+    case "running":
+      return { key: "orbitEdgeLive" };
+    case "failed":
+      return { key: "orbitEdgeSourceFailed" };
+    case "skipped":
+      return { key: "orbitEdgeSkipped" };
+    case "stopped":
+      return { key: "orbitEdgeStopped" };
+    case "done": {
+      const path = source.outputs[kind];
+      if (!path) return { key: "orbitEdgeEmpty" };
+      return kind === "file"
+        ? { key: "orbitEdgeReadyFile", params: { name: baseOf(path) } }
+        : { key: "orbitEdgeReady" };
+    }
+  }
+}
+
+/**
+ * A ligação já tem valor: a origem terminou, o orquestrador fechou o primeiro
+ * turno, ou a url do processo já saiu (espelha o core).
+ */
+export function edgeHasValue(edge: Pick<OrbitEdge, "from" | "kind">, run: Run): boolean {
+  if (!carriesData(edge.kind)) return true;
+  const source = run.nodes[edge.from];
+  if (!source) return false;
+  if (source.status === "done") return true;
+  if (source.status === "running" && source.orchestrating) return true;
+  return edge.kind === "url" && source.status === "running" && Boolean(source.outputs.url);
+}
+
+/** O que a linha da execução e o nó dizem do estado. */
+export function nodeStatusLabel(
+  graph: Pick<Graph, "nodes" | "edges">,
+  run: Run,
+  nodeId: string,
+): Label | null {
+  const n = run.nodes[nodeId];
+  if (!n) return null;
+  if (n.status === "running" && n.orchestrating)
+    return { key: run.settled ? "orbitStatus_done" : "orbitStatus_orchestrating" };
+  if (n.status !== "waiting") return { key: `orbitStatus_${n.status}` };
+  if (run.status !== "running") return { key: "orbitStatus_waiting" };
+  const pending = graph.edges.find((e) => e.to === nodeId && !edgeHasValue(e, run));
+  if (pending) {
+    const from = graph.nodes.find((x) => x.id === pending.from);
+    return {
+      key: "orbitWaitingFor",
+      params: { kind: pending.kind, node: from?.title ?? pending.from },
+    };
+  }
+  return { key: "orbitStatus_waiting" };
+}
+
+/**
+ * Passos da linha da execução: nós agrupados pela profundidade no grafo (o
+ * caminho mais longo desde um nó sem entrada). O mesmo grupo pode rodar junto.
+ */
+export function timelineSteps(graph: Pick<Graph, "nodes" | "edges">): string[][] {
+  const depth = new Map<string, number>();
+  const visit = (id: string, guard: Set<string>): number => {
+    const known = depth.get(id);
+    if (known !== undefined) return known;
+    if (guard.has(id)) return 0;
+    guard.add(id);
+    const d = Math.max(
+      0,
+      ...graph.edges
+        .filter((e) => e.to === id && carriesData(e.kind))
+        .map((e) => visit(e.from, guard) + 1),
+    );
+    guard.delete(id);
+    depth.set(id, d);
+    return d;
+  };
+  const groups: string[][] = [];
+  for (const n of graph.nodes) {
+    // Nota é pronta na hora: não é passo da execução.
+    if (n.kind.type === "note") continue;
+    const d = visit(n.id, new Set());
+    (groups[d] ??= []).push(n.id);
+  }
+  return groups.filter((g) => g && g.length > 0);
+}
+
+/**
+ * Dois agentes que podem rodar ao mesmo tempo (nenhum depende do outro). Na
+ * mesma pasta, um vê no diff o que o outro mudou — a tela avisa.
+ */
+export function concurrentAgents(
+  graph: Pick<Graph, "nodes" | "edges"> & { dir?: string },
+): [OrbitNode, OrbitNode] | null {
+  const agents = graph.nodes.filter((n) => n.kind.type === "agent");
+  // Só avisa quem divide a pasta: com pasta por nó, dois agentes em
+  // paralelo em pastas diferentes não veem o diff um do outro.
+  const dirOf = (n: OrbitNode) =>
+    (n.kind.type === "agent" && n.kind.dir) || graph.dir || "";
+  for (let i = 0; i < agents.length; i++) {
+    for (let j = i + 1; j < agents.length; j++) {
+      const [a, b] = [agents[i], agents[j]];
+      if (dirOf(a) !== dirOf(b)) continue;
+      if (!reaches(graph.edges, a.id, b.id) && !reaches(graph.edges, b.id, a.id)) {
+        return [a, b];
+      }
+    }
+  }
+  return null;
+}
+
+// ------------------------------------------- integrações e importação
+
+/** "Testar com a última entrada": roda só o script com o `in/` da última execução do nó. */
+export const integrationTest = (integrationId: string, graphId: string, nodeId: string) =>
+  invoke<Run>("orbit_integration_test", { integrationId, graphId, nodeId });
+
+/** Campo que saiu no arquivo com segredo literal (o core não reescreve o texto). */
+export interface SecretField {
+  owner: "node" | "integration" | "role";
+  id: string;
+  /** Título do nó ou nome da integração. */
+  name: string;
+  field: "prompt" | "command" | "markdown" | "script" | "instructions";
+}
+
+/** O que avisar depois de exportar. */
+export interface ExportReport {
+  /** Variáveis que saíram vazias por parecerem segredo. */
+  cleared: string[];
+  /** Campos que saíram com segredo literal dentro. */
+  secretFields: SecretField[];
+}
+
+/** Grava o `.tyba-orbit.toml`; devolve o que avisar (variáveis zeradas, segredo literal). */
+export const exportGraph = (graphId: string, path: string) =>
+  invoke<ExportReport>("orbit_export", { graphId, path });
+
+/** Pasta de um nó do arquivo importado. */
+export interface ImportDir {
+  nodeId: string;
+  /** Como veio no arquivo (a do nó ou a padrão do grafo). */
+  dir: string;
+  /** Existe nesta máquina. Se não, o dono escolhe outra antes de confirmar. */
+  exists: boolean;
+}
+
+/** O que o core leu e validou do arquivo. Nada foi gravado ainda. */
+export interface ImportPreview {
+  /** SHA-256 do arquivo: o consentimento vale para este conteúdo. */
+  hash: string;
+  /** Pastas de cada nó são as de quem exportou: as que não existem aqui se escolhem. */
+  graph: Graph;
+  integrations: Integration[];
+  /** Já existe um grafo com esse id: confirmar substitui. */
+  replacesGraph: boolean;
+  /** Ids que já existem aqui com outro conteúdo: a do arquivo entra com id novo, a local fica. */
+  renamedIntegrations: string[];
+  /** A pasta de cada nó executável e se ela existe aqui. */
+  dirs: ImportDir[];
+  /** Papéis do arquivo, com as instruções inteiras. */
+  roles: Role[];
+  /** Cada papel do arquivo comparado com a biblioteca daqui. */
+  roleStatuses: ImportRole[];
+}
+
+/** Como um papel do arquivo se compara com o daqui. */
+export type RoleStatus = "new" | "same" | "different";
+
+export interface ImportRole {
+  name: string;
+  status: RoleStatus;
+}
+
+/** A escolha do dono para um papel diferente do daqui (padrão: cópia "(importado)"). */
+export type RoleChoice = "rename" | "file" | "mine";
+
+export const importPreview = (path: string) =>
+  invoke<ImportPreview>("orbit_import_preview", { path });
+
+/**
+ * Relê o arquivo e só grava se o hash for o da prévia. `dirs` leva a pasta
+ * escolhida por id de nó (obrigatória para as que não existem aqui; o core
+ * recusa sem ela); `dir` vira a pasta padrão do grafo. Devolve o id do grafo.
+ */
+export const importConfirm = (
+  path: string,
+  hash: string,
+  dir: string,
+  dirs: Record<string, string>,
+  roles: Record<string, RoleChoice> = {},
+) => invoke<string>("orbit_import_confirm", { path, hash, dir, dirs, roles });
+
+/** Nós cuja pasta não existe aqui e ainda não ganharam uma escolhida. Confirmar só com zero. */
+export const missingImportDirs = (
+  dirs: readonly ImportDir[],
+  chosen: Readonly<Record<string, string>>,
+): string[] => dirs.filter((d) => !d.exists && !chosen[d.nodeId]).map((d) => d.nodeId);
+
+/** Teto do script de uma integração, em bytes (espelha `MAX_SCRIPT_BYTES` do core). */
+export const MAX_SCRIPT_BYTES = 64 * 1024;
+
+/** `char::is_control` do Rust (categoria Cc), fora `\n` e `\t` — espelha `has_control_chars`. */
+const CONTROL = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/;
+
+export type IntegrationProblem = "emptyName" | "scriptTooLarge" | "controlChars";
+
+/**
+ * Por que o core recusaria a integração (`validate_integration`), ou `null`.
+ * O front avisa antes de salvar; quem decide continua sendo o core.
+ */
+export function integrationProblem(
+  integration: Pick<Integration, "name" | "script">,
+): IntegrationProblem | null {
+  if (integration.name.trim() === "") return "emptyName";
+  if (new TextEncoder().encode(integration.script).length > MAX_SCRIPT_BYTES) {
+    return "scriptTooLarge";
+  }
+  if (CONTROL.test(integration.script)) return "controlChars";
+  return null;
+}
+
+/** Integração nova do painel: script vazio, roda ao receber diff, saída log. */
+export function newIntegration(id: string, name: string): Integration {
+  return { id, name, script: "", trigger: { type: "onInput", kind: "diff" }, output: "log", file: null };
+}
+
+/** Nó do canvas que usa a integração (o "Testar" roda com o `in/` dele). */
+export const integrationNode = (
+  nodes: readonly OrbitNode[],
+  integrationId: string,
+): OrbitNode | null =>
+  nodes.find((n) => n.kind.type === "integration" && n.kind.integrationId === integrationId) ??
+  null;
+
+/** Tipo arrastado do painel de integrações para o canvas. */
+export const INTEGRATION_DRAG_TYPE = "application/x-tyba-orbit-integration";
+
+/** Nome do arquivo exportado: o nome do grafo, só com caracteres seguros. */
+export function exportFileName(graphName: string): string {
+  const slug = graphName
+    .normalize("NFKD")
+    .replace(/[̀-ͯ]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/^[-.]+|-+$/g, "");
+  return `${slug || "orbit"}.tyba-orbit.toml`;
+}
+
+/** Junta pasta e nome com o separador que a pasta já usa. */
+export function joinPath(dir: string, name: string): string {
+  const sep = dir.includes("\\") && !dir.includes("/") ? "\\" : "/";
+  return dir.endsWith(sep) ? `${dir}${name}` : `${dir}${sep}${name}`;
+}
+
+/**
+ * Deixa à vista o que não aparece na tela: caractere de formatação (categoria
+ * Cf — bidi como U+202E, espaço de largura zero) vira `⟨U+XXXX⟩`. O core
+ * recusa caractere de controle, não esses; sem isto um script importado
+ * poderia mostrar uma coisa e rodar outra.
+ */
+export function revealHidden(text: string): string {
+  return text.replace(
+    /[\p{Cf}\u0000-\u0008\u000b-\u001f\u007f-\u009f]/gu,
+    (c) => `⟨U+${c.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0")}⟩`,
+  );
+}
+
+/** Um item do que vai rodar, na ordem em que a tela de importação mostra. */
+export type ImportItem =
+  | {
+      type: "agent";
+      node: OrbitNode;
+      runner: Runner;
+      role: string;
+      prompt: string;
+    }
+  | {
+      type: "process";
+      node: OrbitNode;
+      command: string;
+      output: OutputKind;
+      /** Arquivo de saída, relativo à pasta: o core lê dele depois de rodar. */
+      file: string | null;
+    }
+  | { type: "note"; node: OrbitNode; markdown: string }
+  | { type: "integration"; node: OrbitNode; integration: Integration | null }
+  | { type: "browser"; node: OrbitNode; url: string }
+  | { type: "service"; node: OrbitNode; source: ServiceSource }
+  | { type: "terminal"; node: OrbitNode; dir: string };
+
+/**
+ * Tudo que o arquivo traz para rodar, por nó, com o texto inteiro (nunca
+ * resumo): prompts, comandos, notas e os scripts das integrações.
+ */
+export function importItems(preview: Pick<ImportPreview, "graph" | "integrations">): ImportItem[] {
+  const byId = integrationsById(preview.integrations);
+  return preview.graph.nodes.map((node): ImportItem => {
+    const k = node.kind;
+    switch (k.type) {
+      case "agent":
+        return {
+          type: "agent",
+          node,
+          runner: k.runner,
+          role: k.role,
+          prompt: k.prompt,
+        };
+      case "process":
+        return { type: "process", node, command: k.command, output: k.output, file: k.file };
+      case "note":
+        return { type: "note", node, markdown: k.markdown };
+      case "integration":
+        return { type: "integration", node, integration: byId.get(k.integrationId) ?? null };
+      case "browser":
+        return { type: "browser", node, url: k.url };
+      case "service":
+        return { type: "service", node, source: k.source };
+      case "terminal":
+        return { type: "terminal", node, dir: k.dir };
+    }
+  });
+}
+
+/** Integrações do arquivo que nenhum nó usa: também são gravadas, então também se mostram. */
+export const unusedImportIntegrations = (
+  preview: Pick<ImportPreview, "graph" | "integrations">,
+): Integration[] =>
+  preview.integrations.filter((i) => integrationNode(preview.graph.nodes, i.id) === null);
+
+// ------------------------------------------------ serviço: log ao vivo
+
+/** Linha do log do contêiner, como o core manda (o mesmo `LogLine` da aba de logs). */
+export interface ServiceLogLine {
+  seq: number;
+  ts: string | null;
+  text: string;
+  stderr: boolean;
+  level: string | null;
+}
+
+export interface ServiceLogsSnapshot {
+  lines: ServiceLogLine[];
+  following: boolean;
+}
+
+/** Liga (ou reaproveita) o `docker logs -f` do contêiner do nó; devolve o já lido. */
+export const serviceLogsStart = (containerId: string) =>
+  invoke<ServiceLogsSnapshot>("orbit_service_logs_start", { containerId });
+
+/** Só ficam vivos os seguidores dos contêineres que o canvas mostra. */
+export const serviceLogsRetain = (containerIds: string[]) =>
+  invoke<void>("orbit_service_logs_retain", { containerIds });
+
+export const onServiceLogs = (
+  containerId: string,
+  handler: (batch: { lines: ServiceLogLine[]; ended: boolean }) => void,
+): Promise<UnlistenFn> =>
+  listen<{ lines: ServiceLogLine[]; ended: boolean }>(`orbit-logs://${containerId}`, (e) =>
+    handler(e.payload),
+  );
+
+/** Contêineres que os nós de serviço do grafo mostram (para o `retain`). */
+export const serviceContainers = (nodes: readonly OrbitNode[]): string[] => [
+  ...new Set(
+    nodes.flatMap((n) =>
+      n.kind.type === "service" && n.kind.source.type === "container" && n.kind.source.containerId
+        ? [n.kind.source.containerId]
+        : [],
+    ),
+  ),
+];
+
+/**
+ * Os contêineres cujo log ao vivo fica (`serviceLogsRetain`): os dos nós de
+ * serviço à vista e, nos criados pelo agente no run (que podem não ter id
+ * gravado, só o nome), o id vivo que o card achou — senão o log congela.
+ */
+export function retainedContainers(
+  nodes: readonly OrbitNode[],
+  createdIds: ReadonlySet<string>,
+  live: ReadonlyMap<string, string>,
+): string[] {
+  const ids = serviceContainers(nodes);
+  for (const id of createdIds) {
+    const c = live.get(id);
+    if (c) ids.push(c);
+  }
+  return [...new Set(ids)];
+}
+
+/** Nó de navegador que já recebe a url deste nó, se houver. */
+export const browserFed = (
+  graph: Pick<Graph, "nodes" | "edges">,
+  fromId: string,
+): OrbitNode | null => {
+  const edge = graph.edges.find(
+    (e) =>
+      e.from === fromId &&
+      e.kind === "url" &&
+      graph.nodes.find((n) => n.id === e.to)?.kind.type === "browser",
+  );
+  return edge ? (graph.nodes.find((n) => n.id === edge.to) ?? null) : null;
+};

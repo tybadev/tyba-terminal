@@ -83,6 +83,7 @@ import {
   type Bindings,
 } from "../lib/keys";
 import { getTerminalTheme, onTerminalThemeChange } from "../theme";
+import { nodeFontSize, nodeGrid, nodeLiveClip, nodeZoomStyle, type Cell } from "../lib/nodeTerminal";
 
 const TRANSPARENT_BG = "rgba(0, 0, 0, 0)";
 
@@ -196,6 +197,24 @@ function loadWebgl(term: Terminal, onLost: () => void): WebglAddon | null {
   }
 }
 
+/** O miolo do xterm que o FitAddon também lê: a célula desenhada e a barra. */
+interface XtermCore {
+  _renderService: { dimensions: { css: { cell: { width: number; height: number } } } };
+  viewport?: { scrollBarWidth: number };
+}
+
+/** A célula (px CSS) que o renderer desenha agora — a mesma conta do FitAddon. */
+function renderedCell(term: Terminal): Cell | null {
+  const cell = (term as unknown as { _core: XtermCore })._core._renderService.dimensions.css.cell;
+  return cell.width > 0 && cell.height > 0 ? { w: cell.width, h: cell.height } : null;
+}
+
+/** A barra de rolagem que o FitAddon desconta da largura. */
+function scrollbarWidth(term: Terminal): number {
+  if (term.options.scrollback === 0) return 0;
+  return (term as unknown as { _core: XtermCore })._core.viewport?.scrollBarWidth ?? 0;
+}
+
 function disposeWebgl(webgl: WebglAddon | null) {
   try {
     webgl?.dispose();
@@ -216,6 +235,14 @@ interface Props {
   visible: boolean;
   focused: boolean;
   rect: PaneRectStyle | null;
+  /**
+   * Zoom do canvas, para o terminal de um nó do grafo. O xterm sai de baixo da
+   * escala do canvas (o invólucro faz `scale(1/zoom)`) e desenha com a fonte
+   * `base × zoom`: escala total 1, WebGL nítido e mouse na célula certa. As
+   * colunas e linhas são as do fit em 100% (a caixa do pai, que o transform
+   * não muda), e o PTY não é redimensionado por zoom. Ver `nodeTerminal`.
+   */
+  zoom?: number;
   /** Programa de tela cheia (nvim, hx, htop): o terminal vai de borda a borda,
    * sem a margem do bloco ao vivo — a margem virava moldura em volta do
    * editor. */
@@ -464,6 +491,7 @@ export function TerminalView({
   visible,
   focused,
   rect,
+  zoom,
   fullBleed = false,
   exited,
   reattaches,
@@ -528,6 +556,9 @@ export function TerminalView({
   reattachesRef.current = Boolean(reattaches);
   const visibleRef = useRef(visible);
   visibleRef.current = visible;
+  const zoomRef = useRef(zoom ?? null);
+  zoomRef.current = zoom ?? null;
+  const applyZoomFontRef = useRef<((zoom: number) => void) | null>(null);
   const syncWebglRef = useRef<(() => void) | null>(null);
   const onLiveRowsRef = useRef(onLiveRows);
   onLiveRowsRef.current = onLiveRows;
@@ -933,7 +964,10 @@ export function TerminalView({
       const screen = term.element?.querySelector(".xterm-screen");
       if (!screen || term.rows <= 0) return;
       const box = screen.getBoundingClientRect();
-      const h = box.height / term.rows;
+      // No nó do grafo a caixa vem na escala da tela (fonte `base × zoom`); os
+      // blocos ao lado dela medem em px de layout, sob a escala do canvas.
+      const z = zoomRef.current ?? 1;
+      const h = box.height / term.rows / z;
       if (h > 0 && Math.abs(h - lastLineH) >= 0.05) {
         lastLineH = h;
         onLineHeightRef.current?.(h);
@@ -942,7 +976,7 @@ export function TerminalView({
       // bloco depende de quantos caracteres cabem na linha, e o corpo do cartão
       // usa esta fonte.
       if (term.cols <= 0) return;
-      const w = box.width / term.cols;
+      const w = box.width / term.cols / z;
       if (w <= 0 || Math.abs(w - lastCellW) < 0.05) return;
       lastCellW = w;
       onCellWidthRef.current?.(w);
@@ -957,6 +991,44 @@ export function TerminalView({
     let lastCols = -1;
     let lastRows = -1;
     let timer: number | null = null;
+    // Fonte de preferência do dono. No nó do grafo a grade sai dela (o fit em
+    // 100%) e o desenho vai na fonte do zoom.
+    let baseFont = defaultFontSize;
+    // Fonte do zoom: a grade fixa tem de caber na caixa da tela.
+    const applyZoomFont = (z: number) => {
+      if (!opened) return;
+      const sb = scrollbarWidth(term);
+      nodeFontSize(
+        baseFont,
+        z,
+        { cols: term.cols, rows: term.rows },
+        { w: el.clientWidth - sb, h: el.clientHeight },
+        (size) => {
+          term.options.fontSize = size;
+          return renderedCell(term) ?? { w: 0, h: 0 };
+        },
+      );
+    };
+    applyZoomFontRef.current = applyZoomFont;
+    // O fit do nó: a célula na fonte base sobre a caixa do pai (px de layout,
+    // iguais em qualquer zoom) — as mesmas cols/rows que o fit dá em 100%.
+    const fitNode = (z: number): boolean => {
+      const host = el.parentElement;
+      if (!host) return false;
+      term.options.fontSize = baseFont;
+      const cell = renderedCell(term);
+      if (!cell) return false;
+      const grid = nodeGrid(
+        { w: host.clientWidth, h: host.clientHeight },
+        cell,
+        scrollbarWidth(term),
+      );
+      if (grid.cols !== term.cols || grid.rows !== term.rows) {
+        term.resize(grid.cols, grid.rows);
+      }
+      applyZoomFont(z);
+      return true;
+    };
     const refit = () => {
       // `refit()` agora é chamado de 4 pontos, não só do próprio
       // `setTimeout` de 80ms do ResizeObserver — sem cancelar o timer
@@ -973,7 +1045,8 @@ export function TerminalView({
       const buffer = term.buffer.active;
       const wasAtBottom = buffer.viewportY === buffer.baseY;
       try {
-        fit.fit();
+        if (zoomRef.current === null) fit.fit();
+        else if (!fitNode(zoomRef.current)) return;
       } catch {
         return; // dimensões ainda não prontas — o ResizeObserver refaz
       }
@@ -1042,7 +1115,8 @@ export function TerminalView({
     const onFontSize = (e: Event) => {
       const size = (e as CustomEvent<number>).detail;
       if (typeof size === "number" && size >= 10 && size <= 20) {
-        term.options.fontSize = size;
+        baseFont = size;
+        if (zoomRef.current === null) term.options.fontSize = size;
         schedule();
       }
     };
@@ -1168,6 +1242,7 @@ export function TerminalView({
       showExitBannerRef.current = null;
       syncWebglRef.current = null;
       refitRef.current = null;
+      applyZoomFontRef.current = null;
       disposeWebgl(webglRef.current);
       webglRef.current = null;
       term.dispose();
@@ -1199,6 +1274,12 @@ export function TerminalView({
     if (focused && visible && !readOnly && !hasApprovalPanel) term.focus();
     syncWebglRef.current?.();
   }, [focused, visible, readOnly, hasApprovalPanel]);
+
+  // Zoom do canvas mudou: só a fonte acompanha (a grade fica). O
+  // ResizeObserver ainda refaz o fit do nó, que dá a mesma grade.
+  useEffect(() => {
+    if (zoom !== undefined) applyZoomFontRef.current?.(zoom);
+  }, [zoom]);
 
   // Ao ficar visível (troca de aba), o container sai de `display:none` e ganha
   // tamanho, mas o canvas do xterm ainda está nas dimensões antigas — a CSS o
@@ -1406,7 +1487,9 @@ export function TerminalView({
           // altura — o painel focado aparecia com moldura na metade de baixo.
           className={`overflow-hidden bg-transparent ${fullBleed ? "" : "rounded-[4px] px-2.5"}`}
           style={
-            visible && rect
+            visible && zoom !== undefined
+              ? { ...nodeZoomStyle(zoom), ...nodeLiveClip(hidden) }
+              : visible && rect
               ? {
                   paddingTop: fullBleed ? 0 : LIVE_PAD_TOP_PX,
                   paddingBottom: fullBleed ? 0 : LIVE_PAD_BOTTOM_PX,

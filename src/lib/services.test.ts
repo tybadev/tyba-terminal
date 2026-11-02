@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 
 import type { PortEntry, ServiceOrigin } from "./ipc";
 import {
@@ -120,4 +121,16 @@ describe("containerForPort", () => {
     expect(containerForPort(cs, 15432)).toBeNull();
     expect(containerForPort(cs, 543)).toBeNull();
   });
+});
+
+// "Ir para o terminal" de uma sessão de nó do Orbit: no modo Terminal a
+// tela também abria pelo `goToSession`, que não acha sessão fora do layout e
+// não fazia nada. Toda tela de Serviços e portas passa pelo mesmo caminho.
+test("toda tela de Serviços e portas foca sessão de nó pelo Orbit", () => {
+  const app = readFileSync(new URL("../App.tsx", import.meta.url), "utf8");
+  const screens = app.split("<ServicesScreen").slice(1).map((b) => b.split("/>")[0]);
+  expect(screens.length).toBeGreaterThanOrEqual(2);
+  for (const props of screens) {
+    expect(props).toContain("onFocusSession={focusSessionOrNode}");
+  }
 });

@@ -143,6 +143,7 @@ pub const KEY_ACTIONS: &[&str] = &[
     "selectAll",
     "richInput",
     "promptLine",
+    "toggleOrbit",
 ];
 
 /// Atalhos padrão de cada plataforma — espelho de `MAC_BINDINGS` e
@@ -184,6 +185,7 @@ pub const MAC_BINDINGS: &[(&str, &str)] = &[
     ("selectAll", "meta+a"),
     ("richInput", "meta+shift+g"),
     ("promptLine", "meta+shift+l"),
+    ("toggleOrbit", "meta+shift+m"),
 ];
 
 pub const PC_BINDINGS: &[(&str, &str)] = &[
@@ -221,6 +223,7 @@ pub const PC_BINDINGS: &[(&str, &str)] = &[
     ("selectAll", "ctrl+shift+a"),
     ("richInput", "ctrl+shift+g"),
     ("promptLine", "ctrl+shift+l"),
+    ("toggleOrbit", "ctrl+alt+m"),
 ];
 
 /// Os padrões da plataforma em que o core roda — a mesma escolha do `IS_MAC`

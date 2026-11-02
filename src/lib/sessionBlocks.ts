@@ -39,6 +39,8 @@ export interface SessionBlocksData {
   command: string;
   /** Quando o comando em execução começou, pelo relógio do core. */
   commandStartedAtMs: number | null;
+  /** O que segue o "rodando 1m12s" no header (no nó Terminal: "ferramentas do Orbit"). */
+  runningNote: string | null;
   marked: ReadonlySet<number> | undefined;
   copyCombo: string;
 }
@@ -65,6 +67,7 @@ export function sessionBlocksData(input: {
   active: boolean;
   command: string | null | undefined;
   commandStartedAtMs?: number | null;
+  runningNote?: string | null;
   marked: ReadonlySet<number> | null;
   copyCombo: string;
 }): SessionBlocksData {
@@ -87,6 +90,7 @@ export function sessionBlocksData(input: {
     active: input.active,
     command: input.command ?? "",
     commandStartedAtMs: input.commandStartedAtMs ?? null,
+    runningNote: input.runningNote ?? null,
     marked: input.marked ?? undefined,
     copyCombo: input.copyCombo,
   };

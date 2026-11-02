@@ -7,6 +7,8 @@ import {
   enterAction,
   insertToken,
   parseRichInputPref,
+  richInputToAutoOpen,
+  richInputToUndismiss,
   richInputVisibility,
   shouldShowRichInput,
 } from "./richInput";
@@ -228,5 +230,37 @@ describe("shouldShowRichInput — camadas de confiança e conveniência", () => 
     expect(
       shouldShowRichInput({ type: "shell" }, false, DEFAULT_RICH_INPUT),
     ).toBe(false);
+  });
+});
+
+describe("richInputToUndismiss (por sessão: a ativa e as do nó)", () => {
+  const commands: Record<string, string | null> = { grid: "claude", node: "codex" };
+  const commandOf = (id: string) => commands[id] ?? null;
+
+  test("volta só a sessão cujo comando mudou desde o fechar", () => {
+    const dismissed = new Set(["grid", "node"]);
+    // O nó fechou com o claude e agora roda o codex; a grade segue no mesmo.
+    const at = { grid: "claude", node: "claude" };
+    expect(richInputToUndismiss(["grid", "node"], dismissed, at, commandOf)).toEqual(["node"]);
+  });
+
+  test("sessão fora da lista ou não fechada não volta", () => {
+    expect(richInputToUndismiss(["grid"], new Set(["node"]), { node: "x" }, commandOf)).toEqual([]);
+    expect(richInputToUndismiss(["node"], new Set(), {}, commandOf)).toEqual([]);
+  });
+});
+
+describe("richInputToAutoOpen", () => {
+  const eligible = (id: string) => id !== "plain";
+
+  test("desligado na preferência: nenhuma", () => {
+    expect(richInputToAutoOpen(["node"], { autoOpenOnStart: false }, eligible, new Set())).toEqual([]);
+  });
+
+  test("uma vez por sessão, só as elegíveis", () => {
+    const pref = { autoOpenOnStart: true };
+    expect(richInputToAutoOpen(["grid", "node", "plain"], pref, eligible, new Set(["grid"]))).toEqual([
+      "node",
+    ]);
   });
 });

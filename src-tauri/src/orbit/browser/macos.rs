@@ -1,0 +1,806 @@
+//! A view nativa do navegador no macOS: um `WKWebView` por nó, filho do
+//! `contentView` da janela principal (por cima da webview do app), criado
+//! pelo `wry` com `build_as_child`.
+//!
+//! Tudo aqui roda na main thread (o `WKWebView` não é `Send`): o registro das
+//! views é `thread_local` e as operações chegam por [`apply`].
+//!
+//! O que fecha o canal entre a página e o app, por construção:
+//! - nenhum `with_ipc_handler` (o `window.ipc` que o wry injeta lança erro) e
+//!   nenhum message handler: a configuração é nova, sem o `tauri://`;
+//! - o `WKUIDelegate` é nosso e troca o do wry, que **concede câmera e
+//!   microfone sozinho**: aqui toda captura é negada, o seletor de arquivo só
+//!   abre com o dono usando, e janela nova cai no mesmo nó (a política de
+//!   navegação confere);
+//! - sem download, sem área de transferência por script, sem devtools.
+//!
+//! **Recorte.** O `WKWebView` não fica direto no `contentView`: ele mora num
+//! `NSView` container que corta o que passa da borda (`masksToBounds`). O
+//! container ocupa só a parte do card à vista, e a página, dentro dele, fica
+//! no tamanho inteiro do marcador e no deslocamento certo
+//! ([`super::clip_frames`]). Card cortado pela borda do canvas continua
+//! vivo, sem a página encolher nem deslizar.
+
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::ptr::{null_mut, NonNull};
+use std::sync::Arc;
+
+use block2::{Block, RcBlock};
+use objc2::rc::Retained;
+use objc2::runtime::{AnyObject, NSObject, ProtocolObject};
+use objc2::{define_class, msg_send, sel, DefinedClass, MainThreadMarker, MainThreadOnly};
+use objc2_app_kit::{
+    NSAutoresizingMaskOptions, NSEvent, NSEventMask, NSEventModifierFlags, NSModalResponseOK,
+    NSOpenPanel, NSView, NSWindow, NSWindowOrderingMode,
+};
+use objc2_foundation::{NSArray, NSObjectProtocol, NSPoint, NSProcessInfo, NSRect, NSSize, NSURL};
+use objc2_web_kit::{
+    WKFrameInfo, WKMediaCaptureType, WKNavigationAction, WKOpenPanelParameters,
+    WKPermissionDecision, WKSecurityOrigin, WKUIDelegate, WKWebView, WKWebViewConfiguration,
+    WKWindowFeatures,
+};
+use parking_lot::Mutex;
+use tauri::{AppHandle, Manager};
+use wry::dpi::{LogicalPosition, LogicalSize};
+use wry::{PageLoadEvent, Rect, WebViewBuilder, WebViewBuilderExtDarwin, WebViewExtMacOS};
+
+use super::native::{
+    serve_file, HIDDEN_H, HIDDEN_W, ISOLATED_JS, PAGE_SHIM_JS, PREVIEW_MAX_W, RUN_JS, WORLD,
+};
+use super::{
+    clip_frames, policy, route_key, store_identity, BrowserViews, Focus, KeyRoute, Mods, Op, Place,
+    ViewKey, ViewRect,
+};
+
+struct NativeView {
+    webview: wry::WebView,
+    wk: Retained<WKWebView>,
+    /// O container que corta a página na parte do card à vista; é ele que
+    /// fica no `contentView`, com o `wk` dentro.
+    clip: Retained<NSView>,
+    /// O `UIDelegate` do `WKWebView` é fraco: quem o segura é este campo.
+    _ui: Retained<OrbitUiDelegate>,
+    roots: Arc<Mutex<Vec<PathBuf>>>,
+}
+
+thread_local! {
+    static VIEWS: RefCell<HashMap<ViewKey, NativeView>> = RefCell::new(HashMap::new());
+    /// Os monitores de evento (clique e tecla), instalados uma vez.
+    static MONITORS: RefCell<Vec<Retained<AnyObject>>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Executa a operação (na main thread).
+pub(super) fn apply(app: &AppHandle, op: Op) {
+    match op {
+        Op::Navigate {
+            key,
+            url,
+            roots,
+            place,
+        } => {
+            let exists = VIEWS.with(|v| v.borrow().contains_key(&key));
+            if !exists {
+                match create(app, &key) {
+                    Ok(view) => {
+                        VIEWS.with(|v| {
+                            v.borrow_mut().insert(key.clone(), view);
+                        });
+                        install_monitors(app);
+                        app.state::<BrowserViews>().start_ticking(app);
+                    }
+                    Err(e) => {
+                        eprintln!("[tyba] navegador do orbit: criar a view: {e}");
+                        return;
+                    }
+                }
+            }
+            VIEWS.with(|v| {
+                if let Some(view) = v.borrow().get(&key) {
+                    *view.roots.lock() = roots;
+                    set_place(view, &place);
+                    if let Err(e) = view.webview.load_url(&url) {
+                        eprintln!("[tyba] navegador do orbit: carregar: {e}");
+                    }
+                }
+            });
+        }
+        Op::Place { key, place } => VIEWS.with(|v| {
+            if let Some(view) = v.borrow().get(&key) {
+                set_place(view, &place);
+            }
+        }),
+        Op::Back(key) => VIEWS.with(|v| {
+            if let Some(view) = v.borrow().get(&key) {
+                // SAFETY: main thread; o `WKWebView` vive enquanto a entrada.
+                unsafe { view.wk.goBack() };
+            }
+        }),
+        Op::Reload(key) => VIEWS.with(|v| {
+            if let Some(view) = v.borrow().get(&key) {
+                let _ = view.webview.reload();
+            }
+        }),
+        Op::Snapshot(key) => VIEWS.with(|v| {
+            if let Some(view) = v.borrow().get(&key) {
+                snapshot(app, &key, view);
+            }
+        }),
+        Op::Capture { key, reply } => VIEWS.with(|v| match v.borrow().get(&key) {
+            Some(view) => capture(view, reply),
+            None => {
+                let _ = reply.send(Err(super::NOT_OPEN.to_string()));
+            }
+        }),
+        Op::Eval {
+            key,
+            action,
+            args,
+            reply,
+        } => VIEWS.with(|v| match v.borrow().get(&key) {
+            Some(view) => eval(view, action, &args, reply),
+            None => {
+                let _ = reply.send(Err(super::NOT_OPEN.to_string()));
+            }
+        }),
+        Op::Retain(keep) => destroy(|k| !keep.contains(k)),
+        Op::Destroy { key, .. } => destroy(|k| *k == key),
+        Op::RemoveStore {
+            key,
+            reload,
+            attempt,
+        } => remove_store(app, key, reload, attempt),
+    }
+}
+
+/// Destrói as views de `dead`. O teclado volta ao app antes, com a view
+/// ainda no registro (senão o [`app_view`] a tomaria pela do app); depois
+/// sai do registro e só então é solta: o `Drop` do wry tira a view da janela
+/// e pode chamar delegates.
+fn destroy(dead: impl Fn(&ViewKey) -> bool) {
+    VIEWS.with(|v| {
+        for (_, view) in v.borrow().iter().filter(|(k, _)| dead(k)) {
+            give_back_if_inside(view);
+        }
+    });
+    let gone: Vec<NativeView> = VIEWS.with(|v| {
+        let mut v = v.borrow_mut();
+        let keys: Vec<ViewKey> = v.keys().filter(|k| dead(k)).cloned().collect();
+        keys.iter().filter_map(|k| v.remove(k)).collect()
+    });
+    for view in gone {
+        let clip = view.clip.clone();
+        // O `Drop` do wry tira o `wk` do container; depois sai o container.
+        drop(view);
+        clip.removeFromSuperview();
+    }
+}
+
+/// Quantas vezes tentar apagar o armazenamento (o WebKit recusa enquanto
+/// ainda solta a view).
+const REMOVE_TRIES: u32 = 5;
+
+/// macOS 14+: `WKWebsiteDataStore.removeDataStoreForIdentifier`, assíncrono
+/// e na main thread. Antes do 14 o armazenamento é incógnito e morreu com a
+/// view. Em uso ainda (a view acabou de sair), tenta de novo em 500 ms.
+fn remove_store(app: &AppHandle, key: ViewKey, reload: bool, attempt: u32) {
+    if !per_node_store_available() {
+        app.state::<BrowserViews>().on_cleared(app, &key, reload);
+        return;
+    }
+    let done_app = app.clone();
+    let id = store_identity(&key);
+    <wry::WebView as wry::WebViewExtDarwin>::remove_data_store(&id, move |result| match result {
+        Ok(()) => done_app
+            .state::<BrowserViews>()
+            .on_cleared(&done_app, &key, reload),
+        Err(_) if attempt + 1 < REMOVE_TRIES => {
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                super::dispatch(
+                    &done_app,
+                    Op::RemoveStore {
+                        key,
+                        reload,
+                        attempt: attempt + 1,
+                    },
+                );
+            });
+        }
+        Err(e) => {
+            // Nunca criado (nó que não abriu) também cai aqui: nada a apagar.
+            eprintln!("[tyba] navegador do orbit: apagar os dados: {e}");
+            done_app
+                .state::<BrowserViews>()
+                .on_cleared(&done_app, &key, reload);
+        }
+    });
+}
+
+fn ns_rect(r: ViewRect) -> NSRect {
+    NSRect::new(NSPoint::new(r.x, r.y), NSSize::new(r.w, r.h))
+}
+
+/// Posição, recorte, zoom e visibilidade. Mostra só depois de posicionar.
+/// O container ocupa a parte à vista (`clip`) e a página, dentro dele, o
+/// marcador inteiro.
+fn set_place(view: &NativeView, place: &Place) {
+    let visible = place.visible && place.rect.is_some();
+    if let Some(r) = place.rect {
+        // SAFETY: main thread; o container é filho do `contentView`.
+        if let Some(parent) = unsafe { view.clip.superview() } {
+            let (outer, inner) = clip_frames(
+                r,
+                place.clip.unwrap_or(r),
+                parent.frame().size.height,
+                parent.isFlipped(),
+            );
+            view.clip.setFrame(ns_rect(outer));
+            view.wk.setFrame(ns_rect(inner));
+        }
+        // `setPageZoom`: reescala o layout como o `transform` do canvas (o
+        // `setMagnification` seria zoom de pinça e deslocaria o viewport).
+        let _ = view.webview.zoom(place.zoom.clamp(0.25, 5.0));
+    }
+    if !visible {
+        give_back_if_inside(view);
+    }
+    let _ = view.webview.set_visible(visible);
+    // Escondido também: um container vazio à vista pegaria o clique do app.
+    view.clip.setHidden(!visible);
+}
+
+/// Põe o `wk` dentro de um container que corta (no lugar dele no
+/// `contentView`, mesma ordem). O container começa escondido e com o frame
+/// que o wry deu ao `wk`; a página fica inteira dentro dele.
+fn wrap_in_clip(mtm: MainThreadMarker, wk: &WKWebView) -> Result<Retained<NSView>, String> {
+    // SAFETY: main thread; o `wk` acabou de entrar no `contentView`.
+    let parent = unsafe { wk.superview() }.ok_or("a view do navegador ficou sem pai")?;
+    let frame = wk.frame();
+    let clip = NSView::initWithFrame(mtm.alloc::<NSView>(), frame);
+    clip.setWantsLayer(true);
+    // SAFETY: `layer` de uma view com `wantsLayer`; `masksToBounds` é do
+    // `CALayer`. `clipsToBounds` (macOS 14+) só se a view o tiver.
+    unsafe {
+        let layer: *mut AnyObject = msg_send![&*clip, layer];
+        if let Some(layer) = layer.as_ref() {
+            let _: () = msg_send![layer, setMasksToBounds: true];
+        }
+        if clip.respondsToSelector(sel!(setClipsToBounds:)) {
+            let _: () = msg_send![&*clip, setClipsToBounds: true];
+        }
+    }
+    // Como o wry faz com a view filha: preso ao topo quando a janela muda.
+    clip.setAutoresizingMask(NSAutoresizingMaskOptions::ViewMinYMargin);
+    clip.setHidden(true);
+    parent.addSubview_positioned_relativeTo(&clip, NSWindowOrderingMode::Above, Some(wk));
+    wk.removeFromSuperview();
+    clip.addSubview(wk);
+    wk.setAutoresizingMask(NSAutoresizingMaskOptions::ViewNotSizable);
+    wk.setFrame(NSRect::new(NSPoint::new(0.0, 0.0), frame.size));
+    Ok(clip)
+}
+
+/// macOS 14+: `WKWebsiteDataStore(forIdentifier:)` por nó. Antes disso o
+/// wry cairia no `defaultDataStore`, que é compartilhado entre nós.
+fn per_node_store_available() -> bool {
+    NSProcessInfo::processInfo()
+        .operatingSystemVersion()
+        .majorVersion
+        >= 14
+}
+
+fn create(app: &AppHandle, key: &ViewKey) -> Result<NativeView, String> {
+    let mtm = MainThreadMarker::new().ok_or("fora da main thread")?;
+    let window = app
+        .get_webview_window("main")
+        .ok_or("janela principal não encontrada")?;
+    let roots: Arc<Mutex<Vec<PathBuf>>> = Arc::default();
+    let ephemeral = !per_node_store_available();
+
+    let nav_app = app.clone();
+    let nav_key = key.clone();
+    let load_app = app.clone();
+    let load_key = key.clone();
+    let title_app = app.clone();
+    let title_key = key.clone();
+    let serve_roots = roots.clone();
+
+    let builder = WebViewBuilder::new()
+        .with_visible(false)
+        // Escondida, mas com tamanho de página: o agente lê e clica nela
+        // antes de o card aparecer (o front manda o retângulo de verdade).
+        .with_bounds(Rect {
+            position: LogicalPosition::new(0.0, 0.0).into(),
+            size: LogicalSize::new(HIDDEN_W, HIDDEN_H).into(),
+        })
+        .with_clipboard(false)
+        .with_devtools(false)
+        .with_hotkeys_zoom(false)
+        .with_back_forward_navigation_gestures(false)
+        .with_accept_first_mouse(true)
+        .with_autoplay(false)
+        // Toda navegação, de qualquer frame, passa pela política.
+        .with_navigation_handler(move |url| match policy::decide(&url) {
+            policy::Decision::Allow => true,
+            policy::Decision::Deny(why) => {
+                nav_app
+                    .state::<BrowserViews>()
+                    .on_refused(&nav_app, &nav_key, why);
+                false
+            }
+        })
+        .with_download_started_handler(|_, _| false)
+        .with_on_page_load_handler(move |event, url| {
+            let finished = matches!(event, PageLoadEvent::Finished);
+            load_app
+                .state::<BrowserViews>()
+                .on_load(&load_app, &load_key, &url, finished);
+        })
+        .with_document_title_changed_handler(move |title| {
+            title_app
+                .state::<BrowserViews>()
+                .on_title(&title_app, &title_key, &title);
+        })
+        .with_custom_protocol(policy::FILE_SCHEME.into(), move |_id, request| {
+            serve_file(&serve_roots.lock(), &request)
+        })
+        .with_url("about:blank");
+    let builder = if ephemeral {
+        builder.with_incognito(true)
+    } else {
+        builder.with_data_store_identifier(store_identity(key))
+    };
+    let webview = builder.build_as_child(&window).map_err(|e| e.to_string())?;
+    // SAFETY: o `WryWebView` do wry é subclasse de `WKWebView`.
+    let wk: Retained<WKWebView> = unsafe { Retained::cast_unchecked(webview.webview()) };
+    let clip = wrap_in_clip(mtm, &wk)?;
+    install_scripts(mtm, &wk);
+    let ui = OrbitUiDelegate::new(mtm, app.clone(), key.clone());
+    // SAFETY: main thread; o delegate é segurado pela `NativeView`.
+    unsafe { wk.setUIDelegate(Some(ProtocolObject::from_ref(&*ui))) };
+    app.state::<BrowserViews>().on_created(app, key, ephemeral);
+    Ok(NativeView {
+        webview,
+        wk,
+        clip,
+        _ui: ui,
+        roots,
+    })
+}
+
+struct UiIvars {
+    app: AppHandle,
+    key: ViewKey,
+}
+
+define_class!(
+    #[unsafe(super(NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = UiIvars]
+    struct OrbitUiDelegate;
+
+    unsafe impl NSObjectProtocol for OrbitUiDelegate {}
+
+    unsafe impl WKUIDelegate for OrbitUiDelegate {
+        /// Câmera e microfone: sempre negados (o do wry concedia).
+        #[unsafe(method(webView:requestMediaCapturePermissionForOrigin:initiatedByFrame:type:decisionHandler:))]
+        fn request_media_capture_permission(
+            &self,
+            _webview: &WKWebView,
+            _origin: &WKSecurityOrigin,
+            _frame: &WKFrameInfo,
+            _capture_type: WKMediaCaptureType,
+            decision_handler: &Block<dyn Fn(WKPermissionDecision)>,
+        ) {
+            decision_handler.call((WKPermissionDecision::Deny,));
+        }
+
+        /// `<input type=file>`: só abre com o dono usando a página.
+        #[unsafe(method(webView:runOpenPanelWithParameters:initiatedByFrame:completionHandler:))]
+        fn run_open_panel(
+            &self,
+            _webview: &WKWebView,
+            params: &WKOpenPanelParameters,
+            _frame: &WKFrameInfo,
+            handler: &Block<dyn Fn(*const NSArray<NSURL>)>,
+        ) {
+            let ivars = self.ivars();
+            let owner = ivars.app.state::<BrowserViews>().focus(&ivars.key) == Focus::Owner;
+            let Some(mtm) = MainThreadMarker::new().filter(|_| owner) else {
+                handler.call((null_mut(),));
+                return;
+            };
+            let panel = NSOpenPanel::openPanel(mtm);
+            panel.setCanChooseFiles(true);
+            // SAFETY: parâmetros vindos do WebKit, na main thread.
+            unsafe {
+                panel.setAllowsMultipleSelection(params.allowsMultipleSelection());
+                panel.setCanChooseDirectories(params.allowsDirectories());
+            }
+            if panel.runModal() == NSModalResponseOK {
+                let urls = panel.URLs();
+                handler.call((Retained::as_ptr(&urls),));
+            } else {
+                handler.call((null_mut(),));
+            }
+        }
+
+        /// `target=_blank` / `window.open`: nada de janela nova; a página
+        /// abre no mesmo nó, e a política de navegação decide se carrega.
+        /// Sem url ou `about:blank`, nada: a página do nó fica.
+        #[unsafe(method_id(webView:createWebViewWithConfiguration:forNavigationAction:windowFeatures:))]
+        fn create_web_view(
+            &self,
+            webview: &WKWebView,
+            _configuration: &WKWebViewConfiguration,
+            action: &WKNavigationAction,
+            _features: &WKWindowFeatures,
+        ) -> Option<Retained<WKWebView>> {
+            // SAFETY: main thread; o pedido vem do próprio WebKit.
+            unsafe {
+                let request = action.request();
+                let url = request
+                    .URL()
+                    .and_then(|u| u.absoluteString())
+                    .map(|s| s.to_string())
+                    .unwrap_or_default();
+                if !super::new_window_ignored(&url) {
+                    let _ = webview.loadRequest(&request);
+                }
+            }
+            None
+        }
+    }
+);
+
+impl OrbitUiDelegate {
+    fn new(mtm: MainThreadMarker, app: AppHandle, key: ViewKey) -> Retained<Self> {
+        let this = mtm.alloc::<Self>().set_ivars(UiIvars { app, key });
+        // SAFETY: `init` do `NSObject`.
+        unsafe { msg_send![super(this), init] }
+    }
+}
+
+// ── foco e teclado ──────────────────────────────────────────────────────────
+
+/// A view do app (a webview do Tauri): a subview do `contentView` que não é
+/// de nenhum nó (o container de um nó guarda o `wk` dele). É para ela que o
+/// foco volta.
+fn app_view(window: &NSWindow) -> Option<Retained<NSView>> {
+    let content = window.contentView()?;
+    let subviews = content.subviews();
+    VIEWS.with(|v| {
+        let v = v.borrow();
+        subviews.iter().find(|sub| {
+            !v.values().any(|n| {
+                let clip: &NSView = &n.clip;
+                let wk: &NSView = &n.wk;
+                std::ptr::eq(clip, &**sub) || std::ptr::eq(wk, &**sub)
+            })
+        })
+    })
+}
+
+/// Devolve o foco do teclado ao app.
+fn give_back(window: &NSWindow) {
+    if let Some(app) = app_view(window) {
+        window.makeFirstResponder(Some(&app));
+    }
+}
+
+/// A view vai sumir com o teclado nela: o foco volta ao app antes.
+fn give_back_if_inside(view: &NativeView) {
+    let Some(window) = view.wk.window() else {
+        return;
+    };
+    let inside = window
+        .firstResponder()
+        .and_then(|r| r.downcast::<NSView>().ok())
+        .is_some_and(|r| r.isDescendantOf(&view.wk));
+    if inside {
+        give_back(&window);
+    }
+}
+
+/// O nó cuja view contém `view` (ela mesma ou um descendente).
+fn node_of(view: &NSView) -> Option<ViewKey> {
+    VIEWS.with(|v| {
+        v.borrow()
+            .iter()
+            .find(|(_, n)| view.isDescendantOf(&n.wk))
+            .map(|(k, _)| k.clone())
+    })
+}
+
+fn is_main_window(app: &AppHandle, window: &NSWindow) -> bool {
+    app.get_webview_window("main")
+        .and_then(|w| w.ns_window().ok())
+        .is_some_and(|p| std::ptr::eq(p as *const NSWindow, window))
+}
+
+/// Monitores locais de clique e tecla (uma vez por app). O clique numa
+/// view de nó marca "você"; fora de todas, devolve. A tecla com o foco numa
+/// página passa por [`route_key`]: Esc devolve (e some), ⌘W/⌘K/⌘L vão ao
+/// app, o resto segue para a página. Uma tecla passa pelo app antes da
+/// página — é isso que deixa o Esc devolver.
+fn install_monitors(app: &AppHandle) {
+    if MONITORS.with(|m| !m.borrow().is_empty()) {
+        return;
+    }
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+
+    let click_app = app.clone();
+    let click = RcBlock::new(move |event: NonNull<NSEvent>| -> *mut NSEvent {
+        // SAFETY: o AppKit entrega um evento válido durante a chamada.
+        let ev = unsafe { event.as_ref() };
+        if let Some(window) = ev.window(mtm).filter(|w| is_main_window(&click_app, w)) {
+            let hit = window
+                .contentView()
+                .and_then(|c| c.hitTest(ev.locationInWindow()))
+                .and_then(|v| node_of(&v));
+            let views = click_app.state::<BrowserViews>();
+            views.set_owner(&click_app, hit.as_ref());
+            if let Some(k) = &hit {
+                views.mark_dirty(k);
+            }
+        }
+        event.as_ptr()
+    });
+
+    let key_app = app.clone();
+    let key = RcBlock::new(move |event: NonNull<NSEvent>| -> *mut NSEvent {
+        // SAFETY: o AppKit entrega um evento válido durante a chamada.
+        let ev = unsafe { event.as_ref() };
+        let Some(window) = ev.window(mtm).filter(|w| is_main_window(&key_app, w)) else {
+            return event.as_ptr();
+        };
+        let Some(node) = window
+            .firstResponder()
+            .and_then(|r| r.downcast::<NSView>().ok())
+            .and_then(|v| node_of(&v))
+        else {
+            return event.as_ptr();
+        };
+        let flags = ev.modifierFlags();
+        let mods = Mods {
+            shift: flags.contains(NSEventModifierFlags::Shift),
+            control: flags.contains(NSEventModifierFlags::Control),
+            option: flags.contains(NSEventModifierFlags::Option),
+            command: flags.contains(NSEventModifierFlags::Command),
+        };
+        let chars = ev
+            .charactersIgnoringModifiers()
+            .map(|c| c.to_string())
+            .unwrap_or_default();
+        match route_key(ev.keyCode(), mods, &chars) {
+            KeyRoute::Page => {
+                key_app.state::<BrowserViews>().mark_dirty(&node);
+                event.as_ptr()
+            }
+            KeyRoute::GiveBack => {
+                give_back(&window);
+                key_app.state::<BrowserViews>().set_owner(&key_app, None);
+                null_mut()
+            }
+            KeyRoute::ToApp => {
+                give_back(&window);
+                key_app.state::<BrowserViews>().set_owner(&key_app, None);
+                event.as_ptr()
+            }
+        }
+    });
+
+    // SAFETY: os blocos devolvem o próprio evento (válido) ou nulo.
+    let monitors = unsafe {
+        [
+            NSEvent::addLocalMonitorForEventsMatchingMask_handler(
+                NSEventMask::LeftMouseDown | NSEventMask::RightMouseDown,
+                &click,
+            ),
+            NSEvent::addLocalMonitorForEventsMatchingMask_handler(NSEventMask::KeyDown, &key),
+        ]
+    };
+    MONITORS.with(|m| m.borrow_mut().extend(monitors.into_iter().flatten()));
+}
+
+// ── print ───────────────────────────────────────────────────────────────────
+
+/// `takeSnapshot` → JPEG (fator 0,7) em base64 → [`BrowserViews::on_snapshot`].
+/// Funciona com a view escondida (conferido no protótipo: o print sai com a
+/// página certa, inclusive o que foi digitado).
+fn snapshot(app: &AppHandle, key: &ViewKey, view: &NativeView) {
+    use base64::Engine;
+    use objc2_app_kit::{
+        NSBitmapImageFileType, NSBitmapImageRep, NSImage, NSImageCompressionFactor,
+    };
+    use objc2_foundation::{NSDictionary, NSError, NSNumber};
+    use objc2_web_kit::WKSnapshotConfiguration;
+
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    let width = view.wk.frame().size.width;
+    if width < 10.0 {
+        return;
+    }
+    // SAFETY: main thread; a configuração é nossa.
+    let config = unsafe { WKSnapshotConfiguration::new(mtm) };
+    let number = NSNumber::new_f64(width.min(PREVIEW_MAX_W));
+    // SAFETY: `snapshotWidth` aceita um `NSNumber` em pontos.
+    unsafe { config.setSnapshotWidth(Some(&number)) };
+    let done_app = app.clone();
+    let done_key = key.clone();
+    let block = RcBlock::new(move |image: *mut NSImage, _error: *mut NSError| {
+        // SAFETY: o WebKit entrega imagem válida ou nula.
+        let Some(image) = (unsafe { image.as_ref() }) else {
+            return;
+        };
+        let Some(tiff) = image.TIFFRepresentation() else {
+            return;
+        };
+        let Some(rep) = NSBitmapImageRep::imageRepWithData(&tiff) else {
+            return;
+        };
+        let factor = NSNumber::new_f64(0.7);
+        // SAFETY: a chave é a constante do AppKit e o valor um `NSNumber`.
+        let jpeg = unsafe {
+            let props =
+                NSDictionary::from_slices(&[NSImageCompressionFactor], &[&*factor as &AnyObject]);
+            rep.representationUsingType_properties(NSBitmapImageFileType::JPEG, &props)
+        };
+        let Some(jpeg) = jpeg else {
+            return;
+        };
+        let b64 = base64::engine::general_purpose::STANDARD.encode(jpeg.to_vec());
+        done_app
+            .state::<BrowserViews>()
+            .on_snapshot(&done_app, &done_key, b64);
+    });
+    // SAFETY: main thread; o bloco é copiado pelo WebKit.
+    unsafe {
+        view.wk
+            .takeSnapshotWithConfiguration_completionHandler(Some(&config), &block)
+    };
+}
+
+// ── mundo isolado ───────────────────────────────────────────────────────────
+
+/// Os dois user scripts, no início de cada documento do frame principal: o
+/// `isolated.js` no mundo `tyba-orbit` e o `page_shim.js` no da página.
+/// Nenhum message handler: o retorno é puxado pelo `callAsyncJavaScript`.
+fn install_scripts(mtm: MainThreadMarker, wk: &WKWebView) {
+    use objc2_foundation::NSString;
+    use objc2_web_kit::{WKContentWorld, WKUserScript, WKUserScriptInjectionTime};
+    // SAFETY: main thread; o controller é o da configuração desta view.
+    unsafe {
+        let controller = wk.configuration().userContentController();
+        let isolated = WKContentWorld::worldWithName(&NSString::from_str(WORLD), mtm);
+        let page = WKContentWorld::pageWorld(mtm);
+        for (source, world) in [(ISOLATED_JS, &isolated), (PAGE_SHIM_JS, &page)] {
+            let script = WKUserScript::initWithSource_injectionTime_forMainFrameOnly_inContentWorld(
+                mtm.alloc::<WKUserScript>(),
+                &NSString::from_str(source),
+                WKUserScriptInjectionTime::AtDocumentStart,
+                true,
+                world,
+            );
+            controller.addUserScript(&script);
+        }
+    }
+}
+
+/// `callAsyncJavaScript` no mundo isolado: o resultado (JSON em string) ou
+/// o erro volta por `reply`.
+fn eval(
+    view: &NativeView,
+    action: &str,
+    args: &str,
+    reply: std::sync::mpsc::Sender<Result<String, String>>,
+) {
+    use objc2_foundation::{NSDictionary, NSError, NSString};
+    use objc2_web_kit::WKContentWorld;
+    let Some(mtm) = MainThreadMarker::new() else {
+        let _ = reply.send(Err("fora da main thread".into()));
+        return;
+    };
+    let body = NSString::from_str(&format!("{ISOLATED_JS}\n{RUN_JS}"));
+    let keys = [NSString::from_str("action"), NSString::from_str("args")];
+    let values = [NSString::from_str(action), NSString::from_str(args)];
+    let k: [&NSString; 2] = [&keys[0], &keys[1]];
+    let v: [&AnyObject; 2] = [&values[0], &values[1]];
+    let arguments = NSDictionary::from_slices(&k, &v);
+    let block = RcBlock::new(move |result: *mut AnyObject, error: *mut NSError| {
+        // SAFETY: o WebKit entrega objetos válidos ou nulos.
+        let out = match (unsafe { result.as_ref() }, unsafe { error.as_ref() }) {
+            (_, Some(e)) => Err(format!(
+                "a página não aceitou a ação: {}",
+                super::snapshot::one_line(&e.localizedDescription().to_string(), 200)
+            )),
+            (Some(r), None) => r
+                .downcast_ref::<NSString>()
+                .map(|s| s.to_string())
+                .ok_or_else(|| "a página devolveu uma resposta ilegível".to_string()),
+            (None, None) => Err("a página devolveu uma resposta vazia".to_string()),
+        };
+        let _ = reply.send(out);
+    });
+    // SAFETY: main thread; o corpo é fixo e os argumentos vão no dicionário.
+    unsafe {
+        let world = WKContentWorld::worldWithName(&NSString::from_str(WORLD), mtm);
+        view.wk
+            .callAsyncJavaScript_arguments_inFrame_inContentWorld_completionHandler(
+                &body,
+                Some(&arguments),
+                None,
+                &world,
+                Some(&block),
+            );
+    }
+}
+
+/// O print do agente: `takeSnapshot` em PNG, na largura CSS da página (sem
+/// o zoom do canvas) e até [`super::MAX_SHOT_PX`] pixels. Funciona com a
+/// view escondida; o print **não** é redigido (fica na pasta do run, 0600).
+fn capture(view: &NativeView, reply: std::sync::mpsc::Sender<Result<super::Shot, String>>) {
+    use objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRep, NSImage};
+    use objc2_foundation::{NSDictionary, NSError, NSNumber};
+    use objc2_web_kit::WKSnapshotConfiguration;
+
+    let Some(mtm) = MainThreadMarker::new() else {
+        let _ = reply.send(Err("fora da main thread".into()));
+        return;
+    };
+    let frame = view.wk.frame().size.width;
+    // SAFETY: main thread; leitura de propriedade da view.
+    let zoom = unsafe { view.wk.pageZoom() };
+    let css = if zoom > 0.0 { frame / zoom } else { frame };
+    if css < 10.0 {
+        let _ = reply.send(Err(
+            "o navegador está escondido sem tamanho; abra o Orbit com o nó à vista".into(),
+        ));
+        return;
+    }
+    let scale = view
+        .wk
+        .window()
+        .map_or(2.0, |w| w.backingScaleFactor())
+        .max(1.0);
+    let width = css.min(super::MAX_SHOT_PX / scale);
+    // SAFETY: main thread; a configuração é nossa.
+    let config = unsafe { WKSnapshotConfiguration::new(mtm) };
+    let number = NSNumber::new_f64(width);
+    // SAFETY: `snapshotWidth` aceita um `NSNumber` em pontos.
+    unsafe { config.setSnapshotWidth(Some(&number)) };
+    let block = RcBlock::new(move |image: *mut NSImage, _error: *mut NSError| {
+        // SAFETY: o WebKit entrega imagem válida ou nula.
+        let out = (|| {
+            let image = unsafe { image.as_ref() }.ok_or("o print veio vazio")?;
+            let tiff = image.TIFFRepresentation().ok_or("o print veio vazio")?;
+            let rep = NSBitmapImageRep::imageRepWithData(&tiff).ok_or("o print veio vazio")?;
+            // SAFETY: sem propriedades; o tipo é a constante do AppKit.
+            let png = unsafe {
+                rep.representationUsingType_properties(
+                    NSBitmapImageFileType::PNG,
+                    &NSDictionary::new(),
+                )
+            }
+            .ok_or("o print não virou PNG")?;
+            Ok(super::Shot {
+                png: png.to_vec(),
+                width: rep.pixelsWide().max(0) as u32,
+                height: rep.pixelsHigh().max(0) as u32,
+            })
+        })()
+        .map_err(|e: &str| e.to_string());
+        let _ = reply.send(out);
+    });
+    // SAFETY: main thread; o bloco é copiado pelo WebKit.
+    unsafe {
+        view.wk
+            .takeSnapshotWithConfiguration_completionHandler(Some(&config), &block)
+    };
+}

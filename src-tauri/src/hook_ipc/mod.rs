@@ -48,6 +48,13 @@ pub enum HookAction {
     Ask {
         reason: String,
     },
+    /// Resposta de uma ferramenta do Orbit (`tyba _orbit-mcp`): o nó
+    /// criado, o estado de um nó. Só a sessão de um nó de agente do Orbit
+    /// chega aqui — nas outras o pedido é recusado (ver
+    /// `agent::session::on_orbit_tool`).
+    Result {
+        value: serde_json::Value,
+    },
 }
 
 /// `tyba _hook --observe`: o hook do claude digitado num pane (agente livre).

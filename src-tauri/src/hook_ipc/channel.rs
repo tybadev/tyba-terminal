@@ -455,6 +455,13 @@ fn read_and_unlink_plan(plan_path: &str) -> Option<HostedPlan> {
 /// a decisão sem substituir o processo de teste por um exec real.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub fn resolve_jail_outcome(socket_path: Option<&Path>, args: &[String]) -> JailOutcome {
+    resolve_agent_outcome(socket_path, "claude", args)
+}
+
+/// [`resolve_jail_outcome`] para o agente `agent` (`claude`, ou o `codex`
+/// do nó Terminal do Orbit pelo `_jail-codex`).
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn resolve_agent_outcome(socket_path: Option<&Path>, agent: &str, args: &[String]) -> JailOutcome {
     let Some(socket_path) = socket_path else {
         return JailOutcome::RunReal;
     };
@@ -474,7 +481,7 @@ pub fn resolve_jail_outcome(socket_path: Option<&Path>, args: &[String]) -> Jail
     let request = ChannelRequest {
         v: CHANNEL_PROTOCOL_VERSION,
         op: HOST_AGENT_OP.into(),
-        agent: "claude".into(),
+        agent: agent.into(),
         args: args.to_vec(),
         token: None,
         event: None,
@@ -597,14 +604,22 @@ pub fn jail_args(argv: &[String]) -> Vec<String> {
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub fn maybe_run_jail_mode() -> Option<i32> {
     let argv: Vec<String> = std::env::args().collect();
-    if argv.get(1).map(String::as_str) != Some("_jail") {
-        return None;
+    match argv.get(1).map(String::as_str) {
+        Some("_jail") => Some(run_jail_client(
+            Some(&jail_connect_socket_path()),
+            &jail_args(&argv),
+        )),
+        Some(CODEX_JAIL_MODE) => Some(run_codex_client(
+            Some(&jail_connect_socket_path()),
+            &jail_args(&argv),
+        )),
+        _ => None,
     }
-    Some(run_jail_client(
-        Some(&jail_connect_socket_path()),
-        &jail_args(&argv),
-    ))
 }
+
+/// `tyba _jail-codex -- <args>`: o alvo da função `codex` do rc, que só
+/// existe no shell de um nó Terminal do Orbit (`TYBA_ORBIT_TERMINAL=1`).
+pub const CODEX_JAIL_MODE: &str = "_jail-codex";
 
 /// Fora do Linux e do macOS o canal não existe, mas o shim do rc é o mesmo em todo unix
 /// e chama `tyba _jail` sem `||` de volta (a shell decide ANTES de lançar,
@@ -616,14 +631,16 @@ pub fn maybe_run_jail_mode() -> Option<i32> {
 pub fn maybe_run_jail_mode() -> Option<i32> {
     use std::os::unix::process::CommandExt;
 
-    if std::env::args().nth(1).as_deref() != Some("_jail") {
-        return None;
-    }
+    let program = match std::env::args().nth(1).as_deref() {
+        Some("_jail") => "claude",
+        Some(CODEX_JAIL_MODE) => "codex",
+        _ => return None,
+    };
     let argv: Vec<String> = std::env::args().collect();
-    let err = std::process::Command::new("claude")
+    let err = std::process::Command::new(program)
         .args(jail_args(&argv))
         .exec();
-    eprintln!("tyba _jail: exec de claude falhou: {err}");
+    eprintln!("tyba _jail: exec de {program} falhou: {err}");
     Some(126)
 }
 
@@ -701,6 +718,55 @@ fn run_jail_client(socket_path: Option<&Path>, args: &[String]) -> i32 {
     // falhou), o terminal não pode travar, e o claude sobe cru, com aviso.
     eprintln!("tyba: o TYBA não conseguiu hospedar este claude; ele roda sem os hooks do TYBA.");
     exec_real(args)
+}
+
+/// O `codex` digitado no shell de um nó Terminal do Orbit (fatia 4). O core
+/// acha a sessão dona pela árvore de processos e só hospeda — com o MCP do
+/// Orbit — quando ela é o shell de um nó Terminal aberto. Qualquer outra
+/// resposta (outra sessão, core fora do ar, subcomando que não é sessão, já
+/// dentro de um agente hospedado) roda o codex livre do `tyba _codex`
+/// ([`crate::agent::codex_shim::exec_free_codex`]): o mesmo `codex` de
+/// sempre, sem as ferramentas e com o hook pre-push do TYBA.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn run_codex_client(socket_path: Option<&Path>, args: &[String]) -> i32 {
+    use std::os::unix::process::CommandExt;
+
+    let nested = std::env::var("TYBA_HOSTED").as_deref() == Ok("1");
+    if !nested && crate::agent::codex_cli::hosts(args) {
+        if let JailOutcome::Exec {
+            argv,
+            env,
+            env_remove,
+            cwd,
+        } = resolve_agent_outcome(socket_path, "codex", args)
+        {
+            if let Some((program, rest)) = argv.split_first() {
+                let child_env = hosted_child_env(std::env::vars_os(), &env_remove, &env);
+                // O codex filtra o env dos comandos que roda: o hook pre-push
+                // vai também em `shell_environment_policy.set.*`, como no
+                // `tyba _codex`. O guarda-corpo por texto (`--guard-only`)
+                // vai junto, como no codex livre.
+                let guard = std::env::current_exe()
+                    .ok()
+                    .map(|exe| crate::agent::hooks_settings::guard_only_hook_command(&exe));
+                let rest = crate::agent::codex_shim::codex_argv(rest, guard.as_deref(), |key| {
+                    child_env
+                        .iter()
+                        .rev()
+                        .find(|(k, _)| k.as_os_str() == key)
+                        .map(|(_, v)| v.to_string_lossy().into_owned())
+                });
+                let mut cmd = std::process::Command::new(program);
+                cmd.args(rest);
+                cmd.current_dir(&cwd);
+                cmd.env_clear();
+                cmd.envs(child_env);
+                let err = cmd.exec();
+                eprintln!("tyba: exec do codex hospedado falhou: {err}");
+            }
+        }
+    }
+    crate::agent::codex_shim::exec_free_codex(args)
 }
 
 /// `exec` do `claude` de verdade com os args intactos (argv, nunca shell).
@@ -851,6 +917,30 @@ mod client_tests {
             JailOutcome::Forbidden
         );
         assert_eq!(*seen.lock().unwrap(), args);
+        server.shutdown();
+    }
+
+    /// Fatia 4 do Orbit: o `_jail-codex` pede ao core como `agent: "codex"`,
+    /// com os args do dono, e qualquer recusa (outra sessão, args que não são
+    /// sessão) vira o `codex` de verdade, nunca "nada roda".
+    #[test]
+    fn the_codex_client_asks_as_codex_and_any_refusal_runs_the_real_one() {
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        let (_dir, path, server) = bound_server(std::sync::Arc::new(move |_pid, req| {
+            sink.lock()
+                .unwrap()
+                .push((req.agent.clone(), req.args.clone()));
+            ChannelResponse::Refused {
+                reason: RefusedReason::NoSession,
+            }
+        }));
+        let args: Vec<String> = vec!["resume".into(), "--last".into()];
+        assert_eq!(
+            resolve_agent_outcome(Some(&path), "codex", &args),
+            JailOutcome::RunReal
+        );
+        assert_eq!(*seen.lock().unwrap(), vec![("codex".to_string(), args)]);
         server.shutdown();
     }
 

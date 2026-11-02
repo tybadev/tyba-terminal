@@ -17,6 +17,7 @@ pub mod layout;
 pub mod lsp;
 pub mod menu;
 pub mod notifications;
+pub mod orbit;
 pub mod profile;
 pub mod pty;
 pub mod repo;
@@ -68,6 +69,9 @@ struct AppState {
     managed_lsp: lsp::managed::SharedManaged,
     repo_reconcile: std::sync::mpsc::Sender<()>,
     rich_input_submit: parking_lot::Mutex<()>,
+    /// O que o dono anda digitando em cada sessão: a conversa do Orbit não
+    /// cola por cima (ver `orbit::talk::OwnerKeys`).
+    owner_input: orbit::talk::OwnerInput,
     worktree_files: rich_input::FilesCache,
     hook_servers: Arc<agent::session::HookServerRegistry>,
     subagents: agent::subagents::SharedSubagents,
@@ -416,6 +420,29 @@ fn poll_agent_probers(app: &AppHandle) {
         agent::process_probe::snapshot()
     };
     let changes = state.agent_prober.reconcile(&shells, &rows);
+    // O agente hospedado num nó Terminal saiu (o shell segue): o nó deixa de
+    // dizer `hostedAgent`.
+    if let Some(runs) = app.try_state::<orbit::run::SharedRuns>() {
+        let prober = &state.agent_prober;
+        runs.hosted_agent_tick(
+            &|session| {
+                SessionId::parse_str(session)
+                    .ok()
+                    .is_some_and(|id| prober.detected(id).is_some())
+            },
+            approvals::now_ms(),
+        );
+        // O claude digitado no Terminal pede permissão na sessão do shell.
+        runs.terminal_attention(
+            &|session| {
+                SessionId::parse_str(session)
+                    .ok()
+                    .and_then(|id| state.sessions.get(id))
+                    .and_then(|s| orbit::agent::waiting_you(Some(&s.status)))
+            },
+            approvals::now_ms(),
+        );
+    }
     let leader_by_session: std::collections::HashMap<SessionId, u32> =
         shells.iter().copied().collect();
     let changed: std::collections::HashSet<SessionId> = changes.iter().map(|(id, _)| *id).collect();
@@ -4011,6 +4038,9 @@ fn write_to_session(state: State<'_, AppState>, id: SessionId, data: String) -> 
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(&data)
         .map_err(|e| e.to_string())?;
+    state
+        .owner_input
+        .record(&id.to_string(), &bytes, approvals::now_ms());
     state.pty_pool.write(id, &bytes).map_err(|e| e.to_string())
 }
 
@@ -4244,6 +4274,18 @@ fn submit_rich_input(
     text: String,
     submit: bool,
 ) -> Result<(), String> {
+    state
+        .owner_input
+        .record_rich(&id.to_string(), submit, approvals::now_ms());
+    inject_rich_input(&state, id, &text, submit)
+}
+
+/// A estratégia de envio do agente que lê o input da sessão e se a colagem
+/// de várias linhas chega inteira (bracketed paste ligado e usado por ela).
+fn rich_input_plan(
+    state: &AppState,
+    id: SessionId,
+) -> Result<(bool, agent::SubmitStrategy), String> {
     let bracketed = state
         .pty_pool
         .bracketed_paste(id)
@@ -4261,9 +4303,27 @@ fn submit_rich_input(
             (kind, _) => agent::submit_strategy_for(kind),
         })
         .unwrap_or_default();
-    let (normalized, _) = rich_input::normalize(&text);
-    let payload =
-        rich_input::plan_injection(&normalized, bracketed && strategy.use_bracketed_paste)?;
+    Ok((bracketed && strategy.use_bracketed_paste, strategy))
+}
+
+/// A colagem de várias linhas chega inteira nesta sessão (a conversa do
+/// Orbit vai numa linha só quando não).
+pub(crate) fn rich_input_pastes(state: &AppState, id: SessionId) -> Result<bool, String> {
+    rich_input_plan(state, id).map(|(pastes, _)| pastes)
+}
+
+/// Cola `text` no terminal da sessão e, com `submit`, envia — pela
+/// estratégia do agente que lê o input. É o input rico do dono e a entrega
+/// da conversa do Orbit (`orbit::run`).
+pub(crate) fn inject_rich_input(
+    state: &AppState,
+    id: SessionId,
+    text: &str,
+    submit: bool,
+) -> Result<(), String> {
+    let (pastes, strategy) = rich_input_plan(state, id)?;
+    let (normalized, _) = rich_input::normalize(text);
+    let payload = rich_input::plan_injection(&normalized, pastes)?;
     if payload.is_empty() {
         return Ok(());
     }
@@ -5694,6 +5754,7 @@ fn open_container_tab(
                     &state.pty_pool,
                     bin.as_path(),
                     &args,
+                    &[],
                     title.clone(),
                     None,
                     100,
@@ -5702,6 +5763,8 @@ fn open_container_tab(
                         host_id: Some(h.id.clone()),
                         container_id: container_id.to_string(),
                     },
+                    crate::session::SessionOwner::Grid,
+                    None,
                     move |id| session_exited(&handle, id),
                 )
                 .map_err(|e| e.to_string())?;
@@ -5823,11 +5886,14 @@ fn spawn_tab_session(
             &state.pty_pool,
             program,
             args,
+            &[],
             title,
             cwd,
             100,
             30,
             kind,
+            crate::session::SessionOwner::Grid,
+            None,
             move |id| session_exited(&handle, id),
         )
         .map_err(|e| e.to_string())?;
@@ -6087,9 +6153,10 @@ enum ServicesList {
 /// O que escuta na máquina da sessão: a local, ou o servidor numa sessão SSH
 /// (só leitura). Chamado a cada ~3 s com a tela aberta.
 #[tauri::command]
-async fn services_list(app: AppHandle, id: SessionId) -> Result<ServicesList, AppError> {
+async fn services_list(app: AppHandle, id: Option<SessionId>) -> Result<ServicesList, AppError> {
     off_main(app, move |app, state| {
-        if let Some((host_id, alias, _)) = ssh_target(&state, id) {
+        // Sem sessão (a tela aberta pelo Workspace/Orbit): a máquina local.
+        if let Some((host_id, alias, _)) = id.and_then(|id| ssh_target(&state, id)) {
             let out = state
                 .host_queries
                 .get(&host_id, &alias)
@@ -6150,9 +6217,16 @@ async fn services_kill(
     start_ms: u64,
     group: Option<u32>,
 ) -> Result<services::KillOutcome, AppError> {
-    off_main(app, move |_app, state| {
+    off_main(app, move |app, state| {
         let ctx = services_ctx(&state);
-        state.services.terminate(&ctx, pid, start_ms, group)
+        let runs = app.try_state::<orbit::run::SharedRuns>();
+        state
+            .services
+            .terminate(&ctx, pid, start_ms, group, |session| {
+                if let (Some(runs), Some(session)) = (runs, session) {
+                    runs.owner_stopped_session(&session.to_string());
+                }
+            })
     })
     .await
     .map_err(|e| AppError::new("services.kill_failed").with("detail", e))?
@@ -6484,6 +6558,7 @@ fn screen_container_session(
             &state.pty_pool,
             bin.as_path(),
             &args,
+            &[],
             title,
             None,
             100,
@@ -6492,6 +6567,8 @@ fn screen_container_session(
                 host_id,
                 container_id: container_id.to_string(),
             },
+            crate::session::SessionOwner::Grid,
+            None,
             move |id| session_exited(&handle, id),
         )
         .map_err(|e| e.to_string())?;
@@ -7724,6 +7801,9 @@ fn write_control(state: State<'_, AppState>, id: SessionId, bytes: String) -> Re
         return Err("apenas caracteres de controle".into());
     }
     state
+        .owner_input
+        .record(&id.to_string(), bytes.as_bytes(), approvals::now_ms());
+    state
         .pty_pool
         .write(id, bytes.as_bytes())
         .map_err(|e| e.to_string())
@@ -7731,6 +7811,16 @@ fn write_control(state: State<'_, AppState>, id: SessionId, bytes: String) -> Re
 
 /// Consulta o modo prompt em vez de esperar o evento: quem assina depois do
 /// primeiro prompt nunca receberia o `633;P` e ficaria sem a linha de comando.
+/// Prévia de texto de uma sessão (nó do Orbit fora do zoom 100%): as
+/// últimas linhas da tela renderizada pelo core, no tamanho real do PTY.
+#[tauri::command]
+fn session_screen_lines(state: State<'_, AppState>, id: SessionId, max: usize) -> Vec<String> {
+    state
+        .pty_pool
+        .screen_lines(id, max.min(200))
+        .unwrap_or_default()
+}
+
 /// Ctrl+L na linha de comando: limpa a lista de blocos da sessão, pelo mesmo
 /// caminho do `clear` (apaga do disco e avisa o front), sem rodar comando nem
 /// deixar bloco.
@@ -7746,6 +7836,10 @@ async fn session_blocks(
     state: State<'_, AppState>,
     id: SessionId,
 ) -> Result<Vec<blocks::Block>, String> {
+    // Sessão efêmera (nó Terminal do Orbit): os blocos só existem em memória.
+    if let Some(live) = blocks::LIVE.list(&id.to_string()) {
+        return Ok(live);
+    }
     state
         .store
         .list_blocks(&id.to_string(), 200)
@@ -7935,14 +8029,53 @@ fn history_hits_filtered(
     limit: usize,
     ordem: history::Ordem,
 ) -> Result<Vec<HistoryHit>, String> {
+    let candidates = state
+        .store
+        .history_candidates_filtered(Some(query.trim()), cwd, repo_root, session_id, filter)
+        .map_err(|e| e.to_string())?;
+    let grid = rank_history(candidates, query, limit, ordem);
+    let Some(mut own) = own_history_hits(session_id, query, cwd, repo_root, filter, limit, ordem)
+    else {
+        return Ok(grid);
+    };
+    // Sessão efêmera: o histórico dela primeiro; o da grade, que é do mesmo
+    // dono, depois — sem repetir o que ela já mostra.
+    for hit in grid {
+        if !own.iter().any(|mine| mine.command == hit.command) {
+            own.push(hit);
+        }
+    }
+    own.truncate(limit.min(500));
+    Ok(own)
+}
+
+/// O histórico da própria sessão efêmera (`history::LIVE`), ranqueado como o
+/// do banco. `None` quando a sessão não é efêmera (então só o banco responde).
+fn own_history_hits(
+    session_id: Option<&str>,
+    query: &str,
+    cwd: Option<&str>,
+    repo_root: Option<&str>,
+    filter: &history::HistoryFilter,
+    limit: usize,
+    ordem: history::Ordem,
+) -> Option<Vec<HistoryHit>> {
+    let records = history::LIVE.list(session_id?)?;
+    let candidates = history::live_candidates(&records, cwd, repo_root, filter);
+    Some(rank_history(candidates, query, limit, ordem))
+}
+
+/// Fuzzy filtra, a `ordem` ordena, o teto corta.
+fn rank_history(
+    candidates: Vec<history::HistoryCandidate>,
+    query: &str,
+    limit: usize,
+    ordem: history::Ordem,
+) -> Vec<HistoryHit> {
     use fuzzy_matcher::skim::SkimMatcherV2;
     use fuzzy_matcher::FuzzyMatcher;
 
     let query = query.trim();
-    let candidates = state
-        .store
-        .history_candidates_filtered(Some(query), cwd, repo_root, session_id, filter)
-        .map_err(|e| e.to_string())?;
     let matcher = SkimMatcherV2::default();
     let now = approvals::now_ms() as i64;
     // O fuzzy FILTRA — decide quem aparece. Quem ordena é a `ordem`, e ela
@@ -7981,11 +8114,11 @@ fn history_hits_filtered(
         })
         .collect();
     scored.sort_by(|a, b| b.0.total_cmp(&a.0));
-    Ok(scored
+    scored
         .into_iter()
         .take(limit.min(500))
         .map(|(_, hit)| hit)
-        .collect())
+        .collect()
 }
 
 #[derive(serde::Serialize)]
@@ -8012,7 +8145,7 @@ async fn suggest_commands(
     cwd: Option<String>,
     repo_root: Option<String>,
 ) -> Result<Vec<CommandSuggestion>, String> {
-    command_suggestions(&state, &query, cwd.as_deref(), repo_root.as_deref())
+    command_suggestions(&state, &query, cwd.as_deref(), repo_root.as_deref(), None)
 }
 
 /// A lista responde "o que eu rodei?", e a resposta é cronológica.
@@ -8026,11 +8159,17 @@ async fn suggest_commands(
 /// Snippet vem DEPOIS do histórico: antes ele vinha primeiro, e com a lista
 /// abrindo acima da caixa isso o punha no lugar do último comando executado —
 /// justamente o item que o ↑ escolhe.
+///
+/// Sessão efêmera (nó Terminal do Orbit): a lista é SÓ o histórico dela. O ↑
+/// já escolhe o primeiro item, e ↑ e Enter rodando um comando da grade, nunca
+/// digitado no nó, é o defeito que isto fecha. A grade ainda entra no cinza
+/// ([`ghost_command`]), que é previsão e só o `→` aceita.
 fn command_suggestions(
     state: &AppState,
     query: &str,
     cwd: Option<&str>,
     repo_root: Option<&str>,
+    session_id: Option<&str>,
 ) -> Result<Vec<CommandSuggestion>, String> {
     use fuzzy_matcher::skim::SkimMatcherV2;
     use fuzzy_matcher::FuzzyMatcher;
@@ -8056,14 +8195,26 @@ fn command_suggestions(
         }
     }
 
-    let history = history_hits(
-        state,
+    let own = own_history_hits(
+        session_id,
         query,
         cwd,
         repo_root,
+        &history::HistoryFilter::default(),
         SUGGEST_LIMIT,
         history::Ordem::Recencia,
-    )?
+    );
+    let history = match own {
+        Some(own) => own,
+        None => history_hits(
+            state,
+            query,
+            cwd,
+            repo_root,
+            SUGGEST_LIMIT,
+            history::Ordem::Recencia,
+        )?,
+    }
     .into_iter()
     .map(|hit| CommandSuggestion {
         command: hit.command,
@@ -8099,20 +8250,26 @@ fn history_then_snippets(
 /// uma vez — trocar por recência faria o cinza sugerir o último comando em vez
 /// do provável. Só serve comando que começa EXATAMENTE com o que está escrito
 /// (sem `trim`): ghost que não é prefixo mentiria sobre o que o `→` completa.
+///
+/// Sessão efêmera: o histórico dela primeiro, a grade depois
+/// ([`history_hits_filtered`]).
 fn ghost_command(
     state: &AppState,
     raw_query: &str,
     cwd: Option<&str>,
     repo_root: Option<&str>,
+    session_id: Option<&str>,
 ) -> Option<String> {
     if raw_query.trim().is_empty() {
         return None;
     }
-    history_hits(
+    history_hits_filtered(
         state,
         raw_query,
         cwd,
         repo_root,
+        session_id,
+        &history::HistoryFilter::default(),
         SUGGEST_LIMIT,
         history::Ordem::Frecencia,
     )
@@ -8271,8 +8428,20 @@ async fn suggest_line(
         }
         _ => Vec::new(),
     };
-    let commands = command_suggestions(&state, &query, cwd.as_deref(), repo_root.as_deref())?;
-    let ghost = ghost_command(&state, &query, cwd.as_deref(), repo_root.as_deref());
+    let commands = command_suggestions(
+        &state,
+        &query,
+        cwd.as_deref(),
+        repo_root.as_deref(),
+        session_id.as_deref(),
+    )?;
+    let ghost = ghost_command(
+        &state,
+        &query,
+        cwd.as_deref(),
+        repo_root.as_deref(),
+        session_id.as_deref(),
+    );
     let binaries = binary_suggestions(&state, session_id.as_deref(), command_prefix.as_deref());
     Ok(LineSuggestions {
         commands,
@@ -8599,6 +8768,761 @@ fn save_snippet(state: State<'_, AppState>, snippet: snippet::Snippet) -> Result
 #[tauri::command]
 fn delete_snippet(state: State<'_, AppState>, id: String) -> Result<(), String> {
     state.store.delete_snippet(&id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn orbit_list_graphs(state: State<'_, AppState>) -> Result<Vec<orbit::Graph>, String> {
+    state.store.list_orbit_graphs().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn orbit_get_graph(state: State<'_, AppState>, id: String) -> Result<Option<orbit::Graph>, String> {
+    Ok(state
+        .store
+        .get_orbit_graph(&id)
+        .map_err(|e| e.to_string())?
+        .map(|stored| stored.value))
+}
+
+/// Valida no core antes de gravar: o front oferece só ligação válida, mas não
+/// é quem decide. Grafo salvo pelo dono é dele — fica consentido. Navegador
+/// que saiu do grafo leva junto cookies, login e armazenamento.
+#[tauri::command]
+fn orbit_save_graph(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    views: State<'_, orbit::browser::BrowserViews>,
+    runs: State<'_, orbit::run::SharedRuns>,
+    graph: orbit::Graph,
+) -> Result<(), String> {
+    let integrations = state
+        .store
+        .list_orbit_integrations()
+        .map_err(|e| e.to_string())?;
+    orbit::validate_graph(&graph, &integrations).map_err(|e| e.to_string())?;
+    let before = state
+        .store
+        .get_orbit_graph(&graph.id)
+        .map_err(|e| e.to_string())?;
+    state
+        .store
+        .save_orbit_graph(&graph, true, None)
+        .map_err(|e| e.to_string())?;
+    runs.graph_saved(&graph);
+    if let Some(before) = before {
+        for node in orbit::browser::removed_browsers(&before.value, &graph) {
+            views.forget(&app, &browser_key(graph.id.clone(), node));
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn orbit_delete_graph(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    views: State<'_, orbit::browser::BrowserViews>,
+    id: String,
+) -> Result<(), String> {
+    // Com execução aberta recusa; senão as execuções (linha e pasta) saem
+    // antes do grafo.
+    app.state::<orbit::run::SharedRuns>().forget_graph(&id)?;
+    let before = state
+        .store
+        .get_orbit_graph(&id)
+        .map_err(|e| e.to_string())?;
+    state
+        .store
+        .delete_orbit_graph(&id)
+        .map_err(|e| e.to_string())?;
+    for node in before
+        .map(|g| orbit::browser::browsers(&g.value))
+        .unwrap_or_default()
+    {
+        views.forget(&app, &browser_key(id.clone(), node));
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn orbit_list_integrations(state: State<'_, AppState>) -> Result<Vec<orbit::Integration>, String> {
+    state
+        .store
+        .list_orbit_integrations()
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn orbit_save_integration(
+    state: State<'_, AppState>,
+    runs: State<'_, orbit::run::SharedRuns>,
+    integration: orbit::Integration,
+) -> Result<(), String> {
+    orbit::validate_integration(&integration).map_err(|e| e.to_string())?;
+    state
+        .store
+        .save_orbit_integration(&integration, true, None)
+        .map_err(|e| e.to_string())?;
+    runs.integration_saved(&integration);
+    Ok(())
+}
+
+#[tauri::command]
+fn orbit_delete_integration(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    // Integração em uso não sai: o grafo dela deixaria de validar no ▶.
+    let graphs = state.store.list_orbit_graphs().map_err(|e| e.to_string())?;
+    let users = orbit::graphs_using_integration(&graphs, &id);
+    if !users.is_empty() {
+        return Err(format!(
+            "em uso no grafo {}: tire o nó antes de apagar",
+            users
+                .iter()
+                .map(|n| format!("\"{n}\""))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    state
+        .store
+        .delete_orbit_integration(&id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn orbit_list_roles(state: State<'_, AppState>) -> Result<Vec<orbit::Role>, String> {
+    state.store.list_orbit_roles().map_err(|e| e.to_string())
+}
+
+/// Grava o papel na biblioteca desta máquina (o nome é a chave). Instruções
+/// que mudaram marcam "↻ para aplicar" nos agentes rodando com esse papel.
+#[tauri::command]
+fn orbit_save_role(
+    state: State<'_, AppState>,
+    runs: State<'_, orbit::run::SharedRuns>,
+    role: orbit::Role,
+) -> Result<(), String> {
+    orbit::validate_role(&role).map_err(|e| e.to_string())?;
+    let before = state
+        .store
+        .get_orbit_role(&role.name)
+        .map_err(|e| e.to_string())?;
+    state
+        .store
+        .save_orbit_role(&role, None)
+        .map_err(|e| e.to_string())?;
+    if before.as_ref() != Some(&role) {
+        runs.role_saved(&role.name);
+    }
+    Ok(())
+}
+
+/// Apagar deixa o nome como rótulo nos nós que o usavam.
+#[tauri::command]
+fn orbit_delete_role(state: State<'_, AppState>, name: String) -> Result<(), String> {
+    state
+        .store
+        .delete_orbit_role(&name)
+        .map_err(|e| e.to_string())
+}
+
+/// Renomear leva junto os nós de todos os grafos desta máquina (e dos runs
+/// abertos, sem marcar nada). Recusa nome que já existe.
+#[tauri::command]
+fn orbit_rename_role(
+    state: State<'_, AppState>,
+    runs: State<'_, orbit::run::SharedRuns>,
+    from: String,
+    to: String,
+) -> Result<(), String> {
+    let to = to.trim().to_string();
+    if to == from {
+        return Ok(());
+    }
+    orbit::validate_role(&orbit::Role {
+        name: to.clone(),
+        instructions: String::new(),
+    })
+    .map_err(|e| e.to_string())?;
+    if state
+        .store
+        .get_orbit_role(&to)
+        .map_err(|e| e.to_string())?
+        .is_some()
+    {
+        return Err(format!("já existe um papel chamado \"{to}\""));
+    }
+    state
+        .store
+        .rename_orbit_role(&from, &to)
+        .map_err(|e| e.to_string())?;
+    let graphs = state.store.list_orbit_graphs().map_err(|e| e.to_string())?;
+    for mut graph in graphs {
+        if orbit::rename_role_in(&mut graph, &from, &to) == 0 {
+            continue;
+        }
+        let consented = state
+            .store
+            .get_orbit_graph(&graph.id)
+            .map_err(|e| e.to_string())?
+            .is_none_or(|s| s.consented);
+        state
+            .store
+            .save_orbit_graph(&graph, consented, None)
+            .map_err(|e| e.to_string())?;
+    }
+    runs.role_renamed(&from, &to);
+    Ok(())
+}
+
+/// ▶ Executar. Recusa no core grafo importado e não confirmado, e revalida o
+/// grafo antes de rodar — o banco não é prova de que ele ainda é válido.
+/// Fora da main thread: parar o run anterior e gravar o novo não seguram a
+/// tela; os nós sobem depois, em outra thread (ver `Runs::start`).
+#[tauri::command]
+async fn orbit_run_start(app: AppHandle, graph_id: String) -> Result<String, String> {
+    off_main(app, move |app, state| {
+        let stored = state
+            .store
+            .get_orbit_graph(&graph_id)
+            .map_err(|e| e.to_string())?
+            .ok_or("grafo não encontrado")?;
+        let graph = orbit::run::startable(stored)?;
+        let integrations = state
+            .store
+            .list_orbit_integrations()
+            .map_err(|e| e.to_string())?;
+        orbit::validate_graph(&graph, &integrations).map_err(|e| e.to_string())?;
+        let runs = app.state::<orbit::run::SharedRuns>();
+        Ok(runs.start(graph, integrations)?.id)
+    })
+    .await?
+}
+
+/// Abre o nó Terminal (sem ▶): uma sessão ao vivo do grafo com o shell do
+/// dono na pasta do nó. Nunca no boot nem ao carregar o grafo — só por este
+/// pedido do dono. Mesmas barreiras do ▶: grafo consentido e válido.
+#[tauri::command]
+async fn orbit_terminal_open(
+    app: AppHandle,
+    graph_id: String,
+    node_id: String,
+) -> Result<orbit::run::Run, String> {
+    off_main(app, move |app, state| {
+        let stored = state
+            .store
+            .get_orbit_graph(&graph_id)
+            .map_err(|e| e.to_string())?
+            .ok_or("grafo não encontrado")?;
+        let graph = orbit::run::startable(stored)?;
+        let integrations = state
+            .store
+            .list_orbit_integrations()
+            .map_err(|e| e.to_string())?;
+        orbit::validate_graph(&graph, &integrations).map_err(|e| e.to_string())?;
+        app.state::<orbit::run::SharedRuns>()
+            .open_terminal(graph, &node_id)
+    })
+    .await?
+}
+
+/// Fecha o nó Terminal (⋯ → Fechar): mata o process group do shell e fecha a
+/// sessão ao vivo dele, parando os nós criados nela (salvo os mantidos).
+#[tauri::command]
+async fn orbit_terminal_close(
+    app: AppHandle,
+    graph_id: String,
+    node_id: String,
+) -> Result<(), String> {
+    off_main(app, move |app, _state| {
+        app.state::<orbit::run::SharedRuns>()
+            .close_terminal(&graph_id, &node_id)
+    })
+    .await?
+}
+
+/// O ▶ num nó de integração manual: ele roda assim que as entradas chegarem.
+#[tauri::command]
+fn orbit_run_node(
+    runs: State<'_, orbit::run::SharedRuns>,
+    run_id: String,
+    node_id: String,
+) -> Result<(), String> {
+    runs.run_node(&run_id, &node_id)
+}
+
+/// "Testar com a última entrada": roda só o script da integração com o `in/`
+/// da última execução daquele nó. Mesmas barreiras do ▶ Executar: grafo e
+/// integração consentidos e válidos.
+#[tauri::command]
+fn orbit_integration_test(
+    state: State<'_, AppState>,
+    runs: State<'_, orbit::run::SharedRuns>,
+    integration_id: String,
+    graph_id: String,
+    node_id: String,
+) -> Result<orbit::run::Run, String> {
+    let stored = state
+        .store
+        .get_orbit_graph(&graph_id)
+        .map_err(|e| e.to_string())?
+        .ok_or("grafo não encontrado")?;
+    let graph = orbit::run::startable(stored)?;
+    let integration = state
+        .store
+        .get_orbit_integration(&integration_id)
+        .map_err(|e| e.to_string())?
+        .ok_or("integração não encontrada")?;
+    if !integration.consented {
+        return Err(
+            "integração importada ainda não confirmada: revise e confirme antes de testar".into(),
+        );
+    }
+    let integrations = state
+        .store
+        .list_orbit_integrations()
+        .map_err(|e| e.to_string())?;
+    orbit::validate_graph(&graph, &integrations).map_err(|e| e.to_string())?;
+    orbit::validate_integration(&integration.value).map_err(|e| e.to_string())?;
+    runs.test_integration(graph, integration.value, &node_id)
+}
+
+#[tauri::command]
+fn orbit_run_stop(runs: State<'_, orbit::run::SharedRuns>, run_id: String) -> Result<(), String> {
+    runs.stop(&run_id)
+}
+
+/// Apagar um nó rodando: o core para só ele (e o agente vivo depois do
+/// turno) antes de o front tirá-lo do grafo.
+#[tauri::command]
+fn orbit_run_stop_node(
+    runs: State<'_, orbit::run::SharedRuns>,
+    run_id: String,
+    node_id: String,
+) -> Result<(), String> {
+    runs.stop_one(&run_id, &node_id)
+}
+
+/// Apagar no canvas um nó criado por agente: o core o marca descartado,
+/// registra "você apagou" (o agente que o criou fica sabendo) e o para se
+/// ainda vive.
+#[tauri::command]
+fn orbit_run_discard_node(
+    runs: State<'_, orbit::run::SharedRuns>,
+    run_id: String,
+    node_id: String,
+) -> Result<(), String> {
+    runs.discard_created(&run_id, &node_id)
+}
+
+/// ↻ do nó: reiniciar o que roda ou rodar de novo o que terminou, falhou ou
+/// parou, sem ■ Parar tudo. Só com a execução aberta (rodando ou assentada).
+/// Fora da main thread: matar a sessão velha e subir a nova (git, PTY,
+/// agente) não seguram a tela.
+#[tauri::command]
+async fn orbit_run_restart_node(
+    app: AppHandle,
+    run_id: String,
+    node_id: String,
+) -> Result<(), String> {
+    off_main(app, move |app, _state| {
+        app.state::<orbit::run::SharedRuns>()
+            .restart_node(&run_id, &node_id)
+    })
+    .await?
+}
+
+/// "Manter no grafo": os nós que o orquestrador criou no run (ativo,
+/// terminado, parado ou do histórico) entram no grafo salvo como nós normais —
+/// só `node_id` (o "Manter" do nó) ou todos os do `orchestrator` (o "Manter
+/// tudo" do ⋯ dele). O front grava o
+/// que está no debounce antes; o grafo resultante passa pela mesma validação
+/// do salvar e volta para a tela.
+#[tauri::command]
+fn orbit_keep_created(
+    state: State<'_, AppState>,
+    runs: State<'_, orbit::run::SharedRuns>,
+    run_id: String,
+    node_id: Option<String>,
+    orchestrator: Option<String>,
+) -> Result<orbit::Graph, String> {
+    let run = runs.get(&run_id).ok_or("execução não encontrada")?;
+    let created = orbit::orchestrator::pick_to_keep(
+        runs.created_to_keep(&run_id)?,
+        node_id.as_deref(),
+        orchestrator.as_deref(),
+    )?;
+    let graph_id = run.graph_id;
+    let mut graph = state
+        .store
+        .get_orbit_graph(&graph_id)
+        .map_err(|e| e.to_string())?
+        .ok_or("grafo não encontrado")?
+        .value;
+    orbit::orchestrator::merge_kept(&mut graph, &created, &run.created);
+    let integrations = state
+        .store
+        .list_orbit_integrations()
+        .map_err(|e| e.to_string())?;
+    orbit::validate_graph(&graph, &integrations).map_err(|e| e.to_string())?;
+    state
+        .store
+        .save_orbit_graph(&graph, true, None)
+        .map_err(|e| e.to_string())?;
+    let ids: Vec<String> = created.into_iter().map(|c| c.node.id).collect();
+    runs.mark_kept(&run_id, &ids);
+    Ok(graph)
+}
+
+#[tauri::command]
+fn orbit_run_get(
+    runs: State<'_, orbit::run::SharedRuns>,
+    run_id: String,
+) -> Result<Option<orbit::run::Run>, String> {
+    Ok(runs.get(&run_id))
+}
+
+/// O fim do log de um nó do run (sem cor, redigido): o card do processo que
+/// já terminou mostra isto no lugar do terminal.
+#[tauri::command]
+fn orbit_node_log(
+    runs: State<'_, orbit::run::SharedRuns>,
+    run_id: String,
+    node_id: String,
+    lines: usize,
+) -> Result<Vec<String>, String> {
+    runs.node_log(&run_id, &node_id, lines)
+}
+
+/// "Ver log inteiro" do nó: o log gravado pelo core, sem cor e redigido.
+#[tauri::command]
+fn orbit_node_log_whole(
+    runs: State<'_, orbit::run::SharedRuns>,
+    run_id: String,
+    node_id: String,
+) -> Result<orbit::run::WholeLog, String> {
+    runs.node_log_whole(&run_id, &node_id)
+}
+
+#[tauri::command]
+fn orbit_runs_list(
+    runs: State<'_, orbit::run::SharedRuns>,
+    graph_id: String,
+) -> Vec<orbit::run::Run> {
+    runs.list(&graph_id)
+}
+
+/// Log ao vivo do contêiner no nó de serviço: liga (ou reaproveita) o
+/// seguidor do Orbit e devolve o que já foi lido. As linhas novas chegam em
+/// lote por `orbit-logs://<id>`.
+#[tauri::command]
+async fn orbit_service_logs_start(
+    app: AppHandle,
+    container_id: String,
+) -> Result<docker::logs::LogsSnapshot, String> {
+    docker_blocking(move || orbit::service::start_logs(&app, &container_id)).await?
+}
+
+/// Estado vivo do serviço no card (no ar / caiu / parado) e se "Subir"
+/// vale. Só lê: o card chama de tempos em tempos.
+#[tauri::command]
+async fn orbit_service_probe(
+    app: AppHandle,
+    source: orbit::ServiceSource,
+) -> Result<orbit::service::ServiceLive, String> {
+    docker_blocking(move || orbit::service::probe(&app, &source)).await
+}
+
+/// "Subir" do nó de serviço: o alvo sai do grafo salvo (não do front), o
+/// contêiner parado sobe e fica registrado para o ⌘Q; o nó que tinha caído
+/// no run aberto roda de novo.
+#[tauri::command]
+async fn orbit_service_start(
+    app: AppHandle,
+    graph_id: String,
+    node_id: String,
+) -> Result<orbit::service::ServiceLive, String> {
+    off_main(app, move |app, state| {
+        let graph = state
+            .store
+            .get_orbit_graph(&graph_id)
+            .map_err(|e| e.to_string())?
+            .ok_or("grafo não encontrado")?
+            .value;
+        let source = graph
+            .nodes
+            .iter()
+            .find_map(|n| match &n.kind {
+                orbit::NodeKind::Service { source } if n.id == node_id => Some(source.clone()),
+                _ => None,
+            })
+            .ok_or("nó de serviço não encontrado")?;
+        orbit::service::start(app, &source)?;
+        app.state::<orbit::run::SharedRuns>()
+            .rerun_service(&graph_id, &node_id);
+        Ok(orbit::service::probe(app, &source))
+    })
+    .await?
+}
+
+/// Só sobrevive o seguidor de contêiner que algum nó de serviço do canvas
+/// mostra; o canvas fechado manda a lista vazia.
+#[tauri::command]
+fn orbit_service_logs_retain(
+    logs: State<'_, orbit::service::ServiceLogs>,
+    container_ids: Vec<String>,
+) {
+    logs.0.retain(&container_ids.into_iter().collect());
+}
+
+/// Navegador nativo do nó (Fase 5): o nó existe neste sistema? Sem ele, o
+/// front segue no iframe.
+#[tauri::command]
+fn orbit_browser_native() -> bool {
+    orbit::browser::NATIVE
+}
+
+fn browser_key(graph_id: String, node_id: String) -> orbit::browser::ViewKey {
+    orbit::browser::ViewKey {
+        graph: graph_id,
+        node: node_id,
+    }
+}
+
+/// Abre `url` no navegador nativo do nó. A regra é a do core
+/// (`orbit::browser::policy`): só local; `file://` só `.html` dentro da
+/// pasta do workspace ou de um nó ligado ao navegador. `async`: a regra
+/// confere o disco (`canonicalize`); a view nativa vai para a main thread
+/// pelo `run_on_main_thread`.
+#[tauri::command]
+async fn orbit_browser_navigate(
+    app: AppHandle,
+    graph_id: String,
+    node_id: String,
+    url: String,
+) -> Result<(), String> {
+    off_main(app, move |app, state| {
+        let roots = state
+            .store
+            .get_orbit_graph(&graph_id)
+            .map_err(|e| e.to_string())?
+            .map(|g| orbit::browser::file_roots(&g.value, &node_id))
+            .unwrap_or_default();
+        app.state::<orbit::browser::BrowserViews>().navigate(
+            app,
+            &browser_key(graph_id, node_id),
+            &url,
+            &roots,
+        )
+    })
+    .await?
+}
+
+/// "Apagar dados do navegador" no ⋯ do nó: cookies, login e armazenamento
+/// do nó saem, e a página carrega de novo sem eles. `async`: o apagar mexe
+/// em disco (Windows e Linux) e o navegar de volta também.
+#[tauri::command]
+async fn orbit_browser_clear_data(app: AppHandle, graph_id: String, node_id: String) {
+    let _ = off_main(app, move |app, _| {
+        app.state::<orbit::browser::BrowserViews>()
+            .clear_data(app, &browser_key(graph_id, node_id));
+    })
+    .await;
+}
+
+/// A intenção de geometria do card: `rect` com o marcador e `clip` com a
+/// parte dele à vista, sem nada por cima (sem `clip`, o marcador inteiro),
+/// ou `null` para esconder (o card mostra o print).
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+fn orbit_browser_view(
+    app: AppHandle,
+    views: State<'_, orbit::browser::BrowserViews>,
+    graph_id: String,
+    node_id: String,
+    rect: Option<orbit::browser::ViewRect>,
+    clip: Option<orbit::browser::ViewRect>,
+    zoom: f64,
+    center: Option<(f64, f64)>,
+) {
+    views.set_view(
+        &app,
+        &browser_key(graph_id, node_id),
+        rect,
+        clip,
+        zoom,
+        center,
+    );
+}
+
+#[tauri::command]
+fn orbit_browser_back(
+    app: AppHandle,
+    views: State<'_, orbit::browser::BrowserViews>,
+    graph_id: String,
+    node_id: String,
+) {
+    views.back(&app, &browser_key(graph_id, node_id));
+}
+
+#[tauri::command]
+fn orbit_browser_reload(
+    app: AppHandle,
+    views: State<'_, orbit::browser::BrowserViews>,
+    graph_id: String,
+    node_id: String,
+) {
+    views.reload(&app, &browser_key(graph_id, node_id));
+}
+
+/// O estado atual de um navegador (o card remontado não perde o que já
+/// passou pelo evento).
+#[tauri::command]
+fn orbit_browser_state(
+    views: State<'_, orbit::browser::BrowserViews>,
+    graph_id: String,
+    node_id: String,
+) -> Option<orbit::browser::BrowserState> {
+    views.state(&browser_key(graph_id, node_id))
+}
+
+/// A prévia do card: o último print da página (JPEG em base64).
+#[tauri::command]
+fn orbit_browser_preview(
+    views: State<'_, orbit::browser::BrowserViews>,
+    graph_id: String,
+    node_id: String,
+) -> Option<String> {
+    views.preview(&browser_key(graph_id, node_id))
+}
+
+/// Só sobrevivem os navegadores que o canvas mostra; o Orbit fechado manda
+/// a lista vazia e toda view nativa é destruída.
+#[tauri::command]
+fn orbit_browser_retain(
+    app: AppHandle,
+    views: State<'_, orbit::browser::BrowserViews>,
+    graph_id: String,
+    node_ids: Vec<String>,
+) {
+    views.retain(&app, &graph_id, &node_ids);
+}
+
+/// Grava o `.tyba-orbit.toml` com o grafo e as integrações que ele usa.
+/// Devolve as variáveis zeradas e os campos com segredo literal, para avisar.
+#[tauri::command]
+fn orbit_export(
+    state: State<'_, AppState>,
+    graph_id: String,
+    path: String,
+) -> Result<orbit::export::ExportReport, String> {
+    let graph = state
+        .store
+        .get_orbit_graph(&graph_id)
+        .map_err(|e| e.to_string())?
+        .ok_or("grafo não encontrado")?
+        .value;
+    let integrations = state
+        .store
+        .list_orbit_integrations()
+        .map_err(|e| e.to_string())?;
+    let roles = state.store.list_orbit_roles().map_err(|e| e.to_string())?;
+    orbit::export::export_to(std::path::Path::new(&path), &graph, &integrations, &roles)
+        .map_err(|e| e.to_string())
+}
+
+/// Prévia da importação: lê e valida, devolve tudo que vai rodar e o hash.
+/// Não grava nada.
+#[tauri::command]
+fn orbit_import_preview(
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<orbit::export::ImportPreview, String> {
+    let imported =
+        orbit::export::read_import(std::path::Path::new(&path)).map_err(|e| e.to_string())?;
+    let replaces_graph = state
+        .store
+        .get_orbit_graph(&imported.graph.id)
+        .map_err(|e| e.to_string())?
+        .is_some();
+    // Mesma regra do Confirmar, numa cópia: a prévia mostra o arquivo como veio.
+    let renamed_integrations = orbit::export::resolve_integration_ids(
+        &mut imported.clone(),
+        |id| local_orbit_integration(&state, id),
+        String::new,
+    )?
+    .renamed;
+    let dirs = orbit::export::import_dirs(&imported.graph);
+    let role_statuses =
+        orbit::export::role_statuses(&imported.roles, |name| local_orbit_role(&state, name))?;
+    Ok(orbit::export::ImportPreview {
+        imported,
+        replaces_graph,
+        renamed_integrations,
+        dirs,
+        role_statuses,
+    })
+}
+
+fn local_orbit_role(state: &AppState, name: &str) -> Result<Option<orbit::Role>, String> {
+    state.store.get_orbit_role(name).map_err(|e| e.to_string())
+}
+
+fn local_orbit_integration(
+    state: &AppState,
+    id: &str,
+) -> Result<Option<orbit::Integration>, String> {
+    Ok(state
+        .store
+        .get_orbit_integration(id)
+        .map_err(|e| e.to_string())?
+        .map(|stored| stored.value))
+}
+
+/// Confirmar da importação: relê o arquivo e só grava se o hash for o mesmo
+/// que o dono viu na prévia. Grava consentido e com a origem (`imported_hash`).
+/// Cada nó roda na pasta que o dono escolheu em `dirs` (id do nó → pasta) ou
+/// na do arquivo, se ela existe aqui; pasta inexistente sem escolha recusa.
+/// `dir` vira a pasta padrão do grafo. Integração local de mesmo id e outro
+/// conteúdo nunca é sobrescrita — a do arquivo entra com id novo. Papel do
+/// arquivo diferente do daqui segue a escolha do dono em `roles` (nome →
+/// escolha; sem escolha, entra como cópia).
+#[tauri::command]
+fn orbit_import_confirm(
+    state: State<'_, AppState>,
+    path: String,
+    hash: String,
+    dir: String,
+    dirs: std::collections::HashMap<String, String>,
+    roles: std::collections::HashMap<String, orbit::export::RoleChoice>,
+) -> Result<String, String> {
+    let mut imported = orbit::export::read_confirmed(std::path::Path::new(&path), &hash)
+        .map_err(|e| e.to_string())?;
+    orbit::export::place_dirs(&mut imported, &dir, &dirs).map_err(|e| e.to_string())?;
+    let resolved = orbit::export::resolve_integration_ids(
+        &mut imported,
+        |id| local_orbit_integration(&state, id),
+        || uuid::Uuid::new_v4().to_string(),
+    )?;
+    let roles =
+        orbit::export::resolve_roles(&mut imported, |name| local_orbit_role(&state, name), &roles)?;
+    orbit::validate_graph(&imported.graph, &imported.integrations).map_err(|e| e.to_string())?;
+    for integration in &resolved.to_save {
+        state
+            .store
+            .save_orbit_integration(integration, true, Some(&imported.hash))
+            .map_err(|e| e.to_string())?;
+    }
+    for role in &roles.to_save {
+        state
+            .store
+            .save_orbit_role(role, Some(&imported.hash))
+            .map_err(|e| e.to_string())?;
+    }
+    state
+        .store
+        .save_orbit_graph(&imported.graph, true, Some(&imported.hash))
+        .map_err(|e| e.to_string())?;
+    Ok(imported.graph.id)
 }
 
 /// Histórico de notificações: mais nova primeiro, até 500, dos últimos 7 dias.
@@ -9171,6 +10095,7 @@ pub fn run() {
                 managed_lsp,
                 repo_reconcile: reconcile_tx.clone(),
                 rich_input_submit: parking_lot::Mutex::new(()),
+                owner_input: orbit::talk::OwnerInput::default(),
                 worktree_files: rich_input::FilesCache::default(),
                 hook_servers: Arc::new(agent::session::HookServerRegistry::default()),
                 subagents,
@@ -9188,6 +10113,15 @@ pub fn run() {
                 boot: Arc::clone(&boot_gate),
                 services: Arc::default(),
             });
+            let orbit_runs: orbit::run::SharedRuns = orbit::run::Runs::new(
+                orbit::run::TauriHost::new(app.handle().clone()),
+                Arc::clone(&store),
+                orbit::run::default_root(),
+            );
+            app.manage(orbit_runs);
+            app.manage(orbit::service::ServiceLogs::default());
+            app.manage(orbit::service::StartedContainers::default());
+            app.manage(orbit::browser::BrowserViews::default());
 
             // O canal shim↔core (shim v2, passo 2, tech-spec §3/§4): socket por
             // usuário, ligado uma vez no boot, depois do `app.manage` acima —
@@ -9216,7 +10150,29 @@ pub fn run() {
                             servers: Arc::clone(&state.hook_servers),
                             subagents: Arc::clone(&state.subagents),
                         };
-                        agent::channel_host::handle(&ctx, peer_pid, request)
+                        // O `claude` digitado no shell de um nó Terminal
+                        // aberto do Orbit ganha as ferramentas dele.
+                        let runs = channel_app.try_state::<orbit::run::SharedRuns>();
+                        let orbit_tools = |id: SessionId| {
+                            runs.as_ref()
+                                .and_then(|r| r.terminal_tools(&id.to_string()))
+                        };
+                        let on_hosted = |id: SessionId, agent: &'static str| {
+                            if let Some(runs) = runs.as_ref() {
+                                runs.hosted_agent_started(
+                                    &id.to_string(),
+                                    agent,
+                                    approvals::now_ms(),
+                                );
+                            }
+                        };
+                        agent::channel_host::handle(
+                            &ctx,
+                            peer_pid,
+                            request,
+                            &orbit_tools,
+                            &on_hosted,
+                        )
                     });
                 let channel_socket_path = hook_ipc::channel::resolve_channel_socket_path();
                 match hook_ipc::channel::ChannelServer::bind(&channel_socket_path, channel_handler)
@@ -9563,6 +10519,7 @@ pub fn run() {
             session_line_echo,
             session_blocks,
             wipe_blocks,
+            session_screen_lines,
             focus_session,
             agent_asks,
             dismiss_ask,
@@ -9580,6 +10537,47 @@ pub fn run() {
             list_snippets,
             save_snippet,
             delete_snippet,
+            orbit_list_graphs,
+            orbit_get_graph,
+            orbit_save_graph,
+            orbit_delete_graph,
+            orbit_list_integrations,
+            orbit_save_integration,
+            orbit_delete_integration,
+            orbit_list_roles,
+            orbit_save_role,
+            orbit_delete_role,
+            orbit_rename_role,
+            orbit_run_start,
+            orbit_run_node,
+            orbit_integration_test,
+            orbit_run_stop,
+            orbit_run_stop_node,
+            orbit_run_discard_node,
+            orbit_run_restart_node,
+            orbit_run_get,
+            orbit_node_log,
+            orbit_node_log_whole,
+            orbit_keep_created,
+            orbit_runs_list,
+            orbit_terminal_open,
+            orbit_terminal_close,
+            orbit_service_logs_start,
+            orbit_browser_native,
+            orbit_browser_navigate,
+            orbit_browser_view,
+            orbit_browser_back,
+            orbit_browser_reload,
+            orbit_browser_state,
+            orbit_browser_preview,
+            orbit_browser_retain,
+            orbit_browser_clear_data,
+            orbit_service_logs_retain,
+            orbit_service_probe,
+            orbit_service_start,
+            orbit_export,
+            orbit_import_preview,
+            orbit_import_confirm,
             snippet_placeholders,
             notifications_list,
             notifications_mark_read,
@@ -9671,6 +10669,22 @@ pub fn run() {
                     state.pty_pool.kill_all();
                     state.docker_logs.stop_all();
                 }
+                if let Some(logs) = app_handle.try_state::<orbit::service::ServiceLogs>() {
+                    logs.0.stop_all();
+                }
+                // ⌘Q: o contêiner que o Orbit subiu nesta execução do TYBA
+                // para; o que já rodava antes não é tocado.
+                if let (Some(started), Some(state)) = (
+                    app_handle.try_state::<orbit::service::StartedContainers>(),
+                    app_handle.try_state::<AppState>(),
+                ) {
+                    let ids = started.take();
+                    if !ids.is_empty() {
+                        if let Err(e) = state.docker.stop_many(&ids) {
+                            eprintln!("[orbit] parar contêineres do Orbit na saída: {e}");
+                        }
+                    }
+                }
             }
         });
 }
@@ -9678,6 +10692,66 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Nó Terminal (sessão efêmera): o histórico dele responde, o mais
+    /// recente primeiro — o item que o ↑ escolhe. Sessão que não é efêmera:
+    /// `None`, e quem responde é só o banco.
+    #[test]
+    fn own_history_hits_answer_for_the_ephemeral_session_most_recent_first() {
+        let id = uuid::Uuid::new_v4().to_string();
+        assert!(own_history_hits(
+            Some(&id),
+            "",
+            None,
+            None,
+            &history::HistoryFilter::default(),
+            8,
+            history::Ordem::Recencia,
+        )
+        .is_none());
+        assert!(own_history_hits(
+            None,
+            "",
+            None,
+            None,
+            &history::HistoryFilter::default(),
+            8,
+            history::Ordem::Recencia,
+        )
+        .is_none());
+
+        history::LIVE.open(&id);
+        let own = |query: &str| {
+            own_history_hits(
+                Some(&id),
+                query,
+                None,
+                None,
+                &history::HistoryFilter::default(),
+                8,
+                history::Ordem::Recencia,
+            )
+            .unwrap()
+            .into_iter()
+            .map(|hit| hit.command)
+            .collect::<Vec<_>>()
+        };
+        assert!(own("").is_empty(), "nó sem comando: nada a escolher");
+        for (at, command) in [(1, "cargo build"), (2, "ls"), (3, "cargo test")] {
+            history::LIVE.remember(history::CommandRecord {
+                session_id: id.clone(),
+                cwd: None,
+                command: command.into(),
+                exit_code: Some(0),
+                started_at_ms: at,
+                duration_ms: Some(1),
+                host_id: None,
+            });
+        }
+        assert_eq!(own(""), ["cargo test", "ls", "cargo build"]);
+        assert_eq!(own("cargo"), ["cargo test", "cargo build"]);
+        history::LIVE.close(&id);
+    }
 
     #[test]
     fn split_inherits_the_kernel_cwd_of_the_source_process() {
@@ -10362,6 +11436,7 @@ mod tests {
             agent_usage: None,
             shell_resume_offer: false,
             agent_conversation_cwd: None,
+            owner: Default::default(),
         }
     }
 
@@ -10836,6 +11911,7 @@ mod command_threading_tests {
         "history::import::run(",
         "themes.import(",
         "files_for(",
+        "runs.start(",
     ];
 
     /// Síncronos de propósito, com o motivo.

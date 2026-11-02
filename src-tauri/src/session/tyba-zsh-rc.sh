@@ -260,12 +260,19 @@ if [ -n "${TYBA_BIN:-}" ] && [ "${TYBA_AGENT_SHIM:-1}" = "1" ]; then
   }
 
   # `codex` digitado: sobe o codex de verdade com o hook pre-push do TYBA
-  # (push para main/master), sem gate e sem jaula (`tyba _codex`). Mesmas
-  # escotilhas do claude: caminho absoluto pula, TYBA_AGENT_SHIM=0 desliga.
+  # (push para main/master), sem gate e sem jaula. Mesmas escotilhas do
+  # claude: caminho absoluto pula, TYBA_AGENT_SHIM=0 desliga. No shell de um
+  # no Terminal do Orbit (fatia 4) passa pelo core (`_jail-codex`), que da a
+  # ele tambem as ferramentas do Orbit; recusado ou sem core, cai no mesmo
+  # codex livre de `_codex`.
   codex() {
     __tyba_shim_record "codex"
     if [ -x "$TYBA_BIN" ]; then
-      "$TYBA_BIN" _codex -- "$@"
+      if [ "${TYBA_ORBIT_TERMINAL:-}" = "1" ]; then
+        "$TYBA_BIN" _jail-codex -- "$@"
+      else
+        "$TYBA_BIN" _codex -- "$@"
+      fi
     else
       command codex "$@"
     fi

@@ -2594,6 +2594,10 @@ export const onBlockFinalized = (
   listen<Block>(`block://finalized/${id}`, (e) => handler(e.payload));
 
 /** `clear`/`reset`: em modo bloco a tela é a lista, e ela some inteira. */
+/** As últimas linhas da tela renderizada pelo core, no tamanho real do PTY. */
+export const sessionScreenLines = (id: SessionId, max: number) =>
+  invoke<string[]>("session_screen_lines", { id, max });
+
 /** Ctrl+L: limpa a lista de blocos da sessão, como o `clear`. */
 export const wipeBlocks = (id: SessionId) => invoke<void>("wipe_blocks", { id });
 
@@ -3668,7 +3672,8 @@ export interface KillOutcome {
   force_after_ms: number;
 }
 
-export const servicesList = (id: SessionId) => invoke<ServicesList>("services_list", { id });
+/** `null` = a máquina local, sem sessão (a tela aberta pelo Orbit). */
+export const servicesList = (id: SessionId | null) => invoke<ServicesList>("services_list", { id });
 
 export const servicesDetail = (pid: number) => invoke<ServiceDetail>("services_detail", { pid });
 

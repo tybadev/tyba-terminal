@@ -89,7 +89,7 @@ pub fn validate_open_url(raw: &str) -> Result<ValidatedUrl, String> {
     })
 }
 
-fn shell_quote(path: &Path) -> String {
+pub(crate) fn shell_quote(path: &Path) -> String {
     let raw = path.to_string_lossy();
     format!("'{}'", raw.replace('\'', "'\\''"))
 }

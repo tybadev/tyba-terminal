@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import type { FilesScreenState, Workspace } from "./ipc";
+import type { FilesScreenState, Session, Workspace } from "./ipc";
 import {
   activeFile,
   parseComposeFileView,
@@ -12,6 +12,7 @@ import {
   sessionFiles,
   shouldPin,
   sideSlotView,
+  sshTunnelTargets,
 } from "./screens";
 
 const A = "11111111-1111-1111-1111-111111111111";
@@ -158,5 +159,41 @@ describe("aba compose só leitura", () => {
     expect(own.map((f) => f.rel)).toEqual(["a.ts", "poc/compose.yml"]);
     expect(own[1].compose).toEqual({ project: "poc", index: 0 });
     expect(activeFile(state, A)).toBe(cf(A, "poc:0:compose.yml"));
+  });
+});
+
+describe("sshTunnelTargets (Túneis aberto pelo Orbit)", () => {
+  // Fixtures sintéticas.
+  const session = (id: string, kind: Session["kind"], status: Session["status"] = { state: "running" }): Session => ({
+    id,
+    kind,
+    title: id,
+    repo_root: null,
+    worktree: null,
+    status,
+    attention: false,
+    created_at: "2026-10-16T00:00:00Z",
+  });
+  const hosts = [
+    { id: "h1", alias: "muriki" },
+    { id: "h2", alias: "vps" },
+  ];
+
+  test("só sessão SSH viva com Host conhecido, com o alias dele", () => {
+    const list = [
+      session(A, { type: "ssh", host_id: "h1" }),
+      session(B, { type: "shell" }),
+      session("c", { type: "ssh", host_id: "h2" }, { state: "exited", code: 0 }),
+      session("d", { type: "ssh", host_id: "sumiu" }),
+      session("e", { type: "ssh", host_id: "h2" }, { state: "idle", summary: null }),
+    ];
+    expect(sshTunnelTargets(list, hosts).map((t) => [t.session.id, t.alias])).toEqual([
+      [A, "muriki"],
+      ["e", "vps"],
+    ]);
+  });
+
+  test("sem sessão SSH: lista vazia", () => {
+    expect(sshTunnelTargets([session(A, { type: "shell" })], hosts)).toEqual([]);
   });
 });

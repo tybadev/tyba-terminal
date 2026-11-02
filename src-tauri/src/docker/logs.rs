@@ -478,6 +478,16 @@ impl LogsManager {
         self.retain(&std::collections::HashSet::new());
     }
 
+    /// O que o seguidor do container já leu, sem ligar nada (`None` = não há).
+    pub fn snapshot(&self, id: &str) -> Option<LogsSnapshot> {
+        let f = self.followers.lock().get(id).cloned()?;
+        let lines = f.buffer.lock().iter().cloned().collect();
+        Some(LogsSnapshot {
+            lines,
+            following: f.running.load(Ordering::Acquire),
+        })
+    }
+
     pub fn is_following(&self, id: &str) -> bool {
         self.followers.lock().contains_key(id)
     }

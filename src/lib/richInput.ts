@@ -131,3 +131,30 @@ export function richInputVisibility({
   }
   return kind.type !== "agent" || command?.running !== true;
 }
+
+/**
+ * Sessões cujo "fechei a caixa" deixa de valer: o comando mudou desde o
+ * fechar (outro agente, outra execução). Por sessão — a ativa da grade e as
+ * presas a um nó do Orbit.
+ */
+export function richInputToUndismiss(
+  ids: readonly string[],
+  dismissed: ReadonlySet<string>,
+  dismissedCommand: Readonly<Record<string, string | null>>,
+  commandOf: (id: string) => string | null,
+): string[] {
+  return ids.filter(
+    (id) => dismissed.has(id) && dismissedCommand[id] !== commandOf(id),
+  );
+}
+
+/** Sessões que a caixa abre sozinha (`autoOpenOnStart`): uma vez por sessão. */
+export function richInputToAutoOpen(
+  ids: readonly string[],
+  pref: Pick<RichInputPref, "autoOpenOnStart">,
+  eligible: (id: string) => boolean,
+  already: ReadonlySet<string>,
+): string[] {
+  if (!pref.autoOpenOnStart) return [];
+  return ids.filter((id) => !already.has(id) && eligible(id));
+}

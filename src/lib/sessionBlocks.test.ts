@@ -113,4 +113,11 @@ describe("sessionBlocksData", () => {
       renderProps({ session: { id: "s1", created_at: "lixo" } }).openedAtMs,
     ).toBe(null);
   });
+
+  test("a nota do header (ferramentas do Orbit) entra como texto, ausente = null", () => {
+    expect(renderProps().runningNote).toBeNull();
+    expect(renderProps({ runningNote: "ferramentas do Orbit" }).runningNote).toBe(
+      "ferramentas do Orbit",
+    );
+  });
 });

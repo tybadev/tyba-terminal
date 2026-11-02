@@ -79,8 +79,6 @@ fn is_executable_file(path: &Path) -> bool {
 /// o hook (pasta que não grava), o codex sobe assim mesmo, com aviso.
 #[cfg(unix)]
 pub fn maybe_run_codex_mode() -> Option<i32> {
-    use std::os::unix::process::CommandExt;
-
     let argv: Vec<String> = std::env::args().collect();
     if argv.get(1).map(String::as_str) != Some("_codex") {
         return None;
@@ -89,6 +87,16 @@ pub fn maybe_run_codex_mode() -> Option<i32> {
         Some("--") => argv[3..].to_vec(),
         _ => argv[2..].to_vec(),
     };
+    Some(exec_free_codex(&user_args))
+}
+
+/// O codex livre com o hook pre-push do TYBA: o `tyba _codex` e a saída de
+/// emergência do `tyba _jail-codex` (canal com o core recusado ou fora do ar)
+/// — nenhum dos dois caminhos sobe o codex sem o guarda-corpo.
+#[cfg(unix)]
+pub fn exec_free_codex(user_args: &[String]) -> i32 {
+    use std::os::unix::process::CommandExt;
+
     let wrapper_dir = std::env::var_os("TYBA_WRAPPER_DIR").map(PathBuf::from);
     let Some(real) = real_codex(
         std::env::var("TYBA_REAL_CODEX").ok().as_deref(),
@@ -97,7 +105,7 @@ pub fn maybe_run_codex_mode() -> Option<i32> {
         is_executable_file,
     ) else {
         eprintln!("tyba _codex: codex não encontrado no PATH");
-        return Some(127);
+        return 127;
     };
     let mut env: std::collections::HashMap<String, String> = std::env::vars().collect();
     match crate::session::ensure_git_hooks() {
@@ -113,14 +121,14 @@ pub fn maybe_run_codex_mode() -> Option<i32> {
     let guard = std::env::current_exe()
         .ok()
         .map(|exe| crate::agent::hooks_settings::guard_only_hook_command(&exe));
-    let args = codex_argv(&user_args, guard.as_deref(), |k| env.get(k).cloned());
+    let args = codex_argv(user_args, guard.as_deref(), |k| env.get(k).cloned());
     let err = std::process::Command::new(real)
         .args(args)
         .env_clear()
         .envs(&env)
         .exec();
     eprintln!("tyba _codex: exec do codex falhou: {err}");
-    Some(126)
+    126
 }
 
 #[cfg(not(unix))]

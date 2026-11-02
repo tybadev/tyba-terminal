@@ -126,6 +126,8 @@ export function hiddenApprovalIds(params: {
   /** Os que o painel de agentes NA TELA deixa aprovar na linha do subagente
    * (`agentsPanelActionableIds`). */
   agentsPanelIds?: ReadonlySet<number>;
+  /** Os que a cápsula de um nó do canvas NA TELA mostra (`visibleCardApprovalIds`). */
+  nodeCardIds?: ReadonlySet<number>;
 }): Set<number> {
   const ids = new Set<number>();
   if (params.notificationsOpen) {
@@ -136,6 +138,7 @@ export function hiddenApprovalIds(params: {
   }
   for (const id of params.sessionPanelIds ?? []) ids.add(id);
   for (const id of params.agentsPanelIds ?? []) ids.add(id);
+  for (const id of params.nodeCardIds ?? []) ids.add(id);
   return ids;
 }
 
