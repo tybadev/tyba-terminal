@@ -2472,6 +2472,33 @@ impl<H: RunHost> Runs<H> {
         self.halt(run_id, false)
     }
 
+    /// O app vai fechar (`RunEvent::Exit`, antes do `kill_all`): cada run
+    /// aberto fecha como a varredura do boot fecharia
+    /// ([`Run::close_interrupted`]) e sai de `active` ANTES das sessões
+    /// morrerem. Sem isso, a saída do processo morto pelo `kill_all` (sinal,
+    /// sem `.exit`) chegava com o run aberto e virava "falhou".
+    pub fn close_for_quit(&self) {
+        let closed: Vec<Run> = {
+            let mut active = self.active.lock();
+            let mut stopped = self.stopped.lock();
+            let t = now();
+            active
+                .drain()
+                .map(|(id, mut a)| {
+                    stopped.insert(id);
+                    let mut run = a.sched.snapshot();
+                    run.close_interrupted(t);
+                    run
+                })
+                .collect()
+        };
+        for run in closed {
+            if let Err(e) = self.store.save_orbit_run(&run) {
+                eprintln!("[orbit] fechar execução {} na saída: {e}", run.id);
+            }
+        }
+    }
+
     /// O ■ Parar (`closing` falso) ou o fechar do Terminal da sessão ao vivo
     /// (`closing`: [`Scheduler::close_live`]).
     fn halt(&self, run_id: &str, closing: bool) -> Result<(), String> {
@@ -11299,6 +11326,52 @@ mod tests {
             runs.get(&run.id).unwrap().nodes[&api].status,
             NodeStatus::Stopped
         );
+    }
+
+    /// Execução #21: o app fecha (⌘Q, ou o TYBA Dev reinstalado) com um
+    /// processo criado pelo agente no ar. O `kill_all` do quit mata o PTY sem
+    /// `.exit`; a saída chega antes do run fechar e virava "falhou" ("o
+    /// processo terminou sem exit code"). Fechado antes de matar, é parado
+    /// porque o TYBA fechou, e o run, parado — nunca falhou.
+    #[cfg(unix)]
+    #[test]
+    fn app_quit_with_a_created_process_is_not_a_failure() {
+        use serde_json::json;
+        let dir = tempfile::tempdir().unwrap();
+        let work = dir.path().join("w");
+        std::fs::create_dir(&work).unwrap();
+        let (runs, host, _app) = pty_runs(dir.path().join("runs"));
+        let g = graph(vec![orchestrator("o")], vec![]);
+        runs.store.save_orbit_graph(&g, true, None).unwrap();
+        let run = runs.start_now(g, vec![]).unwrap();
+        wait_orchestrating(&runs, &run.id, "o");
+        let tools = tools_of(&host, "o");
+        let api = tools
+            .call(
+                "orbit_create_process",
+                &json!({"title": "api", "command": "sleep 30", "dir": work}),
+            )
+            .unwrap()["node_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let r = wait_status(&runs, &run.id, &api, NodeStatus::Running);
+        let process = r.nodes[&api].session_id.clone().unwrap();
+        let agent = r.nodes["o"].session_id.clone().unwrap();
+
+        // A ordem do `RunEvent::Exit`: fecha os runs, depois o `kill_all`.
+        runs.close_for_quit();
+        host.kill(&process);
+        host.kill(&agent);
+        std::thread::sleep(Duration::from_millis(800));
+
+        let r = runs.store.get_orbit_run(&run.id).unwrap().unwrap();
+        assert_eq!(r.status, RunStatus::Stopped, "{r:?}");
+        assert_eq!(r.nodes[&api].status, NodeStatus::Stopped, "{r:?}");
+        assert_eq!(r.nodes[&api].reason.as_deref(), Some(APP_CLOSED));
+        assert!(r.nodes.values().all(|n| n.status != NodeStatus::Failed));
+        // O boot seguinte não tem o que fechar.
+        assert!(runs.store.list_running_orbit_runs().unwrap().is_empty());
     }
 
     /// O ↻/■ do dono num nó que o agente criou chega na próxima chamada de

@@ -10665,6 +10665,11 @@ pub fn run() {
                 }
             }
             if matches!(event, tauri::RunEvent::Exit) {
+                // Antes do `kill_all`: o run fecha como "o TYBA fechou", e a
+                // saída dos processos mortos aqui não vira "falhou".
+                if let Some(runs) = app_handle.try_state::<orbit::run::SharedRuns>() {
+                    runs.close_for_quit();
+                }
                 if let Some(state) = app_handle.try_state::<AppState>() {
                     state.pty_pool.kill_all();
                     state.docker_logs.stop_all();

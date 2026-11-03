@@ -219,9 +219,12 @@ pub fn listeners() -> Result<Vec<Listener>, crate::error::AppError> {
 
 /// Teto da varredura das portas de um process group (o vigia do processo do
 /// Orbit roda a cada segundo).
+#[cfg(any(target_os = "macos", windows))]
 const GROUP_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(800);
+#[cfg(any(target_os = "macos", windows))]
 const GROUP_MAX_BYTES: usize = 256 * 1024;
 
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn sorted_ports(listeners: impl IntoIterator<Item = Listener>) -> Vec<u16> {
     let mut ports: Vec<u16> = listeners.into_iter().map(|l| l.port).collect();
     ports.sort_unstable();
@@ -433,6 +436,7 @@ mod tests {
         assert_eq!(parse_netstat_listening(raw), vec![(4120, 5173), (77, 3000)]);
     }
 
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn group_ports_sorts_and_dedups() {
         assert_eq!(

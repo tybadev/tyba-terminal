@@ -46,6 +46,7 @@ pub(super) enum Leader {
     /// Saiu e segue zumbi, sem `wait`: enquanto não é colhido, o número dele
     /// — que é o SID — não volta para processo nenhum, então quem ainda
     /// carrega aquele SID é da sessão que abrimos.
+    #[cfg_attr(not(unix), allow(dead_code))]
     ExitedUnreaped,
     /// Já colhido (ECHILD) ou não é filho nosso: o número pode ter voltado.
     Gone,
