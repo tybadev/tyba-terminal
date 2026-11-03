@@ -8,6 +8,7 @@ import {
   GitBranch,
   HardDrives,
   House,
+  Stack,
   TerminalWindow,
 } from "@phosphor-icons/react";
 
@@ -44,6 +45,8 @@ interface Props {
   onIsolateChange: (value: boolean) => void;
   /** "Onde a sessão vai trabalhar" inclui os servidores, não só pastas daqui. */
   onConnectHost?: (host: Host) => void;
+  /** Em vez de uma sessão de terminal, abre o Orbit. */
+  onOpenOrbit?: () => void;
 }
 
 export function NewSessionPrompt({
@@ -53,6 +56,7 @@ export function NewSessionPrompt({
   isolate,
   onIsolateChange,
   onConnectHost,
+  onOpenOrbit,
 }: Props) {
   const { t } = useTranslation();
   const [hosts, setHosts] = useState<Host[]>([]);
@@ -174,6 +178,17 @@ export function NewSessionPrompt({
             <House size={15} />
             {t("homeFolder")}
           </CommandItem>
+          {onOpenOrbit && (
+            <CommandItem
+              onSelect={() => {
+                onOpenOrbit();
+                onOpenChange(false);
+              }}
+            >
+              <Stack size={15} />
+              {t("openOrbit")}
+            </CommandItem>
+          )}
         </CommandGroup>
         {hosts.length > 0 && onConnectHost && (
           <CommandGroup heading={t("connectionsTitle")}>

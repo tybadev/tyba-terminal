@@ -136,18 +136,23 @@ function ForceButton({ offer, onForce }: { offer: ForceOffer; onForce: () => voi
 export function ServicesScreen({
   session,
   workspaceId,
-  state,
+  state: saved,
   hostAlias,
+  sshTunnels,
   exiting,
   labelOf,
   onFocusSession,
   onClose,
 }: {
-  session: Session;
-  workspaceId: WorkspaceId;
+  /** `null` = aberta pelo Orbit: a máquina local, sem sessão. */
+  session: Session | null;
+  /** `null` junto com `session`: sem workspace de terminal para guardar o estado. */
+  workspaceId: WorkspaceId | null;
   state: ServicesScreenState;
   /** Alias do Host numa sessão SSH; `null` = máquina local. */
   hostAlias: string | null;
+  /** Sem sessão: os túneis de cada sessão SSH viva, na seção Túneis. */
+  sshTunnels?: readonly { session: Session; alias: string }[];
   exiting: boolean;
   /** Nome de exibição da sessão (o do workspace dela). */
   labelOf: (id: SessionId) => string | null;
@@ -155,7 +160,11 @@ export function ServicesScreen({
   onClose: () => void;
 }) {
   const { t, i18n } = useTranslation();
-  const remote = hostAlias !== null;
+  const remote = hostAlias !== null && session !== null;
+  // Aberta pelo Orbit não há workspace de terminal onde o core guarde
+  // seção, filtro e linha escolhida: ficam aqui, enquanto a tela está aberta.
+  const [own, setOwn] = useState(saved);
+  const state = workspaceId ? saved : own;
   const [list, setList] = useState<ServicesList | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -181,9 +190,9 @@ export function ServicesScreen({
       if (state.section === "processes") {
         if (!remote) setProcs(await servicesProcesses());
       } else if (state.section === "ports") {
-        const next = await servicesList(session.id);
+        const next = await servicesList(session?.id ?? null);
         setList(next);
-        if (next.target === "remote") {
+        if (next.target === "remote" && session) {
           setTunnels(await listSessionTunnels(session.id).catch(() => []));
         }
       }
@@ -195,7 +204,7 @@ export function ServicesScreen({
       setLoadingSince(null);
       setSlow(null);
     }
-  }, [state.section, remote, session.id, t]);
+  }, [state.section, remote, session, t]);
 
   // Poll só com a tela aberta (o componente só existe com ela aberta).
   useEffect(() => {
@@ -248,12 +257,18 @@ export function ServicesScreen({
   }, [selectedKey, list]);
 
   const go = (section: ServicesSection) =>
-    void servicesScreenSection(workspaceId, section).catch(() => {});
-  const pick = (p: PortEntry) =>
-    void servicesScreenSelect(
-      workspaceId,
-      isSelected(p) ? null : { port: p.port, pid: p.pid },
-    ).catch(() => {});
+    workspaceId
+      ? void servicesScreenSection(workspaceId, section).catch(() => {})
+      : setOwn((cur) => ({ ...cur, section }));
+  const pick = (p: PortEntry) => {
+    const row = isSelected(p) ? null : { port: p.port, pid: p.pid };
+    if (workspaceId) void servicesScreenSelect(workspaceId, row).catch(() => {});
+    else setOwn((cur) => ({ ...cur, selected: row }));
+  };
+  const onlyMine = (on: boolean) =>
+    workspaceId
+      ? void servicesScreenOnlyMine(workspaceId, on).catch(() => {})
+      : setOwn((cur) => ({ ...cur, only_mine: on }));
 
   const describeOutcome = (label: string, outcome: KillOutcome, pid: number, startMs: number) => {
     const k = keyOf(pid, startMs);
@@ -502,7 +517,7 @@ export function ServicesScreen({
             )}
             <span className="flex gap-2">
               {!p.refusal && detail?.target && killControls(p, p.port)}
-              {p.refusal === "docker" && !remote && (
+              {p.refusal === "docker" && !remote && session && (
                 <button type="button" className={CHIP} onClick={() => void openInDocker(p.port)}>
                   {t("servicesOpenInDocker")}
                 </button>
@@ -522,6 +537,7 @@ export function ServicesScreen({
 
   /** Porta do Docker: o TYBA não encerra o daemon; leva ao container certo. */
   const openInDocker = async (port: number) => {
+    if (!session || !workspaceId) return;
     try {
       const containers = await dockerListContainers(null, false, null);
       const c = containerForPort(containers, port);
@@ -540,7 +556,7 @@ export function ServicesScreen({
     tunnels.find((tn) => tn.kind === "local" && tn.target_port === port && tn.state.state !== "error");
 
   const bring = async (port: number) => {
-    if (busy) return;
+    if (busy || !session) return;
     setBusy(true);
     setError(null);
     try {
@@ -776,10 +792,20 @@ export function ServicesScreen({
         {state.section === "tunnels" ? (
           remote ? (
             <TunnelsView session={session} hostAlias={hostAlias ?? ""} />
+          ) : !session && sshTunnels && sshTunnels.length > 0 ? (
+            <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+              {sshTunnels.map((tn) => (
+                <div key={tn.session.id} className="flex shrink-0 flex-col">
+                  <TunnelsView session={tn.session} hostAlias={tn.alias} />
+                </div>
+              ))}
+            </div>
           ) : (
             <>
               {topBar(ArrowsLeftRight, t("tunnelsTitle"), target)}
-              <p className="px-[18px] py-3 text-[12px] text-tyba-text-faint">{t("servicesTunnelsSshOnly")}</p>
+              <p className="px-[18px] py-3 text-[12px] text-tyba-text-faint">
+                {t(session ? "servicesTunnelsSshOnly" : "servicesTunnelsNoSsh")}
+              </p>
             </>
           )
         ) : state.section === "processes" ? (
@@ -802,7 +828,7 @@ export function ServicesScreen({
                   <input
                     type="checkbox"
                     checked={state.only_mine}
-                    onChange={(e) => void servicesScreenOnlyMine(workspaceId, e.target.checked).catch(() => {})}
+                    onChange={(e) => onlyMine(e.target.checked)}
                     className="accent-tyba-blue"
                   />
                   {t("servicesOnlyMine")}

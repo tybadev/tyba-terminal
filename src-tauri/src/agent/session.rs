@@ -149,6 +149,11 @@ struct HandlerCtx {
     /// `PreToolUse` nunca vira card nem espera ninguém — ver
     /// [`session_route`].
     observe_only: bool,
+    /// Agente de nó do Orbit: onde o fim do turno fica para ele ler.
+    turn_tail: Option<SharedTurnTail>,
+    /// Nó de agente do Orbit: quem atende o `OrbitTool` que o
+    /// `tyba _orbit-mcp` da sessão manda. `None` em toda outra sessão.
+    orbit_tools: Option<crate::orbit::orchestrator::ToolHandler>,
 }
 
 fn main_window_focused(app: &AppHandle) -> bool {
@@ -814,6 +819,22 @@ fn held_by_subagents(is_agent: bool, status: &SessionStatus, has_active: bool) -
 /// Depois de voltar a `Running` por evento de subagente (ferramenta, decisão
 /// de aprovação), a marca volta se o orquestrador segue com o turno
 /// encerrado. Evento do próprio orquestrador nunca a repõe.
+/// Ferramenta de subagente (`PreToolUse`/`PostToolUse` com `agent_id`) com o
+/// prompt nativo do agente principal aberto: o prompt segue aberto, e o
+/// `Running` do irmão apagaria o "pedindo" (e a fila "esperando você" do
+/// Orbit). Só o agente principal voltando a trabalhar, o `Stop` ou o
+/// `SessionEnd` tiram a sessão dali.
+fn subagent_keeps_native_prompt(from_subagent: bool, current: Option<&SessionStatus>) -> bool {
+    from_subagent
+        && matches!(
+            current,
+            Some(SessionStatus::AwaitingInput {
+                reason: AwaitingReason::NativePrompt,
+                ..
+            })
+        )
+}
+
 fn label_held_after_running(from_subagent: bool, orchestrator_idle: bool) -> bool {
     from_subagent && orchestrator_idle
 }
@@ -1135,8 +1156,53 @@ fn record_inferred_notification(
     }
 }
 
+/// Ferramenta do Orbit pedida pelo `tyba _orbit-mcp` da sessão. Não é
+/// hook do agente: não passa pelo registro de eventos nem pelo gate. Só a
+/// sessão de nó de agente do Orbit tem quem atenda.
+fn on_orbit_tool(ctx: &HandlerCtx, event: &HookEvent) -> HookAction {
+    let Some(tools) = &ctx.orbit_tools else {
+        return HookAction::Deny {
+            reason: "as ferramentas do Orbit só existem na sessão de um nó de agente do Orbit"
+                .into(),
+        };
+    };
+    use crate::orbit::orchestrator::ToolRequest;
+    let text = |key: &str| event.raw.get(key).and_then(|t| t.as_str());
+    let tool = text("tool").unwrap_or_default();
+    let args = event
+        .raw
+        .get("arguments")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    let call_id = text("call_id");
+    let request = match (text("control"), call_id) {
+        (Some("cancel"), Some(id)) => ToolRequest::Cancel(id),
+        (Some("ack"), Some(id)) => ToolRequest::Ack(id),
+        (Some(_), _) => {
+            return HookAction::Deny {
+                reason: "controle do Orbit desconhecido".into(),
+            }
+        }
+        (None, _) => ToolRequest::Call {
+            tool,
+            args: &args,
+            call_id,
+        },
+    };
+    match tools.request(&request) {
+        Ok(value) => HookAction::Result { value },
+        Err(reason) => HookAction::Deny { reason },
+    }
+}
+
 fn handle_event(ctx: &HandlerCtx, event: HookEvent) -> HookAction {
+    if event.hook_event_name == crate::orbit::mcp::TOOL_EVENT {
+        return on_orbit_tool(ctx, &event);
+    }
     capture_conversation_id(ctx, &event);
+    if let Some(tail) = &ctx.turn_tail {
+        note_turn_tail(&mut tail.lock().expect("turn tail lock"), &event);
+    }
     // Antes do roteamento: o `PreToolUse` pode ficar bloqueado no gate de um
     // vermelho, e a pendente anterior tem de fechar já, não depois da decisão.
     let outcome = record_inferred(
@@ -1288,8 +1354,11 @@ fn handle_event(ctx: &HandlerCtx, event: HookEvent) -> HookAction {
                             .set_subagents_working(&ctx.app, ctx.session_id, false);
                         ctx.turn_settle.fetch_add(1, Ordering::SeqCst);
                     }
-                    ctx.sessions
-                        .set_status(&ctx.app, ctx.session_id, SessionStatus::Running);
+                    let current = ctx.sessions.get(ctx.session_id).map(|s| s.status);
+                    if !subagent_keeps_native_prompt(from_subagent, current.as_ref()) {
+                        ctx.sessions
+                            .set_status(&ctx.app, ctx.session_id, SessionStatus::Running);
+                    }
                     if label_held_after_running(
                         from_subagent,
                         ctx.subagents.orchestrator_idle(ctx.session_id),
@@ -1744,6 +1813,7 @@ fn build_hosted_command(
     socket_path: &Path,
     runtime: &Path,
     exe: &Path,
+    orbit_args: &[String],
     args: &[String],
     git_hooks: Option<&Path>,
 ) -> Result<HostedCommand, String> {
@@ -1755,6 +1825,10 @@ fn build_hosted_command(
     // Agente digitado no shell: o modelo é o que o usuário passou nos args, não
     // o de uma launch config. Env vazio aqui: o resto vem do pane.
     let mut cmd = runner.build_command(cwd, &HashMap::new(), hook_setup, None, None);
+    // Nó Terminal do Orbit: o MCP e o prompt de orquestrador que o core põe
+    // ([`hosted_orbit_args`]), antes dos do usuário — a forma `--opção=valor`
+    // não come o prompt posicional que ele digitou.
+    cmd.args(orbit_args);
     // M6-A: os args que o usuário digitou (`-c`, `--resume <id>`, `-p ...`),
     // já reclassificados pelo `channel_host`, entram como argv depois do
     // `--settings` dos hooks — nunca por shell.
@@ -1766,6 +1840,88 @@ fn build_hosted_command(
     cmd.env(FORCE_HYPERLINK.0, FORCE_HYPERLINK.1);
     // O `core.hooksPath` do TYBA entra no shim, por cima do `GIT_CONFIG_*`
     // do pane (que só ele conhece): ver `git_hooks::with_hooks_os`.
+    if let Some(hooks) = git_hooks {
+        cmd.env(crate::agent::git_hooks::HOOKS_DIR_ENV, hooks);
+    }
+    let spec = passthrough_spec(cwd, runtime, socket_path, exe);
+    let cmd = crate::sandbox::passthrough::PassthroughSandbox.wrap(cmd, &spec)?;
+    Ok(HostedCommand { cmd, worktree_root })
+}
+
+/// O `claude` digitado no shell de um nó Terminal aberto do Orbit ganha as
+/// ferramentas: o `orbit-mcp.json` (0600, no runtime dir 0700 da sessão)
+/// apontando o servidor `tyba _orbit-mcp` para o socket desta sessão, e os
+/// args `--mcp-config=<arquivo>` + `--append-system-prompt=<orquestrador>`.
+/// Sem `tools` (a aba Terminal, qualquer outro shell): nada, como sempre foi.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn hosted_orbit_args(
+    runtime: &Path,
+    exe: &Path,
+    socket_path: &Path,
+    tools: Option<&crate::orbit::orchestrator::ToolHandler>,
+) -> Result<Vec<String>, String> {
+    use crate::orbit::mcp;
+    if tools.is_none() {
+        return Ok(Vec::new());
+    }
+    let config = mcp::terminal_claude_config(exe, socket_path);
+    let body = serde_json::to_string_pretty(&config)
+        .map_err(|e| format!("config do MCP do Orbit: {e}"))?;
+    crate::session::write_private(runtime, mcp::CLAUDE_CONFIG_FILE, &body)
+        .map_err(|e| format!("escrita da config do MCP do Orbit: {e}"))?;
+    Ok(mcp::terminal_agent_args(
+        &AgentRunnerKind::ClaudeCode,
+        exe,
+        socket_path,
+        &runtime.join(mcp::CLAUDE_CONFIG_FILE),
+    ))
+}
+
+/// O `codex` digitado no shell de um nó Terminal aberto do Orbit (fatia 4):
+/// as `--config mcp_servers.orbit.*` e `developer_instructions` de
+/// [`crate::orbit::mcp::agent_args`] apontando o `tyba _orbit-mcp` para o
+/// socket desta sessão. Sem arquivo: o Codex lê tudo do argv.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn hosted_codex_orbit_args(exe: &Path, socket_path: &Path) -> Vec<String> {
+    crate::orbit::mcp::terminal_agent_args(&AgentRunnerKind::Codex, exe, socket_path, Path::new(""))
+}
+
+/// O argv/env do `codex` digitado no nó Terminal: `codex`, o MCP do Orbit e
+/// os args do dono, nessa ordem (as `--config` da raiz valem também antes de
+/// `resume`/`exec`). Nada do [`crate::agent::CodexRunner::build_command`]:
+/// ele força `--sandbox`/`--ask-for-approval` (o dono digitou o dele, ou usa
+/// o do `config.toml`; o clap recusa `--sandbox` repetido) e troca os
+/// `hooks.*` do dono pelos do TYBA. O Codex digitado segue com o sandbox, a
+/// aprovação e os hooks dele; o que o TYBA acrescenta são as ferramentas.
+/// `TYBA_HOSTED=1` faz um `claude`/`codex` aberto de dentro dele não pedir
+/// outro hosting nesta sessão (que derrubaria o socket das ferramentas).
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn build_hosted_codex_command(
+    cwd: &Path,
+    socket_path: &Path,
+    runtime: &Path,
+    exe: &Path,
+    orbit_args: &[String],
+    args: &[String],
+    git_hooks: Option<&Path>,
+) -> Result<HostedCommand, String> {
+    use crate::sandbox::Sandbox;
+
+    let worktree_root = crate::repo::toplevel(cwd)
+        .map(|top| crate::repo::canonicalize_or(&top))
+        .unwrap_or_else(|| cwd.to_path_buf());
+    let mut cmd = portable_pty::CommandBuilder::new("codex");
+    cmd.cwd(cwd);
+    cmd.env_clear();
+    cmd.args(orbit_args);
+    cmd.args(args);
+    cmd.env("TYBA_HOOK_SOCKET", socket_path);
+    cmd.env("TYBA_HOSTED", "1");
+    cmd.env("TYBA_JAILED", "0");
+    cmd.env(FORCE_HYPERLINK.0, FORCE_HYPERLINK.1);
+    // Mesmo guarda-corpo do `tyba _codex`: o shim soma o `core.hooksPath` ao
+    // env e o repete em `shell_environment_policy.set.*`, porque o codex
+    // filtra o env dos comandos que roda.
     if let Some(hooks) = git_hooks {
         cmd.env(crate::agent::git_hooks::HOOKS_DIR_ENV, hooks);
     }
@@ -1811,6 +1967,13 @@ fn hosted_plan_from(
 /// novo — porque é o que faz o monitor (e todo o resto do hook) ficar
 /// atribuído à sessão que o usuário já está olhando.
 ///
+/// `orbit_tools`: o shell é o de um nó Terminal aberto do Orbit
+/// ([`crate::orbit::run::Runs::terminal_tools`]); o claude ganha o MCP do
+/// Orbit ([`hosted_orbit_args`]). `None` em todo outro shell.
+///
+/// `runner`: `Codex` só chega aqui com `orbit_tools` (o `codex` digitado no
+/// nó Terminal, [`build_hosted_codex_command`]); o resto é o `claude`.
+///
 /// Devolve o caminho do plano escrito (0600 via [`crate::session::write_private_bytes`]).
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub fn prepare_hosted_agent(
@@ -1818,6 +1981,8 @@ pub fn prepare_hosted_agent(
     id: SessionId,
     cwd: PathBuf,
     args: &[String],
+    runner: AgentRunnerKind,
+    orbit_tools: Option<crate::orbit::orchestrator::ToolHandler>,
 ) -> Result<PathBuf, String> {
     let runtime = runtime_dir(id)?;
     let socket_path = runtime.join(HOOK_SOCKET_FILE);
@@ -1825,33 +1990,56 @@ pub fn prepare_hosted_agent(
         return Err("path do socket de hooks excede o limite do sistema".into());
     }
 
-    let runner = build_runner(&AgentRunnerKind::ClaudeCode)?;
     let exe = std::env::current_exe().map_err(|e| format!("exe do Tyba: {e}"))?;
-    let hook_cmd = observer_hook_command(&exe);
     let user_env: HashMap<String, String> = std::env::vars().collect();
-    let settings = observer_session_settings(
-        &hook_cmd,
-        session_statusline(&exe, &user_env, &[&cwd, &main_repo_root(&cwd)]),
-    );
-    let settings_body =
-        serde_json::to_string_pretty(&settings).map_err(|e| format!("settings de hooks: {e}"))?;
-    crate::session::write_private(&runtime, HOOK_SETTINGS_FILE, &settings_body)
-        .map_err(|e| format!("escrita dos settings de hooks: {e}"))?;
-    let hook_setup = HookSetup {
-        settings_path: runtime.join(HOOK_SETTINGS_FILE),
-        hook_command: hook_cmd,
-    };
+    let git_hooks = git_hooks_for_session(&ctx.app, id);
+    let HostedCommand { cmd, worktree_root } = match (&runner, orbit_tools.as_ref()) {
+        (AgentRunnerKind::Codex, Some(_)) => build_hosted_codex_command(
+            &cwd,
+            &socket_path,
+            &runtime,
+            &exe,
+            &hosted_codex_orbit_args(&exe, &socket_path),
+            args,
+            git_hooks.as_deref(),
+        )?,
+        (AgentRunnerKind::Codex, None) => {
+            return Err("o codex só é hospedado no nó Terminal do Orbit".into())
+        }
+        _ => {
+            let claude = build_runner(&AgentRunnerKind::ClaudeCode)?;
+            let hook_cmd = observer_hook_command(&exe);
+            let settings = observer_session_settings(
+                &hook_cmd,
+                session_statusline(&exe, &user_env, &[&cwd, &main_repo_root(&cwd)]),
+            );
+            let settings_body = serde_json::to_string_pretty(&settings)
+                .map_err(|e| format!("settings de hooks: {e}"))?;
+            crate::session::write_private(&runtime, HOOK_SETTINGS_FILE, &settings_body)
+                .map_err(|e| format!("escrita dos settings de hooks: {e}"))?;
+            let hook_setup = HookSetup {
+                settings_path: runtime.join(HOOK_SETTINGS_FILE),
+                hook_command: hook_cmd,
+            };
 
-    let HostedCommand { cmd, worktree_root } = build_hosted_command(
-        runner.as_ref(),
-        &cwd,
-        &hook_setup,
-        &socket_path,
-        &runtime,
-        &exe,
-        args,
-        git_hooks_for_session(&ctx.app, id).as_deref(),
-    )?;
+            let orbit_args = hosted_orbit_args(&runtime, &exe, &socket_path, orbit_tools.as_ref())?;
+            build_hosted_command(
+                claude.as_ref(),
+                &cwd,
+                &hook_setup,
+                &socket_path,
+                &runtime,
+                &exe,
+                &orbit_args,
+                args,
+                git_hooks.as_deref(),
+            )?
+        }
+    };
+    let runner_kind = match runner {
+        AgentRunnerKind::Codex => AgentRunnerKind::Codex,
+        _ => AgentRunnerKind::ClaudeCode,
+    };
 
     ctx.subagents.register_session(id);
     let handler_ctx = HandlerCtx {
@@ -1861,13 +2049,15 @@ pub fn prepare_hosted_agent(
         store: ctx.store.clone(),
         subagents: ctx.subagents.clone(),
         session_id: id,
-        runner_kind: AgentRunnerKind::ClaudeCode,
+        runner_kind,
         repo_root: main_repo_root(&worktree_root),
         agent_home: agent_home(&user_env),
         worktree_root,
         turn_settle: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         seen_transcript: Arc::new(Mutex::new(None)),
         observe_only: true,
+        turn_tail: None,
+        orbit_tools,
     };
     // Review round 1, achado BLOQUEANTE: derruba o HookServer ANTIGO desta
     // sessão ANTES de religar em `socket_path` — nunca depois. `runtime_dir(id)`
@@ -1897,6 +2087,314 @@ pub fn prepare_hosted_agent(
         return Err(format!("escrita do plano de execução: {e}"));
     }
     Ok(runtime.join(LAUNCH_PLAN_FILE))
+}
+
+/// O que o Orbit pede para subir o agente de um nó.
+pub struct FreeAgentSpec {
+    pub runner: AgentRunnerKind,
+    /// A pasta do workspace. Sem worktree.
+    pub cwd: PathBuf,
+    pub title: String,
+    /// Vai como argumento inicial do CLI (`claude "<prompt>"`).
+    pub prompt: String,
+    /// Somado ao env do usuário (`TYBA_IN`/`TYBA_OUT`).
+    pub extra_env: Vec<(String, String)>,
+    pub cols: u16,
+    pub rows: u16,
+    /// Nó de agente do Orbit: a sessão ganha o servidor MCP do Orbit
+    /// (`tyba _orbit-mcp`) e o socket dela atende as ferramentas.
+    pub orbit_tools: Option<crate::orbit::orchestrator::ToolHandler>,
+}
+
+/// O fim de turno como o hook do fio principal o viu. O status da sessão
+/// guarda só um resumo curto; o Orbit precisa da fala inteira.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct TurnTail {
+    pub transcript_path: Option<PathBuf>,
+    /// `last_assistant_message` do `Stop` (Codex): a fala final, sem settle.
+    pub last_message: Option<String>,
+    /// O turno acabou por erro da API (`StopFailure`).
+    pub failure: Option<String>,
+}
+
+pub type SharedTurnTail = Arc<Mutex<TurnTail>>;
+
+fn note_turn_tail(tail: &mut TurnTail, event: &HookEvent) {
+    if event.agent_id.is_some() {
+        return;
+    }
+    if let Some(path) = event
+        .raw
+        .get("transcript_path")
+        .and_then(|p| p.as_str())
+        .filter(|p| !p.is_empty())
+    {
+        tail.transcript_path = Some(PathBuf::from(path));
+    }
+    match event.hook_event_name.as_str() {
+        "Stop" => {
+            if let Some(m) = event
+                .raw
+                .get("last_assistant_message")
+                .and_then(|m| m.as_str())
+            {
+                tail.last_message = Some(m.to_string());
+            }
+        }
+        "StopFailure" => {
+            let error = crate::agent::usage::stop_failure_error(&event.raw);
+            tail.failure =
+                Some(crate::agent::usage::stop_failure_reason(error.as_deref()).to_string());
+        }
+        _ => {}
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+struct FreeCommand {
+    cmd: portable_pty::CommandBuilder,
+    worktree_root: PathBuf,
+    /// Sempre `true`: o hook do nó só observa, como o do claude digitado.
+    observe_only: bool,
+}
+
+/// Prompt que começa com `-` viraria flag do CLI. Um espaço na frente o
+/// mantém posicional (commander e clap só tratam como opção o que começa
+/// com `-`).
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn prompt_arg(prompt: &str) -> String {
+    if prompt.starts_with('-') {
+        format!(" {prompt}")
+    } else {
+        prompt.to_string()
+    }
+}
+
+/// O env do agente do nó: o do agente livre ([`free_agent_env`] — shell de
+/// login, guarda-corpo de push, sem o que desligaria os hooks) mais o que o
+/// nó pede, por cima.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn node_agent_env(
+    free_env: HashMap<String, String>,
+    extra: &[(String, String)],
+) -> HashMap<String, String> {
+    let mut env = free_env;
+    for (k, v) in extra {
+        env.insert(k.clone(), v.clone());
+    }
+    env
+}
+
+/// O argv/env do agente livre do Orbit, sem `AppHandle` (testável): hooks
+/// de observação, prompt como argumento, `Sandbox` passthrough.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[allow(clippy::too_many_arguments)]
+fn build_free_command(
+    runner: &dyn AgentRunner,
+    cwd: &Path,
+    env: &HashMap<String, String>,
+    hook_setup: &HookSetup,
+    socket_path: &Path,
+    runtime: &Path,
+    exe: &Path,
+    prompt: &str,
+    mcp_args: &[String],
+) -> Result<FreeCommand, String> {
+    use crate::sandbox::Sandbox;
+
+    let worktree_root = crate::repo::toplevel(cwd)
+        .map(|top| crate::repo::canonicalize_or(&top))
+        .unwrap_or_else(|| cwd.to_path_buf());
+    let mut cmd = runner.build_command(cwd, env, hook_setup, None, None);
+    // O servidor MCP do Orbit (só no orquestrador) antes do prompt.
+    for arg in mcp_args {
+        cmd.arg(arg);
+    }
+    if !prompt.is_empty() {
+        cmd.arg(prompt_arg(prompt));
+    }
+    cmd.env("TYBA_HOOK_SOCKET", socket_path);
+    cmd.env("TYBA_JAILED", "0");
+    let spec = passthrough_spec(cwd, runtime, socket_path, exe);
+    let cmd = crate::sandbox::passthrough::PassthroughSandbox.wrap(cmd, &spec)?;
+    Ok(FreeCommand {
+        cmd,
+        worktree_root,
+        observe_only: true,
+    })
+}
+
+/// Agente de um nó do Orbit: **livre e observado**, igual ao claude
+/// digitado ([`prepare_hosted_agent`]) — sem jaula, env do usuário, hooks de
+/// observação com o guarda-corpo do `PreToolUse` (`tyba _hook --observe`),
+/// subagentes registrados —, mas subido direto pelo core, na pasta do
+/// workspace, sem worktree. Claude e Codex (o Codex pelas `--config` de
+/// [`crate::agent::codex_hooks`], com o mesmo hook observador).
+///
+/// Devolve também o [`SharedTurnTail`], de onde o Orbit lê a fala final.
+/// No `on_exit` o próprio spawn desfaz o que montou (servidor de hooks,
+/// subagentes, prompt nativo pendente) antes de chamar o do chamador.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub fn spawn_free_agent(
+    ctx: &AgentSessionCtx,
+    spec: FreeAgentSpec,
+    on_exit: impl FnOnce(SessionId) + Send + 'static,
+) -> Result<(Session, SharedTurnTail), String> {
+    let id = SessionId::new_v4();
+    let runtime = runtime_dir(id)?;
+    let socket_path = runtime.join(HOOK_SOCKET_FILE);
+    if socket_path.as_os_str().len() > MAX_SOCKET_PATH {
+        return Err("path do socket de hooks excede o limite do sistema".into());
+    }
+
+    let runner = build_runner(&spec.runner)?;
+    let exe = std::env::current_exe().map_err(|e| format!("exe do Tyba: {e}"))?;
+    let hook_cmd = observer_hook_command(&exe);
+    let mut env = node_agent_env(
+        free_agent_env(
+            crate::shell_path::login_shell_vars().unwrap_or_else(|| std::env::vars().collect()),
+            crate::shell_path::agent_path(),
+            crate::session::nested_guard_wrapper(),
+            git_hooks_for_session(&ctx.app, id).as_deref(),
+        ),
+        &spec.extra_env,
+    );
+    // Agente do Orbit: o `$BROWSER` abre no navegador do canvas ligado a ele
+    // por `controla` (`tyba _orbit-open`), nunca no navegador do sistema.
+    if spec.orbit_tools.is_some() {
+        let shim = crate::orbit::mcp::write_open_shim(&runtime, &exe)?;
+        env.insert("BROWSER".into(), shim.to_string_lossy().into_owned());
+        // O `open` do macOS ignora `$BROWSER`: um `open` na frente do PATH
+        // manda `open <url>` para o mesmo caminho; o resto vai intacto.
+        #[cfg(target_os = "macos")]
+        {
+            let bin = crate::orbit::mcp::write_open_cmd_shim(&runtime, &exe)?;
+            let path = match env.get("PATH") {
+                Some(p) if !p.is_empty() => format!("{}:{p}", bin.display()),
+                _ => bin.display().to_string(),
+            };
+            env.insert("PATH".into(), path);
+        }
+    }
+    if matches!(runner.kind(), AgentRunnerKind::ClaudeCode) {
+        let settings = observer_session_settings(
+            &hook_cmd,
+            session_statusline(&exe, &env, &[&spec.cwd, &main_repo_root(&spec.cwd)]),
+        );
+        let settings_body = serde_json::to_string_pretty(&settings)
+            .map_err(|e| format!("settings de hooks: {e}"))?;
+        crate::session::write_private(&runtime, HOOK_SETTINGS_FILE, &settings_body)
+            .map_err(|e| format!("escrita dos settings de hooks: {e}"))?;
+    }
+    let hook_setup = HookSetup {
+        settings_path: runtime.join(HOOK_SETTINGS_FILE),
+        hook_command: hook_cmd,
+    };
+    // Agente do Orbit: o servidor MCP é este binário, falando pelo socket
+    // desta sessão. O `--mcp-config` do Claude vai num arquivo 0600 no
+    // runtime dir.
+    let mcp_args = match &spec.orbit_tools {
+        Some(tools) => {
+            use crate::orbit::mcp;
+            if matches!(runner.kind(), AgentRunnerKind::ClaudeCode) {
+                let config = mcp::claude_config(&exe, &socket_path, tools.can_create);
+                let body = serde_json::to_string_pretty(&config)
+                    .map_err(|e| format!("config do MCP do Orbit: {e}"))?;
+                crate::session::write_private(&runtime, mcp::CLAUDE_CONFIG_FILE, &body)
+                    .map_err(|e| format!("escrita da config do MCP do Orbit: {e}"))?;
+            }
+            mcp::agent_args(
+                &runner.kind(),
+                &exe,
+                &socket_path,
+                &runtime.join(mcp::CLAUDE_CONFIG_FILE),
+                tools.can_create,
+            )
+        }
+        None => Vec::new(),
+    };
+
+    let FreeCommand {
+        cmd,
+        worktree_root,
+        observe_only,
+    } = build_free_command(
+        runner.as_ref(),
+        &spec.cwd,
+        &env,
+        &hook_setup,
+        &socket_path,
+        &runtime,
+        &exe,
+        &spec.prompt,
+        &mcp_args,
+    )?;
+
+    ctx.subagents.register_session(id);
+    let tail = SharedTurnTail::default();
+    let handler_ctx = HandlerCtx {
+        app: ctx.app.clone(),
+        sessions: ctx.sessions.clone(),
+        approvals: ctx.approvals.clone(),
+        store: ctx.store.clone(),
+        subagents: ctx.subagents.clone(),
+        session_id: id,
+        runner_kind: runner.kind(),
+        repo_root: main_repo_root(&worktree_root),
+        agent_home: agent_home(&env),
+        worktree_root: worktree_root.clone(),
+        turn_settle: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        seen_transcript: Arc::new(Mutex::new(None)),
+        observe_only,
+        turn_tail: Some(tail.clone()),
+        orbit_tools: spec.orbit_tools.clone(),
+    };
+    let server = HookServer::bind(
+        &socket_path,
+        Arc::new(move |event| handle_event(&handler_ctx, event)),
+    )
+    .map_err(|e| format!("socket de hooks: {e}"))?;
+    ctx.servers.insert(id, server);
+
+    let (app, servers, subagents, store) = (
+        ctx.app.clone(),
+        ctx.servers.clone(),
+        ctx.subagents.clone(),
+        ctx.store.clone(),
+    );
+    let teardown = move |id: SessionId| {
+        servers.shutdown(id);
+        subagents.remove_session(&app, id);
+        let _ = store.deny_pending_inferred_for_session(&id.to_string(), now_ms());
+        on_exit(id);
+    };
+    let repo_root = crate::repo::toplevel(&spec.cwd).map(|r| crate::repo::canonicalize_or(&r));
+    let session = ctx
+        .sessions
+        .spawn_session(
+            ctx.app.clone(),
+            &ctx.pty_pool,
+            id,
+            cmd,
+            SessionKind::Agent {
+                runner: runner.kind(),
+            },
+            spec.title,
+            repo_root,
+            None,
+            None,
+            spec.cols,
+            spec.rows,
+            // O agente livre é sempre de um nó do Orbit: nunca vai ao banco.
+            crate::session::SessionOwner::Orbit,
+            teardown,
+        )
+        .map_err(|e| {
+            ctx.servers.shutdown(id);
+            ctx.subagents.remove_session(&ctx.app, id);
+            e.to_string()
+        })?;
+    Ok((session, tail))
 }
 
 /// Sobe o agente de novo na conversa nativa que a sessão morta deixou no disco.
@@ -2338,6 +2836,8 @@ fn spawn_prepared(
         turn_settle: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         seen_transcript: Arc::new(Mutex::new(None)),
         observe_only: free,
+        turn_tail: None,
+        orbit_tools: None,
     };
     let server = HookServer::bind(
         &socket_path,
@@ -2364,6 +2864,7 @@ fn spawn_prepared(
             jail,
             opts.cols,
             opts.rows,
+            crate::session::SessionOwner::Grid,
             on_exit,
         )
         .map_err(|e| {
@@ -2526,6 +3027,7 @@ mod build_hosted_command_tests {
             &runtime.join(HOOK_SOCKET_FILE),
             runtime,
             &std::env::current_exe().unwrap(),
+            &[],
             args,
             Some(Path::new("/h")),
         )
@@ -2689,6 +3191,403 @@ mod build_hosted_command_tests {
         let settings = plan.argv.iter().position(|a| a == "--settings").unwrap();
         assert_eq!(&plan.argv[plan.argv.len() - 4..], &args[..]);
         assert!(settings < plan.argv.len() - 4);
+    }
+
+    fn free(runner: &dyn AgentRunner, cwd: &Path, runtime: &Path, prompt: &str) -> FreeCommand {
+        let env = HashMap::from([("PATH".to_string(), "/usr/bin".to_string())]);
+        build_free_command(
+            runner,
+            cwd,
+            &env,
+            &hook_setup(runtime),
+            &runtime.join(HOOK_SOCKET_FILE),
+            runtime,
+            &std::env::current_exe().unwrap(),
+            prompt,
+            &[],
+        )
+        .expect("o agente do nó sempre monta")
+    }
+
+    fn argv(cmd: &portable_pty::CommandBuilder) -> Vec<String> {
+        cmd.get_argv()
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    /// O nó do Orbit sobe como o claude digitado: o hook só observa, e
+    /// nenhum evento (nem o `PermissionRequest` do Codex) cai no gate.
+    #[test]
+    fn orbit_agent_is_observe_only_and_never_reaches_the_gate() {
+        let cwd = tempfile::tempdir().unwrap();
+        let runtime = tempfile::tempdir().unwrap();
+        for runner in [
+            &ClaudeCodeRunner as &dyn AgentRunner,
+            &CodexRunner as &dyn AgentRunner,
+        ] {
+            let built = free(runner, cwd.path(), runtime.path(), "revise");
+            assert!(built.observe_only);
+            for name in ["PreToolUse", "PermissionRequest"] {
+                assert_ne!(
+                    session_route(&runner.kind(), name, built.observe_only),
+                    HookRoute::ToolUse,
+                    "{name}"
+                );
+            }
+            let argv = argv(&built.cmd);
+            assert_eq!(argv.last().map(String::as_str), Some("revise"));
+            assert!(
+                !argv
+                    .iter()
+                    .any(|a| a.contains("sandbox-exec") || a.contains("bwrap")),
+                "nada de jaula: {argv:?}"
+            );
+            assert!(built
+                .cmd
+                .iter_extra_env_as_str()
+                .any(|(k, _)| k == "TYBA_HOOK_SOCKET"));
+        }
+        // O Codex leva o hook observador nas `--config`.
+        let codex = argv(&free(&CodexRunner, cwd.path(), runtime.path(), "x").cmd);
+        assert!(
+            codex.iter().any(|a| a.contains("_hook --observe")),
+            "{codex:?}"
+        );
+    }
+
+    /// Agente do Orbit: o servidor MCP do Orbit entra antes do prompt, e o
+    /// `--mcp-config=<arquivo>` numa peça só (separado, a opção variádica do
+    /// Claude comeria o prompt).
+    #[test]
+    fn orbit_agent_gets_the_orbit_mcp_before_the_prompt() {
+        let cwd = tempfile::tempdir().unwrap();
+        let runtime = tempfile::tempdir().unwrap();
+        let exe = std::env::current_exe().unwrap();
+        let socket = runtime.path().join(HOOK_SOCKET_FILE);
+        let config = runtime.path().join(crate::orbit::mcp::CLAUDE_CONFIG_FILE);
+        for runner in [
+            &ClaudeCodeRunner as &dyn AgentRunner,
+            &CodexRunner as &dyn AgentRunner,
+        ] {
+            let mcp = crate::orbit::mcp::agent_args(&runner.kind(), &exe, &socket, &config, true);
+            let shim = runtime.path().join(crate::orbit::mcp::OPEN_SHIM_FILE);
+            let env = HashMap::from([
+                ("PATH".to_string(), "/usr/bin".to_string()),
+                ("BROWSER".to_string(), shim.to_string_lossy().into_owned()),
+            ]);
+            let built = build_free_command(
+                runner,
+                cwd.path(),
+                &env,
+                &hook_setup(runtime.path()),
+                &socket,
+                runtime.path(),
+                &exe,
+                "suba o ambiente",
+                &mcp,
+            )
+            .unwrap();
+            let argv = argv(&built.cmd);
+            assert_eq!(argv.last().map(String::as_str), Some("suba o ambiente"));
+            let before_prompt = &argv[..argv.len() - 1];
+            assert!(before_prompt.ends_with(&mcp), "{argv:?}");
+            // O `$BROWSER` do Orbit chega ao agente.
+            assert_eq!(
+                built.cmd.get_env("BROWSER").map(|v| v.to_os_string()),
+                Some(shim.clone().into_os_string())
+            );
+        }
+        // Fora do Orbit, nada de MCP do Orbit.
+        let plain = argv(&free(&ClaudeCodeRunner, cwd.path(), runtime.path(), "x").cmd);
+        assert!(!plain.iter().any(|a| a.contains("mcp")), "{plain:?}");
+    }
+
+    #[test]
+    fn prompt_starting_with_dash_stays_positional() {
+        let cwd = tempfile::tempdir().unwrap();
+        let runtime = tempfile::tempdir().unwrap();
+        let built = free(
+            &ClaudeCodeRunner,
+            cwd.path(),
+            runtime.path(),
+            "--dangerously",
+        );
+        assert_eq!(
+            argv(&built.cmd).last().map(String::as_str),
+            Some(" --dangerously")
+        );
+        let empty = free(&ClaudeCodeRunner, cwd.path(), runtime.path(), "");
+        assert!(!argv(&empty.cmd).iter().any(|a| a.is_empty()));
+    }
+
+    #[test]
+    fn node_agent_env_drops_hook_killers_and_adds_node_vars() {
+        let user = HashMap::from([
+            ("CLAUDE_CODE_SIMPLE".to_string(), "1".to_string()),
+            ("MY_VAR".to_string(), "x".to_string()),
+        ]);
+        let free = free_agent_env(
+            user,
+            "/usr/bin".into(),
+            None,
+            Some(Path::new("/dados/git-hooks")),
+        );
+        let env = node_agent_env(free, &[("TYBA_IN".into(), "/r/in".into())]);
+        assert!(!env.contains_key("CLAUDE_CODE_SIMPLE"));
+        assert_eq!(env.get("MY_VAR").map(String::as_str), Some("x"));
+        assert_eq!(env.get("TYBA_IN").map(String::as_str), Some("/r/in"));
+        // O nó do Orbit também leva o pre-push do TYBA.
+        assert!(env
+            .iter()
+            .any(|(k, v)| k.starts_with("GIT_CONFIG_VALUE_") && v == "/dados/git-hooks"));
+    }
+
+    fn hook(raw: serde_json::Value, agent_id: Option<&str>) -> HookEvent {
+        HookEvent {
+            hook_event_name: raw["hook_event_name"].as_str().unwrap_or("").into(),
+            tool_name: None,
+            tool_input: None,
+            notification_type: None,
+            cwd: None,
+            agent_id: agent_id.map(str::to_string),
+            agent_type: None,
+            raw,
+        }
+    }
+
+    #[test]
+    fn turn_tail_keeps_only_the_main_thread() {
+        let mut tail = TurnTail::default();
+        note_turn_tail(
+            &mut tail,
+            &hook(
+                serde_json::json!({"hook_event_name": "Stop", "transcript_path": "/t/a.jsonl",
+                    "last_assistant_message": "pronto"}),
+                None,
+            ),
+        );
+        note_turn_tail(
+            &mut tail,
+            &hook(
+                serde_json::json!({"hook_event_name": "Stop", "transcript_path": "/t/sub.jsonl",
+                    "last_assistant_message": "do subagente"}),
+                Some("sub-1"),
+            ),
+        );
+        assert_eq!(tail.transcript_path, Some(PathBuf::from("/t/a.jsonl")));
+        assert_eq!(tail.last_message.as_deref(), Some("pronto"));
+        assert!(tail.failure.is_none());
+        note_turn_tail(
+            &mut tail,
+            &hook(serde_json::json!({"hook_event_name": "StopFailure"}), None),
+        );
+        assert!(tail.failure.is_some());
+    }
+
+    /// O `claude` digitado no shell de um nó Terminal aberto do Orbit: o core
+    /// escreve o `orbit-mcp.json` (0600) no runtime dir da sessão e põe o
+    /// `--mcp-config=` e o prompt de orquestrador no argv, antes dos args do
+    /// dono. As ferramentas são as que o `HandlerCtx` recebe.
+    #[test]
+    fn the_typed_claude_in_an_orbit_terminal_gets_the_orbit_mcp() {
+        let cwd = tempfile::tempdir().unwrap();
+        let runtime = tempfile::tempdir().unwrap();
+        let exe = std::env::current_exe().unwrap();
+        let socket = runtime.path().join(HOOK_SOCKET_FILE);
+        let tools = crate::orbit::orchestrator::ToolHandler {
+            call: Arc::new(|_| Ok(serde_json::json!({}))),
+            can_create: true,
+        };
+        let orbit = hosted_orbit_args(runtime.path(), &exe, &socket, Some(&tools)).unwrap();
+        let user = vec!["-c".to_string(), "conserte o teste".to_string()];
+        let hosted = build_hosted_command(
+            &ClaudeCodeRunner,
+            cwd.path(),
+            &hook_setup(runtime.path()),
+            &socket,
+            runtime.path(),
+            &exe,
+            &orbit,
+            &user,
+            Some(Path::new("/h")),
+        )
+        .unwrap();
+        let plan = hosted_plan_from(&hosted.cmd, cwd.path());
+        let config = runtime.path().join(crate::orbit::mcp::CLAUDE_CONFIG_FILE);
+        let mcp = format!("--mcp-config={}", config.display());
+        let at = |want: &str| plan.argv.iter().position(|a| a == want);
+        let mcp_at = at(&mcp).unwrap_or_else(|| panic!("sem {mcp}: {:?}", plan.argv));
+        let prompt_at = plan
+            .argv
+            .iter()
+            .position(|a| a.starts_with("--append-system-prompt="))
+            .expect("sem o prompt de orquestrador");
+        assert!(
+            plan.argv[prompt_at].contains("orbit_create_"),
+            "{:?}",
+            plan.argv
+        );
+        // O prompt do Terminal: sem orbit_finish nem $BROWSER.
+        assert!(!plan.argv[prompt_at].contains("orbit_finish"));
+        assert!(!plan.argv[prompt_at].contains("$BROWSER"));
+        let user_at = at("-c").unwrap();
+        assert!(mcp_at < user_at && prompt_at < user_at, "{:?}", plan.argv);
+        assert_eq!(
+            plan.argv.last().map(String::as_str),
+            Some("conserte o teste")
+        );
+
+        let body: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&config).unwrap()).unwrap();
+        let server = &body["mcpServers"][crate::orbit::mcp::SERVER_NAME];
+        assert_eq!(
+            server["args"],
+            serde_json::json!([crate::orbit::mcp::MODE, crate::orbit::mcp::TERMINAL_ARG])
+        );
+        assert_eq!(
+            server["env"]["TYBA_HOOK_SOCKET"],
+            socket.to_string_lossy().as_ref()
+        );
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&config).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+
+    /// Qualquer outro shell (a aba Terminal, uma sessão de outra janela): o
+    /// argv é o de sempre, sem MCP, e nada é escrito.
+    #[test]
+    fn the_typed_claude_anywhere_else_stays_without_orbit_tools() {
+        let cwd = tempfile::tempdir().unwrap();
+        let runtime = tempfile::tempdir().unwrap();
+        let exe = std::env::current_exe().unwrap();
+        let socket = runtime.path().join(HOOK_SOCKET_FILE);
+        let orbit = hosted_orbit_args(runtime.path(), &exe, &socket, None).unwrap();
+        assert!(orbit.is_empty());
+        let user = vec!["-c".to_string()];
+        let with = build_hosted_command(
+            &ClaudeCodeRunner,
+            cwd.path(),
+            &hook_setup(runtime.path()),
+            &socket,
+            runtime.path(),
+            &exe,
+            &orbit,
+            &user,
+            Some(Path::new("/h")),
+        )
+        .unwrap();
+        let plan = hosted_plan_from(&with.cmd, cwd.path());
+        let before = hosted_plan_from(&build(cwd.path(), runtime.path(), &user).cmd, cwd.path());
+        assert_eq!(plan.argv, before.argv);
+        assert!(
+            !plan
+                .argv
+                .iter()
+                .any(|a| a.starts_with("--mcp-config") || a.starts_with("--append-system-prompt")),
+            "{:?}",
+            plan.argv
+        );
+        assert!(!runtime
+            .path()
+            .join(crate::orbit::mcp::CLAUDE_CONFIG_FILE)
+            .exists());
+    }
+
+    /// Fatia 4: o `codex` digitado no shell de um nó Terminal aberto. O argv
+    /// é `codex`, as `--config mcp_servers.orbit.*` + `developer_instructions`
+    /// apontando para o socket desta sessão, e os args do dono por último —
+    /// sem o `--sandbox`/`--ask-for-approval` nem os `hooks.*` do runner do
+    /// nó de agente (o Codex do dono segue com os dele).
+    #[test]
+    fn the_typed_codex_in_an_orbit_terminal_gets_the_orbit_mcp() {
+        let cwd = tempfile::tempdir().unwrap();
+        let runtime = tempfile::tempdir().unwrap();
+        let exe = std::env::current_exe().unwrap();
+        let socket = runtime.path().join(HOOK_SOCKET_FILE);
+        let orbit = hosted_codex_orbit_args(&exe, &socket);
+        let user = vec![
+            "--sandbox".to_string(),
+            "read-only".to_string(),
+            "conserte o teste".to_string(),
+        ];
+        let hooks = runtime.path().join("git-hooks");
+        let hosted = build_hosted_codex_command(
+            cwd.path(),
+            &socket,
+            runtime.path(),
+            &exe,
+            &orbit,
+            &user,
+            Some(&hooks),
+        )
+        .unwrap();
+        let plan = hosted_plan_from(&hosted.cmd, cwd.path());
+        // O guarda-corpo vai junto: o shim soma o `core.hooksPath` ao env.
+        assert!(plan.env.iter().any(|(k, v)| {
+            k == crate::agent::git_hooks::HOOKS_DIR_ENV && v == &*hooks.to_string_lossy()
+        }));
+
+        assert_eq!(plan.argv.first().map(String::as_str), Some("codex"));
+        let key = format!("mcp_servers.{}", crate::orbit::mcp::SERVER_NAME);
+        let at = |prefix: &str| {
+            plan.argv
+                .iter()
+                .position(|a| a.starts_with(prefix))
+                .unwrap_or_else(|| panic!("sem {prefix}: {:?}", plan.argv))
+        };
+        let command_at = at(&format!("{key}.command="));
+        assert!(plan.argv[command_at].contains(&*exe.to_string_lossy()));
+        let env_at = at(&format!("{key}.env="));
+        assert!(
+            plan.argv[env_at].contains(&*socket.to_string_lossy()),
+            "{:?}",
+            plan.argv
+        );
+        let prompt_at = at("developer_instructions=");
+        assert!(plan.argv[prompt_at].contains("orbit_create_"));
+        // O prompt do Terminal: sem orbit_finish (o core recusa) nem $BROWSER
+        // (o shell do dono não tem o shim); o servidor com --terminal.
+        assert!(!plan.argv[prompt_at].contains("orbit_finish"));
+        assert!(!plan.argv[prompt_at].contains("$BROWSER"));
+        let args_at = at(&format!("{key}.args="));
+        assert!(
+            plan.argv[args_at].contains(crate::orbit::mcp::TERMINAL_ARG),
+            "{:?}",
+            plan.argv
+        );
+        assert_eq!(plan.argv[command_at - 1], "--config");
+        // As do Orbit antes das do dono, que chegam intactas e por último.
+        let user_at = plan.argv.len() - user.len();
+        assert_eq!(plan.argv[user_at..], user[..]);
+        assert!(command_at < user_at && env_at < user_at && prompt_at < user_at);
+        // Um só `--sandbox` (o do dono): o clap recusa repetido.
+        assert_eq!(
+            plan.argv.iter().filter(|a| *a == "--sandbox").count(),
+            1,
+            "{:?}",
+            plan.argv
+        );
+        assert!(
+            !plan.argv.iter().any(|a| a.starts_with("hooks.")
+                || a == "--ask-for-approval"
+                || a.starts_with("--settings")),
+            "{:?}",
+            plan.argv
+        );
+        assert_eq!(plan.cwd, cwd.path().to_string_lossy());
+        let mut keys: Vec<&str> = plan.env.iter().map(|(k, _)| k.as_str()).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                FORCE_HYPERLINK.0,
+                crate::agent::git_hooks::HOOKS_DIR_ENV,
+                "TYBA_HOOK_SOCKET",
+                "TYBA_HOSTED",
+                "TYBA_JAILED",
+            ]
+        );
     }
 }
 
@@ -3045,6 +3944,29 @@ mod hook_route_tests {
             }
         }
         status
+    }
+
+    /// Subagente irmão rodando ferramenta não fecha o prompt nativo do
+    /// principal; o principal voltando a trabalhar fecha.
+    #[test]
+    fn ferramenta_de_subagente_nao_tira_do_prompt_nativo() {
+        let open = native_prompt_status(Some("bun test".into()));
+        assert!(subagent_keeps_native_prompt(true, Some(&open)));
+        assert!(!subagent_keeps_native_prompt(false, Some(&open)));
+        for other in [
+            SessionStatus::Idle { summary: None },
+            SessionStatus::Running,
+            SessionStatus::AwaitingInput {
+                hint: None,
+                reason: AwaitingReason::Approval,
+            },
+        ] {
+            assert!(
+                !subagent_keeps_native_prompt(true, Some(&other)),
+                "{other:?}"
+            );
+        }
+        assert!(!subagent_keeps_native_prompt(true, None));
     }
 
     fn is_native_prompt(status: &SessionStatus) -> bool {

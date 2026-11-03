@@ -35,6 +35,9 @@ const INHERITED_SESSION_MARKERS: &[&str] = &[
     "TYBA_HOOK_SOCKET",
     "TYBA_JAILED",
     "TYBA_SHIM",
+    // Shell de nó Terminal do Orbit: herdado, todo pane deste TYBA
+    // instalaria a função `codex` (fatia 4).
+    "TYBA_ORBIT_TERMINAL",
 ];
 
 pub(crate) fn is_inherited_session_marker(key: &str) -> bool {
@@ -66,6 +69,7 @@ mod tests {
             "CLAUDE_CODE_MESSAGING_TOKEN",
             "CLAUDECODE",
             "TYBA_HOSTED",
+            "TYBA_ORBIT_TERMINAL",
         ] {
             assert!(is_inherited_session_marker(key), "{key}");
         }

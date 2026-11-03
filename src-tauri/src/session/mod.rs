@@ -43,6 +43,20 @@ pub enum SessionKind {
     },
 }
 
+/// Marca o shell de um nó Terminal do Orbit para o rc instalar a função
+/// `codex` (fatia 4). Ver `create_shell_session_as`.
+pub const ORBIT_TERMINAL_ENV: &str = "TYBA_ORBIT_TERMINAL";
+
+/// De quem é a sessão. A da grade vai ao banco e volta no boot; a de um nó
+/// do Orbit é do run: nunca vai ao banco, então nunca volta como shell ou
+/// agente morto na grade depois de o app fechar com ela viva.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SessionOwner {
+    #[default]
+    Grid,
+    Orbit,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentRunnerKind {
@@ -236,6 +250,9 @@ pub struct Session {
     /// vira `cd` depois de [`crate::agent::claude_resume_dir`].
     #[serde(skip)]
     pub agent_conversation_cwd: Option<PathBuf>,
+    /// Fixo na criação. Só memória: o que está no banco é sempre da grade.
+    #[serde(skip)]
+    pub owner: SessionOwner,
 }
 
 #[derive(Debug, Deserialize)]
@@ -416,7 +433,21 @@ impl SessionManager {
         &self,
         app: AppHandle,
         pty_pool: &SharedPtyPool,
+        opts: CreateSessionOpts,
+        on_exit: impl FnOnce(SessionId) + Send + 'static,
+    ) -> Result<Session, PtyError> {
+        self.create_shell_session_as(app, pty_pool, opts, SessionOwner::Grid, on_exit)
+    }
+
+    /// [`Self::create_shell_session`] com o dono da sessão: o nó Terminal do
+    /// Orbit abre o mesmo shell com `SessionOwner::Orbit` (fora da grade e do
+    /// banco).
+    pub fn create_shell_session_as(
+        &self,
+        app: AppHandle,
+        pty_pool: &SharedPtyPool,
         mut opts: CreateSessionOpts,
+        owner: SessionOwner,
         on_exit: impl FnOnce(SessionId) + Send + 'static,
     ) -> Result<Session, PtyError> {
         let id = Uuid::new_v4();
@@ -499,11 +530,21 @@ impl SessionManager {
 
         // O modo prompt do TYBA depende inteiramente do hook: sem integração o
         // `PS1` não sai da tela e a linha do app não pode assumir nada.
-        if integration && self.prompt_mode_enabled() {
+        if wants_prompt_mode(integration, self.prompt_mode_enabled()) {
             cmd.env("TYBA_PROMPT_MODE", "1");
             for (key, value) in PROMPT_FRAMEWORK_SYNC {
                 cmd.env(key, value);
             }
+        }
+
+        // Fatia 4 do Orbit: o shell do nó Terminal ganha a função `codex` do
+        // rc (só ele: na aba Terminal o `codex` segue intocado). É só a dica
+        // para instalar a função — quem decide se esse `codex` ganha as
+        // ferramentas é o core, pela árvore de processos.
+        if owner == SessionOwner::Orbit {
+            cmd.env(ORBIT_TERMINAL_ENV, "1");
+            // E só ele varre a sessão no `exit` do shell, não só no kill.
+            pty_pool.set_sweep_on_exit(id);
         }
 
         let title = opts
@@ -522,6 +563,7 @@ impl SessionManager {
             None,
             opts.cols,
             opts.rows,
+            owner,
             on_exit,
         );
         if result.is_ok() {
@@ -560,16 +602,22 @@ impl SessionManager {
         pty_pool: &SharedPtyPool,
         program: &std::path::Path,
         args: &[String],
+        env: &[(String, String)],
         title: String,
         cwd: Option<&std::path::Path>,
         cols: u16,
         rows: u16,
         kind: SessionKind,
+        owner: SessionOwner,
+        tap: Option<crate::pty::OutputTap>,
         on_exit: impl FnOnce(SessionId) + Send + 'static,
     ) -> Result<Session, PtyError> {
         let id = Uuid::new_v4();
         let mut cmd = CommandBuilder::new(program);
         cmd.args(args);
+        for (k, v) in env {
+            cmd.env(k, v);
+        }
         if let Some(cwd) = cwd {
             cmd.cwd(cwd);
         }
@@ -584,9 +632,16 @@ impl SessionManager {
         ) {
             crate::ssh::command::apply_pty_env(&mut cmd);
         }
-        self.spawn_session(
-            app, pty_pool, id, cmd, kind, title, None, None, None, cols, rows, on_exit,
-        )
+        if let Some(tap) = tap {
+            pty_pool.set_tap(id, tap);
+        }
+        let spawned = self.spawn_session(
+            app, pty_pool, id, cmd, kind, title, None, None, None, cols, rows, owner, on_exit,
+        );
+        if spawned.is_err() {
+            pty_pool.clear_tap(id);
+        }
+        spawned
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -752,6 +807,7 @@ impl SessionManager {
             None,
             None,
             cwd,
+            SessionOwner::Grid,
             connection,
             connection_failure,
         );
@@ -787,14 +843,22 @@ impl SessionManager {
         jail: Option<Box<dyn crate::pty::JailedSpawner>>,
         cols: u16,
         rows: u16,
+        owner: SessionOwner,
         on_exit: impl FnOnce(SessionId) + Send + 'static,
     ) -> Result<Session, PtyError> {
         let cwd = self.prepare_env(&mut cmd, id);
 
+        // A sessão do Orbit não toca o banco nem pela captura do PTY (histórico,
+        // blocos, checkpoint com byte cru), e o kill leva todo job do shell
+        // interativo junto. Ver `PtyPool::set_ephemeral`.
+        if owner == SessionOwner::Orbit {
+            pty_pool.set_ephemeral(id);
+        }
+
         // O tipo vai junto porque o palpite de tela depende dele: sessão de
         // agente do TYBA não recebe nenhum, e a sessão só entra no mapa DEPOIS
         // do spawn — quem resolve isso lá dentro não teria onde perguntar.
-        pty_pool.spawn(
+        let spawned = pty_pool.spawn(
             app.clone(),
             id,
             cmd,
@@ -804,7 +868,14 @@ impl SessionManager {
             rows,
             &kind,
             Box::new(move || on_exit(id)),
-        )?;
+        );
+        if let Err(e) = spawned {
+            // Sem sessão não há `dispose`: a memória aberta no `set_ephemeral`
+            // fecha aqui.
+            crate::blocks::LIVE.close(&id.to_string());
+            crate::history::LIVE.close(&id.to_string());
+            return Err(e);
+        }
 
         Ok(self.register_spawned(
             &app,
@@ -814,6 +885,7 @@ impl SessionManager {
             repo_root,
             worktree,
             cwd,
+            owner,
             ConnectionState::Live,
             None,
         ))
@@ -893,6 +965,7 @@ impl SessionManager {
         repo_root: Option<PathBuf>,
         worktree: Option<crate::worktree::Worktree>,
         cwd: Option<PathBuf>,
+        owner: SessionOwner,
         connection: ConnectionState,
         connection_failure: Option<CanoFailure>,
     ) -> Session {
@@ -923,11 +996,20 @@ impl SessionManager {
             agent_usage: None,
             shell_resume_offer: false,
             agent_conversation_cwd: previous.and_then(|s| s.agent_conversation_cwd),
+            owner,
         };
         self.sessions.write().insert(id, session.clone());
-        let _ = self.store.upsert_session(&session);
+        self.persist(&session);
         emit_status(app, &session);
         session
+    }
+
+    /// Grava a sessão no banco, salvo a do Orbit ([`SessionOwner`]).
+    fn persist(&self, s: &Session) {
+        if s.owner == SessionOwner::Orbit {
+            return;
+        }
+        let _ = self.store.upsert_session(s);
     }
 
     pub fn list(&self) -> Vec<Session> {
@@ -1032,7 +1114,7 @@ impl SessionManager {
             s.subagents_working = false;
         }
         let prev = std::mem::replace(&mut s.status, status);
-        let _ = self.store.upsert_session(s);
+        self.persist(s);
         Some((prev, s.clone()))
     }
 
@@ -1093,7 +1175,7 @@ impl SessionManager {
         if !pair_conversation(s, conversation, cwd) {
             return;
         }
-        let _ = self.store.upsert_session(s);
+        self.persist(s);
         emit_status(app, s);
     }
 
@@ -1378,6 +1460,10 @@ impl SessionManager {
             queries.forget_session(id);
         }
         let _ = pty_pool.kill(id);
+        // Depois do kill: o EOF que ele provoca finaliza o bloco em voo. O
+        // `close` também barra o que o finalizador entregar mais tarde.
+        crate::blocks::LIVE.close(&id.to_string());
+        crate::history::LIVE.close(&id.to_string());
         let _ = self.store.remove_session(id);
     }
 
@@ -1508,6 +1594,15 @@ fn shell_resume_target_of(s: &Session) -> Result<(String, Option<PathBuf>), Stri
 
 fn emit_status(app: &AppHandle, session: &Session) {
     let _ = app.emit(&format!("session://status/{}", session.id), session.clone());
+}
+
+/// O shell esconde o `PS1` (modo prompt) onde a linha de digitar do TYBA o
+/// substitui: na grade e no nó Terminal do Orbit, que mostra o mesmo painel
+/// (único `SessionOwner::Orbit` que passa por `create_shell_session_as`; o
+/// nó Processo é `bash -lc` sem o rc do TYBA e nunca entra em modo prompt).
+/// Os dois seguem a preferência do dono.
+fn wants_prompt_mode(integration: bool, pref: bool) -> bool {
+    integration && pref
 }
 
 /// Quem sabe se o shell que subiu fala o protocolo do TYBA é quem montou o
@@ -2113,6 +2208,21 @@ pub fn strip_verbatim_prefix(path: &Path) -> PathBuf {
 pub type SharedSessionManager = Arc<SessionManager>;
 
 #[cfg(test)]
+mod prompt_mode_tests {
+    use super::wants_prompt_mode;
+
+    /// Grade e nó Terminal do Orbit seguem a mesma regra: a preferência, e só
+    /// com a integração (sem o hook o `PS1` não sai da tela).
+    #[test]
+    fn prompt_mode_follows_the_pref_with_integration() {
+        assert!(wants_prompt_mode(true, true));
+        assert!(!wants_prompt_mode(false, true));
+        assert!(!wants_prompt_mode(true, false));
+        assert!(!wants_prompt_mode(false, false));
+    }
+}
+
+#[cfg(test)]
 mod hook_zsh_tests {
     use super::TYBA_ZSH_RC;
 
@@ -2279,6 +2389,7 @@ mod tests {
             agent_usage: None,
             shell_resume_offer: false,
             agent_conversation_cwd: None,
+            owner: Default::default(),
         }
     }
 
@@ -3163,6 +3274,87 @@ claude mcp list
         }
     }
 
+    /// Fatia 4 do Orbit + agente livre: a função `codex` leva os args um por
+    /// um ao `$TYBA_BIN`. No shell de um nó Terminal (`TYBA_ORBIT_TERMINAL=1`)
+    /// por `_jail-codex --` (o core dá as ferramentas do Orbit); em todo outro
+    /// shell por `_codex --` (o hook pre-push). Nos dois shells.
+    #[test]
+    #[cfg(unix)]
+    fn codex_goes_through_the_core_only_in_an_orbit_terminal() {
+        use std::os::unix::fs::PermissionsExt;
+        for (shell, rc_body) in [("bash", TYBA_BASH_RC), ("zsh", TYBA_ZSH_RC)] {
+            if std::process::Command::new(shell)
+                .arg("--version")
+                .output()
+                .is_err()
+            {
+                continue;
+            }
+            let dir = tempfile::tempdir().unwrap();
+            let codex = dir.path().join("codex");
+            std::fs::write(&codex, "#!/bin/sh\necho CODEX-RODOU \"$@\"\n").unwrap();
+            std::fs::set_permissions(&codex, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let tyba = dir.path().join("tyba");
+            std::fs::write(
+                &tyba,
+                "#!/bin/sh\n\
+                 case \"$1\" in _jail-codex|_codex) ;; *) exit 1 ;; esac\n\
+                 echo \"TYBA-BIN-CALLED $*\" >> \"$TYBA_BIN_LOG\"\n\
+                 shift\n\
+                 [ \"$1\" = \"--\" ] && shift\n\
+                 exec \"${0%/*}/codex\" \"$@\"\n",
+            )
+            .unwrap();
+            std::fs::set_permissions(&tyba, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let rc = dir.path().join("rc.sh");
+            std::fs::write(&rc, rc_body).unwrap();
+            let bin_log = dir.path().join("tyba-bin.log");
+            let script = format!(
+                "source {}\ntype codex | head -1\ncodex\ncodex resume --last\ncodex -m x 'a; echo PWNED $(id)'\n",
+                rc.display()
+            );
+
+            for terminal in [true, false] {
+                let _ = std::fs::remove_file(&bin_log);
+                let mut envs = vec![
+                    ("TYBA_BIN", tyba.to_str().unwrap()),
+                    ("TYBA_BIN_LOG", bin_log.to_str().unwrap()),
+                    ("LC_ALL", "C"),
+                ];
+                if terminal {
+                    envs.push(("TYBA_ORBIT_TERMINAL", "1"));
+                }
+                let Some(texto) = run_interactive_shell(shell, dir.path(), &script, &envs) else {
+                    continue;
+                };
+                let log = std::fs::read_to_string(&bin_log).unwrap_or_default();
+                assert!(
+                    texto.contains("CODEX-RODOU resume --last")
+                        && texto.contains("CODEX-RODOU -m x a; echo PWNED $(id)")
+                        && !texto.contains("PWNED uid"),
+                    "{shell} terminal={terminal}: {texto:?}"
+                );
+                // bash: "codex is a function"; zsh: "codex is a shell function".
+                assert!(
+                    texto.contains("codex is a function")
+                        || texto.contains("codex is a shell function"),
+                    "{shell}: {texto:?}"
+                );
+                let mode = if terminal { "_jail-codex" } else { "_codex" };
+                for expected in [
+                    format!("TYBA-BIN-CALLED {mode} --\n"),
+                    format!("TYBA-BIN-CALLED {mode} -- resume --last\n"),
+                    format!("TYBA-BIN-CALLED {mode} -- -m x a; echo PWNED $(id)\n"),
+                ] {
+                    assert!(
+                        log.contains(&expected),
+                        "{shell} terminal={terminal}: faltou {expected:?} em {log:?}"
+                    );
+                }
+            }
+        }
+    }
+
     /// M6-A: com o wrapper do TYBA no PATH, `command claude` (o que scripts e
     /// Makefiles fazem) também passa pelo `_jail`.
     #[test]
@@ -3675,6 +3867,40 @@ echo beta
             depois.observed.unwrap().state,
             Some(ObservedState::AwaitingInput)
         );
+    }
+
+    /// Sessão de nó do Orbit muda de estado (Running → Idle → esperando)
+    /// com o app aberto e nunca chega ao banco: fechar o app com ela viva não
+    /// a traz de volta no boot como agente morto da grade. A da grade vai.
+    #[test]
+    fn sessao_do_orbit_nunca_vai_ao_banco() {
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        let manager = SessionManager::new(Arc::clone(&store));
+        let mut node = make(
+            SessionKind::Agent {
+                runner: AgentRunnerKind::ClaudeCode,
+            },
+            SessionStatus::Running,
+        );
+        node.owner = SessionOwner::Orbit;
+        let grid = make(SessionKind::Shell, SessionStatus::Running);
+        let (node_id, grid_id) = (node.id, grid.id);
+        manager.sessions.write().insert(node_id, node);
+        manager.sessions.write().insert(grid_id, grid);
+
+        manager.apply_status(node_id, SessionStatus::Idle { summary: None });
+        manager.apply_status(grid_id, SessionStatus::Idle { summary: None });
+
+        let ids: Vec<SessionId> = store
+            .load_sessions()
+            .unwrap()
+            .iter()
+            .map(|s| s.id)
+            .collect();
+        assert_eq!(ids, vec![grid_id]);
+        let reborn = SessionManager::new(Arc::clone(&store));
+        reborn.restore().unwrap();
+        assert!(reborn.get(node_id).is_none());
     }
 
     /// E o inverso: mexer no fato não apaga o palpite por efeito colateral.

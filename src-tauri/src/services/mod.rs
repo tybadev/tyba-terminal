@@ -56,6 +56,16 @@ pub(crate) fn run_bounded(
     args: &[&str],
     max_bytes: usize,
 ) -> Result<Vec<u8>, AppError> {
+    run_bounded_within(bin, args, max_bytes, RUN_TIMEOUT)
+}
+
+/// [`run_bounded`] com outro teto de tempo.
+pub(crate) fn run_bounded_within(
+    bin: &Path,
+    args: &[&str],
+    max_bytes: usize,
+    timeout: Duration,
+) -> Result<Vec<u8>, AppError> {
     let fail = |e: &dyn std::fmt::Display| {
         AppError::new("services.scan_failed").with("detail", e.to_string())
     };
@@ -78,7 +88,7 @@ pub(crate) fn run_bounded(
     loop {
         match child.try_wait().map_err(|e| fail(&e))? {
             Some(_) => break,
-            None if start.elapsed() >= RUN_TIMEOUT => {
+            None if start.elapsed() >= timeout => {
                 let _ = child.kill();
                 let _ = child.wait();
                 return Err(AppError::new("services.scan_timeout"));
@@ -509,21 +519,25 @@ impl ServicesState {
 
     /// SIGTERM, com a conferência de identidade e as recusas na hora.
     /// `confirmed` é o grupo que o usuário viu na confirmação (`None` = só o
-    /// processo): alvo diferente na hora do sinal é recusado.
+    /// processo): alvo diferente na hora do sinal é recusado. `before_signal`
+    /// recebe a sessão dona do processo logo antes do sinal (o Orbit marca o
+    /// nó como parado pelo dono antes de ver a saída).
     pub fn terminate(
         &self,
         ctx: &Ctx,
         pid: u32,
         start_ms: u64,
         confirmed: Option<u32>,
+        before_signal: impl FnOnce(Option<SessionId>),
     ) -> Result<KillOutcome, AppError> {
-        let Some(target) = verify(ctx, pid, start_ms, confirmed)? else {
+        let Some((target, session)) = verify(ctx, pid, start_ms, confirmed)? else {
             return Ok(KillOutcome {
                 exited: true,
                 target: None,
                 force_after_ms: 0,
             });
         };
+        before_signal(session);
         send(target, Signal::Term)?;
         let exited = wait_exit(pid, start_ms, TERM_WAIT);
         if exited {
@@ -562,7 +576,7 @@ impl ServicesState {
                     .with("seconds", wait_ms.div_ceil(1000).to_string())
             });
         }
-        let Some(target) = verify(ctx, pid, start_ms, confirmed)? else {
+        let Some((target, _)) = verify(ctx, pid, start_ms, confirmed)? else {
             self.term_log.lock().forget((pid, start_ms));
             return Ok(KillOutcome {
                 exited: true,
@@ -601,7 +615,7 @@ fn verify(
     pid: u32,
     start_ms: u64,
     confirmed: Option<u32>,
-) -> Result<Option<SignalTarget>, AppError> {
+) -> Result<Option<(SignalTarget, Option<SessionId>)>, AppError> {
     let rows = crate::agent::process_probe::snapshot();
     let Some(row) = rows.iter().find(|r| r.pid == pid) else {
         return Ok(None);
@@ -619,6 +633,7 @@ fn verify(
     }
     let target = decide(&scan, ctx, pid)?;
     check_confirmed(target, confirmed)?;
+    let session = world_of(&scan, ctx).session_of(pid);
     // O `ps` pode levar segundos: a identidade é conferida de novo logo antes
     // do sinal, não só no começo.
     match crate::agent::process_probe::snapshot()
@@ -629,7 +644,7 @@ fn verify(
         Some(r) if r.start_ms != start_ms => {
             Err(AppError::new("services.process_changed").with("pid", pid.to_string()))
         }
-        Some(_) => Ok(Some(target)),
+        Some(_) => Ok(Some((target, session))),
     }
 }
 
@@ -991,7 +1006,7 @@ mod tests {
         };
         // Start errado: o core recusa, nada morre.
         let err = state
-            .terminate(&ctx, pid, start + 1, Some(pid))
+            .terminate(&ctx, pid, start + 1, Some(pid), |_| {})
             .unwrap_err();
         assert_eq!(err.code, "services.process_changed");
         assert!(matches!(child.try_wait(), Ok(None)));
@@ -1001,7 +1016,7 @@ mod tests {
             "services.force_without_term"
         );
         let outcome = state
-            .terminate(&ctx, pid, start, Some(pid))
+            .terminate(&ctx, pid, start, Some(pid), |_| {})
             .expect("terminate");
         let _ = child.wait();
         assert_eq!(outcome.target, Some(SignalTarget::Group { pgid: pid }));

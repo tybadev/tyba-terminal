@@ -35,7 +35,8 @@ export type KeyAction =
   | "search"
   | "selectAll"
   | "richInput"
-  | "promptLine";
+  | "promptLine"
+  | "toggleOrbit";
 
 export const KEY_ACTIONS: KeyAction[] = [
   "paletteActions",
@@ -72,6 +73,7 @@ export const KEY_ACTIONS: KeyAction[] = [
   "selectAll",
   "richInput",
   "promptLine",
+  "toggleOrbit",
 ];
 
 export type KeyCategory =
@@ -126,6 +128,7 @@ export const KEY_ACTION_CATEGORY: Record<KeyAction, KeyCategory> = {
   selectAll: "terminal",
   richInput: "general",
   promptLine: "general",
+  toggleOrbit: "general",
 };
 
 export const ACTION_LABEL_KEYS: Record<KeyAction, string> = {
@@ -163,6 +166,7 @@ export const ACTION_LABEL_KEYS: Record<KeyAction, string> = {
   selectAll: "selectAllTerminal",
   richInput: "richInputToggle",
   promptLine: "promptModeEnabled",
+  toggleOrbit: "toggleOrbit",
 };
 
 export const KEY_CATEGORY_LABEL_KEYS: Record<KeyCategory, string> = {
@@ -176,6 +180,16 @@ export const KEY_CATEGORY_LABEL_KEYS: Record<KeyCategory, string> = {
 
 export function isTerminalAction(action: KeyAction): boolean {
   return KEY_ACTION_CATEGORY[action] === "terminal";
+}
+
+/**
+ * Com o Orbit aberto, o teclado é dele: das ações do app (atalho ou menu
+ * nativo) só valem as que não mexem na grade de terminais escondida embaixo.
+ * ⌘W fecharia um pane que nem está à vista, ⌘L mandaria `clear` a outro
+ * shell; o resto (copiar, colar, selecionar) fica com o xterm do nó.
+ */
+export function allowedUnderOrbit(action: KeyAction): boolean {
+  return action === "newWindow" || action === "toggleOrbit";
 }
 
 export function actionsByCategory(): [KeyCategory, KeyAction[]][] {
@@ -222,6 +236,7 @@ export const MAC_BINDINGS: Bindings = {
   selectAll: "meta+a",
   richInput: "meta+shift+g",
   promptLine: "meta+shift+l",
+  toggleOrbit: "meta+shift+m",
 };
 
 export const PC_BINDINGS: Bindings = {
@@ -259,6 +274,7 @@ export const PC_BINDINGS: Bindings = {
   selectAll: "ctrl+shift+a",
   richInput: "ctrl+shift+g",
   promptLine: "ctrl+shift+l",
+  toggleOrbit: "ctrl+alt+m",
 };
 
 export const DEFAULT_BINDINGS: Bindings = IS_MAC ? MAC_BINDINGS : PC_BINDINGS;

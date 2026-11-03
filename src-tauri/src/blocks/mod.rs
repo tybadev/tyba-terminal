@@ -804,6 +804,9 @@ pub struct Checkpoint {
 
 pub enum Work {
     Finish(Finished),
+    /// O bloco de uma sessão efêmera (nó do Orbit): sai como evento para a
+    /// tela viva e nunca vai ao banco.
+    Show(Finished),
     Save(Checkpoint),
     Clear(String),
     /// `clear`/`reset`: a lista de blocos some, e some do disco também.
@@ -880,6 +883,12 @@ pub fn install(app: tauri::AppHandle, store: std::sync::Arc<crate::session::stor
                         }
                         let _ = store.clear_checkpoint(&session);
                     }
+                    Work::Show(finished) => {
+                        let event = format!("block://finalized/{}", finished.session_id);
+                        let block = build(finished);
+                        let _ = app.emit(&event, block.clone());
+                        LIVE.remember(block);
+                    }
                     Work::Save(cp) => {
                         let (command, lines, truncated) = for_disk(&cp);
                         let _ = store.save_checkpoint(
@@ -896,6 +905,7 @@ pub fn install(app: tauri::AppHandle, store: std::sync::Arc<crate::session::stor
                         let _ = store.clear_checkpoint(&session);
                     }
                     Work::Wipe(session) => {
+                        LIVE.forget(&session);
                         let _ = store.drop_blocks(&session);
                         let _ = store.clear_checkpoint(&session);
                         let event = format!("block://cleared/{session}");
@@ -1021,6 +1031,80 @@ fn build(finished: Finished) -> Block {
     }
 }
 
+/// Quantos blocos a sessão efêmera guarda em memória: o mesmo teto da
+/// leitura do banco (`session_blocks`).
+pub const LIVE_LIMIT: usize = 200;
+
+/// Os blocos de sessão efêmera (nó Terminal do Orbit), só em memória.
+///
+/// Nunca vão ao disco (portão de 2026-10-17): mas o painel que remonta (o
+/// webview recarregado, a tela aberta depois de o bloco sair) pergunta pelo
+/// `session_blocks`, e o evento ao vivo já passou. Daqui a resposta sai igual
+/// à do banco — já redigida pelo `build` — e some com a sessão.
+///
+/// Só guarda bloco de sessão ABERTA ([`LiveBlocks::open`], no
+/// `PtyPool::set_ephemeral`), e o `dispose` a fecha ([`LiveBlocks::close`]).
+/// Não é enfeite: o kill do `dispose` faz o EOF do PTY finalizar o bloco em
+/// voo, e esse bloco chega aqui pelo finalizador DEPOIS do `dispose` — sem a
+/// porta fechada, a sessão morta ficava com uma entrada (até `MAX_LINES` de
+/// saída) pela vida do app, uma a cada Abrir/Fechar com comando rodando.
+#[derive(Default)]
+pub struct LiveBlocks {
+    /// Presença da chave = sessão aberta (a lista pode estar vazia).
+    by_session:
+        parking_lot::Mutex<std::collections::HashMap<String, std::collections::VecDeque<Block>>>,
+}
+
+impl LiveBlocks {
+    /// A sessão efêmera passa a guardar blocos.
+    pub fn open(&self, session: &str) {
+        self.by_session
+            .lock()
+            .entry(session.to_string())
+            .or_default();
+    }
+
+    /// Bloco de sessão não aberta (ou já fechada) é descartado.
+    pub fn remember(&self, block: Block) {
+        let mut map = self.by_session.lock();
+        let Some(list) = map.get_mut(&block.session_id) else {
+            return;
+        };
+        list.push_back(block);
+        while list.len() > LIVE_LIMIT {
+            list.pop_front();
+        }
+    }
+
+    /// Os blocos guardados, do mais antigo ao mais novo. `None` quando a
+    /// sessão não é efêmera aberta (então a resposta é a do banco).
+    pub fn list(&self, session: &str) -> Option<Vec<Block>> {
+        self.by_session
+            .lock()
+            .get(session)
+            .map(|list| list.iter().cloned().collect())
+    }
+
+    /// O `clear`: os blocos saem, a sessão segue aberta.
+    pub fn forget(&self, session: &str) {
+        if let Some(list) = self.by_session.lock().get_mut(session) {
+            list.clear();
+        }
+    }
+
+    /// O `dispose`: a sessão sai, e o que chegar dela depois é descartado.
+    pub fn close(&self, session: &str) {
+        self.by_session.lock().remove(session);
+    }
+
+    #[cfg(test)]
+    fn sessions(&self) -> usize {
+        self.by_session.lock().len()
+    }
+}
+
+pub static LIVE: std::sync::LazyLock<LiveBlocks> = std::sync::LazyLock::new(LiveBlocks::default);
+
 /// Nunca bloqueia: fila cheia descarta o trabalho em vez de segurar o terminal.
 pub fn submit(work: Work) {
     if let Some(finalizer) = FINALIZER.get() {
@@ -1032,9 +1116,71 @@ pub fn finalize(finished: Finished) {
     submit(Work::Finish(finished));
 }
 
+/// [`finalize`] sem gravar: o bloco só vai à tela viva.
+pub fn show(finished: Finished) {
+    submit(Work::Show(finished));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn live_block(session: &str, id: u64) -> Block {
+        Block {
+            id,
+            session_id: session.into(),
+            command: format!("echo {id}"),
+            exit_code: Some(0),
+            cwd: None,
+            started_at_ms: 0,
+            finished_at_ms: 1,
+            lines: Vec::new(),
+            truncated: 0,
+            alt_screen: false,
+        }
+    }
+
+    /// Sessão efêmera: os blocos ficam em memória, em ordem, com teto, por
+    /// sessão; o `forget` (`clear`) esvazia e a sessão segue aberta. Nada toca
+    /// o banco: o tipo nem tem um `Store`.
+    #[test]
+    fn live_blocks_are_bounded_per_session_and_forgotten() {
+        let live = LiveBlocks::default();
+        assert!(live.list("a").is_none());
+        live.open("a");
+        live.open("b");
+        assert_eq!(live.list("a").map(|l| l.len()), Some(0));
+        for id in 1..=(LIVE_LIMIT as u64 + 5) {
+            live.remember(live_block("a", id));
+        }
+        live.remember(live_block("b", 1));
+        let a = live.list("a").expect("a tem blocos");
+        assert_eq!(a.len(), LIVE_LIMIT);
+        assert_eq!(a.first().map(|b| b.id), Some(6));
+        assert_eq!(a.last().map(|b| b.id), Some(LIVE_LIMIT as u64 + 5));
+        assert_eq!(live.list("b").map(|l| l.len()), Some(1));
+        live.forget("a");
+        assert_eq!(live.list("a").map(|l| l.len()), Some(0));
+        live.remember(live_block("a", 9_000));
+        assert_eq!(live.list("a").map(|l| l.len()), Some(1));
+        assert_eq!(live.list("b").map(|l| l.len()), Some(1));
+    }
+
+    /// O vazamento do portão: o `dispose` fecha a sessão, o kill faz o EOF
+    /// finalizar o bloco em voo, e ele chega ao `remember` DEPOIS. Nada fica.
+    /// Sessão que nunca abriu (a da grade) também não guarda nada.
+    #[test]
+    fn a_block_finalized_after_dispose_leaves_nothing() {
+        let live = LiveBlocks::default();
+        live.open("efemera");
+        live.remember(live_block("efemera", 1));
+        live.close("efemera");
+        live.remember(live_block("efemera", 2));
+        assert!(live.list("efemera").is_none());
+        live.remember(live_block("da-grade", 1));
+        assert!(live.list("da-grade").is_none());
+        assert_eq!(live.sessions(), 0);
+    }
 
     /// Fatia como o `String.prototype.slice` do JS: por unidade UTF-16.
     ///

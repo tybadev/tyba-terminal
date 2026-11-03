@@ -2,6 +2,7 @@ import type { ElementType } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
+  ArrowsLeftRight,
   CaretDown,
   CaretRight,
   Check,
@@ -17,6 +18,7 @@ import {
   HardDrives,
   Keyboard,
   MagnifyingGlass,
+  Plug,
   Plus,
   Prohibit,
   SidebarSimple,
@@ -106,6 +108,7 @@ import {
   LaunchConfigScreen,
   type LaunchConfigDraftState,
 } from "./components/LaunchConfigScreen";
+import { OrbitScreen, type FocusSessionRequest } from "./components/orbit/OrbitScreen";
 import { ShortcutsPanel } from "./components/ShortcutsPanel";
 import { ConnectionsView } from "./components/ConnectionsView";
 import {
@@ -138,7 +141,7 @@ import { GitHistoryView } from "./components/GitHistoryView";
 import { DockerScreen } from "./components/DockerScreen";
 import { ServicesScreen } from "./components/ServicesScreen";
 import { HistoryPanel } from "./components/HistoryPanel";
-import { SidePanelBar, type PanelTab } from "./components/SidePanelBar";
+import { PanelIcon, SidePanelBar, type PanelTab } from "./components/SidePanelBar";
 import {
   escClosesPanel,
   litPanel,
@@ -166,7 +169,7 @@ import {
 import { AgentsPanel } from "./components/AgentsPanel";
 import { PrListView } from "./components/PrListView";
 import { GitScreen } from "./components/GitScreen";
-import { activeFile, allScreenEditors, closeTarget, screenOf, sideSlotView } from "./lib/screens";
+import { activeFile, allScreenEditors, closeTarget, screenOf, sideSlotView, sshTunnelTargets } from "./lib/screens";
 import { openGitScreen } from "./lib/gitScreen";
 import { PrDetailView } from "./components/PrDetailView";
 import { SubagentViewer } from "./components/SubagentViewer";
@@ -296,6 +299,8 @@ import {
   type LayoutState,
   type Loaded,
   type RepoSnapshot,
+  type ServicesSection,
+  type PaneId,
   type Session,
   type Tab,
   type SessionCommand,
@@ -450,6 +455,19 @@ const MAIN_MIN_PX = 320;
  * (`sameRect`), e o fit só roda quando o invólucro muda de tamanho de verdade.
  */
 const PANE_BOX = { left: 0, top: 0, width: 100, height: 100 } as const;
+/** O nó do Orbit não está no layout do core: não há painel para focar. */
+const noFocusPane = async (_pane: PaneId) => {};
+/**
+ * No canvas o xterm desfaz o zoom dentro de um invólucro com a margem do
+ * nó (a mesma do padding do terminal na grade). Sem zoom, o terminal vai
+ * como na grade.
+ */
+const wrapNodeTerminal = (zoom: number | undefined, el: React.ReactNode) =>
+  zoom === undefined ? (
+    el
+  ) : (
+    <div className="absolute top-2 right-2.5 bottom-3 left-2.5">{el}</div>
+  );
 import { handlerCache, withEntry } from "./lib/perSession";
 import { useStableCallback } from "./lib/stableProps";
 import { mergeBlockHistory } from "./lib/blockHistory";
@@ -464,13 +482,25 @@ import {
 import { CommandLine } from "./components/CommandLine";
 import { RichInput } from "./components/RichInput";
 import {
+  TerminalPaneContext,
+  type TerminalPaneHost,
+} from "./components/TerminalPaneHost";
+import {
   DEFAULT_RICH_INPUT,
   RICH_INPUT_PREF_KEY,
   parseRichInputPref,
+  richInputToAutoOpen,
+  richInputToUndismiss,
   richInputVisibility,
   shouldShowRichInput,
   type RichInputPref,
 } from "./lib/richInput";
+import {
+  gridAttention,
+  loadWithRetry,
+  orbitPanesToPrune,
+  orbitPickKey,
+} from "./lib/orbitPanes";
 import {
   captureState,
   comboOf,
@@ -481,6 +511,7 @@ import {
   parseBindings,
   bindingOverrides,
   BINDINGS_PREF_KEY,
+  allowedUnderOrbit,
   isTerminalAction,
   isPaneResizeChord,
   isTabDigitChord,
@@ -654,11 +685,14 @@ function IconAction({
   label,
   shortcut,
   onClick,
+  disabled = false,
   children,
 }: {
   label: string;
   shortcut?: string;
   onClick?: () => void;
+  /** Sem efeito agora: `aria-disabled` (não `disabled`) para o tooltip seguir dizendo por quê. */
+  disabled?: boolean;
   children: React.ReactNode;
 }) {
   return (
@@ -667,9 +701,12 @@ function IconAction({
         <Button
           variant="ghost"
           size="icon"
-          onClick={onClick}
+          onClick={disabled ? undefined : onClick}
           aria-label={label}
-          className="h-7 w-[30px] rounded-[6px] text-tyba-text-faint hover:text-tyba-text"
+          aria-disabled={disabled || undefined}
+          className={`h-7 w-[30px] rounded-[6px] text-tyba-text-faint ${
+            disabled ? "cursor-not-allowed opacity-40 hover:bg-transparent" : "hover:text-tyba-text"
+          }`}
         >
           {children}
         </Button>
@@ -1013,6 +1050,11 @@ export default function App() {
   const richInputFocused = useRef(false);
   const richInputAutoOpened = useRef<Set<string>>(new Set());
   const dismissedCommand = useRef<Record<string, string | null>>({});
+  // Sessões fora da grade que mostram o painel da aba Terminal: o nó
+  // Terminal do Orbit (ver `TerminalPaneHost`). Contador por montagem.
+  const [orbitPanes, setOrbitPanes] = useState<Record<string, number>>({});
+  const orbitPanesRef = useRef(orbitPanes);
+  orbitPanesRef.current = orbitPanes;
   const [showGitStatus, setShowGitStatus] = useState(true);
   const [shellIntegration, setShellIntegration] = useState(true);
   const [startup, setStartup] = useState<StartupMode>("resume");
@@ -2084,6 +2126,11 @@ export default function App() {
       ),
     );
   }, [sideView, subagentsBySession, approvals]);
+  // Cápsulas dos nós do grafo na tela (Permitir/Negar no próprio nó): o que
+  // elas mostram sai do toast. A tela do grafo avisa e zera ao fechar.
+  const [nodeCardIds, setNodeCardIds] = useState<ReadonlySet<number>>(
+    () => new Set(),
+  );
   const approvalHiddenIds = useMemo(
     () =>
       computeHiddenApprovalIds({
@@ -2093,6 +2140,7 @@ export default function App() {
         agentQueueVisibleIds,
         sessionPanelIds,
         agentsPanelIds,
+        nodeCardIds,
       }),
     [
       approvals,
@@ -2101,6 +2149,7 @@ export default function App() {
       agentQueueVisibleIds,
       sessionPanelIds,
       agentsPanelIds,
+      nodeCardIds,
     ],
   );
 
@@ -2726,29 +2775,64 @@ export default function App() {
     setRichInputDismissed(prune);
   }, [sessions]);
 
+  // A caixa é por sessão: a ativa da grade e as presas a um nó do Orbit (que
+  // nunca são a ativa). Ver `richInputToUndismiss`/`richInputToAutoOpen`.
+  const orbitPaneIds = Object.keys(orbitPanes).join("\n");
   useEffect(() => {
-    if (!activeId) return;
-    const current = activeCommand?.command ?? null;
-    if (
-      richInputDismissed.has(activeId) &&
-      dismissedCommand.current[activeId] !== current
-    ) {
-      setRichInputDismissed((prev) => {
-        const next = new Set(prev);
-        next.delete(activeId);
-        return next;
-      });
-    }
-  }, [activeId, activeCommand?.command, richInputDismissed]);
+    const ids = [activeId, ...orbitPaneIds.split("\n")].filter(
+      (id): id is string => Boolean(id),
+    );
+    const undismiss = richInputToUndismiss(
+      ids,
+      richInputDismissed,
+      dismissedCommand.current,
+      (id) => sessionCommands[id]?.command ?? null,
+    );
+    if (undismiss.length === 0) return;
+    setRichInputDismissed((prev) => {
+      const next = new Set(prev);
+      for (const id of undismiss) next.delete(id);
+      return next;
+    });
+  }, [activeId, orbitPaneIds, sessionCommands, richInputDismissed]);
 
   useEffect(() => {
-    if (!richInputPref.autoOpenOnStart || !activeId || !richInputEligible) {
-      return;
+    const ids = [activeId, ...orbitPaneIds.split("\n")].filter(
+      (id): id is string => Boolean(id),
+    );
+    const open = richInputToAutoOpen(
+      ids,
+      richInputPref,
+      (id) => {
+        if (id === activeId) return richInputEligible;
+        const s = sessionById.get(id);
+        return (
+          s !== undefined &&
+          shouldShowRichInput(
+            s.kind,
+            sessionCommands[id]?.agent_match ?? false,
+            richInputPref,
+          )
+        );
+      },
+      richInputAutoOpened.current,
+    );
+    for (const id of open) {
+      richInputAutoOpened.current.add(id);
+      // A do nó abre sem o pulso de foco: ele é da caixa da sessão ativa.
+      if (id === activeId) openRichInput(id);
+      else
+        setRichInputOpened((prev) => (prev.has(id) ? prev : new Set(prev).add(id)));
     }
-    if (richInputAutoOpened.current.has(activeId)) return;
-    richInputAutoOpened.current.add(activeId);
-    openRichInput(activeId);
-  }, [activeId, richInputEligible, richInputPref.autoOpenOnStart, openRichInput]);
+  }, [
+    activeId,
+    orbitPaneIds,
+    richInputEligible,
+    richInputPref,
+    sessionById,
+    sessionCommands,
+    openRichInput,
+  ]);
 
 
   useEffect(() => {
@@ -2836,8 +2920,11 @@ export default function App() {
     ? workspaceAgentStatus(activeWorkspace)?.session.status.state === "running"
     : false;
   const unseenAttention = useMemo(
-    () => sessions.some((s) => s.attention),
-    [sessions],
+    () =>
+      gridAttention(sessions, (id) =>
+        Boolean(findSessionLocation(layout.workspaces, id)),
+      ),
+    [sessions, layout.workspaces],
   );
 
   useEffect(() => {
@@ -3970,6 +4057,12 @@ export default function App() {
         void closeActivePane();
       } else if (action === "openFolder") {
         void openProjectFolder();
+      } else if (action === "toggleOrbit") {
+        // Indo para o Orbit, o terminal de baixo não fica com o foco: as
+        // teclas cairiam num xterm escondido.
+        (document.activeElement as HTMLElement | null)?.blur();
+        setMachineScreen(null);
+        setOrbitOpen((o) => !o);
       } else if (action === "newSession") {
         openNewSession();
       } else if (action === "newWorktreeSession") {
@@ -4054,7 +4147,7 @@ export default function App() {
   // linha onde o hook pode chegar (ver `lineVisible`).
   const paneLines = new Map<string, PaneLine>();
   for (const s of sessions) {
-    if (!pannedSessions.has(s.id)) continue;
+    if (!pannedSessions.has(s.id) && !orbitPanes[s.id]) continue;
     paneLines.set(
       s.id,
       paneLine({
@@ -4091,6 +4184,95 @@ export default function App() {
   const focusLine = useCallback((id: SessionId) => {
     setLineFocusNonces((prev) => ({ ...prev, [id]: (prev[id] ?? 0) + 1 }));
   }, []);
+  const attachOrbitPane = useCallback((id: SessionId) => {
+    setOrbitPanes((prev) => ({ ...prev, [id]: (prev[id] ?? 0) + 1 }));
+    return () =>
+      setOrbitPanes((prev) => {
+        const next = { ...prev };
+        if ((next[id] ?? 0) <= 1) delete next[id];
+        else next[id] -= 1;
+        return next;
+      });
+  }, []);
+  // A sessão do nó não entra pela grade: o estado do painel (comando, modo
+  // prompt, blocos…) sai das assinaturas por `sessions`, então ela entra na
+  // lista pela leitura do core. Uma pergunta por sessão — a que já morreu e
+  // saiu do core não vira laço.
+  // Marcada só depois de uma leitura que deu certo; a que falha (ou volta
+  // `ready: false`) tenta de novo algumas vezes (`loadWithRetry`).
+  const askedOrbitPanes = useRef<Set<string>>(new Set());
+  // A altura da linha do TYBA de cada nó, medida: a faixa "O claude está com
+  // o teclado" ocupa a mesma (ver `renderPane`).
+  const orbitLineHeights = useRef<Record<string, number>>({});
+  const askingOrbitPanes = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    const missing = Object.keys(orbitPanes).filter(
+      (id) =>
+        !sessionById.has(id) &&
+        !askedOrbitPanes.current.has(id) &&
+        !askingOrbitPanes.current.has(id),
+    );
+    if (missing.length === 0) return;
+    for (const id of missing) askingOrbitPanes.current.add(id);
+    void loadWithRetry(refreshSessions).then((ok) => {
+      for (const id of missing) {
+        askingOrbitPanes.current.delete(id);
+        if (ok) askedOrbitPanes.current.add(id);
+      }
+    });
+  }, [orbitPanes, sessionById, refreshSessions]);
+  // Painel solto (nó fechado, fora da tela, modo foco): esquece a pergunta e
+  // relê a lista do core. A sessão que fechou sai da lista do `App` com os
+  // blocos dela; a que segue viva fica (ver `orbitPanesToPrune`).
+  const prevOrbitPanes = useRef<string[]>([]);
+  const detachedOrbitPanes = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    const left = prevOrbitPanes.current.filter((id) => !orbitPanes[id]);
+    prevOrbitPanes.current = Object.keys(orbitPanes);
+    for (const id of Object.keys(orbitPanes)) detachedOrbitPanes.current.delete(id);
+    if (left.length === 0) return;
+    for (const id of left) {
+      askedOrbitPanes.current.delete(id);
+      detachedOrbitPanes.current.add(id);
+    }
+    void refreshSessions();
+  }, [orbitPanes, refreshSessions]);
+  useEffect(() => {
+    const detached = detachedOrbitPanes.current;
+    if (detached.size === 0) return;
+    const drop = new Set(
+      orbitPanesToPrune({
+        detached,
+        sessions: sessions.map((s) => ({
+          id: s.id,
+          finished: isFinishedStatus(s.status),
+        })),
+        attached: (id) => Boolean(orbitPanes[id]),
+        inLayout: (id) => Boolean(findSessionLocation(layout.workspaces, id)),
+      }),
+    );
+    // A que já saiu do core (o `refreshSessions` a tirou) só leva os blocos.
+    for (const id of detached) if (!sessionById.has(id)) drop.add(id);
+    // Fica em `detached` até voltar a um nó: se uma leitura do core a trouxer
+    // de novo (fechada), sai de novo.
+    if (drop.size === 0) return;
+    setSessions((prev) =>
+      prev.some((s) => drop.has(s.id)) ? prev.filter((s) => !drop.has(s.id)) : prev,
+    );
+    setBlocks((prev) => {
+      if (![...drop].some((id) => id in prev)) return prev;
+      const next = { ...prev };
+      for (const id of drop) delete next[id];
+      return next;
+    });
+  }, [sessions, sessionById, orbitPanes, layout.workspaces]);
+  const focusOrbitInput = useCallback(
+    (id: SessionId) => {
+      if (ownsLineRef.current[id]) focusLine(id);
+      else getTerm(id)?.term.focus();
+    },
+    [focusLine],
+  );
   // Com a tela de Git aberta o teclado é dela (Esc, campos): nada de puxar o
   // foco de volta por baixo. Quando ela desmonta, o effect roda de novo e o
   // foco volta ao terminal.
@@ -4099,8 +4281,33 @@ export default function App() {
     filesScreenSession !== null ||
     dockerScreenSession !== null ||
     servicesScreenSession !== null;
+  // O Orbit cobre a área inteira: o teclado é dele enquanto estiver aberto.
+  const [orbitOpen, setOrbitOpen] = useState(false);
+  // Serviços e portas / Túneis abertos pelo Orbit: a tela da máquina,
+  // sem sessão, por cima do Orbit (lá não há sessão à vista).
+  const [machineScreen, setMachineScreen] = useState<ServicesSection | null>(null);
+  // "Ir para o terminal" de uma sessão de nó, pedido ao Orbit.
+  const [orbitFocus, setOrbitFocus] = useState<FocusSessionRequest | null>(null);
+  // "Ir para o terminal" de Serviços e portas, no Terminal ou no Workspace.
+  // Sessão da grade: vai ao Terminal, na aba dela. Sessão de nó do Orbit
+  // não está em layout nenhum: abre o Workspace e vai ao nó.
+  const focusSessionOrNode = useCallback(
+    (id: SessionId) => {
+      if (findSessionLocation(layout.workspaces, id)) {
+        setOrbitOpen(false);
+        goToSession(id);
+        return;
+      }
+      // O terminal de baixo não fica com o foco (ver o botão Workspace).
+      (document.activeElement as HTMLElement | null)?.blur();
+      setOrbitOpen(true);
+      setOrbitFocus((f) => ({ sessionId: id, nonce: (f?.nonce ?? 0) + 1 }));
+    },
+    [layout.workspaces, goToSession],
+  );
+  const machineTunnels = useMemo(() => sshTunnelTargets(sessions, sshHosts), [sessions, sshHosts]);
   useEffect(() => {
-    if (!activeId || gitScreenOpen) return;
+    if (!activeId || gitScreenOpen || orbitOpen) return;
     if (ownsCommandLine) {
       focusLine(activeId);
       return;
@@ -4109,7 +4316,7 @@ export default function App() {
     // desligado): o foco vai junto, senão as teclas caem numa caixa que já não
     // é dona da linha.
     getTerm(activeId)?.term.focus();
-  }, [ownsCommandLine, activeId, focusLine, gitScreenOpen]);
+  }, [ownsCommandLine, activeId, focusLine, gitScreenOpen, orbitOpen]);
 
   // Quem responde se o PS1 saiu da tela é o SHELL, não o app: o hook relata por
   // `633;P` a cada prompt. Assumir pela preferência mentiria quando o hook não
@@ -4501,7 +4708,11 @@ export default function App() {
         runMenuExtra(id);
         return;
       }
-      if ((KEY_ACTIONS as string[]).includes(id)) runAction(id as KeyAction);
+      if (!(KEY_ACTIONS as string[]).includes(id)) return;
+      // No macOS o acelerador do menu (⌘W, ⌘T…) chega por aqui, não pelo
+      // keydown: com o Orbit aberto vale a mesma regra do teclado.
+      if (orbitOpen && !allowedUnderOrbit(id as KeyAction)) return;
+      runAction(id as KeyAction);
     }).then((un) => {
       if (disposed) un();
       else unlisten = un;
@@ -4510,11 +4721,53 @@ export default function App() {
       disposed = true;
       unlisten?.();
     };
-  }, [runAction, runMenuExtra]);
+  }, [runAction, runMenuExtra, orbitOpen]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (captureState.active) return;
+      // Orbit aberto: o teclado é dele (o xterm do nó, os campos, o canvas).
+      // Atalho do app que mexeria na grade escondida embaixo não age nem
+      // consome a tecla.
+      if (orbitOpen) {
+        const combo = comboOf(e);
+        const action = combo
+          ? (Object.keys(bindings) as KeyAction[]).find((a) => bindings[a] === combo)
+          : undefined;
+        // Blocos marcados no nó Terminal: ⌘C copia e Esc limpa, como na grade.
+        const pick = blockPickRef.current;
+        const pickTerm = pick ? getTerm(pick.session) : undefined;
+        const selection = window.getSelection();
+        const pickKey = orbitPickKey({
+          key: e.key,
+          isCopy: action === "copy",
+          pickSession: pick?.session ?? null,
+          attached: (id) => Boolean(orbitPanesRef.current[id]),
+          inTextField: inTextField(document.activeElement),
+          textSelected:
+            (selection !== null && !selection.isCollapsed) ||
+            (isTermFocused(pickTerm) && (pickTerm?.term.hasSelection() ?? false)),
+        });
+        if (pick && pickKey) {
+          e.preventDefault();
+          e.stopPropagation();
+          if (e.repeat) return;
+          if (pickKey === "clear") {
+            setBlockPick(null);
+            return;
+          }
+          const chosen = pickedBlocks(pick.selection, blocksRef.current[pick.session] ?? []);
+          if (chosen.length > 0) {
+            void writeClipboardText(blocksMarkdown(chosen)).catch(() => {});
+          }
+          return;
+        }
+        if (!action || !allowedUnderOrbit(action)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        if (!e.repeat) runAction(action);
+        return;
+      }
       // Esc só sai da seleção de blocos quando o teclado não é de um campo:
       // com o foco na caixa de comando, Esc é dela — fecha a sugestão.
       if (
@@ -4660,6 +4913,7 @@ export default function App() {
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
   }, [
+    orbitOpen,
     activeId,
     searchOpen,
     pasteFromClipboard,
@@ -5141,6 +5395,416 @@ export default function App() {
     );
   };
 
+  /**
+   * O painel de uma sessão da grade: terminal, blocos e a linha do TYBA.
+   * Fora do `map` do render para o nó Terminal do Orbit desenhar o mesmo
+   * painel (ver `TerminalPaneHost`).
+   *
+   * `orbit` é o painel dentro do nó: sem `paneRect` (o nó não está no
+   * layout do core), sempre visível, e nada do que é da grade — foco de
+   * painel do core, split, busca, avisos e convites (que abrem ou mexem em
+   * sessões da grade). `zoom` é o do canvas; ausente no modo foco.
+   */
+  const renderPane = (
+    s: Session,
+    paneRect: NonNullable<typeof paneLayout>["panes"][number] | null,
+    orbit: { zoom?: number; hostedAgent?: "claude" | "codex" | null } | null = null,
+  ) => {
+    const bare = orbit !== null;
+    const nodeZoom = orbit?.zoom;
+    // O claude/codex com as ferramentas do Orbit no shell do nó (quadro
+    // OrbitTerminalTyba, B).
+    const hostedAgent = orbit?.hostedAgent ?? null;
+    // O terminal e os blocos medem em % da ÁREA DE CONTEÚDO do
+    // painel — o painel menos a linha do TYBA, que mora no
+    // rodapé dele. Ver o invólucro abaixo.
+    const pane = paneRect || bare ? PANE_BOX : null;
+    const line = paneLines.get(s.id);
+    // Em modo prompt o terminal ocupa uma faixa FIXA embaixo: a
+    // lista de blocos a cobre quando ocioso e a revela quando um
+    // comando roda, sem nunca redimensionar o PTY. Alt-screen é
+    // a exceção — `vim` precisa do painel inteiro.
+    const blocked =
+      (promptModes[s.id] ?? false) &&
+      !(altScreens[s.id] ?? false);
+    const terminalBox =
+      pane && blocked ? termRect(pane) : pane;
+    const detected = detectedBySession.get(s.id) ?? null;
+    const sshHostId =
+      s.kind.type === "ssh" ? s.kind.host_id : null;
+    const resumeInvite = showAgentResumeInvite(
+      s,
+      resumableAgents.get(s.id),
+      dismissedResumeInvites.has(s.id),
+    );
+    // No nó, o agente que toma o painel deixa no lugar da linha "O claude
+    // está com o teclado deste pane." — na MESMA altura da linha, para o PTY
+    // não mudar de tamanho quando ele entra e sai.
+    const keyboardAgent =
+      bare && blocked && !line?.visible
+        ? (hostedAgent ?? (detected ? agentBinaryName(detected.kind) : null))
+        : null;
+    // A faixa da sessão remota: a linha que explica por que ela
+    // é comum, ou o agente rodando no servidor sem jaula. Uma
+    // só — as duas ocupam o mesmo lugar do pane.
+    const remoteNotice = sshHostId
+      ? paneNotice({
+          integration: integrations[s.id],
+          agent: remoteAgentNotice({
+            command: sessionCommands[s.id],
+            confirmed: remoteAgents[s.id],
+          }),
+        })
+      : null;
+    return (
+      // O painel é uma coluna: a área de conteúdo (terminal e
+      // blocos) em cima, a linha do TYBA embaixo. A altura da
+      // linha sai da área de conteúdo DESTE painel e de nenhum
+      // outro — um resize por painel, e só quando a linha muda
+      // de altura, nunca por comando.
+      <div
+        key={`pane-${s.id}`}
+        className={bare ? "absolute inset-0 flex flex-col" : "flex flex-col"}
+        style={
+          bare
+            ? undefined
+            : paneRect
+            ? {
+                position: "absolute",
+                left: `${paneRect.x}%`,
+                top: `${paneRect.y}%`,
+                width: `${paneRect.w}%`,
+                height: `${paneRect.h}%`,
+              }
+            : { display: "none" }
+        }
+      >
+        {s.kind.type === "container" && (
+          <ContainerShellBanner containerId={s.kind.container_id} />
+        )}
+        <div className="relative min-h-0 flex-1">
+          {wrapNodeTerminal(nodeZoom, <TerminalView
+            key={`${s.id}:${paneEpochs.get(s.id) ?? 0}`}
+            sessionId={s.id}
+            transport={transports[s.id] ?? INITIAL_TRANSPORT}
+            remoteNotice={bare ? null : remoteNotice}
+            resumeNotice={
+              !bare && resumeInvite && s.kind.type === "agent"
+                ? { binary: agentBinaryName(s.kind.runner) }
+                : null
+            }
+            onResumeAgent={() =>
+              void resumeAgentConversation(s.id)
+            }
+            onDismissResume={() => dismissResumeInvite(s.id)}
+            shellResumeNotice={
+              !bare &&
+              s.kind.type === "shell" &&
+              Boolean(s.shell_resume_offer)
+            }
+            onResumeShell={() => void resumeShellClaude(s.id)}
+            onDismissShellResume={() =>
+              void dismissShellResumeOffer(s.id).catch(() => {})
+            }
+            authAlert={
+              !bare && runtimeAuthAlerts.has(s.id)
+                ? { kind: runtimeAuthAlerts.get(s.id)! }
+                : null
+            }
+            onDismissAuthAlert={() =>
+              dismissRuntimeAuthAlert(s.id)
+            }
+            approvalRequest={bare ? null : (panelRequests.get(s.id) ?? null)}
+            onPaste={deliverPaste}
+            onSearch={bare ? undefined : () => setSearchOpen(true)}
+            readOnly={line?.owns ?? false}
+            onReclaimFocus={() => focusLine(s.id)}
+            onAltScreen={(alt) =>
+              setAltScreens((prev) =>
+                prev[s.id] === alt
+                  ? prev
+                  : { ...prev, [s.id]: alt },
+              )
+            }
+            onSplit={bare ? undefined : (kind) => void splitActive(kind)}
+            visible={bare || paneRect !== null}
+            // No nó, selecionar não foca o terminal (ver `NodeTerminal`);
+            // no modo foco ele já nasce com o teclado.
+            focused={bare ? nodeZoom === undefined : s.id === activeId}
+            reattaches={!ptyExitEndsSession(s.kind)}
+            connection={
+              s.kind.type === "ssh" ? s.connection : undefined
+            }
+            connectionFailure={
+              s.kind.type === "ssh" ? s.connection_failure : null
+            }
+            knownHostsCommand={
+              sshHostId ? knownHostsCommandFor(sshHostId) : null
+            }
+            onReconnect={
+              s.kind.type === "ssh"
+                ? () =>
+                    void reconnectSsh(s.id).catch((e) =>
+                      toastError(
+                        t("connectionsActionFailed"),
+                        translateError(e, t),
+                      ),
+                    )
+                : undefined
+            }
+            onEditHost={
+              sshHostId ? () => editSshHost(sshHostId) : undefined
+            }
+            onBroadcastInput={
+              broadcastOn && s.kind.type === "ssh"
+                ? handleBroadcastInput
+                : undefined
+            }
+            exited={isFinishedStatus(s.status)}
+            rect={terminalBox}
+            zoom={nodeZoom}
+            // No canvas a margem é do invólucro (`wrapNodeTerminal`).
+            fullBleed={nodeZoom !== undefined || (altScreens[s.id] ?? false)}
+            // Só com a faixa ABERTA. `liveUsed` guarda a última
+            // medida e não se apaga quando o comando termina: sem
+            // esta guarda o recorte fica valendo para sempre, e o
+            // terminal vira uma tira no rodapé assim que a lista
+            // deixa de cobri-lo — num split, o painel sem blocos.
+            liveUsed={
+              blocked && liveOf(s.id) ? liveUsed[s.id] : undefined
+            }
+            swallowArrows={swallowsArrow({
+              running: Boolean(sessionCommands[s.id]?.running),
+              lineEcho: lineEcho[s.id] ?? false,
+              altScreen: altScreens[s.id] ?? false,
+            })}
+            bindings={bindings}
+            // Quem lê o teclado neste painel é um composer de
+            // agente: a sessão gerenciada, ou o `claude` cru que
+            // o probe achou rodando no shell. É o que libera
+            // Shift/Ctrl/Option+Enter como quebra de linha.
+            agentTui={s.kind.type === "agent" || detected !== null}
+            onLineHeight={(px) => reportLineHeight(s.id, px)}
+            onCellWidth={(px) => reportCellWidth(s.id, px)}
+            onLiveRows={
+              blocked
+                ? (used, total, scrolled) =>
+                    reportLiveRows(s.id, used, total, scrolled)
+                : undefined
+            }
+            onFocus={
+              bare
+                ? () => getTerm(s.id)?.term.focus()
+                : paneRect
+                ? () => void focusPane(paneRect.pane)
+                : undefined
+            }
+            onExit={() => void refreshSessions()}
+          />)}
+          {/* Nada de objeto ou arrow montados aqui
+              dentro: o corpo do painel é `memo`, e prop com
+              identidade nova a cada quadro faz a comparação
+              rasa falhar sempre. Ver `SessionBlocks`. */}
+          {blocked && (paneRect || bare) && (
+            <SessionBlocks
+              key={`blocks-${s.id}`}
+              {...sessionBlocksData({
+                session: s,
+                pane: {
+                  pane: paneRect?.pane ?? s.id,
+                  x: PANE_BOX.left,
+                  y: PANE_BOX.top,
+                  w: PANE_BOX.width,
+                  h: PANE_BOX.height,
+                },
+                blocks: blocks[s.id],
+                // `clear` não abre a faixa: ele não tem saída para
+                // mostrar, e meio painel preto que aparece para logo
+                // esvaziar tudo é um solavanco em cima de um comando
+                // cujo ponto é sumir com as coisas.
+                live: liveOf(s.id),
+                // A lista cede à faixa só a altura que a saída usa de
+                // fato. Sem isto ela larga metade do painel para um
+                // terminal que costuma estar em boa parte vazio, e o
+                // cartão nasce longe de onde a saída estava.
+                used: liveUsed[s.id],
+                headerPx: activeHeaderPx[s.id],
+                fontSizePx: termFontSize,
+                lineHeightPx:
+                  termLineHeight[s.id] ?? fallbackLineHeight,
+                cellWidthPx:
+                  termCellWidth[s.id] ?? fallbackCellWidth,
+                cwd: sessionCwds[s.id],
+                // O nó é o próprio painel: "Rodar de novo" vai à linha dele.
+                active: bare || s.id === activeId,
+                command: sessionCommands[s.id]?.command,
+                commandStartedAtMs:
+                  sessionCommands[s.id]?.started_at_ms,
+                runningNote:
+                  bare && hostedAgent ? t("orbitTerminalTools") : null,
+                marked:
+                  blockPick?.session === s.id
+                    ? markedBlocks
+                    : null,
+                copyCombo: formatCombo(bindings.copy),
+              })}
+              onInject={injectInto}
+              onFocusPane={bare ? noFocusPane : focusPane}
+              onPick={pickerFor(s.id)}
+              onClearPick={clearPick}
+              onHeaderPx={reportHeaderPx}
+            />
+          )}
+        </div>
+        {(paneRect || bare) && line?.visible && (
+          // Clicar (ou focar) a linha de outro painel passa o
+          // foco do CORE para ele antes de qualquer tecla: é o
+          // core que decide o painel ativo, e o atalho, a
+          // paleta e a caixa de agente seguem essa resposta.
+          <div
+            className="shrink-0"
+            ref={
+              bare
+                ? (el) => {
+                    if (el) orbitLineHeights.current[s.id] = el.offsetHeight;
+                  }
+                : undefined
+            }
+            onPointerDownCapture={() => {
+              if (paneRect && s.id !== activeId) {
+                void focusPane(paneRect.pane).catch(() => {});
+              }
+            }}
+            onFocusCapture={() => {
+              if (paneRect && s.id !== activeId) {
+                void focusPane(paneRect.pane).catch(() => {});
+              }
+            }}
+          >
+            {/* `key` só pela sessão: trocar o foco NÃO remonta
+                a linha. Texto, caret, linhas pendentes e menu
+                de cada painel ficam onde estavam. */}
+            <CommandLine
+              key={`${s.id}:line`}
+              sessionId={s.id}
+              cwd={cwdKeyOf(s.id)}
+              program={programName(
+                sessionCommands[s.id]?.command,
+              )}
+              // A branch DESTA sessão, pela mesma regra do
+              // chip da barra (sem emprestar de outro repo).
+              // SSH fica sem: o snapshot é local.
+              branch={(() => {
+                if (s.kind.type === "ssh") return null;
+                const chip = toolbarBranchChip({
+                  session: {
+                    id: s.id,
+                    worktree: s.worktree?.path ?? null,
+                    alive: !isFinishedStatus(s.status),
+                    cwd: sessionCwds[s.id]?.canonical ?? null,
+                  },
+                  workspaceDir: null,
+                  snapshots: repoSnapshots,
+                });
+                return chip?.state === "known"
+                  ? chip.label
+                  : null;
+              })()}
+              scope={{
+                cwd: cwdKeyOf(s.id),
+                repoRoot: s.repo_root ?? null,
+              }}
+              // No nó só no modo foco (sem zoom): lá ele nasce com o teclado.
+              focusOnMount={
+                (bare ? nodeZoom === undefined : s.id === activeId) &&
+                line.owns
+              }
+              focusNonce={lineFocusNonces[s.id] ?? 0}
+              state={line.state}
+              boot={shellBoots[s.id] ?? null}
+              booting={
+                promptModes[s.id] !== true &&
+                !isFinishedStatus(s.status)
+              }
+              broadcasting={
+                broadcastOn &&
+                s.kind.type === "ssh" &&
+                broadcastSet.includes(s.id)
+              }
+              bootHost={
+                s.kind.type === "ssh"
+                  ? (sshHosts.find(
+                      (h) =>
+                        s.kind.type === "ssh" &&
+                        h.id === s.kind.host_id,
+                    )?.alias ?? null)
+                  : null
+              }
+              inject={injected[s.id] ?? null}
+              draft={drafts.current[s.id] ?? ""}
+              onDraftChange={rememberDraft}
+              pending={pendings.current[s.id]}
+              onPendingChange={rememberPending}
+            />
+          </div>
+        )}
+        {keyboardAgent && (
+          <div
+            className="flex shrink-0 items-center border-t border-tyba-border px-4 font-mono text-[11px] text-tyba-text-faint"
+            style={{ height: orbitLineHeights.current[s.id] }}
+          >
+            <span className="truncate py-[11px]">
+              {t("orbitTerminalAgentKeyboard", { agent: keyboardAgent })}
+            </span>
+          </div>
+        )}
+        {bare && !line?.owns && orbitRichInput(s)}
+      </div>
+    );
+  };
+
+  /**
+   * A caixa de agente do nó: a mesma regra da grade (`richInputVisibility`),
+   * só que por sessão do nó e flutuando sobre o rodapé dele.
+   */
+  const orbitRichInput = (s: Session) => {
+    const shown = richInputVisibility({
+      kind: s.kind,
+      command: sessionCommands[s.id],
+      pref: richInputPref,
+      opened: richInputOpened.has(s.id),
+      dismissed: richInputDismissed.has(s.id),
+    });
+    if (!shown) return null;
+    return (
+      <div className="absolute inset-x-0 bottom-0 z-40 px-4 pb-4">
+        <RichInput
+          key={s.id}
+          sessionId={s.id}
+          pref={richInputPref}
+          focusNonce={richInputFocusNonce}
+          openedExplicitly={richInputOpened.has(s.id)}
+          prefill={launchPrefills[s.id] ?? null}
+          onFocusChange={(focused) => {
+            richInputFocused.current = focused;
+          }}
+          onClose={() => closeRichInput(s.id)}
+        />
+      </div>
+    );
+  };
+
+  // Novo a cada render de propósito: o nó re-renderiza junto com o estado
+  // do painel, como os painéis da grade.
+  const terminalPaneHost: TerminalPaneHost = {
+    render: (id, zoom, hostedAgent) => {
+      const s = sessionById.get(id);
+      return s ? renderPane(s, null, { zoom, hostedAgent }) : null;
+    },
+    attach: attachOrbitPane,
+    focusInput: focusOrbitInput,
+  };
+
   return (
     <TooltipProvider delayDuration={400}>
       <ErrorBoundary region="notificações">
@@ -5169,7 +5833,7 @@ export default function App() {
               return next;
             })
           }
-          onGoToSession={goToSession}
+          onGoToSession={focusSessionOrNode}
           typedAgentSessions={typedAgentSessions}
           sessionLabel={(id) => {
             // O nome que a barra lateral mostra para a sessão, não o do
@@ -5263,6 +5927,10 @@ export default function App() {
       />
       <NewSessionPrompt
         onConnectHost={(host) => void connectToHost(host)}
+        onOpenOrbit={() => {
+          (document.activeElement as HTMLElement | null)?.blur();
+          setOrbitOpen(true);
+        }}
         open={newSessionOpen}
         onOpenChange={(open) => {
           setNewSessionOpen(open);
@@ -5373,8 +6041,16 @@ export default function App() {
                 <TooltipTrigger asChild>
                   <button
                     aria-label={t("terminalView")}
-                    aria-pressed
-                    className="flex h-6 items-center gap-1.5 rounded-[6px] bg-tyba-raised px-3 text-[13px] text-tyba-text shadow-[var(--tyba-row-raised)]"
+                    aria-pressed={!orbitOpen}
+                    onClick={() => {
+                      setOrbitOpen(false);
+                      setMachineScreen(null);
+                    }}
+                    className={`flex h-6 items-center gap-1.5 rounded-[6px] px-3 text-[13px] ${
+                      orbitOpen
+                        ? "text-tyba-text-faint hover:text-tyba-text-muted"
+                        : "bg-tyba-raised text-tyba-text shadow-[var(--tyba-row-raised)]"
+                    }`}
                   >
                     <TerminalWindow size={14} aria-hidden />
                     {t("terminalView")}
@@ -5387,17 +6063,26 @@ export default function App() {
               <Tooltip>
                 <TooltipTrigger asChild>
                   <button
-                    aria-label={`${t("workspaceView")} — ${t("comingSoon")}`}
-                    aria-disabled
-                    disabled
-                    className="flex h-6 cursor-not-allowed items-center gap-1.5 rounded-[6px] px-3 text-[13px] text-tyba-text-faint"
+                    aria-label={t("orbitView")}
+                    aria-pressed={orbitOpen}
+                    onClick={() => {
+                      // O terminal de baixo não fica com o foco: as teclas
+                      // cairiam num xterm escondido.
+                      (document.activeElement as HTMLElement | null)?.blur();
+                      setOrbitOpen(true);
+                    }}
+                    className={`flex h-6 items-center gap-1.5 rounded-[6px] px-3 text-[13px] ${
+                      orbitOpen
+                        ? "bg-tyba-raised text-tyba-text shadow-[var(--tyba-row-raised)]"
+                        : "text-tyba-text-faint hover:text-tyba-text-muted"
+                    }`}
                   >
                     <Stack size={14} aria-hidden />
-                    {t("workspaceView")}
+                    {t("orbitView")}
                   </button>
                 </TooltipTrigger>
                 <TooltipContent side="bottom">
-                  {t("comingSoon")}
+                  {t("orbitView")}
                 </TooltipContent>
               </Tooltip>
             </div>
@@ -5405,40 +6090,70 @@ export default function App() {
 
           <div className="h-full flex-1" data-tauri-drag-region />
 
-          <SidePanelBar
-            tabs={panelTabs}
-            lit={
-              activeContent?.kind === "session-diff"
-                ? "diff"
-                : litPanel(sideView, fileSessionId)
-            }
-            onClick={onPanelClick}
-            onEscape={() => {
-              if (activeWorkspace) {
-                void closeSideView(activeWorkspace.id).catch(() => {});
-              }
-            }}
-          />
+          {orbitOpen ? (
+            // No Workspace não há sessão à vista: Serviços e Túneis abrem a
+            // tela da máquina por cima do Orbit; o que depende de sessão
+            // fica desabilitado dizendo onde funciona, em vez de não fazer nada.
+            <>
+              <IconAction label={t("servicesTitle")} onClick={() => setMachineScreen("ports")}>
+                <Plug size={16} />
+              </IconAction>
+              <IconAction label={t("tunnelsTitle")} onClick={() => setMachineScreen("tunnels")}>
+                <ArrowsLeftRight size={16} />
+              </IconAction>
+              {panelTabs
+                .filter((tab) => tab.kind !== "services")
+                .map((tab) => (
+                  <IconAction
+                    key={tab.kind}
+                    disabled
+                    label={t("openInTerminalHint", { what: tab.label })}
+                  >
+                    <PanelIcon kind={tab.kind} />
+                  </IconAction>
+                ))}
+              <IconAction disabled label={t("openInTerminalHint", { what: t("filesPanel") })}>
+                <FolderOpen size={16} />
+              </IconAction>
+            </>
+          ) : (
+            <>
+              <SidePanelBar
+                tabs={panelTabs}
+                lit={
+                  activeContent?.kind === "session-diff"
+                    ? "diff"
+                    : litPanel(sideView, fileSessionId)
+                }
+                onClick={onPanelClick}
+                onEscape={() => {
+                  if (activeWorkspace) {
+                    void closeSideView(activeWorkspace.id).catch(() => {});
+                  }
+                }}
+              />
 
-          <ErrorBoundary region="forge">
-            <ForgePanel
-              sessionId={activeId}
-              repoRoot={activeGitStatus?.root ?? null}
-            />
-          </ErrorBoundary>
+              <ErrorBoundary region="forge">
+                <ForgePanel
+                  sessionId={activeId}
+                  repoRoot={activeGitStatus?.root ?? null}
+                />
+              </ErrorBoundary>
 
-          {/* A pasta do header abre a tela de Arquivos da sessão (pedido do dono,
-              2026-10-14); "Abrir pasta do projeto" fica no menu, na paleta e no
-              atalho. */}
-          <IconAction
-            label={t("filesPanel")}
-            shortcut={bindings.files}
-            onClick={() => {
-              if (fileSessionId) void openFilesPanel(fileSessionId).catch(() => {});
-            }}
-          >
-            <FolderOpen size={16} />
-          </IconAction>
+              {/* A pasta do header abre a tela de Arquivos da sessão (pedido do dono,
+                  2026-10-14); "Abrir pasta do projeto" fica no menu, na paleta e no
+                  atalho. */}
+              <IconAction
+                label={t("filesPanel")}
+                shortcut={bindings.files}
+                onClick={() => {
+                  if (fileSessionId) void openFilesPanel(fileSessionId).catch(() => {});
+                }}
+              >
+                <FolderOpen size={16} />
+              </IconAction>
+            </>
+          )}
 
           <ErrorBoundary region="notificações">
             <NotificationsInbox
@@ -5446,7 +6161,7 @@ export default function App() {
               approvals={approvals}
               open={inboxOpen}
               onOpenChange={setInboxOpen}
-              onGoToSession={goToSession}
+              onGoToSession={focusSessionOrNode}
             />
           </ErrorBoundary>
 
@@ -5509,7 +6224,42 @@ export default function App() {
           <WindowControls />
         </header>
 
-        <div className="flex min-h-0 flex-1">
+        <div className="relative flex min-h-0 flex-1">
+          {/* Orbit em tela cheia, sem a barra de sessões. Fica por cima em
+              vez de desmontar a área: os terminais seguem vivos embaixo. */}
+          {orbitOpen && (
+            <div className="absolute inset-0 z-40 flex">
+              <ErrorBoundary region="orbit">
+                <TerminalPaneContext.Provider value={terminalPaneHost}>
+                  <OrbitScreen
+                    focusSession={orbitFocus}
+                    approvals={approvals}
+                    onCardApprovals={setNodeCardIds}
+                    covered={machineScreen !== null}
+                    sessions={sessions}
+                  />
+                </TerminalPaneContext.Provider>
+              </ErrorBoundary>
+              {machineScreen && (
+                <ServicesScreen
+                  key={machineScreen}
+                  session={null}
+                  workspaceId={null}
+                  state={{ section: machineScreen, only_mine: false, selected: null }}
+                  hostAlias={null}
+                  sshTunnels={machineTunnels}
+                  exiting={false}
+                  labelOf={(id) => {
+                    const loc = findSessionLocation(layout.workspaces, id);
+                    const ws = loc && layout.workspaces.find((w) => w.id === loc.workspaceId);
+                    return ws?.name ?? sessionById.get(id)?.title ?? null;
+                  }}
+                  onFocusSession={focusSessionOrNode}
+                  onClose={() => setMachineScreen(null)}
+                />
+              )}
+            </div>
+          )}
           <>
             {sidebar !== "hidden" && (
                 <aside
@@ -5852,7 +6602,7 @@ export default function App() {
                       const ws = loc && layout.workspaces.find((w) => w.id === loc.workspaceId);
                       return ws?.name ?? sessionById.get(id)?.title ?? null;
                     }}
-                    onFocusSession={goToSession}
+                    onFocusSession={focusSessionOrNode}
                     onClose={() => void closeSideView(activeWorkspace.id).catch(() => {})}
                   />
                 )}
@@ -6188,311 +6938,7 @@ export default function App() {
                     const paneRect =
                       paneLayout?.panes.find((p) => p.session === s.id) ??
                       null;
-                    // O terminal e os blocos medem em % da ÁREA DE CONTEÚDO do
-                    // painel — o painel menos a linha do TYBA, que mora no
-                    // rodapé dele. Ver o invólucro abaixo.
-                    const pane = paneRect ? PANE_BOX : null;
-                    const line = paneLines.get(s.id);
-                    // Em modo prompt o terminal ocupa uma faixa FIXA embaixo: a
-                    // lista de blocos a cobre quando ocioso e a revela quando um
-                    // comando roda, sem nunca redimensionar o PTY. Alt-screen é
-                    // a exceção — `vim` precisa do painel inteiro.
-                    const blocked =
-                      (promptModes[s.id] ?? false) &&
-                      !(altScreens[s.id] ?? false);
-                    const terminalBox =
-                      pane && blocked ? termRect(pane) : pane;
-                    const detected = detectedBySession.get(s.id) ?? null;
-                    const sshHostId =
-                      s.kind.type === "ssh" ? s.kind.host_id : null;
-                    const resumeInvite = showAgentResumeInvite(
-                      s,
-                      resumableAgents.get(s.id),
-                      dismissedResumeInvites.has(s.id),
-                    );
-                    // A faixa da sessão remota: a linha que explica por que ela
-                    // é comum, ou o agente rodando no servidor sem jaula. Uma
-                    // só — as duas ocupam o mesmo lugar do pane.
-                    const remoteNotice = sshHostId
-                      ? paneNotice({
-                          integration: integrations[s.id],
-                          agent: remoteAgentNotice({
-                            command: sessionCommands[s.id],
-                            confirmed: remoteAgents[s.id],
-                          }),
-                        })
-                      : null;
-                    return (
-                      // O painel é uma coluna: a área de conteúdo (terminal e
-                      // blocos) em cima, a linha do TYBA embaixo. A altura da
-                      // linha sai da área de conteúdo DESTE painel e de nenhum
-                      // outro — um resize por painel, e só quando a linha muda
-                      // de altura, nunca por comando.
-                      <div
-                        key={`pane-${s.id}`}
-                        className="flex flex-col"
-                        style={
-                          paneRect
-                            ? {
-                                position: "absolute",
-                                left: `${paneRect.x}%`,
-                                top: `${paneRect.y}%`,
-                                width: `${paneRect.w}%`,
-                                height: `${paneRect.h}%`,
-                              }
-                            : { display: "none" }
-                        }
-                      >
-                        {s.kind.type === "container" && (
-                          <ContainerShellBanner containerId={s.kind.container_id} />
-                        )}
-                        <div className="relative min-h-0 flex-1">
-                          <TerminalView
-                            key={`${s.id}:${paneEpochs.get(s.id) ?? 0}`}
-                            sessionId={s.id}
-                            transport={transports[s.id] ?? INITIAL_TRANSPORT}
-                            remoteNotice={remoteNotice}
-                            resumeNotice={
-                              resumeInvite && s.kind.type === "agent"
-                                ? { binary: agentBinaryName(s.kind.runner) }
-                                : null
-                            }
-                            onResumeAgent={() =>
-                              void resumeAgentConversation(s.id)
-                            }
-                            onDismissResume={() => dismissResumeInvite(s.id)}
-                            shellResumeNotice={
-                              s.kind.type === "shell" &&
-                              Boolean(s.shell_resume_offer)
-                            }
-                            onResumeShell={() => void resumeShellClaude(s.id)}
-                            onDismissShellResume={() =>
-                              void dismissShellResumeOffer(s.id).catch(() => {})
-                            }
-                            authAlert={
-                              runtimeAuthAlerts.has(s.id)
-                                ? { kind: runtimeAuthAlerts.get(s.id)! }
-                                : null
-                            }
-                            onDismissAuthAlert={() =>
-                              dismissRuntimeAuthAlert(s.id)
-                            }
-                            approvalRequest={panelRequests.get(s.id) ?? null}
-                            onPaste={deliverPaste}
-                            onSearch={() => setSearchOpen(true)}
-                            readOnly={line?.owns ?? false}
-                            onReclaimFocus={() => focusLine(s.id)}
-                            onAltScreen={(alt) =>
-                              setAltScreens((prev) =>
-                                prev[s.id] === alt
-                                  ? prev
-                                  : { ...prev, [s.id]: alt },
-                              )
-                            }
-                            onSplit={(kind) => void splitActive(kind)}
-                            visible={paneRect !== null}
-                            focused={s.id === activeId}
-                            reattaches={!ptyExitEndsSession(s.kind)}
-                            connection={
-                              s.kind.type === "ssh" ? s.connection : undefined
-                            }
-                            connectionFailure={
-                              s.kind.type === "ssh" ? s.connection_failure : null
-                            }
-                            knownHostsCommand={
-                              sshHostId ? knownHostsCommandFor(sshHostId) : null
-                            }
-                            onReconnect={
-                              s.kind.type === "ssh"
-                                ? () =>
-                                    void reconnectSsh(s.id).catch((e) =>
-                                      toastError(
-                                        t("connectionsActionFailed"),
-                                        translateError(e, t),
-                                      ),
-                                    )
-                                : undefined
-                            }
-                            onEditHost={
-                              sshHostId ? () => editSshHost(sshHostId) : undefined
-                            }
-                            onBroadcastInput={
-                              broadcastOn && s.kind.type === "ssh"
-                                ? handleBroadcastInput
-                                : undefined
-                            }
-                            exited={isFinishedStatus(s.status)}
-                            rect={terminalBox}
-                            fullBleed={altScreens[s.id] ?? false}
-                            // Só com a faixa ABERTA. `liveUsed` guarda a última
-                            // medida e não se apaga quando o comando termina: sem
-                            // esta guarda o recorte fica valendo para sempre, e o
-                            // terminal vira uma tira no rodapé assim que a lista
-                            // deixa de cobri-lo — num split, o painel sem blocos.
-                            liveUsed={
-                              blocked && liveOf(s.id) ? liveUsed[s.id] : undefined
-                            }
-                            swallowArrows={swallowsArrow({
-                              running: Boolean(sessionCommands[s.id]?.running),
-                              lineEcho: lineEcho[s.id] ?? false,
-                              altScreen: altScreens[s.id] ?? false,
-                            })}
-                            bindings={bindings}
-                            // Quem lê o teclado neste painel é um composer de
-                            // agente: a sessão gerenciada, ou o `claude` cru que
-                            // o probe achou rodando no shell. É o que libera
-                            // Shift/Ctrl/Option+Enter como quebra de linha.
-                            agentTui={s.kind.type === "agent" || detected !== null}
-                            onLineHeight={(px) => reportLineHeight(s.id, px)}
-                            onCellWidth={(px) => reportCellWidth(s.id, px)}
-                            onLiveRows={
-                              blocked
-                                ? (used, total, scrolled) =>
-                                    reportLiveRows(s.id, used, total, scrolled)
-                                : undefined
-                            }
-                            onFocus={
-                              paneRect
-                                ? () => void focusPane(paneRect.pane)
-                                : undefined
-                            }
-                            onExit={() => void refreshSessions()}
-                          />
-                          {/* Nada de objeto ou arrow montados aqui
-                              dentro: o corpo do painel é `memo`, e prop com
-                              identidade nova a cada quadro faz a comparação
-                              rasa falhar sempre. Ver `SessionBlocks`. */}
-                          {blocked && paneRect && (
-                            <SessionBlocks
-                              key={`blocks-${s.id}`}
-                              {...sessionBlocksData({
-                                session: s,
-                                pane: {
-                                  pane: paneRect.pane,
-                                  x: PANE_BOX.left,
-                                  y: PANE_BOX.top,
-                                  w: PANE_BOX.width,
-                                  h: PANE_BOX.height,
-                                },
-                                blocks: blocks[s.id],
-                                // `clear` não abre a faixa: ele não tem saída para
-                                // mostrar, e meio painel preto que aparece para logo
-                                // esvaziar tudo é um solavanco em cima de um comando
-                                // cujo ponto é sumir com as coisas.
-                                live: liveOf(s.id),
-                                // A lista cede à faixa só a altura que a saída usa de
-                                // fato. Sem isto ela larga metade do painel para um
-                                // terminal que costuma estar em boa parte vazio, e o
-                                // cartão nasce longe de onde a saída estava.
-                                used: liveUsed[s.id],
-                                headerPx: activeHeaderPx[s.id],
-                                fontSizePx: termFontSize,
-                                lineHeightPx:
-                                  termLineHeight[s.id] ?? fallbackLineHeight,
-                                cellWidthPx:
-                                  termCellWidth[s.id] ?? fallbackCellWidth,
-                                cwd: sessionCwds[s.id],
-                                active: s.id === activeId,
-                                command: sessionCommands[s.id]?.command,
-                                commandStartedAtMs:
-                                  sessionCommands[s.id]?.started_at_ms,
-                                marked:
-                                  blockPick?.session === s.id
-                                    ? markedBlocks
-                                    : null,
-                                copyCombo: formatCombo(bindings.copy),
-                              })}
-                              onInject={injectInto}
-                              onFocusPane={focusPane}
-                              onPick={pickerFor(s.id)}
-                              onClearPick={clearPick}
-                              onHeaderPx={reportHeaderPx}
-                            />
-                          )}
-                        </div>
-                        {paneRect && line?.visible && (
-                          // Clicar (ou focar) a linha de outro painel passa o
-                          // foco do CORE para ele antes de qualquer tecla: é o
-                          // core que decide o painel ativo, e o atalho, a
-                          // paleta e a caixa de agente seguem essa resposta.
-                          <div
-                            className="shrink-0"
-                            onPointerDownCapture={() => {
-                              if (s.id !== activeId) {
-                                void focusPane(paneRect.pane).catch(() => {});
-                              }
-                            }}
-                            onFocusCapture={() => {
-                              if (s.id !== activeId) {
-                                void focusPane(paneRect.pane).catch(() => {});
-                              }
-                            }}
-                          >
-                            {/* `key` só pela sessão: trocar o foco NÃO remonta
-                                a linha. Texto, caret, linhas pendentes e menu
-                                de cada painel ficam onde estavam. */}
-                            <CommandLine
-                              key={`${s.id}:line`}
-                              sessionId={s.id}
-                              cwd={cwdKeyOf(s.id)}
-                              program={programName(
-                                sessionCommands[s.id]?.command,
-                              )}
-                              // A branch DESTA sessão, pela mesma regra do
-                              // chip da barra (sem emprestar de outro repo).
-                              // SSH fica sem: o snapshot é local.
-                              branch={(() => {
-                                if (s.kind.type === "ssh") return null;
-                                const chip = toolbarBranchChip({
-                                  session: {
-                                    id: s.id,
-                                    worktree: s.worktree?.path ?? null,
-                                    alive: !isFinishedStatus(s.status),
-                                    cwd: sessionCwds[s.id]?.canonical ?? null,
-                                  },
-                                  workspaceDir: null,
-                                  snapshots: repoSnapshots,
-                                });
-                                return chip?.state === "known"
-                                  ? chip.label
-                                  : null;
-                              })()}
-                              scope={{
-                                cwd: cwdKeyOf(s.id),
-                                repoRoot: s.repo_root ?? null,
-                              }}
-                              focusOnMount={s.id === activeId && line.owns}
-                              focusNonce={lineFocusNonces[s.id] ?? 0}
-                              state={line.state}
-                              boot={shellBoots[s.id] ?? null}
-                              booting={
-                                promptModes[s.id] !== true &&
-                                !isFinishedStatus(s.status)
-                              }
-                              broadcasting={
-                                broadcastOn &&
-                                s.kind.type === "ssh" &&
-                                broadcastSet.includes(s.id)
-                              }
-                              bootHost={
-                                s.kind.type === "ssh"
-                                  ? (sshHosts.find(
-                                      (h) =>
-                                        s.kind.type === "ssh" &&
-                                        h.id === s.kind.host_id,
-                                    )?.alias ?? null)
-                                  : null
-                              }
-                              inject={injected[s.id] ?? null}
-                              draft={drafts.current[s.id] ?? ""}
-                              onDraftChange={rememberDraft}
-                              pending={pendings.current[s.id]}
-                              onPendingChange={rememberPending}
-                            />
-                          </div>
-                        )}
-                      </div>
-                    );
+                    return renderPane(s, paneRect);
                   })}
                   {/* Onde o foco está: o filamento de luz na aresta de cima
                       do painel ativo — a mesma linha viva (estática) da aba

@@ -217,6 +217,110 @@ pub fn listeners() -> Result<Vec<Listener>, crate::error::AppError> {
     Err(crate::error::AppError::new("services.unsupported"))
 }
 
+/// Teto da varredura das portas de um process group (o vigia do processo do
+/// Orbit roda a cada segundo).
+#[cfg(any(target_os = "macos", windows))]
+const GROUP_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(800);
+#[cfg(any(target_os = "macos", windows))]
+const GROUP_MAX_BYTES: usize = 256 * 1024;
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn sorted_ports(listeners: impl IntoIterator<Item = Listener>) -> Vec<u16> {
+    let mut ports: Vec<u16> = listeners.into_iter().map(|l| l.port).collect();
+    ports.sort_unstable();
+    ports.dedup();
+    ports
+}
+
+/// Portas em LISTEN do process group `pgid` (o da sessão: o líder do PTY
+/// abre o grupo, e é ele que o `killpg` mata). macOS: `lsof -a -g`, com teto
+/// de tempo. Falha ou teto: vazio (o vigia tenta de novo).
+#[cfg(target_os = "macos")]
+pub fn group_ports(pgid: u32) -> Vec<u16> {
+    let group = pgid.to_string();
+    super::run_bounded_within(
+        std::path::Path::new(LSOF),
+        &[
+            "-nP",
+            "-a",
+            "-g",
+            &group,
+            "-iTCP",
+            "-sTCP:LISTEN",
+            "-F",
+            "pcn",
+        ],
+        GROUP_MAX_BYTES,
+        GROUP_TIMEOUT,
+    )
+    .map(|out| sorted_ports(parse_lsof(&out)))
+    .unwrap_or_default()
+}
+
+/// Linux: os sockets do `/proc` e o grupo de cada dono (`getpgid`).
+#[cfg(target_os = "linux")]
+pub fn group_ports(pgid: u32) -> Vec<u16> {
+    let Ok(all) = listeners() else {
+        return Vec::new();
+    };
+    sorted_ports(
+        all.into_iter()
+            .filter(|l| unsafe { libc::getpgid(l.pid as libc::pid_t) } == pgid as libc::pid_t),
+    )
+}
+
+/// Saída de `netstat -ano -p TCP`: (pid, porta) de quem está em LISTENING.
+pub fn parse_netstat_listening(raw: &str) -> Vec<(u32, u16)> {
+    raw.lines()
+        .filter_map(|line| {
+            let cols: Vec<&str> = line.split_whitespace().collect();
+            // Proto  Local  Remoto  Estado  PID
+            if cols.len() < 5
+                || !cols[0].eq_ignore_ascii_case("tcp")
+                || !cols[3].eq_ignore_ascii_case("listening")
+            {
+                return None;
+            }
+            let port = cols[1].rsplit_once(':')?.1.parse::<u16>().ok()?;
+            let pid = cols[4].parse::<u32>().ok()?;
+            (port > 0 && pid > 0).then_some((pid, port))
+        })
+        .collect()
+}
+
+/// Windows: `netstat -ano`, com teto. Sem process group nem árvore de
+/// processos ainda (Toolhelp fica para depois): só a porta do próprio líder
+/// conta; a url impressa é o que vale lá.
+#[cfg(windows)]
+pub fn group_ports(pid: u32) -> Vec<u16> {
+    let root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
+    let netstat = std::path::Path::new(&root)
+        .join("System32")
+        .join("netstat.exe");
+    super::run_bounded_within(
+        &netstat,
+        &["-ano", "-p", "TCP"],
+        GROUP_MAX_BYTES,
+        GROUP_TIMEOUT,
+    )
+    .map(|out| {
+        let mut ports: Vec<u16> = parse_netstat_listening(&String::from_utf8_lossy(&out))
+            .into_iter()
+            .filter(|(owner, _)| *owner == pid)
+            .map(|(_, port)| port)
+            .collect();
+        ports.sort_unstable();
+        ports.dedup();
+        ports
+    })
+    .unwrap_or_default()
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
+pub fn group_ports(_pgid: u32) -> Vec<u16> {
+    Vec::new()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -324,5 +428,20 @@ mod tests {
         let owners = HashMap::from([(1, 42)]);
         // Socket sem dono legível (outro usuário) fica de fora.
         assert_eq!(join_sockets(&sockets, &owners), vec![l(42, 3000, "*")]);
+    }
+
+    #[test]
+    fn netstat_listening_rows_give_pid_and_port() {
+        let raw = "\r\nActive Connections\r\n\r\n  Proto  Local Address          Foreign Address        State           PID\r\n  TCP    0.0.0.0:5173           0.0.0.0:0              LISTENING       4120\r\n  TCP    [::]:3000              [::]:0                 LISTENING       77\r\n  TCP    127.0.0.1:5173         127.0.0.1:50000        ESTABLISHED     4120\r\n  UDP    0.0.0.0:5353           *:*                                    900\r\n  TCP    lixo\r\n";
+        assert_eq!(parse_netstat_listening(raw), vec![(4120, 5173), (77, 3000)]);
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn group_ports_sorts_and_dedups() {
+        assert_eq!(
+            sorted_ports(vec![l(1, 5173, "*"), l(2, 3000, "::1"), l(1, 5173, "::1")]),
+            vec![3000, 5173]
+        );
     }
 }

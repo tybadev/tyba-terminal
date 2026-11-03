@@ -252,6 +252,38 @@ CREATE TABLE IF NOT EXISTS notification (
     read INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS notification_by_time ON notification (at_ms);
+CREATE TABLE IF NOT EXISTS orbit_graph (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    dir TEXT NOT NULL,
+    body_json TEXT NOT NULL,
+    updated_at_ms INTEGER NOT NULL,
+    imported_hash TEXT,
+    consented INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS orbit_integration (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    body_json TEXT NOT NULL,
+    updated_at_ms INTEGER NOT NULL,
+    imported_hash TEXT,
+    consented INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS orbit_role (
+    name TEXT PRIMARY KEY,
+    body_json TEXT NOT NULL,
+    updated_at_ms INTEGER NOT NULL,
+    imported_hash TEXT
+);
+CREATE TABLE IF NOT EXISTS orbit_run (
+    id TEXT PRIMARY KEY,
+    graph_id TEXT NOT NULL,
+    started_at_ms INTEGER NOT NULL,
+    finished_at_ms INTEGER,
+    status TEXT NOT NULL,
+    body_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS orbit_run_by_graph ON orbit_run (graph_id, started_at_ms);
 ";
 
 /// Teto do histórico. Sem ele a tabela cresce com o uso e nunca encolhe: é a
@@ -549,6 +581,9 @@ pub enum StoreError {
 ///     nascem vazios/desligados — a configuração que já existia continua
 ///     abrindo do jeito de antes. Conferido em 2026-10-15: nenhuma branch
 ///     local nem remota usava 14.
+/// 15 — `maestro_graph`, `maestro_integration` e `maestro_run` passam a
+///     `orbit_*` (o recurso se chamava Maestro), com os dados. Conferido em
+///     2026-10-16: nenhuma branch local nem remota usava 15.
 ///
 /// Degrau próprio para cada um, e nunca linha nova na [`BASELINE_COLUMNS`]: a
 /// base só roda em banco na versão 0, então quem já subiu de versão nunca mais
@@ -560,7 +595,7 @@ pub enum StoreError {
 /// `from >= SCHEMA_VERSION` antes de olhar degrau nenhum. O teste discriminante
 /// de cada um passa isolado, porque simula o banco na versão anterior, que é
 /// justamente o caso em que ambos rodam.
-const SCHEMA_VERSION: i64 = 14;
+const SCHEMA_VERSION: i64 = 15;
 
 /// Colunas da versão 1, na ordem em que nasceram. Guardadas por `table_info` em
 /// vez de tentadas às cegas porque os três estados possíveis convergem aqui: o
@@ -831,6 +866,73 @@ fn migrate_launch_slot_options(conn: &Connection) -> Result<(), StoreError> {
                 [],
             )?;
         }
+        Ok(())
+    })();
+    match result {
+        Ok(()) => conn.execute_batch("COMMIT")?,
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            return Err(e);
+        }
+    }
+    Ok(())
+}
+
+/// Tabelas do grafo de antes do nome Orbit (o recurso se chamava Maestro) e a
+/// nova de cada uma, com as colunas — as mesmas nos dois lados.
+const ORBIT_LEGACY_TABLES: &[(&str, &str, &str)] = &[
+    (
+        "maestro_graph",
+        "orbit_graph",
+        "id, name, dir, body_json, updated_at_ms, imported_hash, consented",
+    ),
+    (
+        "maestro_integration",
+        "orbit_integration",
+        "id, name, body_json, updated_at_ms, imported_hash, consented",
+    ),
+    (
+        "maestro_run",
+        "orbit_run",
+        "id, graph_id, started_at_ms, finished_at_ms, status, body_json",
+    ),
+];
+
+/// Degrau 15: `maestro_*` → `orbit_*`. As tabelas novas já nasceram vazias
+/// pelo [`SCHEMA`], então é cópia e não `RENAME`: as linhas vão para a nova e
+/// a antiga sai (o índice dela vai junto). Numa transação só — copiar sem
+/// apagar deixaria a próxima tentativa copiar de novo por cima do que o dono
+/// editou depois; apagar sem copiar perderia os grafos.
+fn migrate_orbit_tables(conn: &Connection) -> Result<(), StoreError> {
+    conn.execute_batch("BEGIN")?;
+    let result = (|| -> Result<(), StoreError> {
+        for (old, new, columns) in ORBIT_LEGACY_TABLES {
+            let exists: bool = conn.query_row(
+                "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+                params![old],
+                |row| row.get(0),
+            )?;
+            if !exists {
+                continue;
+            }
+            // Nomes vêm da constante acima, nunca de entrada externa.
+            conn.execute(
+                &format!("INSERT OR IGNORE INTO {new} ({columns}) SELECT {columns} FROM {old}"),
+                [],
+            )?;
+            conn.execute(&format!("DROP TABLE {old}"), [])?;
+        }
+        // As saídas de cada nó guardam o caminho absoluto do arquivo, dentro
+        // de `<perfil>/maestro/runs/`; a pasta muda para `orbit/runs/` no boot
+        // (`orbit::run::default_root`). No JSON, a barra invertida do Windows
+        // vem dobrada.
+        conn.execute(
+            "UPDATE orbit_run SET body_json =
+                replace(replace(body_json, '/maestro/runs/', '/orbit/runs/'),
+                        '\\\\maestro\\\\runs\\\\', '\\\\orbit\\\\runs\\\\')
+             WHERE body_json LIKE '%maestro%'",
+            [],
+        )?;
         Ok(())
     })();
     match result {
@@ -1124,6 +1226,18 @@ fn migrate(conn: &Connection) -> Result<Vec<String>, StoreError> {
         true
     };
 
+    let orbit_tables_applied = if from < 15 {
+        match migrate_orbit_tables(conn) {
+            Ok(()) => true,
+            Err(e) => {
+                skipped.push(format!("tabelas do Orbit (degrau 15): {e}"));
+                false
+            }
+        }
+    } else {
+        true
+    };
+
     let reached = match (
         baseline_applied,
         scrollback_applied,
@@ -1138,23 +1252,25 @@ fn migrate(conn: &Connection) -> Result<Vec<String>, StoreError> {
         conversation_cwd_applied,
         spec_reseed_13_applied,
         launch_slot_options_applied,
+        orbit_tables_applied,
     ) {
-        (true, true, true, true, true, true, true, true, true, true, true, true, true) => {
+        (true, true, true, true, true, true, true, true, true, true, true, true, true, true) => {
             SCHEMA_VERSION
         }
-        (true, true, true, true, true, true, true, true, true, true, true, true, false) => 13,
-        (true, true, true, true, true, true, true, true, true, true, true, false, _) => 12,
-        (true, true, true, true, true, true, true, true, true, true, false, _, _) => 11,
-        (true, true, true, true, true, true, true, true, true, false, _, _, _) => 10,
-        (true, true, true, true, true, true, true, true, false, _, _, _, _) => 9,
-        (true, true, true, true, true, true, true, false, _, _, _, _, _) => 8,
-        (true, true, true, true, true, true, false, _, _, _, _, _, _) => 7,
-        (true, true, true, true, true, false, _, _, _, _, _, _, _) => 5,
-        (true, true, true, true, false, _, _, _, _, _, _, _, _) => 4,
-        (true, true, true, false, _, _, _, _, _, _, _, _, _) => 3,
-        (true, true, false, _, _, _, _, _, _, _, _, _, _) => 2,
-        (true, false, _, _, _, _, _, _, _, _, _, _, _) => 1,
-        (false, _, _, _, _, _, _, _, _, _, _, _, _) => from,
+        (true, true, true, true, true, true, true, true, true, true, true, true, true, false) => 14,
+        (true, true, true, true, true, true, true, true, true, true, true, true, false, _) => 13,
+        (true, true, true, true, true, true, true, true, true, true, true, false, _, _) => 12,
+        (true, true, true, true, true, true, true, true, true, true, false, _, _, _) => 11,
+        (true, true, true, true, true, true, true, true, true, false, _, _, _, _) => 10,
+        (true, true, true, true, true, true, true, true, false, _, _, _, _, _) => 9,
+        (true, true, true, true, true, true, true, false, _, _, _, _, _, _) => 8,
+        (true, true, true, true, true, true, false, _, _, _, _, _, _, _) => 7,
+        (true, true, true, true, true, false, _, _, _, _, _, _, _, _) => 5,
+        (true, true, true, true, false, _, _, _, _, _, _, _, _, _) => 4,
+        (true, true, true, false, _, _, _, _, _, _, _, _, _, _) => 3,
+        (true, true, false, _, _, _, _, _, _, _, _, _, _, _) => 2,
+        (true, false, _, _, _, _, _, _, _, _, _, _, _, _) => 1,
+        (false, _, _, _, _, _, _, _, _, _, _, _, _, _) => from,
     };
     if reached > from {
         conn.pragma_update(None, "user_version", reached)?;
@@ -3083,6 +3199,364 @@ impl Store {
         Ok(())
     }
 
+    pub fn list_orbit_graphs(&self) -> Result<Vec<crate::orbit::Graph>, StoreError> {
+        let conn = self.conn.lock();
+        let mut stmt =
+            conn.prepare("SELECT body_json FROM orbit_graph ORDER BY updated_at_ms DESC")?;
+        let bodies = stmt
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(bodies
+            .iter()
+            .map(|b| serde_json::from_str(b))
+            .collect::<Result<_, _>>()?)
+    }
+
+    pub fn get_orbit_graph(
+        &self,
+        id: &str,
+    ) -> Result<Option<crate::orbit::Stored<crate::orbit::Graph>>, StoreError> {
+        self.get_orbit_row("orbit_graph", id)
+    }
+
+    /// Grava (ou substitui) o grafo. `imported_hash = None` mantém o que já
+    /// estava: edição do dono depois de importar não apaga a origem.
+    pub fn save_orbit_graph(
+        &self,
+        graph: &crate::orbit::Graph,
+        consented: bool,
+        imported_hash: Option<&str>,
+    ) -> Result<(), StoreError> {
+        let body = serde_json::to_string(graph)?;
+        let conn = self.conn.lock();
+        conn.execute(
+            "INSERT INTO orbit_graph
+                 (id, name, dir, body_json, updated_at_ms, imported_hash, consented)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(id) DO UPDATE SET
+                 name = ?2, dir = ?3, body_json = ?4, updated_at_ms = ?5,
+                 imported_hash = COALESCE(?6, imported_hash), consented = ?7",
+            params![
+                graph.id,
+                graph.name,
+                graph.dir,
+                body,
+                crate::approvals::now_ms() as i64,
+                imported_hash,
+                consented,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_orbit_graph(&self, id: &str) -> Result<(), StoreError> {
+        let conn = self.conn.lock();
+        conn.execute("DELETE FROM orbit_graph WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    pub fn list_orbit_integrations(&self) -> Result<Vec<crate::orbit::Integration>, StoreError> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare("SELECT body_json FROM orbit_integration ORDER BY name")?;
+        let bodies = stmt
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(bodies
+            .iter()
+            .map(|b| serde_json::from_str(b))
+            .collect::<Result<_, _>>()?)
+    }
+
+    pub fn get_orbit_integration(
+        &self,
+        id: &str,
+    ) -> Result<Option<crate::orbit::Stored<crate::orbit::Integration>>, StoreError> {
+        self.get_orbit_row("orbit_integration", id)
+    }
+
+    /// Mesma regra de `save_orbit_graph` para `imported_hash`.
+    pub fn save_orbit_integration(
+        &self,
+        integration: &crate::orbit::Integration,
+        consented: bool,
+        imported_hash: Option<&str>,
+    ) -> Result<(), StoreError> {
+        let body = serde_json::to_string(integration)?;
+        let conn = self.conn.lock();
+        conn.execute(
+            "INSERT INTO orbit_integration
+                 (id, name, body_json, updated_at_ms, imported_hash, consented)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(id) DO UPDATE SET
+                 name = ?2, body_json = ?3, updated_at_ms = ?4,
+                 imported_hash = COALESCE(?5, imported_hash), consented = ?6",
+            params![
+                integration.id,
+                integration.name,
+                body,
+                crate::approvals::now_ms() as i64,
+                imported_hash,
+                consented,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_orbit_integration(&self, id: &str) -> Result<(), StoreError> {
+        let conn = self.conn.lock();
+        conn.execute("DELETE FROM orbit_integration WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    /// A biblioteca de papéis desta máquina, por nome (sem diferenciar caixa).
+    pub fn list_orbit_roles(&self) -> Result<Vec<crate::orbit::Role>, StoreError> {
+        let conn = self.conn.lock();
+        let mut stmt =
+            conn.prepare("SELECT body_json FROM orbit_role ORDER BY name COLLATE NOCASE")?;
+        let bodies = stmt
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(bodies
+            .iter()
+            .map(|b| serde_json::from_str(b))
+            .collect::<Result<_, _>>()?)
+    }
+
+    pub fn get_orbit_role(&self, name: &str) -> Result<Option<crate::orbit::Role>, StoreError> {
+        use rusqlite::OptionalExtension;
+        let conn = self.conn.lock();
+        let body = conn
+            .query_row(
+                "SELECT body_json FROM orbit_role WHERE name = ?1",
+                params![name],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        Ok(body.map(|b| serde_json::from_str(&b)).transpose()?)
+    }
+
+    /// Grava (ou substitui) o papel. `imported_hash = None` mantém o que já
+    /// estava, como no grafo.
+    pub fn save_orbit_role(
+        &self,
+        role: &crate::orbit::Role,
+        imported_hash: Option<&str>,
+    ) -> Result<(), StoreError> {
+        let body = serde_json::to_string(role)?;
+        let conn = self.conn.lock();
+        conn.execute(
+            "INSERT INTO orbit_role (name, body_json, updated_at_ms, imported_hash)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(name) DO UPDATE SET
+                 body_json = ?2, updated_at_ms = ?3,
+                 imported_hash = COALESCE(?4, imported_hash)",
+            params![
+                role.name,
+                body,
+                crate::approvals::now_ms() as i64,
+                imported_hash,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_orbit_role(&self, name: &str) -> Result<(), StoreError> {
+        let conn = self.conn.lock();
+        conn.execute("DELETE FROM orbit_role WHERE name = ?1", params![name])?;
+        Ok(())
+    }
+
+    /// Troca a chave do papel numa transação: a linha nova nasce com o corpo
+    /// renomeado e a antiga sai. Quem chama já conferiu que `to` não existe.
+    pub fn rename_orbit_role(&self, from: &str, to: &str) -> Result<(), StoreError> {
+        use rusqlite::OptionalExtension;
+        let conn = self.conn.lock();
+        let body = conn
+            .query_row(
+                "SELECT body_json FROM orbit_role WHERE name = ?1",
+                params![from],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        let Some(body) = body else { return Ok(()) };
+        let mut role: crate::orbit::Role = serde_json::from_str(&body)?;
+        role.name = to.to_string();
+        let body = serde_json::to_string(&role)?;
+        conn.execute_batch("BEGIN")?;
+        let done = conn
+            .execute(
+                "INSERT INTO orbit_role (name, body_json, updated_at_ms, imported_hash)
+                 SELECT ?2, ?3, ?4, imported_hash FROM orbit_role WHERE name = ?1",
+                params![from, to, body, crate::approvals::now_ms() as i64],
+            )
+            .and_then(|_| conn.execute("DELETE FROM orbit_role WHERE name = ?1", params![from]));
+        match done {
+            Ok(_) => conn.execute_batch("COMMIT")?,
+            Err(e) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                return Err(e.into());
+            }
+        }
+        Ok(())
+    }
+
+    /// Grava (ou substitui) o estado de uma execução do Orbit. Retrato com
+    /// versão menor que a gravada é velho (chegou fora de ordem) e é ignorado.
+    pub fn save_orbit_run(&self, run: &crate::orbit::run::Run) -> Result<(), StoreError> {
+        let body = serde_json::to_string(run)?;
+        let status = serde_json::to_value(run.status)?
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        let conn = self.conn.lock();
+        conn.execute(
+            "INSERT INTO orbit_run
+                 (id, graph_id, started_at_ms, finished_at_ms, status, body_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(id) DO UPDATE SET
+                 finished_at_ms = ?4, status = ?5, body_json = ?6
+             WHERE ?7 >= COALESCE(json_extract(orbit_run.body_json, '$.version'), 0)",
+            params![
+                run.id,
+                run.graph_id,
+                run.started_at as i64,
+                run.finished_at.map(|t| t as i64),
+                status,
+                body,
+                run.version as i64,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_orbit_run(&self, id: &str) -> Result<Option<crate::orbit::run::Run>, StoreError> {
+        use rusqlite::OptionalExtension;
+        let conn = self.conn.lock();
+        let body = conn
+            .query_row(
+                "SELECT body_json FROM orbit_run WHERE id = ?1",
+                params![id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        Ok(body.map(|b| serde_json::from_str(&b)).transpose()?)
+    }
+
+    /// Execuções gravadas como `running`, de qualquer grafo. No boot nenhuma
+    /// está viva: são as que o app deixou abertas ao fechar.
+    pub fn list_running_orbit_runs(&self) -> Result<Vec<crate::orbit::run::Run>, StoreError> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare("SELECT body_json FROM orbit_run WHERE status = 'running'")?;
+        let bodies = stmt
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(bodies
+            .iter()
+            .map(|b| serde_json::from_str(b))
+            .collect::<Result<_, _>>()?)
+    }
+
+    /// As `limit` execuções mais recentes do grafo, da mais nova para a mais velha.
+    pub fn list_orbit_runs(
+        &self,
+        graph_id: &str,
+        limit: usize,
+    ) -> Result<Vec<crate::orbit::run::Run>, StoreError> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT body_json FROM orbit_run WHERE graph_id = ?1
+             ORDER BY started_at_ms DESC, rowid DESC LIMIT ?2",
+        )?;
+        let bodies = stmt
+            .query_map(params![graph_id, limit as i64], |row| {
+                row.get::<_, String>(0)
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(bodies
+            .iter()
+            .map(|b| serde_json::from_str(b))
+            .collect::<Result<_, _>>()?)
+    }
+
+    /// Apaga as execuções além das `keep` mais recentes do grafo e devolve os
+    /// ids apagados — a pasta de cada uma sai junto, por quem chamou. Runs de
+    /// teste ("Testar com a última entrada") têm janela própria e não tiram
+    /// vaga dos runs de verdade; ids em `protect` (rodando, agente vivo) ficam.
+    pub fn prune_orbit_runs(
+        &self,
+        graph_id: &str,
+        keep: usize,
+        protect: &std::collections::HashSet<String>,
+    ) -> Result<Vec<String>, StoreError> {
+        #[derive(serde::Deserialize)]
+        struct Flags {
+            #[serde(default)]
+            test: bool,
+        }
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        let ids = {
+            let mut stmt = tx.prepare(
+                "SELECT id, body_json FROM orbit_run WHERE graph_id = ?1
+                 ORDER BY started_at_ms DESC, rowid DESC",
+            )?;
+            let rows = stmt
+                .query_map(params![graph_id], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            // [runs de verdade, runs de teste]
+            let mut kept = [0usize; 2];
+            let mut ids = Vec::new();
+            for (id, body) in rows {
+                let flags: Flags = serde_json::from_str(&body)?;
+                let slot = &mut kept[usize::from(flags.test)];
+                if *slot < keep {
+                    *slot += 1;
+                } else if !protect.contains(&id) {
+                    ids.push(id);
+                }
+            }
+            ids
+        };
+        for id in &ids {
+            tx.execute("DELETE FROM orbit_run WHERE id = ?1", params![id])?;
+        }
+        tx.commit()?;
+        Ok(ids)
+    }
+
+    /// `table` é sempre uma das duas tabelas do Orbit, nunca entrada externa.
+    fn get_orbit_row<T: serde::de::DeserializeOwned>(
+        &self,
+        table: &'static str,
+        id: &str,
+    ) -> Result<Option<crate::orbit::Stored<T>>, StoreError> {
+        use rusqlite::OptionalExtension;
+        let conn = self.conn.lock();
+        let row = conn
+            .query_row(
+                &format!("SELECT body_json, consented, imported_hash FROM {table} WHERE id = ?1"),
+                params![id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, bool>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((body, consented, imported_hash)) = row else {
+            return Ok(None);
+        };
+        Ok(Some(crate::orbit::Stored {
+            value: serde_json::from_str(&body)?,
+            consented,
+            imported_hash,
+        }))
+    }
+
     pub fn save_layout(&self, rows: &LayoutRows) -> Result<(), StoreError> {
         let mut conn = self.conn.lock();
         let tx = conn.transaction()?;
@@ -3796,6 +4270,7 @@ impl RawSession {
             agent_usage: None,
             shell_resume_offer: false,
             agent_conversation_cwd: conversation_cwd,
+            owner: Default::default(),
         })
     }
 }
@@ -3903,6 +4378,7 @@ mod tests {
             agent_usage: None,
             shell_resume_offer: false,
             agent_conversation_cwd: None,
+            owner: Default::default(),
         }
     }
 
@@ -4398,7 +4874,7 @@ mod tests {
     /// uma tabela inteira. Sem esta segunda lista, a guarda de colisão exigiria
     /// que o último degrau fosse uma coluna, e o jeito de satisfazê-la seria
     /// inventar uma coluna que ninguém quer.
-    const STEP_TABLES: &[(i64, &str)] = &[(6, "command_spec")];
+    const STEP_TABLES: &[(i64, &str)] = &[(6, "command_spec"), (15, "orbit_graph")];
 
     /// Degraus que RESEMEIAM uma tabela que já existe, e em qual número.
     ///
@@ -4972,6 +5448,158 @@ mod tests {
         assert_eq!(slots[0].initial_prompt.as_deref(), Some("ls"));
         assert_eq!(slots[0].model, None);
         assert_eq!(slots[0].run_on_open, 0);
+    }
+
+    /// Degrau 15 a partir de um banco na 14: os grafos, integrações e runs
+    /// gravados quando o recurso se chamava Maestro passam para as tabelas
+    /// `orbit_*` sem perder nada, e as antigas saem.
+    #[test]
+    fn banco_na_14_leva_as_tabelas_do_maestro_para_o_orbit() {
+        use crate::orbit::run::{NodeRun, NodeStatus, Run, RunStatus};
+        use crate::orbit::{EdgeKind, Graph, Integration, OutputKind, Trigger};
+        let dir = tempfile::tempdir().unwrap();
+        let node = |out: &str| NodeRun {
+            status: NodeStatus::Done,
+            session_id: None,
+            started_at: Some(7),
+            finished_at: Some(8),
+            exit_code: Some(0),
+            outputs: [(EdgeKind::Log, out.to_string())].into(),
+            reason: None,
+            url: None,
+            orchestrating: false,
+            opened: None,
+            inbox: 0,
+            sent: None,
+            written: None,
+            undelivered: None,
+            inbox_from: Default::default(),
+            attempt: 0,
+            stale: false,
+            stale_reason: None,
+            hosted_agent: None,
+            events: Vec::new(),
+            waiting_you: None,
+        };
+        let path = dir.path().join("tyba.db");
+        let graph = Graph {
+            id: "g-1".into(),
+            name: "revisão".into(),
+            dir: "/tmp/repo".into(),
+            nodes: Vec::new(),
+            edges: Vec::new(),
+            variables: Default::default(),
+        };
+        let integration = Integration {
+            id: "i-1".into(),
+            name: "resumir log".into(),
+            script: "tail -n 20 log.txt".into(),
+            trigger: Trigger::OnInput {
+                kind: EdgeKind::Log,
+            },
+            output: OutputKind::Log,
+            file: None,
+        };
+        let run = Run {
+            id: "r-1".into(),
+            graph_id: "g-1".into(),
+            started_at: 7,
+            finished_at: Some(9),
+            status: RunStatus::Done,
+            nodes: [
+                (
+                    "p".to_string(),
+                    node("/home/u/.tyba/maestro/runs/r-1/p/log.txt"),
+                ),
+                (
+                    "w".to_string(),
+                    node(r"C:\Users\u\.tyba\maestro\runs\r-1\w\log.txt"),
+                ),
+            ]
+            .into(),
+            version: 3,
+            test: false,
+            live_agents: Vec::new(),
+            settled: false,
+            paused_ms: 0,
+            created: Vec::new(),
+            plans: Vec::new(),
+            number: 0,
+            terminal: None,
+            waiting_you: Vec::new(),
+        };
+        {
+            // Grava pelo caminho normal e devolve as tabelas ao nome antigo:
+            // é o banco de quem usou o Maestro, com as colunas de então.
+            let store = Store::open(&path).unwrap();
+            store
+                .save_orbit_graph(&graph, false, Some("hash-importado"))
+                .unwrap();
+            store
+                .save_orbit_integration(&integration, true, None)
+                .unwrap();
+            store.save_orbit_run(&run).unwrap();
+            let conn = store.conn.lock();
+            conn.execute_batch(
+                "DROP INDEX orbit_run_by_graph;
+                 ALTER TABLE orbit_graph RENAME TO maestro_graph;
+                 ALTER TABLE orbit_integration RENAME TO maestro_integration;
+                 ALTER TABLE orbit_run RENAME TO maestro_run;
+                 CREATE INDEX maestro_run_by_graph ON maestro_run (graph_id, started_at_ms);",
+            )
+            .unwrap();
+            conn.pragma_update(None, "user_version", 14).unwrap();
+        }
+
+        let store = Store::open(&path).unwrap();
+
+        assert_eq!(user_version(&store), SCHEMA_VERSION);
+        assert_eq!(store.degraded(), None);
+        let got = store.get_orbit_graph("g-1").unwrap().unwrap();
+        assert_eq!(got.value, graph);
+        assert!(!got.consented);
+        assert_eq!(got.imported_hash.as_deref(), Some("hash-importado"));
+        let got = store.get_orbit_integration("i-1").unwrap().unwrap();
+        assert_eq!(got.value, integration);
+        assert!(got.consented);
+        let got = store.get_orbit_run("r-1").unwrap().unwrap();
+        assert_eq!(
+            got.nodes["p"].outputs[&EdgeKind::Log],
+            "/home/u/.tyba/orbit/runs/r-1/p/log.txt",
+            "a saída aponta para a pasta que mudou para orbit/runs"
+        );
+        assert_eq!(
+            got.nodes["w"].outputs[&EdgeKind::Log],
+            r"C:\Users\u\.tyba\orbit\runs\r-1\w\log.txt"
+        );
+        let mut expected = run.clone();
+        for n in expected.nodes.values_mut() {
+            let out = n.outputs.get_mut(&EdgeKind::Log).unwrap();
+            *out = out.replace("maestro", "orbit");
+        }
+        assert_eq!(got, expected);
+        assert_eq!(store.list_orbit_runs("g-1", 20).unwrap().len(), 1);
+        let legacy: i64 = store
+            .conn
+            .lock()
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name LIKE 'maestro%'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(legacy, 0, "as tabelas e o índice antigos saem");
+        let has_index: bool = store
+            .conn
+            .lock()
+            .query_row(
+                "SELECT EXISTS (SELECT 1 FROM sqlite_master
+                 WHERE type = 'index' AND name = 'orbit_run_by_graph')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(has_index);
     }
 
     /// Degrau 9 a partir de um banco na 8: a chave de integração nasce ligada e
@@ -7185,5 +7813,285 @@ mod tests {
 
         store.delete_snippet("s-1").unwrap();
         assert!(store.list_snippets().unwrap().is_empty());
+    }
+
+    #[test]
+    fn orbit_graph_round_trip_keeps_consent_and_hash() {
+        use crate::orbit::{
+            Edge, EdgeKind, Graph, Node, NodeKind, OutputKind, Position, Runner, Size,
+        };
+        let store = Store::open_in_memory().unwrap();
+        let graph = Graph {
+            id: "g-1".into(),
+            name: "revisão".into(),
+            dir: "/tmp/repo".into(),
+            nodes: vec![
+                Node {
+                    id: "a".into(),
+                    title: "Claude".into(),
+                    kind: NodeKind::Agent {
+                        runner: Runner::Claude,
+                        role: "autor".into(),
+                        prompt: "corrija {{alvo}}".into(),
+                        dir: String::new(),
+                        no_create: false,
+                    },
+                    position: Position { x: 10.0, y: 20.5 },
+                    size: Size { w: 480.0, h: 320.0 },
+                },
+                Node {
+                    id: "p".into(),
+                    title: "Testes".into(),
+                    kind: NodeKind::Process {
+                        command: "cargo test".into(),
+                        output: OutputKind::Log,
+                        file: None,
+                        dir: String::new(),
+                    },
+                    position: Position { x: 600.0, y: 20.0 },
+                    size: Size { w: 480.0, h: 320.0 },
+                },
+            ],
+            edges: vec![Edge {
+                id: "e1".into(),
+                from: "a".into(),
+                to: "p".into(),
+                kind: EdgeKind::Diff,
+            }],
+            variables: [("alvo".to_string(), "parser".to_string())].into(),
+        };
+        assert!(store.get_orbit_graph("g-1").unwrap().is_none());
+
+        store
+            .save_orbit_graph(&graph, false, Some("hash-importado"))
+            .unwrap();
+        let got = store.get_orbit_graph("g-1").unwrap().unwrap();
+        assert_eq!(got.value, graph);
+        assert!(!got.consented);
+        assert_eq!(got.imported_hash.as_deref(), Some("hash-importado"));
+
+        // O dono edita e salva: consente, mas a origem importada fica.
+        let edited = Graph {
+            name: "revisão 2".into(),
+            ..graph.clone()
+        };
+        store.save_orbit_graph(&edited, true, None).unwrap();
+        let got = store.get_orbit_graph("g-1").unwrap().unwrap();
+        assert_eq!(got.value, edited);
+        assert!(got.consented);
+        assert_eq!(got.imported_hash.as_deref(), Some("hash-importado"));
+        assert_eq!(store.list_orbit_graphs().unwrap(), vec![edited]);
+
+        store.delete_orbit_graph("g-1").unwrap();
+        assert!(store.list_orbit_graphs().unwrap().is_empty());
+    }
+
+    #[test]
+    fn orbit_runs_keep_the_newest_and_prune_the_rest() {
+        use crate::orbit::run::{Run, RunStatus};
+        let store = Store::open_in_memory().unwrap();
+        let run = |id: &str, graph: &str, at: u64| Run {
+            id: id.into(),
+            graph_id: graph.into(),
+            started_at: at,
+            finished_at: None,
+            status: RunStatus::Running,
+            nodes: Default::default(),
+            version: 1,
+            test: false,
+            live_agents: Vec::new(),
+            settled: false,
+            paused_ms: 0,
+            created: Vec::new(),
+            plans: Vec::new(),
+            number: 0,
+            terminal: None,
+            waiting_you: Vec::new(),
+        };
+        for i in 0..5u64 {
+            store
+                .save_orbit_run(&run(&format!("r{i}"), "g-1", i))
+                .unwrap();
+        }
+        store.save_orbit_run(&run("outro", "g-2", 0)).unwrap();
+
+        let mut done = run("r4", "g-1", 4);
+        done.status = RunStatus::Done;
+        done.finished_at = Some(9);
+        done.version = 2;
+        store.save_orbit_run(&done).unwrap();
+        assert_eq!(store.get_orbit_run("r4").unwrap(), Some(done));
+
+        let mut pruned = store
+            .prune_orbit_runs("g-1", 3, &Default::default())
+            .unwrap();
+        pruned.sort();
+        assert_eq!(pruned, vec!["r0".to_string(), "r1".to_string()]);
+        let left: Vec<String> = store
+            .list_orbit_runs("g-1", 20)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.id)
+            .collect();
+        assert_eq!(left, vec!["r4", "r3", "r2"]);
+        assert!(store.get_orbit_run("outro").unwrap().is_some());
+    }
+
+    #[test]
+    fn orbit_run_older_snapshot_does_not_overwrite_newer() {
+        use crate::orbit::run::{Run, RunStatus};
+        let store = Store::open_in_memory().unwrap();
+        let snap = |version: u64, status: RunStatus| Run {
+            id: "r".into(),
+            graph_id: "g".into(),
+            started_at: 1,
+            finished_at: (status != RunStatus::Running).then_some(2),
+            status,
+            nodes: Default::default(),
+            version,
+            test: false,
+            live_agents: Vec::new(),
+            settled: false,
+            paused_ms: 0,
+            created: Vec::new(),
+            plans: Vec::new(),
+            number: 0,
+            terminal: None,
+            waiting_you: Vec::new(),
+        };
+        store.save_orbit_run(&snap(1, RunStatus::Running)).unwrap();
+        store.save_orbit_run(&snap(3, RunStatus::Done)).unwrap();
+        // O retrato 2 foi publicado depois do 3 (fora do lock): fica o 3.
+        store.save_orbit_run(&snap(2, RunStatus::Running)).unwrap();
+        let got = store.get_orbit_run("r").unwrap().unwrap();
+        assert_eq!(got.status, RunStatus::Done);
+        assert_eq!(got.version, 3);
+    }
+
+    #[test]
+    fn orbit_prune_keeps_protected_runs_and_ignores_test_runs() {
+        use crate::orbit::run::{Run, RunStatus};
+        let store = Store::open_in_memory().unwrap();
+        let run = |id: &str, at: u64, test: bool| Run {
+            id: id.into(),
+            graph_id: "g".into(),
+            started_at: at,
+            finished_at: Some(at),
+            status: RunStatus::Done,
+            nodes: Default::default(),
+            version: 1,
+            test,
+            live_agents: Vec::new(),
+            settled: false,
+            paused_ms: 0,
+            created: Vec::new(),
+            plans: Vec::new(),
+            number: 0,
+            terminal: None,
+            waiting_you: Vec::new(),
+        };
+        // r0 é o mais velho e está ativo; depois dele, 3 testes e 2 runs.
+        store.save_orbit_run(&run("r0", 0, false)).unwrap();
+        for i in 1..=3u64 {
+            store
+                .save_orbit_run(&run(&format!("t{i}"), i, true))
+                .unwrap();
+        }
+        store.save_orbit_run(&run("r1", 4, false)).unwrap();
+        store.save_orbit_run(&run("r2", 5, false)).unwrap();
+
+        let protect = std::collections::HashSet::from(["r0".to_string()]);
+        let mut pruned = store.prune_orbit_runs("g", 2, &protect).unwrap();
+        pruned.sort();
+        // Testes não tiram vaga dos runs (r1, r2 ficam na janela de 2); o r0
+        // passou da janela mas está protegido; dos testes, sai o mais velho.
+        assert_eq!(pruned, vec!["t1".to_string()]);
+        assert!(store.get_orbit_run("r0").unwrap().is_some());
+
+        let pruned = store.prune_orbit_runs("g", 2, &Default::default()).unwrap();
+        assert_eq!(pruned, vec!["r0".to_string()]);
+    }
+
+    #[test]
+    fn orbit_integration_round_trip_and_delete() {
+        use crate::orbit::{EdgeKind, Integration, OutputKind, Trigger};
+        let store = Store::open_in_memory().unwrap();
+        let integration = Integration {
+            id: "i-1".into(),
+            name: "resumir log".into(),
+            script: "tail -n 20 \"$TYBA_IN/log.txt\" > \"$TYBA_OUT/log.txt\"".into(),
+            trigger: Trigger::OnInput {
+                kind: EdgeKind::Log,
+            },
+            output: OutputKind::Log,
+            file: None,
+        };
+        store
+            .save_orbit_integration(&integration, true, None)
+            .unwrap();
+        let got = store.get_orbit_integration("i-1").unwrap().unwrap();
+        assert_eq!(got.value, integration);
+        assert!(got.consented);
+        assert_eq!(got.imported_hash, None);
+        assert_eq!(store.list_orbit_integrations().unwrap(), vec![integration]);
+
+        store.delete_orbit_integration("i-1").unwrap();
+        assert!(store.list_orbit_integrations().unwrap().is_empty());
+        assert!(store.get_orbit_integration("i-1").unwrap().is_none());
+    }
+
+    /// Biblioteca de papéis (quadro OrbitPapeis B): o nome é a chave, a
+    /// lista sai por nome sem diferenciar caixa, renomear troca a chave e o
+    /// corpo numa transação, apagar some.
+    #[test]
+    fn orbit_role_round_trip_rename_and_delete() {
+        use crate::orbit::Role;
+        let store = Store::open_in_memory().unwrap();
+        let revisor = Role {
+            name: "Revisor".into(),
+            instructions: "lê o diff".into(),
+        };
+        let qa = Role {
+            name: "qa".into(),
+            instructions: "reproduz o bug".into(),
+        };
+        store.save_orbit_role(&revisor, None).unwrap();
+        store.save_orbit_role(&qa, Some("h1")).unwrap();
+        assert_eq!(
+            store.list_orbit_roles().unwrap(),
+            vec![qa.clone(), revisor.clone()]
+        );
+        assert_eq!(
+            store.get_orbit_role("Revisor").unwrap(),
+            Some(revisor.clone())
+        );
+        assert_eq!(store.get_orbit_role("revisor").unwrap(), None);
+
+        let revisor2 = Role {
+            instructions: "lê o diff e aponta risco".into(),
+            ..revisor.clone()
+        };
+        store.save_orbit_role(&revisor2, None).unwrap();
+        assert_eq!(
+            store.get_orbit_role("Revisor").unwrap(),
+            Some(revisor2.clone())
+        );
+
+        store.rename_orbit_role("Revisor", "Revisora").unwrap();
+        assert_eq!(store.get_orbit_role("Revisor").unwrap(), None);
+        assert_eq!(
+            store.get_orbit_role("Revisora").unwrap(),
+            Some(Role {
+                name: "Revisora".into(),
+                instructions: revisor2.instructions.clone(),
+            })
+        );
+        // Renomear o que não existe não faz nada.
+        store.rename_orbit_role("não existe", "x").unwrap();
+        assert_eq!(store.list_orbit_roles().unwrap().len(), 2);
+
+        store.delete_orbit_role("qa").unwrap();
+        assert_eq!(store.list_orbit_roles().unwrap().len(), 1);
+        assert_eq!(store.get_orbit_role("qa").unwrap(), None);
     }
 }

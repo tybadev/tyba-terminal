@@ -136,6 +136,17 @@ describe("hiddenApprovalIds", () => {
     expect(ids).toEqual(new Set([10]));
   });
 
+  test("cápsula de nó na tela esconde o toast só do pedido que ela mostra", () => {
+    const ids = hiddenApprovalIds({
+      approvals: [makeApproval({ id: 10 }), makeApproval({ id: 11 })],
+      notificationsOpen: false,
+      agentQueueOpen: false,
+      agentQueueVisibleIds: new Set(),
+      nodeCardIds: new Set([11]),
+    });
+    expect(ids).toEqual(new Set([11]));
+  });
+
   test("fila fechada ignora agentQueueVisibleIds mesmo que venha preenchido", () => {
     const ids = hiddenApprovalIds({
       approvals: [makeApproval({ id: 10 })],
