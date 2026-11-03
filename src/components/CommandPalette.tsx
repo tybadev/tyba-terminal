@@ -1,4 +1,5 @@
 import { type KeyboardEvent, useEffect, useState } from "react";
+import { PLATE, PLATE_FLOAT, PLATE_LINE } from "./plate";
 import { useTranslation } from "react-i18next";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import {
@@ -430,7 +431,7 @@ export function CommandPalette({
       description={t("searchCommand")}
       shouldFilter={mode !== "files" && mode !== "history"}
       showCloseButton={false}
-      className="top-28 max-w-[560px] translate-y-0 rounded-[6px] border-tyba-border-strong bg-tyba-surface shadow-2xl"
+      className={`top-28 max-w-[560px] translate-y-0 ${PLATE} ${PLATE_LINE} ${PLATE_FLOAT}`}
     >
       <div className="flex items-center gap-1 tyba-divide-b px-2 py-1.5">
         {(

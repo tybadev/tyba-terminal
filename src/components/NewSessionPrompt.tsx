@@ -28,6 +28,8 @@ import {
   type ShellOption,
 } from "../lib/ipc";
 import { basename, cn } from "@/lib/utils";
+import { Kbd } from "@/components/ui/kbd";
+import { PLATE, PLATE_FLOAT, PLATE_LINE } from "@/components/plate";
 
 const LAST_DIR_KEY = "pref.last_session_dir";
 const DEFAULT_DIR_KEY = "pref.default_session_dir";
@@ -102,7 +104,12 @@ export function NewSessionPrompt({
       title={t("newSession")}
       description={t("newSessionWhere")}
       showCloseButton={false}
-      className="top-28 max-w-[480px] translate-y-0 rounded-[6px] border-tyba-border-strong bg-tyba-surface shadow-2xl"
+      className={cn(
+        "top-28 max-w-[480px] translate-y-0",
+        PLATE,
+        PLATE_LINE,
+        PLATE_FLOAT,
+      )}
     >
       <CommandInput placeholder={t("newSessionWhere")} />
       {shells.length > 1 && (
@@ -220,10 +227,19 @@ export function NewSessionPrompt({
           </CommandGroup>
         )}
       </CommandList>
-      <div className="flex items-center gap-4 tyba-divide-t px-3 py-1.5 font-mono text-[10px] text-tyba-text-faint">
-        <span>↑↓ {t("hintNavigate")}</span>
-        <span>↵ {t("hintRun")}</span>
-        <span className="ml-auto">esc {t("hintClose")}</span>
+      <div className="flex items-center gap-4 px-3 py-1.5 text-[11px] text-tyba-text-faint shadow-[inset_0_1px_0_var(--tyba-line)]">
+        <span className="inline-flex items-center gap-1.5">
+          <Kbd>↑↓</Kbd>
+          {t("hintNavigate")}
+        </span>
+        <span className="inline-flex items-center gap-1.5">
+          <Kbd>↵</Kbd>
+          {t("hintRun")}
+        </span>
+        <span className="ml-auto inline-flex items-center gap-1.5">
+          <Kbd>esc</Kbd>
+          {t("hintClose")}
+        </span>
       </div>
     </CommandDialog>
   );

@@ -20,9 +20,7 @@ import {
   Plug,
   Plus,
   Prohibit,
-  SidebarSimple,
   SquaresFour,
-  Stack,
   TerminalWindow,
   Tray,
   X,
@@ -107,6 +105,8 @@ import {
 } from "./components/LaunchConfigScreen";
 import { OrbitScreen, type FocusSessionRequest } from "./components/orbit/OrbitScreen";
 import { ShortcutsPanel } from "./components/ShortcutsPanel";
+import { EmptySessions } from "./components/EmptySessions";
+import { OrbitIcon } from "./components/icons/OrbitIcon";
 import { ConnectionsView } from "./components/ConnectionsView";
 import {
   HostFormDialog,
@@ -5141,19 +5141,30 @@ export default function App() {
               }
             : undefined
         }
-        // Ativa = a pastilha quase opaca (quadro PropostaClaro); sem fio na
-        // aresta, que barra de um lado só não entra em card.
-        className={`group relative flex shrink-0 items-center gap-2.5 overflow-hidden rounded-[6px] text-[13px] font-medium transition-colors ${
-          showDetails ? "min-h-[3.75rem] py-1.5" : "h-9"
+        // Ativa = o cartão que SOBE (mockup Proposta): `raised` com o contorno
+        // do tema e o filamento vertical no meio da aresta esquerda. Voltou
+        // como era na main (dono, 2026-11-02: "era perfeito").
+        className={`group relative flex shrink-0 items-center gap-2 overflow-hidden rounded-[6px] text-[13px] transition-colors ${
+          showDetails ? "h-[3.75rem]" : "h-[33px]"
         } ${open ? "px-2.5" : "justify-center px-0"} ${
           isActive
-            ? `text-tyba-text ${w.color ? "" : "tyba-pill-on"}`
+            ? `text-tyba-text ${w.color ? "" : "bg-tyba-raised shadow-[var(--tyba-raised-ring)]"}`
             : "text-tyba-text-muted hover:bg-tyba-text/[.03] hover:text-tyba-text"
         }`}
       >
-        {/* Aberta, a sessão é só texto e o ponto de estado (quadro); o ícone
-            fica para o trilho recolhido, onde não há texto. */}
-        <span className={`relative shrink-0 ${open ? "hidden" : ""}`}>
+        {isActive && (
+          // O fio pega só o meio da aresta: de ponta a ponta pesava mais que o
+          // próprio cartão.
+          <span
+            className="absolute left-0 top-1/2 h-6 w-0.5 -translate-y-1/2 rounded-r-full"
+            style={{
+              background: w.color
+                ? `var(--tyba-${w.color})`
+                : "var(--tyba-filament-v)",
+            }}
+          />
+        )}
+        <span className="relative shrink-0">
           {isWtView ? (
             <SquaresFour
               size={16}
@@ -5303,6 +5314,14 @@ export default function App() {
                 </span>
               )}
             </span>
+            {!isConfig && !isWtView && w.tabs.length > 0 && (
+              <span
+                title={t("sessionPanes", { count: w.tabs.length })}
+                className="shrink-0 font-mono text-[10px] text-tyba-text-faint"
+              >
+                {w.tabs.length}
+              </span>
+            )}
             {!isConfig && !isWtView && (
               <span
                 role="img"
@@ -6028,44 +6047,24 @@ export default function App() {
             aria-label={t("breadcrumb")}
             className="flex min-w-0 items-center gap-2 text-[13px] font-medium text-tyba-text-faint"
           >
-            {/* Terminal | Orbit (dono, 2026-11-02: o Orbit volta para a barra).
-                Segmento da opção G: degrau de tinta, o modo aceso é a placa. */}
-            <div className="tyba-segment h-7 shrink-0">
-              <button
-                aria-label={t("terminalView")}
-                aria-pressed={!orbitOpen}
-                onClick={() => {
-                  setOrbitOpen(false);
-                  setMachineScreen(null);
-                }}
-                className={`flex items-center gap-1.5 whitespace-nowrap rounded-[5px] px-2.5 text-[12.5px] ${
-                  orbitOpen
-                    ? "text-tyba-text-muted hover:text-tyba-text"
-                    : "tyba-pill-on text-tyba-text"
-                }`}
-              >
+            {/* O modo atual (Terminal ou Workspace/Orbit). Quem troca de modo é
+                a lateral — o item Workspace (dono, 2026-11-02); clicar aqui no
+                Workspace volta ao Terminal. */}
+            <button
+              onClick={() => {
+                if (!orbitOpen) return;
+                setOrbitOpen(false);
+                setMachineScreen(null);
+              }}
+              className="tyba-pill-on flex h-[26px] shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full pl-2 pr-2.5 text-tyba-text"
+            >
+              {orbitOpen ? (
+                <OrbitIcon size={13} className="text-tyba-violet" />
+              ) : (
                 <span className="font-mono text-tyba-green">❯</span>
-                {t("terminalView")}
-              </button>
-              <button
-                aria-label={t("orbitView")}
-                aria-pressed={orbitOpen}
-                onClick={() => {
-                  // O terminal de baixo não fica com o foco: as teclas
-                  // cairiam num xterm escondido.
-                  (document.activeElement as HTMLElement | null)?.blur();
-                  setOrbitOpen(true);
-                }}
-                className={`flex items-center gap-1.5 whitespace-nowrap rounded-[5px] px-2.5 text-[12.5px] ${
-                  orbitOpen
-                    ? "tyba-pill-on text-tyba-text"
-                    : "text-tyba-text-muted hover:text-tyba-text"
-                }`}
-              >
-                <Stack size={13} aria-hidden className="text-tyba-violet" />
-                {t("orbitView")}
-              </button>
-            </div>
+              )}
+              {orbitOpen ? t("orbitView") : t("terminalView")}
+            </button>
             {/* Com as abas na barra, o nome da sessão sai da migalha: ele
                 repetia a pasta da aba, e o caminho já está no campo de
                 comando (dono, 2026-11-02). */}
@@ -6194,6 +6193,10 @@ export default function App() {
                     onCardApprovals={setNodeCardIds}
                     covered={machineScreen !== null}
                     sessions={sessions}
+                    onBackToTerminal={() => {
+                      setMachineScreen(null);
+                      setOrbitOpen(false);
+                    }}
                   />
                 </TerminalPaneContext.Provider>
               </ErrorBoundary>
@@ -6260,7 +6263,7 @@ export default function App() {
                               open ? "justify-start px-2.5" : "justify-center px-0"
                             }`}
                           >
-                            <Plus size={14} className="shrink-0 text-tyba-green" />
+                            <Plus size={14} className="shrink-0 text-tyba-text-faint" />
                             {open && (
                               <>
                                 <span className="flex-1 text-left">{t("newSession")}</span>
@@ -6281,22 +6284,35 @@ export default function App() {
                           </span>
                         </TooltipContent>
                       </Tooltip>
-                      {/* Workspace (Orbit) segue bloqueado: visível, desabilitado
-                          e com "em breve" (workspaceBlocked.test). */}
+                      {/* Um item só para o Orbit (dono, 2026-11-02: "a lateral não
+                          pode estar poluída"); a volta para o Terminal mora na
+                          paleta do próprio Orbit. Aceso enquanto ele está aberto. */}
                       <button
-                        disabled
-                        aria-disabled
-                        aria-label={`${t("workspaceView")} — ${t("comingSoon")}`}
-                        title={t("comingSoon")}
-                        className={`flex h-[33px] shrink-0 cursor-not-allowed items-center gap-2.5 rounded-[6px] text-[13px] font-medium text-tyba-text-faint ${
-                          open ? "px-2.5" : "justify-center px-0"
-                        }`}
+                        aria-label={t("orbitView")}
+                        aria-pressed={orbitOpen}
+                        onClick={() => {
+                          // Indo para o Orbit, o terminal de baixo não fica com
+                          // o foco: as teclas cairiam num xterm escondido.
+                          if (!orbitOpen) (document.activeElement as HTMLElement | null)?.blur();
+                          setMachineScreen(null);
+                          setOrbitOpen((o) => !o);
+                        }}
+                        className={`flex h-[33px] shrink-0 items-center gap-2.5 rounded-[6px] text-[13px] font-medium ${
+                          orbitOpen
+                            ? "tyba-pill-on text-tyba-text"
+                            : "text-tyba-text-muted hover:bg-tyba-text/[.03] hover:text-tyba-text"
+                        } ${open ? "px-2.5" : "justify-center px-0"}`}
                       >
-                        <Stack size={14} className="shrink-0 text-tyba-violet/60" />
+                        <OrbitIcon
+                          size={14}
+                          className={`shrink-0 ${orbitOpen ? "text-tyba-violet" : "text-tyba-text-faint"}`}
+                        />
                         {open && (
                           <>
-                            <span className="flex-1 text-left">{t("workspaceView")}</span>
-                            <span className="text-[11px]">{t("comingSoon")}</span>
+                            <span className="flex-1 text-left">{t("orbitView")}</span>
+                            <span className="font-mono text-[11px] text-tyba-text-faint">
+                              {formatCombo(bindings.toggleOrbit)}
+                            </span>
                           </>
                         )}
                       </button>
@@ -6316,7 +6332,7 @@ export default function App() {
                                 : "text-tyba-text-muted hover:bg-tyba-text/[.03] hover:text-tyba-text"
                             }`}
                           >
-                            <HardDrives size={14} className="shrink-0 text-tyba-cyan" />
+                            <HardDrives size={14} className="shrink-0 text-tyba-text-faint" />
                             {open && t("connectionsTitle")}
                           </Button>
                         </TooltipTrigger>
@@ -6555,7 +6571,11 @@ export default function App() {
               <main ref={mainAreaRef} className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden">
                 {gitScreenSession && activeWorkspace && (
                   <GitScreen
-                    key={gitScreenSession.id}
+                    // Key com o tipo: Git, Docker e Serviços são irmãos aqui e
+                    // podem ser da MESMA sessão (um saindo enquanto o outro entra).
+                    // Só o id dava duas crianças com a mesma key, e o React
+                    // deixava a tela órfã no DOM, sem fechar (trava de 2026-11-02).
+                    key={`git:${gitScreenSession.id}`}
                     session={gitScreenSession}
                     // O repo da PRÓPRIA sessão da tela (worktree, senão o cwd
                     // dela), não o do painel em foco: branch, ↑↓, Pull, push e
@@ -6575,7 +6595,7 @@ export default function App() {
                 )}
                 {dockerScreenSession && activeWorkspace && (
                   <DockerScreen
-                    key={dockerScreenSession.id}
+                    key={`docker:${dockerScreenSession.id}`}
                     session={dockerScreenSession}
                     workspaceId={activeWorkspace.id}
                     state={activeWorkspace.screens.docker}
@@ -6597,7 +6617,7 @@ export default function App() {
                 )}
                 {servicesScreenSession && activeWorkspace && (
                   <ServicesScreen
-                    key={servicesScreenSession.id}
+                    key={`services:${servicesScreenSession.id}`}
                     session={servicesScreenSession}
                     workspaceId={activeWorkspace.id}
                     state={activeWorkspace.screens.services}
@@ -6999,80 +7019,26 @@ export default function App() {
                   ))}
                   {!activeTab && (
                     <div
-                      className="absolute inset-0 flex flex-col items-center justify-center gap-5"
+                      className="absolute inset-0 flex flex-col items-center justify-center"
                       style={{
                         transform: `translateX(${-SIDEBAR_WIDTH[sidebar] / 2}px)`,
                       }}
                     >
-                      <TerminalWindow
-                        size={36}
-                        className="text-tyba-text-faint"
+                      <EmptySessions
+                        hasWorkspaces={layout.workspaces.length > 0}
+                        bindings={bindings}
+                        hosts={sshHosts}
+                        onNewSession={() => openNewSession()}
+                        onNewTab={() => void newTab()}
+                        onConnectSsh={() =>
+                          sshHosts.length > 0
+                            ? setHostPickerOpen(true)
+                            : void openViewTab("connections").catch(() => {})
+                        }
+                        onPalette={() => openPalette("actions")}
+                        onTogglePanel={toggleSidebar}
+                        onPickHost={(host) => void connectToHost(host)}
                       />
-                      <p className="text-sm text-tyba-text-faint">
-                        {layout.workspaces.length === 0
-                          ? t("noSessions")
-                          : t("noTabs")}
-                      </p>
-                      <div className="flex w-64 flex-col gap-px">
-                        {layout.workspaces.length === 0 ? (
-                          <button
-                            onClick={() => openNewSession()}
-                            className="flex h-8 items-center gap-2.5 rounded-[4px] px-2.5 text-[13px] text-tyba-text-muted transition-colors hover:bg-tyba-text/[.04] hover:text-tyba-text"
-                          >
-                            <Plus size={14} className="text-tyba-green" />
-                            <span className="flex-1 text-left">
-                              {t("newSession")}
-                            </span>
-                            <Shortcut combo={bindings.newTab} />
-                          </button>
-                        ) : (
-                          <button
-                            onClick={() => void newTab()}
-                            className="flex h-8 items-center gap-2.5 rounded-[4px] px-2.5 text-[13px] text-tyba-text-muted transition-colors hover:bg-tyba-text/[.04] hover:text-tyba-text"
-                          >
-                            <Plus size={14} className="text-tyba-green" />
-                            <span className="flex-1 text-left">
-                              {t("newTab")}
-                            </span>
-                            <Shortcut combo={bindings.newTab} />
-                          </button>
-                        )}
-                        <button
-                          onClick={() =>
-                            sshHosts.length > 0
-                              ? setHostPickerOpen(true)
-                              : void openViewTab("connections").catch(() => {})
-                          }
-                          className="flex h-8 items-center gap-2.5 rounded-[4px] px-2.5 text-[13px] text-tyba-text-muted transition-colors hover:bg-tyba-text/[.04] hover:text-tyba-text"
-                        >
-                          <HardDrives size={14} className="text-tyba-cyan" />
-                          <span className="flex-1 text-left">
-                            {sshHosts.length > 0
-                              ? t("connectSsh")
-                              : t("connectionsTitle")}
-                          </span>
-                        </button>
-                        <button
-                          onClick={() => openPalette("actions")}
-                          className="flex h-8 items-center gap-2.5 rounded-[4px] px-2.5 text-[13px] text-tyba-text-muted transition-colors hover:bg-tyba-text/[.04] hover:text-tyba-text"
-                        >
-                          <MagnifyingGlass size={14} />
-                          <span className="flex-1 text-left">
-                            {t("commandPalette")}
-                          </span>
-                          <Shortcut combo={bindings.paletteActions} />
-                        </button>
-                        <button
-                          onClick={toggleSidebar}
-                          className="flex h-8 items-center gap-2.5 rounded-[4px] px-2.5 text-[13px] text-tyba-text-muted transition-colors hover:bg-tyba-text/[.04] hover:text-tyba-text"
-                        >
-                          <SidebarSimple size={14} />
-                          <span className="flex-1 text-left">
-                            {t("togglePanel")}
-                          </span>
-                          <Shortcut combo={bindings.panel} />
-                        </button>
-                      </div>
                     </div>
                   )}
                   {activeSession && richInputVisible && !ownsCommandLine && (() => {

@@ -1716,18 +1716,10 @@ samp {
   content: "";
   position: absolute;
   inset: 0 auto 0 0;
-  z-index: 40;
+  z-index: 20;
   width: 1px;
   background: var(--tyba-line);
   pointer-events: none;
-}
-/* Tela cheia aberta (.tyba-git-screen cobre o <main> inteiro, opaca): a
-   folha embaixo não aparece, e o desfoque dela é custo puro a cada quadro —
-   o Docker, com logs seguindo, redesenha sem parar (trava de 2026-11-02).
-   `:not(.hidden)` porque Arquivos fica montado com `hidden` quando fechado. */
-.tyba-window main:has(> .tyba-git-screen:not(.hidden)) [data-terminal-piece] {
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
 }
 /* Cabeçalho fixo do bloco (a saída rola por baixo dele): com a folha colada
    na barra, opaco e só com o fio ele lia como parte da barra. Vira placa —
@@ -1788,3 +1780,4 @@ html {
 [data-theme='light']:not([data-imported]) .tyba-aurora {
   background: var(--tyba-field);
 }
+
