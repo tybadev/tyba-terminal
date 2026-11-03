@@ -764,13 +764,15 @@ export function CommandLine({
     // terminal BLACKOUT é o degrau que diz "aqui se escreve" sem moldura.
     // `px-4` na linha põe o chevron na coluna do chevron dos blocos.
     //
-    // O fundo é o do painel (`--tyba-panel-bg`): no escuro a superfície
-    // chapada, no claro o vidro branco a 62% — o mesmo do mockup.
+    // Opção G (2026-11-02): como na main, a linha de comando é uma faixa da
+    // própria folha, com o fio em cima — sem caixa solta nem respiro. O foco
+    // acende o fio.
     <div
-      className={`relative shrink-0 border-t bg-[var(--tyba-panel-bg)] py-2 transition-colors ${
-        focused ? "border-tyba-green/25" : "border-tyba-border"
+      className={`relative shrink-0 py-2.5 transition-shadow ${
+        focused
+          ? "shadow-[inset_0_1px_0_color-mix(in_srgb,var(--tyba-green)_35%,transparent)]"
+          : "shadow-[inset_0_1px_0_var(--tyba-line)]"
       }`}
-      style={{ boxShadow: "var(--tyba-edge)" }}
     >
       {/* Shell subindo: o filamento corre na aresta de cima enquanto o rc
           carrega. Absoluto, para não mexer na altura da linha (resize). */}

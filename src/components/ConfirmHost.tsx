@@ -9,6 +9,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import { PLATE, PLATE_ACRYLIC, PLATE_LINE } from "@/components/plate";
 import {
   answerConfirm,
   subscribeConfirm,
@@ -34,7 +35,7 @@ export function ConfirmHost() {
           detalhe rola. Em confirmação destrutiva o foco começa em Cancelar,
           para um Enter distraído não confirmar. */}
       <DialogContent
-        className="flex max-h-[80vh] max-w-[440px] flex-col border-tyba-border-strong bg-tyba-surface"
+        className={`flex max-h-[80vh] max-w-[440px] flex-col ${PLATE} ${PLATE_LINE} ${PLATE_ACRYLIC}`}
         showCloseButton={false}
       >
         <DialogHeader className="shrink-0">
@@ -42,7 +43,7 @@ export function ConfirmHost() {
         </DialogHeader>
         {request.detail && (
           <DialogDescription asChild>
-            <div className="min-h-0 overflow-y-auto whitespace-pre-wrap break-words rounded-md bg-tyba-sunken px-3 py-2">
+            <div className="min-h-0 overflow-y-auto whitespace-pre-wrap break-words rounded-[6px] bg-tyba-sunken px-3 py-2">
               {request.detail}
             </div>
           </DialogDescription>

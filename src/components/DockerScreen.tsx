@@ -154,7 +154,7 @@ function ShellPane({
           {error}
         </p>
       ) : (
-        <div className="relative min-h-0 flex-1 bg-tyba-sunken">
+        <div className="relative min-h-0 flex-1">
           {sessionId && (
             <TerminalView
               key={sessionId}
@@ -275,8 +275,8 @@ function ReadOnlyList({ section, host }: { section: "images" | "volumes"; host: 
   }, [section, host, t, startedAt]);
   const rows = section === "images" ? images : volumes;
   return (
-    <div className="flex min-h-0 flex-1 flex-col bg-tyba-sunken">
-      <div className="shrink-0 border-b border-[var(--tyba-border-soft)] bg-[var(--tyba-panel-bg)] px-[18px] py-2.5 text-[11px] text-tyba-text-faint">
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="shrink-0 border-b border-[var(--tyba-line)] bg-[var(--tyba-panel-bg)] px-[18px] py-2.5 text-[11px] text-tyba-text-faint">
         {section === "images"
           ? t("dockerScreenImagesCount", { count: images?.length ?? 0 })
           : t("dockerScreenVolumesCount", { count: volumes?.length ?? 0 })}
@@ -586,7 +586,7 @@ export function DockerScreen({
         // Escolhido = fundo elevado com contorno inteiro; nunca barra lateral.
         className={`flex w-full flex-col gap-[5px] rounded-[6px] px-3 py-2.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-tyba-blue ${
           on
-            ? "bg-tyba-raised shadow-[var(--tyba-raised-ring)]"
+            ? "tyba-pill-on"
             : "hover:bg-tyba-text/[.03]"
         } ${running ? "text-tyba-text" : "text-tyba-text-muted"}`}
       >
@@ -664,7 +664,7 @@ export function DockerScreen({
       tabIndex={-1}
       aria-label={t("sidePanelDocker")}
       data-exiting={exiting}
-      className="tyba-git-screen absolute inset-0 z-30 flex flex-row-reverse bg-tyba-bg outline-none"
+      className="tyba-git-screen absolute inset-0 z-30 flex flex-row-reverse bg-tyba-paper-solid outline-none"
       onKeyDown={(e) => {
         if (
           escClosesScreen({
@@ -694,7 +694,7 @@ export function DockerScreen({
               title={t(label)}
               onClick={() => go(key)}
               className={`relative flex size-9 items-center justify-center rounded-[8px] transition-colors ${
-                on ? "bg-tyba-blue/[.12] text-tyba-blue" : "text-tyba-text-faint hover:text-tyba-text"
+                on ? "tyba-icon-on text-tyba-blue" : "text-tyba-text-faint hover:text-tyba-text"
               }`}
             >
               <SectionIcon size={17} />
@@ -825,7 +825,7 @@ export function DockerScreen({
         ) : (
           // Coluna à direita, junto do trilho, como em Arquivos (dono, 2026-10-14).
           <div className="flex min-h-0 flex-1 flex-row-reverse">
-            <div className="flex w-[300px] shrink-0 flex-col border-l border-[var(--tyba-border-soft)] bg-[var(--tyba-panel-bg)]">
+            <div className="flex w-[300px] shrink-0 flex-col border-l border-[var(--tyba-line)] bg-[var(--tyba-panel-bg)]">
               <div className="flex shrink-0 items-center gap-2 px-3.5 pb-1.5 pt-3 text-[11px] text-tyba-text-faint">
                 <span className="flex-1">
                   {t("dockerScreenContainersCount", { count: list?.length ?? 0 })}
@@ -870,14 +870,14 @@ export function DockerScreen({
                   ordered.map(card)
                 )}
               </div>
-              <div className="flex shrink-0 items-center gap-2 border-t border-[var(--tyba-border-soft)] px-3.5 py-2.5 text-[11px] leading-4 text-tyba-text-faint">
+              <div className="flex shrink-0 items-center gap-2 border-t border-[var(--tyba-line)] px-3.5 py-2.5 text-[11px] leading-4 text-tyba-text-faint">
                 <p className="min-w-0 flex-1">
                   {host ? t("dockerPanelNoteRemote", { host }) : t("dockerScreenNoteLocal")}
                 </p>
               </div>
             </div>
 
-            <div className="flex min-w-0 flex-1 flex-col bg-tyba-sunken">
+            <div className="flex min-w-0 flex-1 flex-col">
               {selected ? (
                 <>
                   <ContainerStrip
@@ -888,7 +888,7 @@ export function DockerScreen({
                     inScreen
                     onRestarted={() => setLogsRestart((n) => n + 1)}
                   />
-                  <div className="flex shrink-0 items-center gap-2.5 border-b border-[var(--tyba-border-soft)] px-[18px] py-2">
+                  <div className="flex shrink-0 items-center gap-2.5 border-b border-[var(--tyba-line)] px-[18px] py-2">
                     <span
                       role="tablist"
                       aria-label={t("dockerScreenPanes")}
@@ -909,7 +909,7 @@ export function DockerScreen({
                             onClick={() => showPane(pane)}
                             className={`rounded-[6px] px-3 py-[5px] text-[12px] disabled:opacity-40 ${
                               on
-                                ? "bg-tyba-raised text-tyba-text shadow-[var(--tyba-raised-ring)]"
+                                ? "tyba-pill-on text-tyba-text"
                                 : "text-tyba-text-faint hover:text-tyba-text"
                             }`}
                           >

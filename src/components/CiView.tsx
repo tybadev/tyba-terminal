@@ -195,10 +195,10 @@ export function CiView({
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-      <div className="flex shrink-0 items-center gap-2.5 tyba-divide-b px-[18px] py-2 text-[12px]">
+      <div className="flex shrink-0 items-center gap-2.5 shadow-[inset_0_-1px_0_var(--tyba-line)] px-[18px] py-2 text-[12px]">
         <div
           role="tablist"
-          className="flex shrink-0 gap-0.5 rounded-[7px] bg-tyba-sunken p-0.5 shadow-[inset_0_0_0_1px_var(--tyba-border)]"
+          className="tyba-segment shrink-0"
         >
           {(["branch", "all"] as const).map((key) => (
             <button
@@ -210,7 +210,7 @@ export function CiView({
               onClick={() => setScope(key)}
               className={`whitespace-nowrap rounded-[5px] px-2.5 py-1 ${
                 scope === key
-                  ? "bg-tyba-raised text-tyba-text shadow-[var(--tyba-raised-ring)]"
+                  ? "tyba-pill-on text-tyba-text"
                   : "text-tyba-text-muted hover:text-tyba-text"
               }`}
             >
@@ -245,7 +245,7 @@ export function CiView({
 
       {run && (
         <div className="flex min-h-0 flex-1">
-          <ul className="flex w-[340px] shrink-0 flex-col gap-0.5 overflow-y-auto tyba-divide-r p-2">
+          <ul className="flex w-[340px] shrink-0 flex-col gap-0.5 overflow-y-auto shadow-[inset_-1px_0_0_var(--tyba-line)] p-2">
             {shown.map((r) => {
               const tone = runTone(r);
               const on = r.id === run.id;
@@ -255,7 +255,7 @@ export function CiView({
                     type="button"
                     onClick={() => setRunId(r.id)}
                     className={`flex w-full flex-col gap-0.5 rounded-[6px] px-2.5 py-2 text-left ${
-                      on ? "bg-tyba-raised shadow-[var(--tyba-raised-ring)]" : "hover:bg-tyba-raised/60"
+                      on ? "tyba-pill-on" : "hover:bg-tyba-raised/60"
                     }`}
                   >
                     <span className="flex min-w-0 items-center gap-2 text-[12.5px]">
@@ -276,7 +276,7 @@ export function CiView({
             })}
           </ul>
 
-          <div className="flex w-[260px] shrink-0 flex-col gap-1 overflow-y-auto tyba-divide-r p-3">
+          <div className="flex w-[260px] shrink-0 flex-col gap-1 overflow-y-auto shadow-[inset_-1px_0_0_var(--tyba-line)] p-3">
             <span className="tyba-label px-1.5 pb-1.5">{t("ciJobs")}</span>
             {jobs === null && (
               <ForgeLoading
@@ -294,7 +294,7 @@ export function CiView({
                   type="button"
                   onClick={() => setJobId(j.id)}
                   className={`flex items-center gap-2 rounded-[6px] px-1.5 py-1.5 text-left text-[12.5px] ${
-                    j.id === jobId ? "bg-tyba-raised shadow-[var(--tyba-raised-ring)]" : "hover:bg-tyba-raised/60"
+                    j.id === jobId ? "tyba-pill-on" : "hover:bg-tyba-raised/60"
                   }`}
                 >
                   <span className={`w-3 shrink-0 ${TONE_TEXT[tone]}`}>{MARK[tone]}</span>
@@ -326,8 +326,8 @@ export function CiView({
             )}
           </div>
 
-          <div className="flex min-w-0 flex-1 flex-col bg-tyba-sunken">
-            <div className="flex shrink-0 items-center gap-2.5 tyba-divide-b px-4 py-2 text-[12px]">
+          <div className="flex min-w-0 flex-1 flex-col">
+            <div className="flex shrink-0 items-center gap-2.5 shadow-[inset_0_-1px_0_var(--tyba-line)] px-4 py-2 text-[12px]">
               <span className="min-w-0 truncate text-tyba-text">{log?.failed_step ?? job?.name ?? ""}</span>
               {log?.failed_step && <span className="shrink-0 text-[11px] text-tyba-red">{t("ciStepFailed")}</span>}
               <span className="flex-1" />
@@ -371,7 +371,7 @@ export function CiView({
                 </div>
               ))}
             </div>
-            <div className="flex shrink-0 flex-wrap items-center gap-2 tyba-divide-t bg-[var(--tyba-panel-bg)] px-4 py-2.5">
+            <div className="flex shrink-0 flex-wrap items-center gap-2 shadow-[inset_0_1px_0_var(--tyba-line)] px-4 py-2.5">
               {/* Só em sessão de agente: numa de shell o prompt cairia no shell. */}
               {session.kind.type === "agent" && log && job && job.conclusion === "failure" && (
                 <button

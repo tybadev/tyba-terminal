@@ -37,7 +37,7 @@ const KIND_LABEL: Record<TunnelKind, string> = {
   dynamic: "tunnelsKindDynamic",
 };
 
-/** O `.btn` dos mockups: 11px, contorno 0,14, cantos de 5px. */
+/** O `.btn` dos mockups: 11px, contorno 0,14; cantos de 6px, como os botões da main. */
 const BTN =
   "shrink-0 rounded-[5px] border border-tyba-border-strong px-[9px] py-[3px] text-[11px] text-tyba-text-muted hover:text-tyba-text";
 
@@ -298,7 +298,7 @@ export function TunnelsView({ session, hostAlias }: Props) {
               <Button
                 size="sm"
                 type="submit"
-                className="h-auto flex-1 rounded-[6px] bg-tyba-cyan px-3.5 py-[7px] text-[12px] font-normal text-tyba-text-inverse hover:bg-tyba-cyan/90"
+                className="h-auto flex-1 rounded-[5px] bg-tyba-cyan px-3.5 py-[7px] text-[12px] font-normal text-tyba-text-inverse hover:bg-tyba-cyan/90"
               >
                 {t("tunnelsOpen")}
               </Button>

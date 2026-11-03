@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { MagnifyingGlass } from "@phosphor-icons/react";
 
-import { PANEL_SECTION, RAISED_ROW, SidePanelHeader } from "./SidePanelBar";
+import { PANEL_SECTION, SidePanelHeader } from "./SidePanelBar";
 import { formatDuration } from "../lib/blockLayout";
 import { writeClipboardText } from "../lib/clipboard";
 import { translateError } from "../lib/errors";
@@ -101,7 +101,7 @@ export function HistoryPanel({
                 aria-pressed={repo === r}
                 onClick={() => setRepo(r)}
                 className={`rounded-[5px] px-2 py-0.5 outline-none focus-visible:ring-2 focus-visible:ring-tyba-cyan ${
-                  repo === r ? `${RAISED_ROW} text-tyba-text` : "text-tyba-text-faint hover:text-tyba-text"
+                  repo === r ? "tyba-pill-on text-tyba-text" : "text-tyba-text-faint hover:text-tyba-text"
                 }`}
               >
                 {r ? t("historyScopeRepo") : t("historyScopeSession")}

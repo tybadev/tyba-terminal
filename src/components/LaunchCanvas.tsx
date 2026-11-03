@@ -112,10 +112,10 @@ export function LaunchCanvas({
             }}
             aria-pressed={isSelected}
             aria-label={slot?.name ?? t("launchSlotUnnamed")}
-            className={`tyba-focusable absolute flex flex-col overflow-hidden rounded-[8px] bg-tyba-sunken text-left ${
+            className={`tyba-focusable absolute flex flex-col overflow-hidden rounded-[8px] bg-transparent text-left ${
               isSelected
                 ? "shadow-[0_0_0_2px_var(--tyba-green)]"
-                : "shadow-[inset_0_0_0_1px_var(--tyba-border)] hover:shadow-[inset_0_0_0_1px_var(--tyba-border-strong)]"
+                : "shadow-[inset_0_0_0_1px_var(--tyba-line)] hover:shadow-[inset_0_0_0_1px_var(--tyba-border-strong)]"
             }`}
             style={{
               left: `calc(${rect.x}% + 4px)`,
@@ -124,7 +124,7 @@ export function LaunchCanvas({
               height: `calc(${rect.h}% - 8px)`,
             }}
           >
-            <div className="flex items-center gap-2 border-b border-tyba-border-soft bg-tyba-raised px-2.5 py-[7px] text-[11.5px]">
+            <div className="flex items-center gap-2 border-b border-[var(--tyba-line)] bg-tyba-raised px-2.5 py-[7px] text-[11.5px]">
               <span className="size-[7px] shrink-0 rounded-full" style={{ background: dotColor(slot) }} />
               <span className="truncate text-tyba-text">{slot?.name ?? t("launchSlotUnnamed")}</span>
               {!compact && <span className="truncate text-tyba-text-faint">{kindLabel(slot)}</span>}

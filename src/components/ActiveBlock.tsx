@@ -104,7 +104,7 @@ export function ActiveBlockHeader({
       // Sem caixa, como os blocos prontos: o que diz "este roda" é o filete
       // vivo no topo e o ponto aceso. `px-2.5` + o recuo da faixa põem o comando
       // na mesma coluna do comando dos blocos da lista (`px-[18px]`, mockup).
-      className="z-10 flex h-9 items-start gap-2 overflow-hidden bg-tyba-sunken px-2.5 pt-2.5"
+      className="z-10 flex h-9 items-start gap-2 overflow-hidden bg-tyba-paper-solid px-2.5 pt-2.5"
       style={{
         position: "absolute",
         left: `calc(${rect.left}% + ${LIVE_INSET_X_PX}px)`,

@@ -197,7 +197,7 @@ export function AgentsPanel({
           sabe dela. Com o `statusLine` do Claude: modelo, contexto, tokens,
           custo e tempo. Sem ele (Codex, Claude sem sessão do TYBA): só o
           tempo de sessão — o que não chega do core não se inventa. */}
-      <div className="flex shrink-0 flex-col gap-1 tyba-divide-b px-4 py-3.5">
+      <div className="flex shrink-0 flex-col gap-1 shadow-[inset_0_-1px_0_var(--tyba-line)] px-4 py-3.5">
         <div className="flex min-w-0 items-center gap-2">
           {runner === "claude_code" ? (
             <ClaudeIcon size={13} className="shrink-0 text-tyba-amber" />

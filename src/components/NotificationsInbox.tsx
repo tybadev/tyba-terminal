@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ArrowRight, Bell, CaretDown, CaretRight, Check, Diamond, Info, Warning, X, XCircle } from "@phosphor-icons/react";
+import { ArrowRight, CaretDown, CaretRight, Check, Diamond, Info, Warning, X, XCircle } from "@phosphor-icons/react";
 
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -66,7 +66,7 @@ const CMD = "notif-cmd mt-1.5 line-clamp-3 w-fit max-w-full rounded-[4px] px-1.5
 const ACTS = "mt-2 flex flex-wrap items-center gap-3.5";
 const SECTION = "flex justify-between pb-1 text-[11px] text-tyba-text-faint";
 const GROUP_HEAD =
-  "sticky top-0 z-[1] flex min-w-0 items-center gap-2 bg-tyba-surface py-1.5 text-[11px] text-tyba-text-faint";
+  "sticky top-0 z-[1] flex min-w-0 items-center gap-2 bg-[var(--tyba-glass-section)] backdrop-blur-[28px] py-1.5 text-[11px] text-tyba-text-faint";
 
 /** Ícone do pedido (losango) na cor do risco. */
 function RiskGlyph({ risk, label }: { risk: RiskLevel | null; label: string }) {
@@ -89,12 +89,16 @@ export function NotificationsInbox({
   open,
   onOpenChange,
   onGoToSession,
+  onBadgeChange,
 }: {
   sessions: Session[];
   approvals: ApprovalRequest[];
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onGoToSession: (sessionId: SessionId) => void;
+  /** Contagem do item Inbox da lateral (quadro PropostaClaro): a coluna não
+   *  tem botão próprio, quem abre é a lateral. */
+  onBadgeChange: (count: number) => void;
 }) {
   const { t } = useTranslation();
   const [feedbackFor, setFeedbackFor] = useState<number | null>(null);
@@ -161,6 +165,7 @@ export function NotificationsInbox({
   const history = useMemo(() => historyEntries(entries), [entries]);
   const shown = useMemo(() => filterEntries(history, filter), [history, filter]);
   const badge = attentionCount(approvals.length, entries);
+  useEffect(() => onBadgeChange(badge), [badge, onBadgeChange]);
   // Só o histórico: os pedidos pendentes têm a contagem própria em "Precisa de você".
   const unread = unreadCount(history);
   const now = Date.now();
@@ -460,38 +465,17 @@ export function NotificationsInbox({
 
   return (
     <>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <Button
-            variant="ghost"
-            size="icon"
-            aria-label={badge > 0 ? t("notifAria", { count: badge }) : t("notifications")}
-            aria-pressed={open}
-            onClick={() => onOpenChange(!open)}
-            className={`relative h-7 w-[30px] rounded-[6px] ${
-              open ? "bg-[var(--tyba-lit-bg)] text-tyba-blue shadow-[var(--tyba-lit-glow)]" : "text-tyba-text-faint hover:text-tyba-text"
-            }`}
-          >
-            <Bell size={16} weight={badge > 0 ? "fill" : "regular"} />
-            {badge > 0 && (
-              <span className="absolute right-[3px] top-[3px] flex h-3 min-w-3 items-center justify-center rounded-[6px] bg-tyba-red-fill px-[3px] text-[9px] leading-none text-tyba-text-inverse">
-                {badge > 9 ? "9+" : badge}
-              </span>
-            )}
-          </Button>
-        </TooltipTrigger>
-        <TooltipContent side="bottom">{t("notifications")}</TooltipContent>
-      </Tooltip>
-
       {open && (
         <aside
           ref={panelRef}
           aria-label={t("notifications")}
-          className="motion-safe:animate-tyba-panel-in fixed bottom-[26px] right-0 top-[38px] z-50 flex w-[380px] flex-col tyba-divide-l bg-[var(--tyba-panel-bg)] tyba-glass shadow-[-24px_0_48px_rgba(0,0,0,0.35)]"
+          // Coluna encostada na lateral, empurrando o terminal (quadro
+          // PropostaClaro): a mesma seção de vidro da lateral.
+          data-inbox-section
+          className="tyba-section flex w-[320px] shrink-0 flex-col overflow-hidden"
         >
           <div className={PANEL_HEADER}>
-            <Bell size={16} className="shrink-0 text-tyba-blue" />
-            <span className="min-w-0 flex-1 truncate text-[13px] text-tyba-text">{t("notifications")}</span>
+            <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-tyba-text">{t("inbox")}</span>
             {unread > 0 && <span className="text-[11px] text-tyba-text-faint">{t("notifUnreadCount", { count: unread })}</span>}
             <Tooltip>
               <TooltipTrigger asChild>

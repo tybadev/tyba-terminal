@@ -16,16 +16,13 @@ import {
   GitBranch,
   GitDiff,
   HardDrives,
-  Keyboard,
   MagnifyingGlass,
   Plug,
   Plus,
   Prohibit,
-  SidebarSimple,
   SquaresFour,
-  Stack,
   TerminalWindow,
-  User,
+  Tray,
   X,
   XCircle,
 } from "@phosphor-icons/react";
@@ -37,8 +34,6 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuGroup,
-  DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuSub,
   DropdownMenuSubContent,
@@ -110,6 +105,8 @@ import {
 } from "./components/LaunchConfigScreen";
 import { OrbitScreen, type FocusSessionRequest } from "./components/orbit/OrbitScreen";
 import { ShortcutsPanel } from "./components/ShortcutsPanel";
+import { EmptySessions } from "./components/EmptySessions";
+import { OrbitIcon } from "./components/icons/OrbitIcon";
 import { ConnectionsView } from "./components/ConnectionsView";
 import {
   HostFormDialog,
@@ -1071,6 +1068,7 @@ export default function App() {
   const [approvals, setApprovals] = useState<ApprovalRequest[]>([]);
   const sessionPorts = useSessionPorts();
   const [inboxOpen, setInboxOpen] = useState(false);
+  const [inboxBadge, setInboxBadge] = useState(0);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [version, setVersion] = useState("");
   const [update, setUpdate] = useState<UpdateStatus | null>(null);
@@ -1158,6 +1156,16 @@ export default function App() {
       null,
     [activeWorkspace],
   );
+
+  // As abas vão na barra (opção G) nas mesmas telas em que a faixa aparecia:
+  // as de tela cheia (Configurações, Conexões…) não têm abas para mostrar.
+  const tabsInBar =
+    !!activeWorkspace &&
+    activeWorkspace.tabs.length > 0 &&
+    activeTab?.view !== "settings" &&
+    activeTab?.view !== "connections" &&
+    activeTab?.view !== "stats" &&
+    activeTab?.view !== "agent-board";
 
   const activeId = useMemo(
     () =>
@@ -2907,6 +2915,23 @@ export default function App() {
     [sessionById],
   );
 
+  const workspaceCwd = useCallback(
+    (w: Workspace): string | null => resolveWorkspaceCwd(w, sessionCwds)?.cwd ?? null,
+    [sessionCwds],
+  );
+
+  // O nome da sessão como a lateral mostra: segue o cwd vivo (`cd` troca o
+  // contexto), a não ser que o dono tenha renomeado de propósito. A migalha
+  // usava `w.name`, o nome do momento em que a sessão abriu.
+  const activeWorkspaceName = activeWorkspace
+    ? activeWorkspace.name_locked
+      ? activeWorkspace.name
+      : (() => {
+          const dir = workspaceCwd(activeWorkspace) ?? activeWorkspace.repo_root;
+          return dir ? basename(dir) : activeWorkspace.name;
+        })()
+    : null;
+
   const titleBase =
     activeWorkspace &&
     !isConfigWorkspace(activeWorkspace) &&
@@ -2914,7 +2939,7 @@ export default function App() {
     !isConnectionsWorkspace(activeWorkspace) &&
     !isStatsWorkspace(activeWorkspace) &&
     !isAgentBoardWorkspace(activeWorkspace)
-      ? activeWorkspace.name
+      ? (activeWorkspaceName ?? activeWorkspace.name)
       : "Tyba";
   const activeAgentRunning = activeWorkspace
     ? workspaceAgentStatus(activeWorkspace)?.session.status.state === "running"
@@ -2954,11 +2979,6 @@ export default function App() {
     }, SPINNER_INTERVAL_MS);
     return () => window.clearInterval(timer);
   }, [titleBase, activeAgentRunning, unseenAttention]);
-
-  const workspaceCwd = useCallback(
-    (w: Workspace): string | null => resolveWorkspaceCwd(w, sessionCwds)?.cwd ?? null,
-    [sessionCwds],
-  );
 
   const workspaceGitDir = useCallback(
     (w: Workspace): string | null => workspaceMatchDir(w, sessionCwds),
@@ -5122,7 +5142,8 @@ export default function App() {
             : undefined
         }
         // Ativa = o cartão que SOBE (mockup Proposta): `raised` com o contorno
-        // do tema e o filamento vertical no meio da aresta esquerda.
+        // do tema e o filamento vertical no meio da aresta esquerda. Voltou
+        // como era na main (dono, 2026-11-02: "era perfeito").
         className={`group relative flex shrink-0 items-center gap-2 overflow-hidden rounded-[6px] text-[13px] transition-colors ${
           showDetails ? "h-[3.75rem]" : "h-[33px]"
         } ${open ? "px-2.5" : "justify-center px-0"} ${
@@ -5998,228 +6019,163 @@ export default function App() {
       />
       <div className="tyba-aurora flex h-screen flex-col text-tyba-text">
         <WindowResizeEdges />
+        <div className="tyba-window">
         <header
           data-tauri-drag-region
           // Build de dev: listras diagonais no header, como os apps do GNOME em
           // desenvolvimento, para nunca confundir com o app instalado. O build
           // de release não tem `import.meta.env.DEV`.
           style={DEV_HEADER_STYLE}
-          // Sem vidro: o header é transparente sobre o canvas, e é por ele que a
-          // aurora tripla aparece no topo da janela (mockup Proposta/PropostaClaro).
-          className={`tyba-lift-b flex h-[38px] shrink-0 items-center gap-1 pr-2.5 ${
-            IS_MAC ? "pl-20" : "pl-2.5"
+          // Barra B do quadro PropostaClaro: seção de vidro na largura toda,
+          // semáforos, marca, migalha, branch e, à direita, os ícones do painel.
+          // Os semáforos nativos ficam dentro dela (`trafficLightPosition`).
+          className={`tyba-section tyba-bar flex h-10 shrink-0 items-center gap-3 pr-2.5 ${
+            IS_MAC ? "pl-[84px]" : "pl-2.5"
           }`}
         >
           {/* Marca + wordmark. Sem eventos: o clique cai no header, que
               arrasta a janela. */}
-          <span className="pointer-events-none mr-2 flex shrink-0 items-center gap-2">
-            <TybaMark size={18} />
-            <span className="font-sans text-[13px] font-bold tracking-[0.02em] text-tyba-text">
+          <span className="pointer-events-none flex shrink-0 items-center gap-3">
+            <TybaMark size={16} />
+            <span className="font-sans text-[13px] font-semibold tracking-[0.02em] text-tyba-text">
               TYBA
             </span>
+            <span aria-hidden className="h-[18px] w-px bg-tyba-border" />
           </span>
 
-          <IconAction
-            label={t("panelToggle")}
-            shortcut={bindings.panel}
-            onClick={toggleSidebar}
+          <nav
+            aria-label={t("breadcrumb")}
+            className="flex min-w-0 items-center gap-2 text-[13px] font-medium text-tyba-text-faint"
           >
-            <SidebarSimple size={16} />
-          </IconAction>
-
-          <IconAction
-            label={t("commandPalette")}
-            shortcut={bindings.paletteActions}
-            onClick={() => openPalette("actions")}
-          >
-            <MagnifyingGlass size={16} />
-          </IconAction>
-
-          <div className="pointer-events-none absolute inset-x-0 top-0 flex h-[38px] items-center justify-center">
-            <div className="pointer-events-auto flex items-center gap-0.5 rounded-[8px] bg-[var(--tyba-segment-bg)] p-[3px] shadow-[var(--tyba-edge)]">
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <button
-                    aria-label={t("terminalView")}
-                    aria-pressed={!orbitOpen}
-                    onClick={() => {
-                      setOrbitOpen(false);
-                      setMachineScreen(null);
-                    }}
-                    className={`flex h-6 items-center gap-1.5 rounded-[6px] px-3 text-[13px] ${
-                      orbitOpen
-                        ? "text-tyba-text-faint hover:text-tyba-text-muted"
-                        : "bg-tyba-raised text-tyba-text shadow-[var(--tyba-row-raised)]"
-                    }`}
-                  >
-                    <TerminalWindow size={14} aria-hidden />
-                    {t("terminalView")}
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent side="bottom">
-                  {t("terminalView")}
-                </TooltipContent>
-              </Tooltip>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <button
-                    aria-label={t("orbitView")}
-                    aria-pressed={orbitOpen}
-                    onClick={() => {
-                      // O terminal de baixo não fica com o foco: as teclas
-                      // cairiam num xterm escondido.
-                      (document.activeElement as HTMLElement | null)?.blur();
-                      setOrbitOpen(true);
-                    }}
-                    className={`flex h-6 items-center gap-1.5 rounded-[6px] px-3 text-[13px] ${
-                      orbitOpen
-                        ? "bg-tyba-raised text-tyba-text shadow-[var(--tyba-row-raised)]"
-                        : "text-tyba-text-faint hover:text-tyba-text-muted"
-                    }`}
-                  >
-                    <Stack size={14} aria-hidden />
-                    {t("orbitView")}
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent side="bottom">
-                  {t("orbitView")}
-                </TooltipContent>
-              </Tooltip>
-            </div>
-          </div>
+            {/* O modo atual (Terminal ou Workspace/Orbit). Quem troca de modo é
+                a lateral — o item Workspace (dono, 2026-11-02); clicar aqui no
+                Workspace volta ao Terminal. */}
+            <button
+              onClick={() => {
+                if (!orbitOpen) return;
+                setOrbitOpen(false);
+                setMachineScreen(null);
+              }}
+              className="tyba-pill-on flex h-[26px] shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full pl-2 pr-2.5 text-tyba-text"
+            >
+              {orbitOpen ? (
+                <OrbitIcon size={13} className="text-tyba-violet" />
+              ) : (
+                <span className="font-mono text-tyba-green">❯</span>
+              )}
+              {orbitOpen ? t("orbitView") : t("terminalView")}
+            </button>
+            {/* Com as abas na barra, o nome da sessão sai da migalha: ele
+                repetia a pasta da aba, e o caminho já está no campo de
+                comando (dono, 2026-11-02). */}
+            {!orbitOpen && activeWorkspace && !tabsInBar && (
+              <>
+                <span aria-hidden>/</span>
+                <span className="truncate">{activeWorkspaceName}</span>
+              </>
+            )}
+            {/* Opção G: as abas moram na migalha, no lugar do título da
+                sessão — a faixa de abas saiu e o terminal ganhou a altura. */}
+            {orbitOpen ? null : tabsInBar && activeWorkspace ? (
+              <>
+                <span aria-hidden>/</span>
+                <TabBar
+                  tabs={activeWorkspace.tabs}
+                  activeTab={activeWorkspace.active_tab}
+                  sessions={sessions}
+                  cwds={sessionCwds}
+                  onActivate={(id) => void activateTab(id)}
+                  onClose={(id) => void closeTabAndRefresh(id)}
+                  onNew={() => void newTab()}
+                />
+              </>
+            ) : (
+              activeSession && (
+                <>
+                  <span aria-hidden>/</span>
+                  <b className="truncate font-medium text-tyba-text">
+                    {activeSession.title}
+                  </b>
+                </>
+              )
+            )}
+          </nav>
+          {activeChips.branch?.state === "known" && (
+            <span className="flex h-[22px] shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full bg-tyba-blue/[.10] pl-2 pr-[9px] text-[11.5px] font-medium text-tyba-blue">
+              <span aria-hidden className="size-1.5 rounded-full bg-current" />
+              {activeChips.branch.label}
+            </span>
+          )}
 
           <div className="h-full flex-1" data-tauri-drag-region />
 
-          {orbitOpen ? (
-            // No Workspace não há sessão à vista: Serviços e Túneis abrem a
-            // tela da máquina por cima do Orbit; o que depende de sessão
-            // fica desabilitado dizendo onde funciona, em vez de não fazer nada.
+          {/* Ícones do painel lateral: soltos na barra (opção G). */}
+          <div className="flex items-center gap-0.5">
+            {orbitOpen ? (
+              // No Orbit não há sessão à vista: Serviços e Túneis abrem a
+              // tela da máquina por cima dele; o que depende de sessão fica
+              // desabilitado dizendo onde funciona, em vez de não fazer nada.
+              <>
+                <IconAction label={t("servicesTitle")} onClick={() => setMachineScreen("ports")}>
+                  <Plug size={16} />
+                </IconAction>
+                <IconAction label={t("tunnelsTitle")} onClick={() => setMachineScreen("tunnels")}>
+                  <ArrowsLeftRight size={16} />
+                </IconAction>
+                {panelTabs
+                  .filter((tab) => tab.kind !== "services")
+                  .map((tab) => (
+                    <IconAction
+                      key={tab.kind}
+                      disabled
+                      label={t("openInTerminalHint", { what: tab.label })}
+                    >
+                      <PanelIcon kind={tab.kind} />
+                    </IconAction>
+                  ))}
+                <IconAction disabled label={t("openInTerminalHint", { what: t("filesPanel") })}>
+                  <FolderOpen size={16} />
+                </IconAction>
+              </>
+            ) : (
             <>
-              <IconAction label={t("servicesTitle")} onClick={() => setMachineScreen("ports")}>
-                <Plug size={16} />
-              </IconAction>
-              <IconAction label={t("tunnelsTitle")} onClick={() => setMachineScreen("tunnels")}>
-                <ArrowsLeftRight size={16} />
-              </IconAction>
-              {panelTabs
-                .filter((tab) => tab.kind !== "services")
-                .map((tab) => (
-                  <IconAction
-                    key={tab.kind}
-                    disabled
-                    label={t("openInTerminalHint", { what: tab.label })}
-                  >
-                    <PanelIcon kind={tab.kind} />
-                  </IconAction>
-                ))}
-              <IconAction disabled label={t("openInTerminalHint", { what: t("filesPanel") })}>
-                <FolderOpen size={16} />
-              </IconAction>
-            </>
-          ) : (
-            <>
-              <SidePanelBar
-                tabs={panelTabs}
-                lit={
-                  activeContent?.kind === "session-diff"
-                    ? "diff"
-                    : litPanel(sideView, fileSessionId)
+            <SidePanelBar
+              tabs={panelTabs}
+              lit={
+                activeContent?.kind === "session-diff"
+                  ? "diff"
+                  : litPanel(sideView, fileSessionId)
+              }
+              onClick={onPanelClick}
+              onEscape={() => {
+                if (activeWorkspace) {
+                  void closeSideView(activeWorkspace.id).catch(() => {});
                 }
-                onClick={onPanelClick}
-                onEscape={() => {
-                  if (activeWorkspace) {
-                    void closeSideView(activeWorkspace.id).catch(() => {});
-                  }
-                }}
-              />
-
-              <ErrorBoundary region="forge">
-                <ForgePanel
-                  sessionId={activeId}
-                  repoRoot={activeGitStatus?.root ?? null}
-                />
-              </ErrorBoundary>
-
-              {/* A pasta do header abre a tela de Arquivos da sessão (pedido do dono,
-                  2026-10-14); "Abrir pasta do projeto" fica no menu, na paleta e no
-                  atalho. */}
-              <IconAction
-                label={t("filesPanel")}
-                shortcut={bindings.files}
-                onClick={() => {
-                  if (fileSessionId) void openFilesPanel(fileSessionId).catch(() => {});
-                }}
-              >
-                <FolderOpen size={16} />
-              </IconAction>
-            </>
-          )}
-
-          <ErrorBoundary region="notificações">
-            <NotificationsInbox
-              sessions={sessions}
-              approvals={approvals}
-              open={inboxOpen}
-              onOpenChange={setInboxOpen}
-              onGoToSession={focusSessionOrNode}
+              }}
             />
-          </ErrorBoundary>
 
-          {/* Divisória antes da conta (mockup): 1px × 18px, a linha fina. */}
-          <span aria-hidden className="mx-1.5 h-[18px] w-px bg-tyba-border" />
+            <ErrorBoundary region="forge">
+              <ForgePanel
+                sessionId={activeId}
+                repoRoot={activeGitStatus?.root ?? null}
+              />
+            </ErrorBoundary>
 
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <button
-                aria-label={t("account")}
-                className="ml-1 rounded-full p-px"
-                style={{ background: "var(--tyba-gradient)" }}
-              >
-                <span className="flex size-5 items-center justify-center rounded-full bg-tyba-raised text-tyba-text-muted">
-                  <User size={11} weight="bold" />
-                </span>
-              </button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent
-              align="end"
-              className="w-56"
+            {/* A pasta do header abre a tela de Arquivos da sessão (pedido do dono,
+                2026-10-14); "Abrir pasta do projeto" fica no menu, na paleta e no
+                atalho. */}
+            <IconAction
+              label={t("filesPanel")}
+              shortcut={bindings.files}
+              onClick={() => {
+                if (fileSessionId) void openFilesPanel(fileSessionId).catch(() => {});
+              }}
             >
-              <DropdownMenuLabel className="flex min-w-0 flex-col">
-                <span className="truncate text-xs font-medium text-tyba-text">
-                  {accountName || t("localAccount")}
-                </span>
-                {accountName && (
-                  <span className="truncate text-[11px] font-normal text-tyba-text-faint">
-                    {t("localAccount")}
-                  </span>
-                )}
-              </DropdownMenuLabel>
-              <DropdownMenuSeparator />
-              <DropdownMenuGroup>
-                <DropdownMenuItem
-                  className="text-xs"
-                  onSelect={() => void openViewTab("settings").catch(() => {})}
-                >
-                  <GearSix size={16} className="opacity-60" />
-                  {t("settings")}
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  className="text-xs"
-                  onSelect={() => openPalette("actions")}
-                >
-                  <MagnifyingGlass size={16} className="opacity-60" />
-                  {t("commandPalette")}
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  className="text-xs"
-                  onSelect={() => setShortcutsOpen(true)}
-                >
-                  <Keyboard size={16} className="opacity-60" />
-                  {t("shortcuts")}
-                </DropdownMenuItem>
-              </DropdownMenuGroup>
-            </DropdownMenuContent>
-          </DropdownMenu>
+              <FolderOpen size={16} />
+            </IconAction>
+            </>
+            )}
+          </div>
 
           <WindowControls />
         </header>
@@ -6237,6 +6193,10 @@ export default function App() {
                     onCardApprovals={setNodeCardIds}
                     covered={machineScreen !== null}
                     sessions={sessions}
+                    onBackToTerminal={() => {
+                      setMachineScreen(null);
+                      setOrbitOpen(false);
+                    }}
                   />
                 </TerminalPaneContext.Provider>
               </ErrorBoundary>
@@ -6269,11 +6229,11 @@ export default function App() {
                   // `sunken` distam 5/255. E acima do terminal ela encosta na
                   // faixa de abas, que é `surface` também: mesma cor, zero
                   // separação, em TODO tema.
-                  className="tyba-lift-r tyba-glass flex shrink-0 flex-col"
+                  className="tyba-section flex shrink-0 flex-col overflow-hidden"
                   style={{ width: SIDEBAR_WIDTH[sidebar] }}
                 >
                   {open && (
-                    <label className="mx-2 mt-3 flex h-[31px] items-center gap-1.5 rounded-[6px] bg-tyba-raised px-2.5 shadow-[var(--tyba-raised-ring)] focus-within:shadow-[inset_0_0_0_1px_var(--tyba-border-strong)]">
+                    <label className="tyba-piece mx-2 mt-2 flex h-8 shrink-0 items-center gap-2 !rounded-[6px] px-2.5 focus-within:outline focus-within:outline-1 focus-within:outline-tyba-border-strong">
                       <MagnifyingGlass
                         size={12}
                         className="shrink-0 text-tyba-text-faint"
@@ -6285,93 +6245,111 @@ export default function App() {
                         value={sessionQuery}
                         onChange={(e) => setSessionQuery(e.target.value)}
                         placeholder={t("searchSessions")}
-                        className="w-full bg-transparent text-[13px] text-tyba-text outline-none placeholder:text-tyba-text-faint"
+                        className="w-full bg-transparent text-[12.5px] text-tyba-text outline-none placeholder:text-tyba-text-faint"
                       />
                     </label>
                   )}
-                  <nav
-                    className="tyba-scroll-fade mt-3 flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto px-2 pb-2"
-                  >
-                    {layout.workspaces.some(isConfigWorkspace) && (
-                      <div className="mb-1 flex flex-col gap-px rounded-[6px] border border-tyba-border/70 bg-tyba-text/[.015] p-1">
-                        {open && (
-                          <span className="flex items-center gap-2 px-1.5 pt-1 pb-1.5">
-                            <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-tyba-text-faint">
-                              {t("systemGroup")}
-                            </span>
-                            <span className="h-px min-w-0 flex-1 bg-tyba-border" />
-                          </span>
-                        )}
-                        <Tooltip>
+                  <div className="mt-1 flex shrink-0 flex-col gap-0.5 px-2">
+                      <Tooltip>
                         <TooltipTrigger asChild>
-                        <button
-                          onClick={() =>
-                            void openViewTab("settings").catch(() => {})
-                          }
-                          aria-label={t("settings")}
-                          className={`group relative flex h-8 shrink-0 items-center gap-2 rounded-[4px] text-[13px] transition-colors ${
-                            open ? "px-2" : "justify-center px-0"
-                          } ${
-                            activeTab?.view === "settings"
-                              ? "bg-tyba-text/[.05] text-tyba-text"
-                              : "text-tyba-text-faint hover:bg-tyba-text/[.03] hover:text-tyba-text-muted"
-                          }`}
-                        >
-                          <GearSix size={16} className="shrink-0" />
-                          {open && (
-                            <span className="min-w-0 flex-1 truncate text-left">
-                              {t("settings")}
-                            </span>
-                          )}
-                        </button>
+                          <Button
+                            variant="ghost"
+                            onClick={() => openNewSession()}
+                            aria-label={t("newSession")}
+                            className={`h-[33px] shrink-0 gap-2 rounded-[6px] text-[13px] font-medium text-tyba-text-muted hover:bg-tyba-text/[.03] hover:text-tyba-text ${
+                              open ? "justify-start px-2.5" : "justify-center px-0"
+                            }`}
+                          >
+                            <Plus size={14} className="shrink-0 text-tyba-text-faint" />
+                            {open && (
+                              <>
+                                <span className="flex-1 text-left">{t("newSession")}</span>
+                                <span className="text-[12px] text-tyba-text-faint">
+                                  {formatCombo(bindings.newSession)}
+                                </span>
+                              </>
+                            )}
+                          </Button>
                         </TooltipTrigger>
-                        {!open && (
-                          <TooltipContent side="right">
-                            {t("settings")}
-                          </TooltipContent>
-                        )}
-                        </Tooltip>
-                      </div>
-                    )}
-                    {layout.workspaces.some(isWorktreesWorkspace) && (
-                      <div className="mb-1 flex flex-col gap-px rounded-[6px] border border-tyba-border/70 bg-tyba-text/[.015] p-1">
-                        {open && (
-                          <span className="flex items-center gap-2 px-1.5 pt-1 pb-1.5">
-                            <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-tyba-text-faint">
-                              {t("codeGroup")}
-                            </span>
-                            <span className="h-px min-w-0 flex-1 bg-tyba-border" />
-                          </span>
-                        )}
-                        <button
-                          disabled
-                          aria-disabled
-                          aria-label={`${t("worktreesTitle")} — ${t("comingSoon")}`}
-                          title={t("comingSoon")}
-                          className={`group relative flex h-8 shrink-0 cursor-not-allowed items-center gap-2 rounded-[4px] text-[13px] text-tyba-text-faint/50 ${
-                            open ? "px-2" : "justify-center px-0"
-                          }`}
+                        <TooltipContent
+                          side={open ? "bottom" : "right"}
+                          className="flex items-center gap-2"
                         >
-                          <SquaresFour size={16} className="shrink-0" />
-                          {open && (
-                            <>
-                              <span className="min-w-0 flex-1 truncate text-left">
-                                {t("worktreesTitle")}
-                              </span>
-                              <span className="shrink-0 rounded-[3px] bg-tyba-text/[.06] px-1.5 py-0.5 text-[9px] uppercase tracking-wider">
-                                {t("comingSoon")}
-                              </span>
-                            </>
-                          )}
-                        </button>
-                      </div>
-                    )}
+                          {t("newSession")}
+                          <span className="font-mono text-tyba-text-faint">
+                            {formatCombo(bindings.newSession)}
+                          </span>
+                        </TooltipContent>
+                      </Tooltip>
+                      {/* Um item só para o Orbit (dono, 2026-11-02: "a lateral não
+                          pode estar poluída"); a volta para o Terminal mora na
+                          paleta do próprio Orbit. Aceso enquanto ele está aberto. */}
+                      <button
+                        aria-label={t("orbitView")}
+                        aria-pressed={orbitOpen}
+                        onClick={() => {
+                          // Indo para o Orbit, o terminal de baixo não fica com
+                          // o foco: as teclas cairiam num xterm escondido.
+                          if (!orbitOpen) (document.activeElement as HTMLElement | null)?.blur();
+                          setMachineScreen(null);
+                          setOrbitOpen((o) => !o);
+                        }}
+                        className={`flex h-[33px] shrink-0 items-center gap-2.5 rounded-[6px] text-[13px] font-medium ${
+                          orbitOpen
+                            ? "tyba-nav-on text-tyba-violet"
+                            : "text-tyba-text-muted hover:bg-tyba-text/[.03] hover:text-tyba-text"
+                        } ${open ? "px-2.5" : "justify-center px-0"}`}
+                      >
+                        <OrbitIcon
+                          size={14}
+                          className={`shrink-0 ${orbitOpen ? "text-tyba-violet" : "text-tyba-text-faint"}`}
+                        />
+                        {open && (
+                          <>
+                            <span className="flex-1 text-left text-tyba-text">{t("orbitView")}</span>
+                            <span className="font-mono text-[11px] text-tyba-text-faint">
+                              {formatCombo(bindings.toggleOrbit)}
+                            </span>
+                          </>
+                        )}
+                      </button>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Button
+                            variant="ghost"
+                            onClick={() =>
+                              void openViewTab("connections").catch(() => {})
+                            }
+                            aria-label={t("connectionsTitle")}
+                            className={`h-[33px] shrink-0 gap-2.5 rounded-[6px] text-[13px] font-medium ${
+                              open ? "justify-start px-2.5" : "justify-center px-0"
+                            } ${
+                              activeTab?.view === "connections"
+                                ? "tyba-nav-on text-tyba-cyan"
+                                : "text-tyba-text-muted hover:bg-tyba-text/[.03] hover:text-tyba-text"
+                            }`}
+                          >
+                            <HardDrives
+                              size={14}
+                              className={`shrink-0 ${activeTab?.view === "connections" ? "text-tyba-cyan" : "text-tyba-text-faint"}`}
+                            />
+                            {open && <span className="text-tyba-text">{t("connectionsTitle")}</span>}
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent side={open ? "bottom" : "right"}>
+                          {t("connectionsTitle")}
+                        </TooltipContent>
+                      </Tooltip>
+                  </div>
+                  <nav
+                    className="tyba-scroll-fade mt-2 flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto px-2 pb-2"
+                  >
                     {groupedWorkspaces.groups.map(([name, list]) => (
                       <div
                         key={name}
-                        className="mb-1 flex flex-col gap-px rounded-[6px] border border-tyba-border/70 bg-tyba-text/[.015] p-1"
+                        className="flex flex-col gap-0.5"
                       >
-                        <span className="flex items-center gap-2 px-1.5 pt-1 pb-1.5">
+                        <span className="flex items-center gap-2 px-2.5 pt-3.5 pb-1.5">
                           <button
                             aria-label={name}
                             aria-expanded={!collapsedGroups[name]}
@@ -6388,14 +6366,11 @@ export default function App() {
                             ) : (
                               <CaretDown size={9} weight="bold" />
                             )}
-                            <span className="truncate text-[10px] font-medium uppercase tracking-[0.14em]">
-                              {name}
+                            <span className="truncate text-[11px] font-medium uppercase tracking-[0.06em]">
+                              {t("sessionsGroup", { name })}
                             </span>
                           </button>
-                          <span className="h-px min-w-0 flex-1 bg-tyba-border" />
-                          <span className="font-mono text-[9px] text-tyba-text-faint">
-                            {list.length}
-                          </span>
+                          <span className="min-w-0 flex-1" />
                           <Tooltip>
                             <TooltipTrigger asChild>
                               <button
@@ -6414,6 +6389,19 @@ export default function App() {
                         {!collapsedGroups[name] && list.map(renderWorkspace)}
                       </div>
                     ))}
+                    {open &&
+                      groupedWorkspaces.loose.some(
+                        (w) =>
+                          !isConfigWorkspace(w) &&
+                          !isWorktreesWorkspace(w) &&
+                          !isConnectionsWorkspace(w) &&
+                          !isStatsWorkspace(w) &&
+                          !isAgentBoardWorkspace(w),
+                      ) && (
+                      <span className="px-2.5 pt-3.5 pb-1.5 text-[11px] font-medium uppercase tracking-[0.06em] text-tyba-text-faint">
+                        {t("sessionsTitle")}
+                      </span>
+                    )}
                     {groupedWorkspaces.loose
                       .filter(
                         (w) =>
@@ -6424,54 +6412,6 @@ export default function App() {
                           !isAgentBoardWorkspace(w),
                       )
                       .map(renderWorkspace)}
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <Button
-                          variant="ghost"
-                          onClick={() => openNewSession()}
-                          aria-label={t("newSession")}
-                          className={`h-[33px] shrink-0 gap-2 rounded-[6px] text-[13px] font-normal text-tyba-text-faint hover:bg-tyba-text/[.03] hover:text-tyba-text ${
-                            open ? "justify-start px-2.5" : "justify-center px-0"
-                          }`}
-                        >
-                          {/* Aberta, só o texto (mockup Proposta); o ícone fica
-                              para o trilho recolhido, onde não há texto. */}
-                          {open ? t("newSession") : <Plus size={14} />}
-                        </Button>
-                      </TooltipTrigger>
-                      <TooltipContent
-                        side={open ? "bottom" : "right"}
-                        className="flex items-center gap-2"
-                      >
-                        {t("newSession")}
-                        <span className="font-mono text-tyba-text-faint">
-                          {formatCombo(bindings.newSession)}
-                        </span>
-                      </TooltipContent>
-                    </Tooltip>
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <Button
-                          variant="ghost"
-                          onClick={() =>
-                            void openViewTab("connections").catch(() => {})
-                          }
-                          aria-label={t("connectionsTitle")}
-                          className={`h-[33px] shrink-0 gap-2 rounded-[6px] text-[13px] font-normal ${
-                            open ? "justify-start px-2.5" : "justify-center px-0"
-                          } ${
-                            activeTab?.view === "connections"
-                              ? "bg-tyba-text/[.05] text-tyba-text"
-                              : "text-tyba-text-faint hover:bg-tyba-text/[.03] hover:text-tyba-text"
-                          }`}
-                        >
-                          {open ? t("connectionsTitle") : <HardDrives size={14} />}
-                        </Button>
-                      </TooltipTrigger>
-                      <TooltipContent side={open ? "bottom" : "right"}>
-                        {t("connectionsTitle")}
-                      </TooltipContent>
-                    </Tooltip>
                   </nav>
                   {/* Sem divisa: quem marca a fronteira de rolagem é o fade
                       no `nav` acima. A linha aqui ficava 21px acima da borda da
@@ -6480,23 +6420,70 @@ export default function App() {
                       valor escolhido hoje quebra quando uma delas mudar.
                       O fade resolve por deleção, e informa mais: ele só existe
                       quando há conteúdo escondido acima. */}
-                  <div className="flex shrink-0 flex-col px-2 pt-1 pb-2">
+                  <div className="flex shrink-0 flex-col gap-0.5 px-2 pt-1 pb-2">
+                    {/* Inbox (quadro PropostaClaro): bandeja e contagem; abre a
+                        coluna encostada na lateral. */}
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          variant="ghost"
+                          aria-label={inboxBadge > 0 ? t("notifAria", { count: inboxBadge }) : t("inbox")}
+                          aria-pressed={inboxOpen}
+                          onClick={() => setInboxOpen((o) => !o)}
+                          className={`relative h-[33px] shrink-0 gap-2.5 rounded-[6px] text-[13px] font-medium ${
+                            open ? "justify-start px-2.5" : "justify-center px-0"
+                          } ${
+                            inboxOpen
+                              ? "tyba-nav-on text-tyba-blue"
+                              : "bg-tyba-text/[.05] text-tyba-text hover:bg-tyba-text/[.07]"
+                          }`}
+                        >
+                          <Tray size={16} className={`shrink-0 ${inboxOpen ? "text-tyba-blue" : ""}`} />
+                          {open && <span className="flex-1 text-left text-tyba-text">{t("inbox")}</span>}
+                          {inboxBadge > 0 && (
+                            <span
+                              className={
+                                open
+                                  ? "flex h-[22px] items-center gap-1.5 rounded-full bg-tyba-blue/[.10] pl-2 pr-[9px] text-[11.5px] font-medium text-tyba-blue before:size-1.5 before:rounded-full before:bg-current before:content-['']"
+                                  : "absolute right-1 top-1 size-1.5 rounded-full bg-tyba-blue"
+                              }
+                            >
+                              {open ? (inboxBadge > 9 ? "9+" : inboxBadge) : null}
+                            </span>
+                          )}
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent side={open ? "bottom" : "right"}>
+                        {t("inbox")}
+                      </TooltipContent>
+                    </Tooltip>
                     <Tooltip>
                       <TooltipTrigger asChild>
                         <Button
                           variant="ghost"
                           onClick={openAgentsFromSidebar}
                           aria-label={t("agentsQueue")}
-                          className={`relative h-[33px] shrink-0 gap-2 rounded-[6px] text-[13px] font-normal ${
+                          // Peça de vidro (quadro): o painel Agentes é o que
+                          // flutua, então a entrada dele já tem a lente.
+                          className={`relative h-[33px] shrink-0 gap-2.5 rounded-[6px] text-[13px] font-medium ${
                             open ? "justify-start px-2.5" : "justify-center px-0"
                           } ${
                             activeWorkspace?.side_view === "agent-queue" ||
                             activeWorkspace?.side_view?.startsWith("agents:")
-                              ? "bg-tyba-text/[.05] text-tyba-text"
-                              : "text-tyba-text hover:bg-tyba-text/[.03]"
+                              ? "tyba-nav-on text-tyba-amber"
+                              : "tyba-piece text-tyba-text"
                           }`}
                         >
-                          {open ? t("agentsQueue") : <AgentIcon size={14} />}
+                          <AgentIcon
+                            size={14}
+                            className={`shrink-0 ${
+                              activeWorkspace?.side_view === "agent-queue" ||
+                              activeWorkspace?.side_view?.startsWith("agents:")
+                                ? "text-tyba-amber"
+                                : "text-tyba-text-faint"
+                            }`}
+                          />
+                          {open && <span className="flex-1 text-left text-tyba-text">{t("agentsQueue")}</span>}
                           {/* Pílula do mockup: conta APROVAÇÕES pendentes. Sem
                               nenhuma, mas com agente pedindo alguém, cai no
                               número de antes — a atenção não some da tela. */}
@@ -6542,14 +6529,61 @@ export default function App() {
                         />
                       </div>
                     )}
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          variant="ghost"
+                          onClick={() => void openViewTab("settings").catch(() => {})}
+                          aria-label={t("settings")}
+                          className={`h-[33px] shrink-0 gap-2.5 rounded-[6px] text-[13px] font-medium ${
+                            open ? "justify-start px-2.5" : "justify-center px-0"
+                          } ${
+                            activeTab?.view === "settings"
+                              ? "tyba-nav-on text-tyba-green"
+                              : "text-tyba-text-muted hover:bg-tyba-text/[.03] hover:text-tyba-text"
+                          }`}
+                        >
+                          <GearSix
+                            size={16}
+                            className={`shrink-0 ${activeTab?.view === "settings" ? "text-tyba-green" : ""}`}
+                          />
+                          {open && (
+                            <>
+                              <span className="flex-1 text-left text-tyba-text">{t("settings")}</span>
+                              <span className="text-[12px] text-tyba-text-faint">
+                                {formatCombo(bindings.settings)}
+                              </span>
+                            </>
+                          )}
+                        </Button>
+                      </TooltipTrigger>
+                      {!open && (
+                        <TooltipContent side="right">{t("settings")}</TooltipContent>
+                      )}
+                    </Tooltip>
                   </div>
                 </aside>
               )}
 
+              <ErrorBoundary region="notificações">
+                <NotificationsInbox
+                  sessions={sessions}
+                  approvals={approvals}
+                  open={inboxOpen}
+                  onOpenChange={setInboxOpen}
+                  onGoToSession={goToSession}
+                  onBadgeChange={setInboxBadge}
+                />
+              </ErrorBoundary>
+
               <main ref={mainAreaRef} className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden">
                 {gitScreenSession && activeWorkspace && (
                   <GitScreen
-                    key={gitScreenSession.id}
+                    // Key com o tipo: Git, Docker e Serviços são irmãos aqui e
+                    // podem ser da MESMA sessão (um saindo enquanto o outro entra).
+                    // Só o id dava duas crianças com a mesma key, e o React
+                    // deixava a tela órfã no DOM, sem fechar (trava de 2026-11-02).
+                    key={`git:${gitScreenSession.id}`}
                     session={gitScreenSession}
                     // O repo da PRÓPRIA sessão da tela (worktree, senão o cwd
                     // dela), não o do painel em foco: branch, ↑↓, Pull, push e
@@ -6569,7 +6603,7 @@ export default function App() {
                 )}
                 {dockerScreenSession && activeWorkspace && (
                   <DockerScreen
-                    key={dockerScreenSession.id}
+                    key={`docker:${dockerScreenSession.id}`}
                     session={dockerScreenSession}
                     workspaceId={activeWorkspace.id}
                     state={activeWorkspace.screens.docker}
@@ -6591,7 +6625,7 @@ export default function App() {
                 )}
                 {servicesScreenSession && activeWorkspace && (
                   <ServicesScreen
-                    key={servicesScreenSession.id}
+                    key={`services:${servicesScreenSession.id}`}
                     session={servicesScreenSession}
                     workspaceId={activeWorkspace.id}
                     state={activeWorkspace.screens.services}
@@ -6671,22 +6705,6 @@ export default function App() {
                       : undefined
                   }
                 >
-                {activeWorkspace &&
-                  activeWorkspace.tabs.length > 0 &&
-                  activeTab?.view !== "settings" &&
-                  activeTab?.view !== "connections" &&
-                  activeTab?.view !== "stats" &&
-                  activeTab?.view !== "agent-board" && (
-                  <TabBar
-                    tabs={activeWorkspace.tabs}
-                    activeTab={activeWorkspace.active_tab}
-                    sessions={sessions}
-                    cwds={sessionCwds}
-                    onActivate={(id) => void activateTab(id)}
-                    onClose={(id) => void closeTabAndRefresh(id)}
-                    onNew={() => void newTab()}
-                  />
-                )}
                 {containerStrip && (
                   <ContainerStrip
                     key={containerStrip.id}
@@ -6711,6 +6729,9 @@ export default function App() {
                 )}
                 <div
                   ref={paneAreaRef}
+                  // A folha do terminal (opção G): acrílico, colada na barra e
+                  // na lateral — o material está em `[data-terminal-piece]`.
+                  data-terminal-piece
                   className="relative min-h-0 flex-1 overflow-hidden"
                 >
                   {searchOpen && activeId && (
@@ -6909,26 +6930,6 @@ export default function App() {
                       />
                     </div>
                   )}
-                  {/* O painel É a área de terminal, e pinta como tal.
-                      Antes dos terminais no DOM, portanto atrás de todos.
-
-                      Sem isto, tudo que não é coberto pelo terminal nem pela
-                      lista mostra o fundo do app, mais claro: a faixa entre o
-                      último cartão e o bloco em execução, e a margem em volta
-                      dele. Cada pedaço aparece como um degrau de cor. */}
-                  {paneLayout?.panes.map((p) => (
-                    <div
-                      key={`pane-bg-${p.pane}`}
-                      className="pointer-events-none bg-tyba-sunken"
-                      style={{
-                        position: "absolute",
-                        left: `${p.x}%`,
-                        top: `${p.y}%`,
-                        width: `${p.w}%`,
-                        height: `${p.h}%`,
-                      }}
-                    />
-                  ))}
                   {sessions.map((s) => {
                     // Sem painel em aba nenhuma, sem terminal. Ver
                     // `pannedSessions`: a lista de sessões guarda as mortas, e
@@ -7026,80 +7027,26 @@ export default function App() {
                   ))}
                   {!activeTab && (
                     <div
-                      className="absolute inset-0 flex flex-col items-center justify-center gap-5"
+                      className="absolute inset-0 flex flex-col items-center justify-center"
                       style={{
                         transform: `translateX(${-SIDEBAR_WIDTH[sidebar] / 2}px)`,
                       }}
                     >
-                      <TerminalWindow
-                        size={36}
-                        className="text-tyba-text-faint"
+                      <EmptySessions
+                        hasWorkspaces={layout.workspaces.length > 0}
+                        bindings={bindings}
+                        hosts={sshHosts}
+                        onNewSession={() => openNewSession()}
+                        onNewTab={() => void newTab()}
+                        onConnectSsh={() =>
+                          sshHosts.length > 0
+                            ? setHostPickerOpen(true)
+                            : void openViewTab("connections").catch(() => {})
+                        }
+                        onPalette={() => openPalette("actions")}
+                        onTogglePanel={toggleSidebar}
+                        onPickHost={(host) => void connectToHost(host)}
                       />
-                      <p className="text-sm text-tyba-text-faint">
-                        {layout.workspaces.length === 0
-                          ? t("noSessions")
-                          : t("noTabs")}
-                      </p>
-                      <div className="flex w-64 flex-col gap-px">
-                        {layout.workspaces.length === 0 ? (
-                          <button
-                            onClick={() => openNewSession()}
-                            className="flex h-8 items-center gap-2.5 rounded-[4px] px-2.5 text-[13px] text-tyba-text-muted transition-colors hover:bg-tyba-text/[.04] hover:text-tyba-text"
-                          >
-                            <Plus size={14} className="text-tyba-green" />
-                            <span className="flex-1 text-left">
-                              {t("newSession")}
-                            </span>
-                            <Shortcut combo={bindings.newTab} />
-                          </button>
-                        ) : (
-                          <button
-                            onClick={() => void newTab()}
-                            className="flex h-8 items-center gap-2.5 rounded-[4px] px-2.5 text-[13px] text-tyba-text-muted transition-colors hover:bg-tyba-text/[.04] hover:text-tyba-text"
-                          >
-                            <Plus size={14} className="text-tyba-green" />
-                            <span className="flex-1 text-left">
-                              {t("newTab")}
-                            </span>
-                            <Shortcut combo={bindings.newTab} />
-                          </button>
-                        )}
-                        <button
-                          onClick={() =>
-                            sshHosts.length > 0
-                              ? setHostPickerOpen(true)
-                              : void openViewTab("connections").catch(() => {})
-                          }
-                          className="flex h-8 items-center gap-2.5 rounded-[4px] px-2.5 text-[13px] text-tyba-text-muted transition-colors hover:bg-tyba-text/[.04] hover:text-tyba-text"
-                        >
-                          <HardDrives size={14} className="text-tyba-cyan" />
-                          <span className="flex-1 text-left">
-                            {sshHosts.length > 0
-                              ? t("connectSsh")
-                              : t("connectionsTitle")}
-                          </span>
-                        </button>
-                        <button
-                          onClick={() => openPalette("actions")}
-                          className="flex h-8 items-center gap-2.5 rounded-[4px] px-2.5 text-[13px] text-tyba-text-muted transition-colors hover:bg-tyba-text/[.04] hover:text-tyba-text"
-                        >
-                          <MagnifyingGlass size={14} />
-                          <span className="flex-1 text-left">
-                            {t("commandPalette")}
-                          </span>
-                          <Shortcut combo={bindings.paletteActions} />
-                        </button>
-                        <button
-                          onClick={toggleSidebar}
-                          className="flex h-8 items-center gap-2.5 rounded-[4px] px-2.5 text-[13px] text-tyba-text-muted transition-colors hover:bg-tyba-text/[.04] hover:text-tyba-text"
-                        >
-                          <SidebarSimple size={14} />
-                          <span className="flex-1 text-left">
-                            {t("togglePanel")}
-                          </span>
-                          <Shortcut combo={bindings.panel} />
-                        </button>
-                      </div>
                     </div>
                   )}
                   {activeSession && richInputVisible && !ownsCommandLine && (() => {
@@ -7175,8 +7122,8 @@ export default function App() {
                       }
                       className={`flex min-h-0 min-w-0 ${
                         agentsSideNarrow
-                          ? "shrink-0 bg-[var(--tyba-panel-bg)] tyba-divide-l"
-                          : "flex-1 bg-[var(--tyba-panel-bg)] tyba-divide-l"
+                          ? "tyba-side-sheet shrink-0"
+                          : "tyba-side-sheet flex-1"
                       }${
                         renderSideView?.startsWith("agents:")
                           ? agentsMotion.exiting
@@ -7362,6 +7309,31 @@ export default function App() {
             escondida: nada aparece e o foco entra num `display: none`. */}
         {activeTab && activeWorkspace && !(sideVisible && sideExpanded) && (
           <Toolbar
+            hints={[
+              {
+                key: "actions",
+                label: t("hintCommands"),
+                combo: bindings.paletteActions,
+                onClick: () => openPalette("actions"),
+              },
+              {
+                key: "history",
+                label: t("hintHistory"),
+                combo: bindings.paletteHistory,
+                onClick: () => openPalette("history"),
+              },
+              {
+                key: "snippets",
+                label: t("hintSnippets"),
+                combo: bindings.paletteSnippets,
+                onClick: () => openPalette("snippets"),
+              },
+              {
+                key: "shortcuts",
+                label: t("hintShortcuts"),
+                onClick: () => setShortcutsOpen((open) => !open),
+              },
+            ]}
             pref={toolbarPref}
             cwd={activeChips.cwd}
             branch={activeChips.branch}
@@ -7389,6 +7361,7 @@ export default function App() {
             sessionId={activeId ?? null}
           />
         )}
+        </div>
       </div>
     </TooltipProvider>
   );

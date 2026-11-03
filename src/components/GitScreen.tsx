@@ -173,7 +173,7 @@ export function GitScreen({
       tabIndex={-1}
       aria-label={t("gitScreenTitle")}
       data-exiting={exiting}
-      className="tyba-git-screen absolute inset-0 z-30 flex outline-none flex-row-reverse bg-tyba-bg"
+      className="tyba-git-screen absolute inset-0 z-30 flex outline-none flex-row-reverse bg-tyba-paper-solid"
       onKeyDown={(e) => {
         if (e.key !== "Escape" || e.defaultPrevented) return;
         const target = e.target as HTMLElement;
@@ -213,7 +213,7 @@ export function GitScreen({
               title={t(label)}
               onClick={() => go({ section: key, pr: null })}
               className={`relative flex size-9 items-center justify-center rounded-[8px] transition-colors ${
-                on ? "bg-tyba-blue/[.12] text-tyba-blue" : "text-tyba-text-faint hover:text-tyba-text"
+                on ? "tyba-icon-on text-tyba-blue" : "text-tyba-text-faint hover:text-tyba-text"
               }`}
             >
               <SectionIcon size={17} />

@@ -1027,7 +1027,7 @@ export const BlockList = memo(function BlockList({
         // tudo (ver `App`). Lista e terminal desenhando cada um a sua borda
         // punham duas caixas dentro do mesmo painel, e a de baixo só existia na
         // metade que o terminal ocupa.
-        className="pointer-events-auto h-full overflow-y-auto overscroll-contain bg-tyba-sunken pb-3 pt-2.5"
+        className="pointer-events-auto h-full overflow-y-auto overscroll-contain bg-transparent pb-3 pt-2.5"
       >
         {/* Ancorado EMBAIXO, de baixo para cima como no Warp (decisão do dono,
             15/10, quadro Proposta): o último comando fica colado na linha
@@ -1097,7 +1097,7 @@ export const BlockList = memo(function BlockList({
           O `px-2` repete o padding do scroller para o comando cair na mesma
           coluna do comando de todo cartão. */}
       {pinned !== null && blocks[pinned] && (
-        <div className="absolute inset-x-0 top-0 z-10 tyba-divide-b bg-tyba-sunken">
+        <div className="tyba-pinned absolute inset-x-0 top-0 z-10">
           <BlockHeader block={blocks[pinned]} pinned onInject={onInject} />
         </div>
       )}

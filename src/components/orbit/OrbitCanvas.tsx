@@ -1216,7 +1216,8 @@ export function OrbitCanvas({
               />
             )}
             {error && (
-              <Panel position="top-center">
+              // Abaixo da paleta, que flutua no topo do canvas (OrbitScreen).
+              <Panel position="top-center" className="!mt-[68px]">
                 <div
                   role="alert"
                   className="flex max-w-[560px] items-start gap-2 rounded-[6px] border border-tyba-red/50 bg-tyba-red-tint px-3 py-2 font-mono text-[12px] text-tyba-red"

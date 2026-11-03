@@ -224,8 +224,8 @@ export function BranchPicker({
                     onBrowse(b.is_current ? null : b.name);
                     setOpen(false);
                   }}
-                  className={`flex w-full items-center gap-2 rounded-md p-2 text-left text-[11px] hover:bg-tyba-text/[.04] ${
-                    active ? "bg-tyba-text/[.06]" : ""
+                  className={`flex w-full items-center gap-2 rounded-md p-2 text-left text-[11px] ${
+                    active ? "tyba-pill-on" : "hover:bg-tyba-text/[.04]"
                   }`}
                 >
                   <GitBranch
