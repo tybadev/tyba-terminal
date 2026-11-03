@@ -21,7 +21,7 @@ import type { PanelIndicator, PanelKind } from "../lib/sidePanel";
 
 /**
  * Cor de cada área (classes literais: o Tailwind só gera o que lê no fonte).
- * O ícone aceso é a pastilha quase opaca (`tyba-pill-on`) com a cor da área.
+ * O ícone aceso é a tinta e o brilho da cor da área (`tyba-icon-on`), sem placa.
  */
 const AREA: Record<PanelKind, { text: string }> = {
   history: { text: "text-tyba-green" },
@@ -119,10 +119,10 @@ export function SidePanelBar({
                 aria-label={tab.label}
                 aria-pressed={on}
                 onClick={() => onClick(tab.kind)}
-                className={`relative flex h-7 w-[30px] items-center justify-center rounded-[6px] outline-none focus-visible:ring-2 focus-visible:ring-tyba-cyan ${
+                className={`relative flex h-[30px] w-8 items-center justify-center rounded-[6px] outline-none focus-visible:ring-2 focus-visible:ring-tyba-cyan ${
                   on
-                    ? `${area.text} tyba-pill-on`
-                    : "text-tyba-text-faint hover:text-tyba-text"
+                    ? `${area.text} tyba-icon-on`
+                    : "text-tyba-text-muted hover:text-tyba-text"
                 }`}
               >
                 <PanelIcon kind={tab.kind} />

@@ -6296,7 +6296,7 @@ export default function App() {
                         }}
                         className={`flex h-[33px] shrink-0 items-center gap-2.5 rounded-[6px] text-[13px] font-medium ${
                           orbitOpen
-                            ? "tyba-pill-on text-tyba-text"
+                            ? "tyba-nav-on text-tyba-violet"
                             : "text-tyba-text-muted hover:bg-tyba-text/[.03] hover:text-tyba-text"
                         } ${open ? "px-2.5" : "justify-center px-0"}`}
                       >
@@ -6306,7 +6306,7 @@ export default function App() {
                         />
                         {open && (
                           <>
-                            <span className="flex-1 text-left">{t("orbitView")}</span>
+                            <span className="flex-1 text-left text-tyba-text">{t("orbitView")}</span>
                             <span className="font-mono text-[11px] text-tyba-text-faint">
                               {formatCombo(bindings.toggleOrbit)}
                             </span>
@@ -6325,7 +6325,7 @@ export default function App() {
                               open ? "justify-start px-2.5" : "justify-center px-0"
                             } ${
                               activeTab?.view === "connections"
-                                ? "tyba-pill-on text-tyba-text"
+                                ? "tyba-nav-on text-tyba-cyan"
                                 : "text-tyba-text-muted hover:bg-tyba-text/[.03] hover:text-tyba-text"
                             }`}
                           >
@@ -6333,7 +6333,7 @@ export default function App() {
                               size={14}
                               className={`shrink-0 ${activeTab?.view === "connections" ? "text-tyba-cyan" : "text-tyba-text-faint"}`}
                             />
-                            {open && t("connectionsTitle")}
+                            {open && <span className="text-tyba-text">{t("connectionsTitle")}</span>}
                           </Button>
                         </TooltipTrigger>
                         <TooltipContent side={open ? "bottom" : "right"}>
@@ -6434,12 +6434,12 @@ export default function App() {
                             open ? "justify-start px-2.5" : "justify-center px-0"
                           } ${
                             inboxOpen
-                              ? "tyba-pill-on text-tyba-text"
+                              ? "tyba-nav-on text-tyba-blue"
                               : "bg-tyba-text/[.05] text-tyba-text hover:bg-tyba-text/[.07]"
                           }`}
                         >
                           <Tray size={16} className={`shrink-0 ${inboxOpen ? "text-tyba-blue" : ""}`} />
-                          {open && <span className="flex-1 text-left">{t("inbox")}</span>}
+                          {open && <span className="flex-1 text-left text-tyba-text">{t("inbox")}</span>}
                           {inboxBadge > 0 && (
                             <span
                               className={
@@ -6470,7 +6470,7 @@ export default function App() {
                           } ${
                             activeWorkspace?.side_view === "agent-queue" ||
                             activeWorkspace?.side_view?.startsWith("agents:")
-                              ? "tyba-pill-on text-tyba-text"
+                              ? "tyba-nav-on text-tyba-amber"
                               : "tyba-piece text-tyba-text"
                           }`}
                         >
@@ -6483,7 +6483,7 @@ export default function App() {
                                 : "text-tyba-text-faint"
                             }`}
                           />
-                          {open && <span className="flex-1 text-left">{t("agentsQueue")}</span>}
+                          {open && <span className="flex-1 text-left text-tyba-text">{t("agentsQueue")}</span>}
                           {/* Pílula do mockup: conta APROVAÇÕES pendentes. Sem
                               nenhuma, mas com agente pedindo alguém, cai no
                               número de antes — a atenção não some da tela. */}
@@ -6539,7 +6539,7 @@ export default function App() {
                             open ? "justify-start px-2.5" : "justify-center px-0"
                           } ${
                             activeTab?.view === "settings"
-                              ? "tyba-pill-on text-tyba-text"
+                              ? "tyba-nav-on text-tyba-green"
                               : "text-tyba-text-muted hover:bg-tyba-text/[.03] hover:text-tyba-text"
                           }`}
                         >
@@ -6549,7 +6549,7 @@ export default function App() {
                           />
                           {open && (
                             <>
-                              <span className="flex-1 text-left">{t("settings")}</span>
+                              <span className="flex-1 text-left text-tyba-text">{t("settings")}</span>
                               <span className="text-[12px] text-tyba-text-faint">
                                 {formatCombo(bindings.settings)}
                               </span>

@@ -65,7 +65,7 @@ const SLOW_REMOTE_MS = 10000;
 const GRID = "grid grid-cols-[90px_170px_minmax(0,1fr)_150px_90px_120px_250px] items-center gap-3";
 
 const CHIP =
-  "shrink-0 whitespace-nowrap rounded-[6px] border border-tyba-border-strong px-[9px] py-[3px] text-[11px] text-tyba-text-muted hover:text-tyba-text disabled:opacity-50";
+  "shrink-0 whitespace-nowrap rounded-[5px] border border-tyba-border-strong px-[9px] py-[3px] text-[11px] text-tyba-text-muted hover:text-tyba-text disabled:opacity-50";
 const CHIP_DANGER = `${CHIP} text-tyba-red hover:text-tyba-red`;
 
 const DOT: Record<ReturnType<typeof portTone>, string> = {
@@ -770,7 +770,7 @@ export function ServicesScreen({
               title={t(label)}
               onClick={() => go(key)}
               className={`relative flex size-9 items-center justify-center rounded-[8px] transition-colors ${
-                on ? "tyba-pill-on text-tyba-blue" : "text-tyba-text-faint hover:text-tyba-text"
+                on ? "tyba-icon-on text-tyba-blue" : "text-tyba-text-faint hover:text-tyba-text"
               }`}
             >
               <SectionIcon size={17} />

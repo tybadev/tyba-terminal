@@ -370,6 +370,8 @@
   --tyba-tint-alpha: 12%;
   --tyba-glow-size: 0px;          /* mockups *Claro: nenhum brilho */
   --tyba-glow-alpha: 28%;
+  /* Exceção: o ícone aceso brilha também no claro (quadro G, 10px a 28%). */
+  --tyba-icon-glow: 0 0 10px color-mix(in srgb, currentColor 28%, transparent);
   --tyba-halo-alpha: 10%;
   --tyba-selection-alpha: 25%;
   --tyba-glass-alpha: 62%;         /* mockup PropostaClaro */
@@ -1758,6 +1760,21 @@ samp {
   background-color: var(--tyba-glass-active);
   background-image: var(--tyba-pill-sheen);
   box-shadow: var(--tyba-pill-on);
+}
+/* O aceso de navegação (dono, 2026-11-03): tinta da cor da área, sem
+   placa. Quem usa põe a cor no próprio botão (`text-tyba-*`); o rótulo
+   volta ao neutro. Abas e linhas de lista continuam na placa. */
+.tyba-nav-on {
+  background-color: color-mix(in srgb, currentColor var(--tyba-tint-alpha), transparent);
+}
+/* Botão só de ícone aceso (quadro G, `iconBtnOn`): a tinta mais o brilho
+   da cor, nos dois temas. Linha com texto fica só na tinta. */
+.tyba-icon-on {
+  background-color: color-mix(in srgb, currentColor var(--tyba-tint-alpha), transparent);
+  box-shadow: var(
+    --tyba-icon-glow,
+    0 0 var(--tyba-glow-size) color-mix(in srgb, currentColor var(--tyba-glow-alpha), transparent)
+  );
 }
 /* `html` e não `:root`: o bloco `:root` é um só (themeFrame.test). */
 html {

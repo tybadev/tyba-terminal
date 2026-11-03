@@ -213,7 +213,7 @@ export function GitScreen({
               title={t(label)}
               onClick={() => go({ section: key, pr: null })}
               className={`relative flex size-9 items-center justify-center rounded-[8px] transition-colors ${
-                on ? "bg-tyba-blue/[.12] text-tyba-blue" : "text-tyba-text-faint hover:text-tyba-text"
+                on ? "tyba-icon-on text-tyba-blue" : "text-tyba-text-faint hover:text-tyba-text"
               }`}
             >
               <SectionIcon size={17} />
