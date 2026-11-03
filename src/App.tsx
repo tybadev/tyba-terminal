@@ -6247,9 +6247,6 @@ export default function App() {
                         placeholder={t("searchSessions")}
                         className="w-full bg-transparent text-[12.5px] text-tyba-text outline-none placeholder:text-tyba-text-faint"
                       />
-                      <kbd className="shrink-0 rounded-[4px] bg-tyba-text/[.05] px-1.5 py-px font-sans text-[11px] text-tyba-text-faint">
-                        {formatCombo(bindings.paletteSessions)}
-                      </kbd>
                     </label>
                   )}
                   <div className="mt-1 flex shrink-0 flex-col gap-0.5 px-2">
@@ -6332,7 +6329,10 @@ export default function App() {
                                 : "text-tyba-text-muted hover:bg-tyba-text/[.03] hover:text-tyba-text"
                             }`}
                           >
-                            <HardDrives size={14} className="shrink-0 text-tyba-text-faint" />
+                            <HardDrives
+                              size={14}
+                              className={`shrink-0 ${activeTab?.view === "connections" ? "text-tyba-cyan" : "text-tyba-text-faint"}`}
+                            />
                             {open && t("connectionsTitle")}
                           </Button>
                         </TooltipTrigger>
@@ -6371,9 +6371,6 @@ export default function App() {
                             </span>
                           </button>
                           <span className="min-w-0 flex-1" />
-                          <span className="font-mono text-[9px] text-tyba-text-faint">
-                            {list.length}
-                          </span>
                           <Tooltip>
                             <TooltipTrigger asChild>
                               <button
@@ -6441,7 +6438,7 @@ export default function App() {
                               : "bg-tyba-text/[.05] text-tyba-text hover:bg-tyba-text/[.07]"
                           }`}
                         >
-                          <Tray size={16} className="shrink-0" />
+                          <Tray size={16} className={`shrink-0 ${inboxOpen ? "text-tyba-blue" : ""}`} />
                           {open && <span className="flex-1 text-left">{t("inbox")}</span>}
                           {inboxBadge > 0 && (
                             <span
@@ -6477,7 +6474,15 @@ export default function App() {
                               : "tyba-piece text-tyba-text"
                           }`}
                         >
-                          <AgentIcon size={14} className="shrink-0 text-tyba-amber" />
+                          <AgentIcon
+                            size={14}
+                            className={`shrink-0 ${
+                              activeWorkspace?.side_view === "agent-queue" ||
+                              activeWorkspace?.side_view?.startsWith("agents:")
+                                ? "text-tyba-amber"
+                                : "text-tyba-text-faint"
+                            }`}
+                          />
                           {open && <span className="flex-1 text-left">{t("agentsQueue")}</span>}
                           {/* Pílula do mockup: conta APROVAÇÕES pendentes. Sem
                               nenhuma, mas com agente pedindo alguém, cai no
@@ -6538,7 +6543,10 @@ export default function App() {
                               : "text-tyba-text-muted hover:bg-tyba-text/[.03] hover:text-tyba-text"
                           }`}
                         >
-                          <GearSix size={16} className="shrink-0" />
+                          <GearSix
+                            size={16}
+                            className={`shrink-0 ${activeTab?.view === "settings" ? "text-tyba-green" : ""}`}
+                          />
                           {open && (
                             <>
                               <span className="flex-1 text-left">{t("settings")}</span>
