@@ -5594,6 +5594,7 @@ export default function App() {
             liveUsed={
               blocked && liveOf(s.id) ? liveUsed[s.id] : undefined
             }
+            covered={blocked && !liveOf(s.id)}
             swallowArrows={swallowsArrow({
               running: Boolean(sessionCommands[s.id]?.running),
               lineEcho: lineEcho[s.id] ?? false,

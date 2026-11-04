@@ -343,6 +343,13 @@ interface Props {
    * PTY. Trocar isto por altura é reintroduzir o `vim` reabrindo torto.
    */
   liveUsed?: number;
+  /**
+   * A lista de blocos está por cima (modo prompt, nada rodando). Com a lista
+   * transparente da opção G, o xterm ocioso aparecia através dela — o cursor
+   * vazado no topo do painel. Some por `opacity`, não por `visibility` nem
+   * `display`: o textarea continua focável e o tamanho medido não muda.
+   */
+  covered?: boolean;
   /** Mede a saída em curso para {@link Props.liveUsed} — ver `usedFraction`. */
   onLiveRows?: (usedRows: number, totalRows: number, scrolled: boolean) => void;
   /**
@@ -521,6 +528,7 @@ export function TerminalView({
   onDismissAuthAlert,
   approvalRequest,
   liveUsed,
+  covered = false,
   onLiveRows,
   onLineHeight,
   onCellWidth,
@@ -1510,6 +1518,7 @@ export function TerminalView({
                   // dois muda o TAMANHO, que é o que o `ResizeObserver` observa
                   // — por isso o PTY não sabe que algo mudou.
                   ...liveClip,
+                  ...(covered ? { opacity: 0 } : {}),
                 }
               : { display: "none" }
           }
