@@ -942,6 +942,9 @@ pub fn spawn_logs_follow(
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    // Grupo próprio: o kill do seguidor é `killpg` (princípio 9).
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
     Ok(cmd.spawn()?)
 }
 

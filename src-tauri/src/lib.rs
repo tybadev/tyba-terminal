@@ -6779,12 +6779,26 @@ async fn docker_container_action(
     host: Option<String>,
 ) -> Result<(), String> {
     let docker = Arc::clone(&state.docker);
+    let logs = Arc::clone(&state.docker_logs);
     docker_blocking(move || {
         docker
             .action(&container_id, action, host.as_deref())
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?;
+        if action == docker::ContainerAction::Restart && host.is_none() {
+            reopen_logs_after_restart(&logs, &container_id);
+        }
+        Ok(())
     })
     .await?
+}
+
+/// O restart derruba o `docker logs -f` do container (o stop fecha o stream):
+/// sem reabrir, a aba de logs para de receber. Só local — é o único que tem
+/// seguidor estruturado.
+fn reopen_logs_after_restart(logs: &docker::logs::LogsManager, container_id: &str) {
+    let _ = logs.restart(container_id, |since| {
+        docker::spawn_logs_follow(container_id, since.as_deref(), None).map_err(|e| e.to_string())
+    });
 }
 
 #[tauri::command]
@@ -7133,10 +7147,15 @@ async fn docker_container_op(
     host: Option<String>,
 ) -> Result<(), String> {
     let docker = Arc::clone(&state.docker);
+    let logs = Arc::clone(&state.docker_logs);
     docker_blocking(move || {
         docker
             .container_op(&container_id, op, host.as_deref())
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?;
+        if op == docker::ContainerOp::Restart && host.is_none() {
+            reopen_logs_after_restart(&logs, &container_id);
+        }
+        Ok(())
     })
     .await?
 }
