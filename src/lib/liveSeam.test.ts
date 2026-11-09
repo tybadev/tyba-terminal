@@ -11,6 +11,7 @@ import {
   nonEmptyLine,
   padSlackPx,
   sameRect,
+  termCovered,
   termRect,
   usedFraction,
   usedRowsFromLastLine,
@@ -257,5 +258,23 @@ describe("blocksRect", () => {
     const live = liveRect(pane, used);
     expect(blocksRect(pane, true, used).height).toBeCloseTo(live.top);
     expect(liveHeight(pane, used)).toBeCloseTo(live.height);
+  });
+});
+
+describe("termCovered", () => {
+  // O cursor vazado no topo do painel: depois de sair do `claude`, o xterm
+  // ocioso ficava atrás da lista de blocos, que passou a ser transparente, e o
+  // cursor sem foco dele (contorno) aparecia em (0,0).
+  it("de volta aos blocos depois da tela cheia, o xterm ocioso some", () => {
+    expect(termCovered(true, false)).toBe(true);
+  });
+
+  it("com a faixa ao vivo aberta, a saída em curso aparece", () => {
+    expect(termCovered(true, true)).toBe(false);
+  });
+
+  it("fora do modo de blocos (tela cheia ou terminal cru), o xterm é a tela", () => {
+    expect(termCovered(false, false)).toBe(false);
+    expect(termCovered(false, true)).toBe(false);
   });
 });

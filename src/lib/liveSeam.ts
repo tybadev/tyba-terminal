@@ -124,6 +124,15 @@ export function hiddenFraction(used: number): number {
   return Math.min(1, Math.max(0, 1 - used));
 }
 
+/**
+ * A lista de blocos cobre o xterm inteiro: modo de blocos, faixa ao vivo
+ * fechada. A lista é transparente (opção G), então o xterm ocioso por trás
+ * precisa sumir — senão o cursor sem foco dele aparece no topo do painel.
+ */
+export function termCovered(blocked: boolean, live: boolean): boolean {
+  return blocked && !live;
+}
+
 /** Altura da faixa revelada, em % do painel — sem contar o padding do terminal. */
 export function liveHeight(pane: SeamRect, used: number): number {
   return pane.height * LIVE_FRACTION * used;
