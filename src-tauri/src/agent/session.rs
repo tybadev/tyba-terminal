@@ -850,6 +850,39 @@ fn status_on_held_stop(current: &SessionStatus) -> Option<SessionStatus> {
     (!matches!(current, SessionStatus::AwaitingInput { .. })).then_some(SessionStatus::Running)
 }
 
+/// O que um `Stop` do agente principal significa para o turno.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StopOutcome {
+    /// Fim de turno de verdade: `Idle`, fila e aviso "terminou".
+    End,
+    /// Pausa: ficou Bash em background (`background_tasks`) ou cron/wakeup
+    /// agendado (`session_crons`), e o Claude acorda sozinho. A sessão segue
+    /// `Running`; o próximo `Stop` sem pendência fecha o turno.
+    Pause,
+    /// `stop_hook_active`: o `Stop` de uma continuação forçada por hook — não
+    /// conta como fim de turno.
+    Ignore,
+}
+
+/// Lido do payload do `Stop`. Campo ausente (Claude Code antigo, Codex) conta
+/// como lista vazia: o comportamento de antes. Ideia do plugin
+/// `claude-code-warp` (MIT).
+fn stop_outcome(raw: &serde_json::Value) -> StopOutcome {
+    if raw.get("stop_hook_active").and_then(|v| v.as_bool()) == Some(true) {
+        return StopOutcome::Ignore;
+    }
+    let pending = |key: &str| {
+        raw.get(key)
+            .and_then(|v| v.as_array())
+            .is_some_and(|a| !a.is_empty())
+    };
+    if pending("background_tasks") || pending("session_crons") {
+        StopOutcome::Pause
+    } else {
+        StopOutcome::End
+    }
+}
+
 /// Para onde um evento de hook vai depois do sinal de status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HookRoute {
@@ -1382,6 +1415,23 @@ fn handle_event(ctx: &HandlerCtx, event: HookEvent) -> HookAction {
                     if let Some(next) = next {
                         ctx.sessions.set_status(&ctx.app, ctx.session_id, next);
                         notify_awaiting_input(ctx, "Agente aguardando sua resposta");
+                    }
+                }
+                Some(SessionStatus::Idle { .. })
+                    if stop_outcome(&event.raw) == StopOutcome::Ignore => {}
+                Some(SessionStatus::Idle { .. })
+                    if stop_outcome(&event.raw) == StopOutcome::Pause =>
+                {
+                    // Pendência em background: o Claude acorda sozinho. Sem
+                    // `Idle`, sem fila, sem "terminou" — mesmo segurar do
+                    // `Stop` com subagente vivo.
+                    ctx.turn_settle.fetch_add(1, Ordering::SeqCst);
+                    if let Some(next) = ctx
+                        .sessions
+                        .get(ctx.session_id)
+                        .and_then(|s| status_on_held_stop(&s.status))
+                    {
+                        ctx.sessions.set_status(&ctx.app, ctx.session_id, next);
                     }
                 }
                 Some(SessionStatus::Idle { .. }) => {
@@ -3658,6 +3708,47 @@ mod subagent_status_tests {
             status_on_held_stop(&SessionStatus::Idle { summary: None }),
             Some(SessionStatus::Running)
         );
+    }
+}
+
+#[cfg(test)]
+mod stop_pending_tests {
+    use super::{stop_outcome, StopOutcome};
+    use serde_json::json;
+
+    // Payloads sintéticos, escritos à mão.
+    #[test]
+    fn background_task_pending_pauses_the_turn() {
+        let raw = json!({"hook_event_name": "Stop", "background_tasks": [{"id": "bg-1"}]});
+        assert_eq!(stop_outcome(&raw), StopOutcome::Pause);
+    }
+
+    #[test]
+    fn next_stop_with_empty_lists_ends_the_turn() {
+        let raw = json!({"hook_event_name": "Stop", "background_tasks": [], "session_crons": []});
+        assert_eq!(stop_outcome(&raw), StopOutcome::End);
+    }
+
+    #[test]
+    fn session_cron_pending_pauses_the_turn() {
+        let raw = json!({"hook_event_name": "Stop", "session_crons": [{"id": "cron-1"}]});
+        assert_eq!(stop_outcome(&raw), StopOutcome::Pause);
+        let raw = json!({"hook_event_name": "Stop", "session_crons": []});
+        assert_eq!(stop_outcome(&raw), StopOutcome::End);
+    }
+
+    #[test]
+    fn stop_hook_active_is_ignored() {
+        let raw = json!({"hook_event_name": "Stop", "stop_hook_active": true});
+        assert_eq!(stop_outcome(&raw), StopOutcome::Ignore);
+        let raw = json!({"hook_event_name": "Stop", "stop_hook_active": false});
+        assert_eq!(stop_outcome(&raw), StopOutcome::End);
+    }
+
+    #[test]
+    fn missing_fields_keep_todays_behavior() {
+        let raw = json!({"hook_event_name": "Stop", "transcript_path": "/t/a.jsonl"});
+        assert_eq!(stop_outcome(&raw), StopOutcome::End);
     }
 }
 
