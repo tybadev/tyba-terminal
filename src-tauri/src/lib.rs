@@ -6522,68 +6522,74 @@ fn screen_container_session(
         .docker
         .ensure_known(container_id, host)
         .map_err(|e| e.to_string())?;
-    if let Some(existing) = state.docker.tab_session(container_id, tab) {
-        match state.sessions.get(existing).map(|s| s.status) {
+    let session = state.docker.screen_session(
+        container_id,
+        tab,
+        |existing| match state.sessions.get(existing).map(|s| s.status) {
             Some(SessionStatus::Exited { .. } | SessionStatus::Failed { .. }) => {
                 state.sessions.dispose(&state.pty_pool, existing);
+                false
             }
-            Some(_) => return Ok(existing),
-            None => {}
-        }
-    }
-    if let Some(alias) = host {
-        crate::ssh::command::require_session_if_password(alias).map_err(|e| e.to_string())?;
-    }
-    let host_id = match host {
-        Some(alias) => Some(
-            state
-                .store
-                .load_hosts()
-                .ok()
-                .and_then(|hosts| hosts.into_iter().find(|h| h.alias == alias))
-                .map(|h| h.id)
-                .ok_or("host não encontrado")?,
-        ),
-        None => None,
-    };
-    let bin = docker::docker_bin().ok_or("binário docker não encontrado")?;
-    let (args, title) = container_command(container_id, tab, &name, host);
-    let title = match host {
-        Some(alias) => format!("{alias} · {title}"),
-        None => title,
-    };
-    let handle = app.clone();
-    let session = state
-        .sessions
-        .create_command_session(
-            app.clone(),
-            &state.pty_pool,
-            bin.as_path(),
-            &args,
-            &[],
-            title,
-            None,
-            100,
-            30,
-            SessionKind::Container {
-                host_id,
-                container_id: container_id.to_string(),
-            },
-            crate::session::SessionOwner::Grid,
-            None,
-            move |id| session_exited(&handle, id),
-        )
-        .map_err(|e| e.to_string())?;
-    state.docker.remember_tab(container_id, tab, session.id);
+            Some(_) => true,
+            None => false,
+        },
+        || -> Result<SessionId, String> {
+            if let Some(alias) = host {
+                crate::ssh::command::require_session_if_password(alias)
+                    .map_err(|e| e.to_string())?;
+            }
+            let host_id = match host {
+                Some(alias) => Some(
+                    state
+                        .store
+                        .load_hosts()
+                        .ok()
+                        .and_then(|hosts| hosts.into_iter().find(|h| h.alias == alias))
+                        .map(|h| h.id)
+                        .ok_or("host não encontrado")?,
+                ),
+                None => None,
+            };
+            let bin = docker::docker_bin().ok_or("binário docker não encontrado")?;
+            let (args, title) = container_command(container_id, tab, &name, host);
+            let title = match host {
+                Some(alias) => format!("{alias} · {title}"),
+                None => title,
+            };
+            let handle = app.clone();
+            let session = state
+                .sessions
+                .create_command_session(
+                    app.clone(),
+                    &state.pty_pool,
+                    bin.as_path(),
+                    &args,
+                    &[],
+                    title,
+                    None,
+                    100,
+                    30,
+                    SessionKind::Container {
+                        host_id,
+                        container_id: container_id.to_string(),
+                    },
+                    crate::session::SessionOwner::Grid,
+                    None,
+                    move |id| session_exited(&handle, id),
+                )
+                .map_err(|e| e.to_string())?;
+            Ok(session.id)
+        },
+    )?;
     // Corrida: a tela pode ter fechado durante o spawn, com o `emit_layout`
     // do fechamento passando antes do registro acima — ninguém soltaria esta
     // sessão depois. A entrada que sobra aponta para sessão morta e é
     // recriada/esquecida pelos caminhos de sempre.
     if !docker_screen_open(&state.layout.state()) {
-        state.sessions.dispose(&state.pty_pool, session.id);
+        state.sessions.dispose(&state.pty_pool, session);
         return Err("a tela de Docker foi fechada".into());
     }
-    Ok(session.id)
+    Ok(session)
 }
 
 /// Imagens do alvo (seção Imagens da tela de Docker, só leitura).
@@ -6775,12 +6781,26 @@ async fn docker_container_action(
     host: Option<String>,
 ) -> Result<(), String> {
     let docker = Arc::clone(&state.docker);
+    let logs = Arc::clone(&state.docker_logs);
     docker_blocking(move || {
         docker
             .action(&container_id, action, host.as_deref())
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?;
+        if action == docker::ContainerAction::Restart && host.is_none() {
+            reopen_logs_after_restart(&logs, &container_id);
+        }
+        Ok(())
     })
     .await?
+}
+
+/// O restart derruba o `docker logs -f` do container (o stop fecha o stream):
+/// sem reabrir, a aba de logs para de receber. Só local — é o único que tem
+/// seguidor estruturado.
+fn reopen_logs_after_restart(logs: &docker::logs::LogsManager, container_id: &str) {
+    let _ = logs.restart(container_id, |since| {
+        docker::spawn_logs_follow(container_id, since.as_deref(), None).map_err(|e| e.to_string())
+    });
 }
 
 #[tauri::command]
@@ -7129,10 +7149,15 @@ async fn docker_container_op(
     host: Option<String>,
 ) -> Result<(), String> {
     let docker = Arc::clone(&state.docker);
+    let logs = Arc::clone(&state.docker_logs);
     docker_blocking(move || {
         docker
             .container_op(&container_id, op, host.as_deref())
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?;
+        if op == docker::ContainerOp::Restart && host.is_none() {
+            reopen_logs_after_restart(&logs, &container_id);
+        }
+        Ok(())
     })
     .await?
 }

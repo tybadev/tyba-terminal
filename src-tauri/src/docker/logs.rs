@@ -308,10 +308,51 @@ struct Follower {
     running: AtomicBool,
     child: Mutex<Option<Child>>,
     mapping: PathMapping,
+    emit: Emit,
+    /// Retomada: o `--since` do docker inclui o próprio instante, então linha
+    /// com hora até aqui já foi lida pelo seguidor anterior.
+    after: Option<chrono::DateTime<chrono::FixedOffset>>,
+    /// Trocado por outro no restart: o fim deste não é fim para o webview.
+    superseded: AtomicBool,
+    flusher: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
 impl Follower {
+    /// O seguidor novo de um container: herda buffer e `seq` do anterior (se
+    /// houver) para o webview seguir a mesma lista, sem repetir linha.
+    fn successor(old: Option<&Follower>, mapping: PathMapping, emit: Emit) -> Arc<Follower> {
+        let (buffer, seq) = match old {
+            Some(old) => (
+                std::mem::take(&mut *old.buffer.lock()),
+                old.seq.load(Ordering::Relaxed),
+            ),
+            None => (VecDeque::new(), 0),
+        };
+        let after = buffer
+            .iter()
+            .rev()
+            .find_map(|l| l.ts.as_deref())
+            .and_then(|ts| chrono::DateTime::parse_from_rfc3339(ts).ok());
+        Arc::new(Follower {
+            buffer: Mutex::new(buffer),
+            pending: Mutex::new(Vec::new()),
+            seq: AtomicU64::new(seq),
+            running: AtomicBool::new(true),
+            child: Mutex::new(None),
+            mapping,
+            emit,
+            after,
+            superseded: AtomicBool::new(false),
+            flusher: Mutex::new(None),
+        })
+    }
+
     fn push(&self, raw: &str, stderr: bool, prev: &mut Option<LogLevel>) {
+        if let (Some(after), (Some((ts, _)), _)) = (self.after, split_timestamp(raw)) {
+            if chrono::DateTime::parse_from_rfc3339(&ts).is_ok_and(|t| t <= after) {
+                return;
+            }
+        }
         let seq = self.seq.fetch_add(1, Ordering::Relaxed);
         let mut line = parse_line(raw, stderr, *prev, seq);
         *prev = line.level;
@@ -321,6 +362,74 @@ impl Follower {
 
     fn last_ts(&self) -> Option<String> {
         self.buffer.lock().iter().rev().find_map(|l| l.ts.clone())
+    }
+
+    /// Sobe o `docker logs -f` (via `spawn`), os leitores e o lote.
+    fn launch<S>(self: &Arc<Self>, spawn: S) -> Result<(), String>
+    where
+        S: FnOnce(Option<String>) -> Result<Child, String>,
+    {
+        let mut child = spawn(self.last_ts())?;
+        let stdout = child.stdout.take();
+        let stderr = child.stderr.take();
+        *self.child.lock() = Some(child);
+
+        let mut readers = Vec::new();
+        for (pipe, is_err) in [
+            (
+                stdout.map(|p| Box::new(p) as Box<dyn std::io::Read + Send>),
+                false,
+            ),
+            (
+                stderr.map(|p| Box::new(p) as Box<dyn std::io::Read + Send>),
+                true,
+            ),
+        ] {
+            let Some(pipe) = pipe else { continue };
+            let f = Arc::clone(self);
+            readers.push(std::thread::spawn(move || {
+                let mut prev = None;
+                let reader = BufReader::new(pipe);
+                for line in reader.split(b'\n') {
+                    let Ok(bytes) = line else { break };
+                    f.push(&String::from_utf8_lossy(&bytes), is_err, &mut prev);
+                }
+            }));
+        }
+
+        let f = Arc::clone(self);
+        let flusher = std::thread::spawn(move || loop {
+            std::thread::sleep(FLUSH_EVERY);
+            let done = readers.iter().all(|r| r.is_finished());
+            let batch: Vec<LogLine> = std::mem::take(&mut *f.pending.lock());
+            if !batch.is_empty() {
+                let mut buf = f.buffer.lock();
+                buf.extend(batch.iter().cloned());
+                while buf.len() > BUFFER_CAP {
+                    buf.pop_front();
+                }
+            }
+            if done {
+                f.running.store(false, Ordering::Release);
+                kill(&f);
+                let ended = !f.superseded.load(Ordering::Acquire);
+                if ended || !batch.is_empty() {
+                    (f.emit)(LogsBatch {
+                        lines: batch,
+                        ended,
+                    });
+                }
+                break;
+            }
+            if !batch.is_empty() {
+                (f.emit)(LogsBatch {
+                    lines: batch,
+                    ended: false,
+                });
+            }
+        });
+        *self.flusher.lock() = Some(flusher);
+        Ok(())
     }
 }
 
@@ -362,90 +471,47 @@ impl LogsManager {
                 });
             }
         }
-        let follower = match existing {
-            Some(old) => Arc::new(Follower {
-                buffer: Mutex::new(std::mem::take(&mut *old.buffer.lock())),
-                pending: Mutex::new(Vec::new()),
-                seq: AtomicU64::new(old.seq.load(Ordering::Relaxed)),
-                running: AtomicBool::new(true),
-                child: Mutex::new(None),
-                mapping,
-            }),
-            None => Arc::new(Follower {
-                buffer: Mutex::new(VecDeque::new()),
-                pending: Mutex::new(Vec::new()),
-                seq: AtomicU64::new(0),
-                running: AtomicBool::new(true),
-                child: Mutex::new(None),
-                mapping,
-            }),
-        };
-        let mut child = spawn(follower.last_ts())?;
-        let stdout = child.stdout.take();
-        let stderr = child.stderr.take();
-        *follower.child.lock() = Some(child);
-
-        let mut readers = Vec::new();
-        for (pipe, is_err) in [
-            (
-                stdout.map(|p| Box::new(p) as Box<dyn std::io::Read + Send>),
-                false,
-            ),
-            (
-                stderr.map(|p| Box::new(p) as Box<dyn std::io::Read + Send>),
-                true,
-            ),
-        ] {
-            let Some(pipe) = pipe else { continue };
-            let f = Arc::clone(&follower);
-            readers.push(std::thread::spawn(move || {
-                let mut prev = None;
-                let reader = BufReader::new(pipe);
-                for line in reader.split(b'\n') {
-                    let Ok(bytes) = line else { break };
-                    f.push(&String::from_utf8_lossy(&bytes), is_err, &mut prev);
-                }
-            }));
-        }
-
-        let f = Arc::clone(&follower);
-        std::thread::spawn(move || loop {
-            std::thread::sleep(FLUSH_EVERY);
-            let done = readers.iter().all(|r| r.is_finished());
-            let batch: Vec<LogLine> = std::mem::take(&mut *f.pending.lock());
-            if !batch.is_empty() {
-                let mut buf = f.buffer.lock();
-                buf.extend(batch.iter().cloned());
-                while buf.len() > BUFFER_CAP {
-                    buf.pop_front();
-                }
-            }
-            if done {
-                f.running.store(false, Ordering::Release);
-                if let Some(mut child) = f.child.lock().take() {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                }
-                emit(LogsBatch {
-                    lines: batch,
-                    ended: true,
-                });
-                break;
-            }
-            if !batch.is_empty() {
-                emit(LogsBatch {
-                    lines: batch,
-                    ended: false,
-                });
-            }
-        });
-
+        let follower = Follower::successor(existing.as_deref(), mapping, emit);
+        follower.launch(spawn)?;
         let snapshot = follower.buffer.lock().iter().cloned().collect();
         followers.insert(id.to_string(), follower);
         Ok(LogsSnapshot {
             lines: snapshot,
             following: true,
         })
+    }
+
+    /// Container reiniciado: o `docker logs -f` morre com o stop e ninguém o
+    /// reabriria. Mata o anterior (grupo inteiro, se ainda vivo), espera o
+    /// último lote dele e sobe outro com `--since` da última linha lida, no
+    /// mesmo buffer e evento — o webview só vê as linhas novas chegando.
+    /// Sem seguidor (nenhuma aba de logs aberta), não faz nada.
+    pub fn restart<S>(&self, id: &str, spawn: S) -> Result<(), String>
+    where
+        S: FnOnce(Option<String>) -> Result<Child, String>,
+    {
+        let mut followers = self.followers.lock();
+        let Some(old) = followers.get(id).cloned() else {
+            return Ok(());
+        };
+        old.superseded.store(true, Ordering::Release);
+        kill(&old);
+        if let Some(flusher) = old.flusher.lock().take() {
+            let _ = flusher.join();
+        }
+        let follower = Follower::successor(Some(&old), old.mapping.clone(), Arc::clone(&old.emit));
+        if let Err(e) = follower.launch(spawn) {
+            // Sem seguidor novo: o buffer volta ao antigo (parado) para um
+            // `start` posterior retomar, e o webview vê o fim.
+            *old.buffer.lock() = std::mem::take(&mut *follower.buffer.lock());
+            (old.emit)(LogsBatch {
+                lines: Vec::new(),
+                ended: true,
+            });
+            return Err(e);
+        }
+        followers.insert(id.to_string(), follower);
+        Ok(())
     }
 
     /// Mata o seguidor e esquece o buffer.
@@ -493,8 +559,16 @@ impl LogsManager {
     }
 }
 
+/// Mata o `docker logs -f` e o grupo dele (princípio 9: `spawn_logs_follow`
+/// o põe em grupo próprio), e colhe o processo.
 fn kill(f: &Follower) {
     if let Some(mut child) = f.child.lock().take() {
+        // SAFETY: sinal para o grupo do nosso filho, ainda não colhido (o
+        // `wait` vem depois), então o pgid não pode ter sido reaproveitado.
+        #[cfg(unix)]
+        unsafe {
+            libc::killpg(child.id() as libc::pid_t, libc::SIGKILL);
+        }
         let _ = child.kill();
         let _ = child.wait();
     }
@@ -884,5 +958,119 @@ mod tests {
         assert_eq!(lines[1].level, Some(LogLevel::Error));
         assert_eq!(lines[0].seq + 1, lines[1].seq);
         mgr.stop("abc");
+    }
+
+    #[cfg(unix)]
+    fn sh(script: &str) -> Result<Child, String> {
+        use std::os::unix::process::CommandExt;
+        use std::process::{Command, Stdio};
+        // Mesmo grupo próprio que o `spawn_logs_follow` dá ao docker.
+        Command::new("/bin/sh")
+            .args(["-c", script])
+            .process_group(0)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| e.to_string())
+    }
+
+    #[cfg(unix)]
+    fn wait_lines(got: &Mutex<Vec<LogsBatch>>, n: usize) -> Vec<LogLine> {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let lines: Vec<LogLine> = got.lock().iter().flat_map(|b| b.lines.clone()).collect();
+            if lines.len() >= n {
+                // Folga para uma duplicata que viesse atrás aparecer.
+                std::thread::sleep(FLUSH_EVERY * 3);
+                return got.lock().iter().flat_map(|b| b.lines.clone()).collect();
+            }
+            assert!(std::time::Instant::now() < deadline, "linhas não chegaram");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    // `--since` do docker inclui o próprio instante: a última linha lida volta
+    // no seguidor novo e não pode aparecer duas vezes.
+    #[cfg(unix)]
+    #[test]
+    fn resumed_follower_skips_lines_already_read() {
+        let mgr = LogsManager::new();
+        let got: Arc<Mutex<Vec<LogsBatch>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&got);
+        let emit: Emit = Arc::new(move |b| sink.lock().push(b));
+        mgr.start("abc", PathMapping::default(), Arc::clone(&emit), |_| {
+            sh("printf '2026-10-12T15:24:02.5Z a\\n2026-10-12T15:24:03.25Z b\\n'")
+        })
+        .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !got.lock().iter().any(|b| b.ended) {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        mgr.start("abc", PathMapping::default(), emit, |since| {
+            assert_eq!(since.as_deref(), Some("2026-10-12T15:24:03.25Z"));
+            sh("printf '2026-10-12T15:24:03.250Z b\\n2026-10-12T15:24:04Z c\\n'")
+        })
+        .unwrap();
+        let texts: Vec<String> = wait_lines(&got, 3).into_iter().map(|l| l.text).collect();
+        assert_eq!(texts, ["a", "b", "c"]);
+        mgr.stop("abc");
+    }
+
+    // Bug do "Reiniciar" (2026-11-09): o `docker logs -f` morre com o stop do
+    // restart e ninguém o reabria — a lista parava. O core reabre na hora,
+    // sem `ended` para o webview, sem duplicar e sem deixar o anterior vivo.
+    #[cfg(unix)]
+    #[test]
+    fn restart_reopens_follower_since_last_line_and_kills_the_old_one() {
+        let mgr = LogsManager::new();
+        let got: Arc<Mutex<Vec<LogsBatch>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&got);
+        let old_pid = Arc::new(Mutex::new(0u32));
+        let pid = Arc::clone(&old_pid);
+        mgr.start(
+            "abc",
+            PathMapping::default(),
+            Arc::new(move |b| sink.lock().push(b)),
+            move |_| {
+                // Filho em segundo plano no mesmo grupo: só `killpg` o alcança.
+                let child = sh(
+                    "sleep 30 & printf '2026-10-12T15:24:02Z a\\n2026-10-12T15:24:03Z b\\n'; wait",
+                )?;
+                *pid.lock() = child.id();
+                Ok(child)
+            },
+        )
+        .unwrap();
+        wait_lines(&got, 2);
+        mgr.restart("abc", |since| {
+            assert_eq!(since.as_deref(), Some("2026-10-12T15:24:03Z"));
+            sh("printf '2026-10-12T15:24:03Z b\\n2026-10-12T15:24:09Z c\\n'; sleep 30")
+        })
+        .unwrap();
+        let lines = wait_lines(&got, 3);
+        let texts: Vec<&str> = lines.iter().map(|l| l.text.as_str()).collect();
+        assert_eq!(texts, ["a", "b", "c"]);
+        assert!(lines.windows(2).all(|w| w[0].seq < w[1].seq));
+        assert!(
+            !got.lock().iter().any(|b| b.ended),
+            "o webview não pode ver fim"
+        );
+        assert!(mgr.snapshot("abc").unwrap().following);
+        // O grupo inteiro do seguidor anterior morreu (o `sleep 30` também).
+        let pgid = *old_pid.lock() as libc::pid_t;
+        let alive = unsafe { libc::killpg(pgid, 0) } == 0;
+        assert!(!alive, "seguidor anterior ficou vivo");
+        mgr.stop("abc");
+    }
+
+    #[test]
+    fn restart_without_follower_spawns_nothing() {
+        let mgr = LogsManager::new();
+        mgr.restart("nada", |_| -> Result<Child, String> {
+            panic!("não devia subir")
+        })
+        .unwrap();
+        assert!(!mgr.is_following("nada"));
     }
 }
