@@ -24,6 +24,7 @@ pub mod hooks_settings;
 pub mod inherited_env;
 pub mod notify;
 pub mod process_probe;
+pub mod prompt_queue;
 pub mod session;
 pub mod statusline;
 pub mod subagents;

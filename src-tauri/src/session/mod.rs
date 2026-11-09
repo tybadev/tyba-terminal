@@ -1080,6 +1080,7 @@ impl SessionManager {
         if let Some((prev, session)) = self.apply_status(id, status) {
             emit_status(app, &session);
             crate::agent::asking::on_status(app, id, &session.status);
+            crate::agent::prompt_queue::on_status(app, id, &prev, &session.status);
             crate::notifications::record(app, |n| n.status_changed(Some(&prev), &session));
         }
     }
@@ -1450,6 +1451,7 @@ impl SessionManager {
     pub fn dispose(&self, pty_pool: &SharedPtyPool, id: SessionId) {
         self.sessions.write().remove(&id);
         crate::agent::asking::book().clear(id);
+        crate::agent::prompt_queue::book().forget(id);
         self.canos.lock().remove(&id);
         self.pane_tokens.lock().remove(&id);
         crate::history::forget_session_host(&id.to_string());
