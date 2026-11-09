@@ -288,6 +288,292 @@ fn words(line: &str) -> Option<Vec<String>> {
     Some(out)
 }
 
+/// Teto de bytes que a confirmação de login olha. Passou disso sem cara de
+/// prompt, o `ssh` vira um bloco comum: melhor não avisar do que avisar
+/// errado.
+const WATCH_MAX_BYTES: usize = 64 * 1024;
+/// Teto de tempo desde o `133;C`: cabe senha, passphrase e segundo fator
+/// digitados à mão.
+const WATCH_MAX_MS: i64 = 120_000;
+
+/// O que a observação da saída concluiu até aqui.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Login {
+    Pending,
+    /// `Last login:` ou uma linha com cara de prompt remoto.
+    Confirmed,
+    /// Estourou um dos tetos: desistiu, de vez.
+    GaveUp,
+}
+
+/// Observa a saída de um `ssh` digitado até ele ter cara de logado.
+///
+/// Heurística, como a do Warp: a saída do servidor só decide se o aviso
+/// informativo aparece, nunca vira ação. Nada do que passa aqui é guardado
+/// além da linha corrente.
+pub struct LoginWatch {
+    started_ms: i64,
+    seen: usize,
+    line: String,
+    esc: Scan,
+}
+
+impl LoginWatch {
+    pub fn new(started_ms: i64) -> Self {
+        Self {
+            started_ms,
+            seen: 0,
+            line: String::new(),
+            esc: Scan::Ground,
+        }
+    }
+
+    pub fn feed(&mut self, bytes: &[u8], now_ms: i64) -> Login {
+        if self.seen > WATCH_MAX_BYTES || now_ms - self.started_ms > WATCH_MAX_MS {
+            return self.give_up();
+        }
+        self.seen += bytes.len();
+        for ch in String::from_utf8_lossy(bytes).chars() {
+            if !self.visible(ch) {
+                continue;
+            }
+            match ch {
+                '\n' | '\r' => {
+                    if is_last_login(&self.line) {
+                        return Login::Confirmed;
+                    }
+                    self.line.clear();
+                }
+                c if c.is_control() => {}
+                // A linha corrente basta; uma linha gigante sem quebra não
+                // tem cara de prompt e não pode crescer sem teto.
+                c if self.line.len() < 512 => self.line.push(c),
+                _ => {}
+            }
+        }
+        if is_last_login(&self.line) || looks_like_prompt(&self.line) {
+            return Login::Confirmed;
+        }
+        if self.seen > WATCH_MAX_BYTES {
+            return self.give_up();
+        }
+        Login::Pending
+    }
+
+    fn give_up(&mut self) -> Login {
+        self.seen = WATCH_MAX_BYTES + 1;
+        self.line.clear();
+        Login::GaveUp
+    }
+
+    /// Filtra escapes (CSI, OSC, DCS…) com estado entre chunks: o que sobra
+    /// é o texto que o terminal desenharia.
+    fn visible(&mut self, ch: char) -> bool {
+        let (next, keep) = match (self.esc, ch) {
+            (Scan::Str, '\x07') => (Scan::Ground, false),
+            (Scan::Str, '\x1b') => (Scan::StrEscape, false),
+            (Scan::Str, _) => (Scan::Str, false),
+            (Scan::StrEscape, _) => (Scan::Ground, false),
+            (_, '\x1b') => (Scan::Escape, false),
+            (Scan::Escape, '[') => (Scan::Csi, false),
+            (Scan::Escape, ']' | 'P' | 'X' | '^' | '_') => (Scan::Str, false),
+            (Scan::Escape, _) => (Scan::Ground, false),
+            (Scan::Csi, '\u{40}'..='\u{7e}') => (Scan::Ground, false),
+            (Scan::Csi, _) => (Scan::Csi, false),
+            (Scan::Ground, _) => (Scan::Ground, true),
+        };
+        self.esc = next;
+        keep
+    }
+}
+
+fn is_last_login(line: &str) -> bool {
+    line.trim_start().starts_with("Last login:")
+}
+
+/// A linha em aberto (sem quebra depois) termina como um prompt de shell
+/// termina, e não é uma das perguntas do próprio `ssh`.
+fn looks_like_prompt(line: &str) -> bool {
+    let trimmed = line.trim_end();
+    let Some(last) = trimmed.chars().last() else {
+        return false;
+    };
+    if !matches!(last, '$' | '#' | '%' | '>' | '❯' | '➜' | '»') {
+        return false;
+    }
+    let lower = trimmed.to_lowercase();
+    ![
+        "password",
+        "passphrase",
+        "yes/no",
+        "verification",
+        "code:",
+        "otp",
+        "token",
+    ]
+    .iter()
+    .any(|word| lower.contains(word))
+}
+
+/// Onde o filtro de escapes está, entre um chunk e outro.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Scan {
+    Ground,
+    Escape,
+    Csi,
+    /// Corpo de OSC/DCS/APC/PM/SOS — termina em `BEL` ou `ST`.
+    Str,
+    StrEscape,
+}
+
+/// Um `ssh` digitado que logou: para onde, e qual bloco (o `started_at_ms`
+/// do comando em execução — o bloco vivo ainda não tem id).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Detected {
+    pub destination: TypedDestination,
+    pub block_started_at_ms: Option<i64>,
+}
+
+/// O ciclo do comando de UMA sessão, do ponto de vista da detecção: arma no
+/// `ssh` interativo, observa, avisa uma vez, e desarma quando o comando acaba.
+#[derive(Default)]
+pub struct TypedSshTracker {
+    armed: Option<Armed>,
+    /// O `started_at_ms` do último comando visto rodando.
+    last_started: Option<i64>,
+}
+
+struct Armed {
+    destination: TypedDestination,
+    started_at_ms: Option<i64>,
+    watch: LoginWatch,
+}
+
+impl TypedSshTracker {
+    /// O estado do comando, como a captura o anuncia (`CommandState`).
+    ///
+    /// O mesmo comando anunciado de novo (mesmo `started_at_ms`) não rearma:
+    /// um `ssh` que já avisou não avisa outra vez.
+    pub fn on_command(
+        &mut self,
+        running: bool,
+        command: Option<&str>,
+        started_at_ms: Option<i64>,
+        now_ms: i64,
+    ) {
+        if !running {
+            self.armed = None;
+            self.last_started = None;
+            return;
+        }
+        if self.last_started.is_some() && self.last_started == started_at_ms {
+            return;
+        }
+        self.last_started = started_at_ms;
+        self.armed = command.and_then(parse).map(|destination| Armed {
+            destination,
+            started_at_ms,
+            watch: LoginWatch::new(now_ms),
+        });
+    }
+
+    /// Saída do comando armado. `Some` uma única vez, no login.
+    pub fn feed(&mut self, bytes: &[u8], now_ms: i64) -> Option<Detected> {
+        let armed = self.armed.as_mut()?;
+        match armed.watch.feed(bytes, now_ms) {
+            Login::Pending => None,
+            Login::GaveUp => {
+                self.armed = None;
+                None
+            }
+            Login::Confirmed => {
+                let armed = self.armed.take()?;
+                Some(Detected {
+                    destination: armed.destination,
+                    block_started_at_ms: armed.started_at_ms,
+                })
+            }
+        }
+    }
+}
+
+/// O aviso que o core emite quando um `ssh` digitado loga. Informativo: a
+/// tela oferece "Abrir como sessão TYBA"/"Cadastrar", e quem age é o dono.
+pub const EVENT_DETECTED: &str = "ssh-typed://detected";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DetectedEvent {
+    pub session_id: String,
+    /// O bloco vivo, pelo `started_at_ms` que o `CommandState` já entrega à
+    /// tela: o id do bloco só nasce quando ele termina.
+    pub block_started_at_ms: Option<i64>,
+    pub destination: TypedDestination,
+    /// `Some` quando casou com um Host cadastrado (`Registered`).
+    pub host_id: Option<String>,
+}
+
+impl DetectedEvent {
+    /// `None` quando o aviso fica quieto (ver [`resolve`]).
+    pub fn build(session_id: String, detected: Detected, hosts: &[super::Host]) -> Option<Self> {
+        let host_id = match resolve(detected.destination.clone(), hosts)? {
+            TypedMatch::Registered(id) => Some(id),
+            TypedMatch::Unregistered(_) => None,
+        };
+        // TODO(ssh-digitado): a lista de hosts negados ("Nunca para este
+        // host", Settings > SSH > Integração) ainda não existe. Quando entrar,
+        // é aqui que um destino negado devolve `None`.
+        Some(Self {
+            session_id,
+            block_started_at_ms: detected.block_started_at_ms,
+            destination: detected.destination,
+            host_id,
+        })
+    }
+}
+
+/// O `ssh` digitado casado com o cadastro do gestor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TypedMatch {
+    Registered(String),
+    Unregistered(TypedDestination),
+}
+
+/// Casa o destino com um Host cadastrado — por alias (o nome materializado
+/// no `tyba.conf`) ou por hostname, com usuário e porta compatíveis.
+///
+/// `None` quando o Host casado tem a integração desligada (regra 11): o dono
+/// já disse que não quer o TYBA ali, e o aviso fica quieto.
+///
+/// Só o cadastro do TYBA: o `~/.ssh/config` do dono não é lido. Um alias que
+/// só existe lá cai em `Unregistered`, que é o caso do "Cadastrar".
+pub fn resolve(destination: TypedDestination, hosts: &[super::Host]) -> Option<TypedMatch> {
+    let user_ok = |h: &super::Host| match (&destination.user, &h.username) {
+        (Some(typed), Some(registered)) => typed == registered,
+        _ => true,
+    };
+    // Pelo alias, sem `-p` vale a porta do `tyba.conf`; pelo hostname, o
+    // bloco do alias não se aplica e sem `-p` é a 22.
+    let by_alias = |h: &&super::Host| {
+        h.alias == destination.host
+            && user_ok(h)
+            && destination.port.is_none_or(|p| p == h.port.unwrap_or(22))
+    };
+    let by_hostname = |h: &&super::Host| {
+        h.hostname.eq_ignore_ascii_case(&destination.host)
+            && user_ok(h)
+            && destination.port.unwrap_or(22) == h.port.unwrap_or(22)
+    };
+    let found = hosts
+        .iter()
+        .find(by_alias)
+        .or_else(|| hosts.iter().find(by_hostname));
+    match found {
+        Some(host) if !host.integration_enabled => None,
+        Some(host) => Some(TypedMatch::Registered(host.id.clone())),
+        None => Some(TypedMatch::Unregistered(destination)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -594,5 +880,268 @@ mod tests {
         for line in cases {
             assert_eq!(parse(line), None, "linha: {line:?}");
         }
+    }
+
+    // --- Confirmação de login (fixtures sintéticas, escritas à mão) ---
+
+    fn watch_all(chunks: &[&str]) -> Login {
+        let mut watch = LoginWatch::new(0);
+        let mut last = Login::Pending;
+        for chunk in chunks {
+            last = watch.feed(chunk.as_bytes(), 1_000);
+            if last != Login::Pending {
+                break;
+            }
+        }
+        last
+    }
+
+    #[test]
+    fn login_is_confirmed_by_last_login_or_a_remote_prompt() {
+        let cases: &[&[&str]] = &[
+            &["Last login: Mon Nov  9 10:00:00 2026 from 192.0.2.1\r\n"],
+            &["Welcome to Ubuntu\r\n\r\nLast login: Mon Nov  9 from 192.0.2.1\r\n"],
+            &["Last lo", "gin: Mon Nov  9\r\n"],
+            &["deploy@web-01:~$ "],
+            &["[root@vps ~]# "],
+            &["host% "],
+            &["\x1b[01;32mdeploy@web\x1b[00m:\x1b[01;34m~\x1b[00m$ "],
+            &["\x1b]0;deploy@web: ~\x07deploy@web:~$ "],
+            &["banner\r\n", "motd\r\n", "deploy@web:~$ "],
+            &["deploy@web:~$"],
+            &["❯ "],
+            &["deploy@web ~ > "],
+        ];
+        for chunks in cases {
+            assert_eq!(watch_all(chunks), Login::Confirmed, "saída: {chunks:?}");
+        }
+    }
+
+    #[test]
+    fn login_prompts_banners_and_errors_do_not_confirm() {
+        let cases: &[&[&str]] = &[
+            &["deploy@web's password: "],
+            &["Password:"],
+            &["Enter passphrase for key '/Users/me/.ssh/id_ed25519': "],
+            &[
+                "The authenticity of host 'web (192.0.2.1)' can't be established.\r\n",
+                "Are you sure you want to continue connecting (yes/no/[fingerprint])? ",
+            ],
+            &["yes\r\nWarning: Permanently added 'web' (ED25519) to the list of known hosts.\r\n"],
+            &["(deploy@web) Verification code: "],
+            &["ssh: connect to host web port 22: Connection refused\r\n"],
+            &["deploy@web: Permission denied (publickey).\r\n"],
+            &["Welcome to Ubuntu 24.04 LTS\r\n * Documentation:  https://help.ubuntu.com\r\n"],
+            &["Last login is in the past\r\n"],
+            &["the price is $\r\n"],
+            &[""],
+        ];
+        for chunks in cases {
+            assert_eq!(watch_all(chunks), Login::Pending, "saída: {chunks:?}");
+        }
+    }
+
+    #[test]
+    fn the_watch_gives_up_past_the_byte_or_time_ceiling() {
+        let mut watch = LoginWatch::new(0);
+        let noise = "x".repeat(1024) + "\r\n";
+        let mut outcome = Login::Pending;
+        for _ in 0..(WATCH_MAX_BYTES / noise.len() + 2) {
+            outcome = watch.feed(noise.as_bytes(), 10);
+            if outcome != Login::Pending {
+                break;
+            }
+        }
+        assert_eq!(outcome, Login::GaveUp);
+        assert_eq!(
+            watch.feed(b"Last login: now\r\n", 20),
+            Login::GaveUp,
+            "desistiu é de vez"
+        );
+
+        let mut watch = LoginWatch::new(1_000);
+        assert_eq!(
+            watch.feed(b"banner\r\n", 1_000 + WATCH_MAX_MS - 1),
+            Login::Pending
+        );
+        assert_eq!(
+            watch.feed(b"deploy@web:~$ ", 1_000 + WATCH_MAX_MS + 1),
+            Login::GaveUp
+        );
+    }
+
+    // --- Ciclo do comando ---
+
+    #[test]
+    fn the_tracker_reports_once_per_interactive_ssh() {
+        let mut t = TypedSshTracker::default();
+        t.on_command(true, Some("ssh deploy@web"), Some(500), 500);
+        assert_eq!(t.feed(b"deploy@web's password: ", 600), None);
+        let got = t.feed(b"\r\nLast login: today\r\n", 700).expect("logou");
+        assert_eq!(got.destination, with_user("web", "deploy"));
+        assert_eq!(got.block_started_at_ms, Some(500));
+        assert_eq!(t.feed(b"deploy@web:~$ ", 800), None, "um aviso só");
+        // O mesmo anúncio repetido não rearma.
+        t.on_command(true, Some("ssh deploy@web"), Some(500), 900);
+        assert_eq!(t.feed(b"deploy@web:~$ ", 900), None);
+    }
+
+    #[test]
+    fn the_tracker_ignores_other_commands_and_disarms_when_the_command_ends() {
+        let mut t = TypedSshTracker::default();
+        t.on_command(true, Some("ls -la"), Some(1), 1);
+        assert_eq!(t.feed(b"total 0\r\nme@laptop:~$ ", 2), None);
+
+        t.on_command(true, Some("ssh host uptime"), Some(3), 3);
+        assert_eq!(t.feed(b"Last login: x\r\n", 4), None);
+
+        t.on_command(true, Some("ssh web"), Some(5), 5);
+        t.on_command(false, None, None, 6);
+        assert_eq!(
+            t.feed(b"me@laptop:~$ ", 7),
+            None,
+            "prompt LOCAL depois do fim"
+        );
+
+        t.on_command(true, Some("ssh web"), Some(8), 8);
+        assert!(t.feed(b"web$ ", 9).is_some(), "rearma no comando seguinte");
+    }
+
+    // --- Casamento com o cadastro ---
+
+    fn host(id: &str, alias: &str, hostname: &str) -> crate::ssh::Host {
+        crate::ssh::Host {
+            id: id.into(),
+            alias: alias.into(),
+            hostname: hostname.into(),
+            port: None,
+            username: None,
+            identity_file: None,
+            proxy_jump: None,
+            group_id: None,
+            color: None,
+            notes: None,
+            position: 0,
+            tunnels: Vec::new(),
+            auth_method: crate::ssh::AuthMethod::Auto,
+            agent_key: None,
+            integration_enabled: true,
+            created_at: chrono::Utc::now(),
+            last_connected_at: None,
+        }
+    }
+
+    fn resolved(line: &str, hosts: &[crate::ssh::Host]) -> Option<TypedMatch> {
+        resolve(parse(line).expect("linha interativa"), hosts)
+    }
+
+    #[test]
+    fn the_destination_matches_a_registered_host() {
+        let mut prod = host("h-prod", "prod", "web.example.test");
+        prod.username = Some("deploy".into());
+        prod.port = Some(2222);
+        let mut vps = host("h-vps", "vps", "192.0.2.10");
+        vps.username = Some("root".into());
+        let hosts = vec![prod, vps];
+        let registered = |id: &str| Some(TypedMatch::Registered(id.into()));
+
+        assert_eq!(resolved("ssh prod", &hosts), registered("h-prod"));
+        assert_eq!(resolved("ssh deploy@prod", &hosts), registered("h-prod"));
+        assert_eq!(resolved("ssh -p 2222 prod", &hosts), registered("h-prod"));
+        assert_eq!(
+            resolved("ssh -p 2222 deploy@web.example.test", &hosts),
+            registered("h-prod")
+        );
+        assert_eq!(
+            resolved("ssh -p 2222 WEB.example.test", &hosts),
+            registered("h-prod")
+        );
+        assert_eq!(resolved("ssh root@192.0.2.10", &hosts), registered("h-vps"));
+        assert_eq!(resolved("ssh 192.0.2.10", &hosts), registered("h-vps"));
+        assert_eq!(
+            resolved("ssh -p 22 192.0.2.10", &hosts),
+            registered("h-vps")
+        );
+    }
+
+    #[test]
+    fn a_different_user_port_or_host_is_unregistered() {
+        let mut prod = host("h-prod", "prod", "web.example.test");
+        prod.username = Some("deploy".into());
+        prod.port = Some(2222);
+        let hosts = vec![prod];
+        for line in [
+            "ssh other@prod",
+            "ssh -p 22 prod",
+            "ssh web.example.test",
+            "ssh other@web.example.test",
+            "ssh -p 2222 db.example.test",
+            "ssh Prod",
+        ] {
+            let dest = parse(line).expect("linha interativa");
+            assert_eq!(
+                resolve(dest.clone(), &hosts),
+                Some(TypedMatch::Unregistered(dest)),
+                "linha: {line:?}"
+            );
+        }
+        assert_eq!(
+            resolved("ssh anything", &[]),
+            Some(TypedMatch::Unregistered(dest("anything")))
+        );
+    }
+
+    #[test]
+    fn a_host_with_integration_off_stays_quiet() {
+        let mut off = host("h-off", "off", "off.example.test");
+        off.integration_enabled = false;
+        assert_eq!(resolved("ssh off", &[off.clone()]), None);
+        assert_eq!(resolved("ssh off.example.test", &[off]), None);
+    }
+
+    #[test]
+    fn the_event_carries_the_destination_and_the_host_when_registered() {
+        let mut prod = host("h-prod", "prod", "web.example.test");
+        prod.username = Some("deploy".into());
+        let mut off = host("h-off", "off", "off.example.test");
+        off.integration_enabled = false;
+        let hosts = vec![prod, off];
+        let detected = |line: &str| Detected {
+            destination: parse(line).expect("linha interativa"),
+            block_started_at_ms: Some(42),
+        };
+
+        let event = DetectedEvent::build("s1".into(), detected("ssh prod"), &hosts).expect("avisa");
+        assert_eq!(event.host_id.as_deref(), Some("h-prod"));
+        assert_eq!(event.destination, dest("prod"));
+        assert_eq!(event.block_started_at_ms, Some(42));
+        assert_eq!(event.session_id, "s1");
+
+        let event = DetectedEvent::build("s1".into(), detected("ssh x@new.example.test"), &hosts)
+            .expect("avisa");
+        assert_eq!(event.host_id, None);
+        assert_eq!(event.destination, with_user("new.example.test", "x"));
+
+        assert_eq!(
+            DetectedEvent::build("s1".into(), detected("ssh off"), &hosts),
+            None
+        );
+
+        let wire = serde_json::to_value(
+            DetectedEvent::build("s1".into(), detected("ssh -p 2 a@b"), &[]).expect("avisa"),
+        )
+        .expect("serializa");
+        assert_eq!(
+            wire,
+            serde_json::json!({
+                "session_id": "s1",
+                "block_started_at_ms": 42,
+                "destination": {
+                    "host": "b", "user": "a", "port": 2,
+                    "identity_file": null, "proxy_jump": null
+                },
+                "host_id": null
+            })
+        );
     }
 }

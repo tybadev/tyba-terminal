@@ -402,6 +402,31 @@ fn install_auth_watchers(
     }));
 }
 
+/// O `ssh` digitado num shell local: a sessão de shell ganha a detecção, e o
+/// login confirmado vira o aviso `ssh-typed://detected`. Só informa — nada é
+/// injetado no PTY, e nada da saída do servidor é guardado.
+fn install_typed_ssh(app: &AppHandle, pty_pool: &SharedPtyPool) {
+    let app = app.clone();
+    pty_pool.set_typed_ssh(Arc::new(move |id, kind| {
+        if !matches!(kind, SessionKind::Shell) {
+            return None;
+        }
+        let app = app.clone();
+        Some(pty::TypedSshPipe {
+            tracker: Default::default(),
+            on_detect: Box::new(move |detected| {
+                let state = app.state::<AppState>();
+                let hosts = state.store.load_hosts().unwrap_or_default();
+                if let Some(event) =
+                    crate::ssh::typed::DetectedEvent::build(id.to_string(), detected, &hosts)
+                {
+                    let _ = app.emit(crate::ssh::typed::EVENT_DETECTED, event);
+                }
+            }),
+        })
+    }));
+}
+
 /// Um tick do poll de detecção de agente: monta a lista de shells vivos com seu
 /// `leader_pid`, sonda a árvore de processos e emite só as sessões que mudaram.
 /// Quando não há shell aberto, nem varre os processos — custo zero (só um par de
@@ -10162,6 +10187,7 @@ pub fn run() {
                 &config_dir.join("manifests"),
             );
             install_auth_watchers(app.handle(), &pty_pool, &sessions);
+            install_typed_ssh(app.handle(), &pty_pool);
 
             let repos: repo::SharedRepoWatcher = Arc::new(repo::RepoWatcher::new());
             let (reconcile_tx, reconcile_rx) = std::sync::mpsc::channel::<()>();

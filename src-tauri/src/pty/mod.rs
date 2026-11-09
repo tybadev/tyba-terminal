@@ -519,6 +519,17 @@ pub type ScreenObserverFactory =
 /// app; o `PtyPool` não conhece nenhum dos dois.
 pub type AuthWatchFactory = Arc<dyn Fn(PtyId, &SessionKind) -> Option<AuthWatch> + Send + Sync>;
 
+/// Gêmeo das fábricas acima para o `ssh` digitado: quem resolve o Host
+/// (store) e emite o aviso (`AppHandle`) só existe junto no `setup`.
+pub type TypedSshFactory = Arc<dyn Fn(PtyId, &SessionKind) -> Option<TypedSshPipe> + Send + Sync>;
+
+/// A detecção do `ssh` digitado de uma sessão, e o que fazer quando um loga.
+/// Roda na thread emissora; `on_detect` só informa — nada volta ao PTY.
+pub struct TypedSshPipe {
+    pub tracker: crate::ssh::typed::TypedSshTracker,
+    pub on_detect: Box<dyn FnMut(crate::ssh::typed::Detected) + Send>,
+}
+
 /// O observador do marco de login de um Cano, com o que fazer quando ele
 /// aparece e quando o processo acaba. Roda na thread leitora: `on_finish` é
 /// chamado antes do `on_exit` da sessão, sempre.
@@ -539,6 +550,7 @@ pub struct PtyPool {
     ptys: Mutex<HashMap<PtyId, PtyHandle>>,
     observers: Mutex<Option<ScreenObserverFactory>>,
     auth_watchers: Mutex<Option<AuthWatchFactory>>,
+    typed_ssh: Mutex<Option<TypedSshFactory>>,
     /// Taps esperando o spawn da sessão ([`PtyPool::set_tap`]).
     taps: Mutex<HashMap<PtyId, OutputTap>>,
     /// Sessões marcadas efêmeras esperando o spawn ([`PtyPool::set_ephemeral`]).
@@ -666,6 +678,41 @@ fn ingest_chunk(
     apply_screen(state, chunk, &actions);
     state.prompt_ready = machine.ready_at_prompt();
     actions
+}
+
+/// O `ssh` digitado: o estado do comando arma e desarma a detecção, e só a
+/// saída DEPOIS do `133;C` alimenta a confirmação de login — o prompt e o eco
+/// locais que vêm antes do marcador teriam cara de prompt remoto. O chunk em
+/// que o comando acaba já chega desarmado: o prompt local depois do `133;D`
+/// também.
+fn observe_typed_ssh(
+    pipe: &mut TypedSshPipe,
+    actions: &[capture::Action],
+    chunk: &[u8],
+    now_ms: i64,
+) {
+    const START: &[u8] = b"\x1b]133;C";
+    let mut from = 0;
+    for action in actions {
+        if let capture::Action::CommandState(state) = action {
+            pipe.tracker.on_command(
+                state.running,
+                state.command.as_deref(),
+                state.started_at_ms,
+                now_ms,
+            );
+            if state.running {
+                // Marcador partido entre chunks: nada deste é saída garantida.
+                from = chunk
+                    .windows(START.len())
+                    .rposition(|w| w == START)
+                    .unwrap_or(chunk.len());
+            }
+        }
+    }
+    if let Some(detected) = pipe.tracker.feed(&chunk[from..], now_ms) {
+        (pipe.on_detect)(detected);
+    }
 }
 
 /// O OSC 7501 de uma sessão: responde à detecção e acompanha o registro raiz.
@@ -913,6 +960,12 @@ impl PtyPool {
         *self.auth_watchers.lock() = Some(factory);
     }
 
+    /// Instalada uma vez, no `setup`: sem ela nenhuma sessão detecta `ssh`
+    /// digitado.
+    pub fn set_typed_ssh(&self, factory: TypedSshFactory) {
+        *self.typed_ssh.lock() = Some(factory);
+    }
+
     /// O próximo spawn de `id` entrega o fluxo do pane a `tap`. Spawn que
     /// falha deixa o tap aqui: quem o pôs tira com [`PtyPool::clear_tap`].
     pub fn set_tap(&self, id: PtyId, tap: OutputTap) {
@@ -988,6 +1041,11 @@ impl PtyPool {
     /// `patterns_for`, R10 do contrato de cobertura).
     fn auth_pipe(&self, id: PtyId, kind: &SessionKind) -> Option<AuthWatch> {
         let factory = self.auth_watchers.lock().clone()?;
+        factory(id, kind)
+    }
+
+    fn typed_ssh_pipe(&self, id: PtyId, kind: &SessionKind) -> Option<TypedSshPipe> {
+        let factory = self.typed_ssh.lock().clone()?;
         factory(id, kind)
     }
 
@@ -1110,6 +1168,7 @@ impl PtyPool {
         // Entrega C: o inverso do palpite de tela acima — só sessão de
         // AGENTE (Claude Code, hoje) ganha o scanner de auth de runtime.
         let auth_watch = self.auth_pipe(session_id, kind);
+        let mut typed_ssh = self.typed_ssh_pipe(session_id, kind);
         let tap = self.taps.lock().remove(&session_id);
         let ephemeral = self.ephemeral.lock().remove(&session_id);
         let sweep_on_exit = self.sweep_on_exit.lock().remove(&session_id);
@@ -1495,6 +1554,9 @@ impl PtyPool {
                                         bracketed_paste: bracketed,
                                     },
                                 );
+                            }
+                            if let Some(typed) = typed_ssh.as_mut() {
+                                observe_typed_ssh(typed, &actions, &chunk, now_ms());
                             }
                             if sink.run(actions, cols, rows) {
                                 last_checkpoint = Instant::now();
@@ -2104,6 +2166,80 @@ mod ingest_tests {
         let mut parser = vt100::Parser::new(24, 80, SCROLLBACK_LINES);
         parser.process(bytes);
         parser.screen().contents()
+    }
+
+    /// A detecção do `ssh` digitado vista pela máquina de verdade: quem
+    /// decide o que é saída do comando são os marcadores, não o teste.
+    /// Fixtures sintéticas, no formato do hook de `tyba-zsh-rc.sh`.
+    fn typed_ssh_run(chunks: &[String]) -> Vec<crate::ssh::typed::Detected> {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&seen);
+        let mut pipe = super::TypedSshPipe {
+            tracker: Default::default(),
+            on_detect: Box::new(move |d| sink.lock().push(d)),
+        };
+        let mut machine = CaptureMachine::new("s1".into());
+        for (at, chunk) in chunks.iter().enumerate() {
+            let now = 1_000 + at as i64;
+            let actions = machine.on_chunk(chunk.as_bytes(), now, false);
+            super::observe_typed_ssh(&mut pipe, &actions, chunk.as_bytes(), now);
+        }
+        let out = seen.lock().clone();
+        out
+    }
+
+    fn typed_start(command: &str) -> String {
+        use base64::Engine as _;
+        format!(
+            "\x1b]633;E;{}\x07\x1b]133;C\x07",
+            base64::engine::general_purpose::STANDARD.encode(command)
+        )
+    }
+
+    const LOCAL_PROMPT: &str = "\x1b]133;A\x07me@laptop:~$ \x1b]133;B\x07";
+
+    #[test]
+    fn a_typed_ssh_that_logs_in_is_detected_once() {
+        let got = typed_ssh_run(&[
+            format!("{LOCAL_PROMPT}{}", typed_start("ssh -p 2222 deploy@web")),
+            "deploy@web's password: ".into(),
+            "\r\nLast login: Mon Nov  9 from 192.0.2.1\r\n".into(),
+            "deploy@web:~$ ".into(),
+        ]);
+        assert_eq!(got.len(), 1, "{got:?}");
+        assert_eq!(got[0].destination.host, "web");
+        assert_eq!(got[0].destination.user.as_deref(), Some("deploy"));
+        assert_eq!(got[0].destination.port, Some(2222));
+        assert_eq!(got[0].block_started_at_ms, Some(1_000));
+    }
+
+    #[test]
+    fn the_local_prompt_around_a_failed_ssh_is_not_a_login() {
+        // Prompt local antes do marcador, no mesmo chunk, e depois do fim.
+        let got = typed_ssh_run(&[
+            format!("{LOCAL_PROMPT}{}", typed_start("ssh web")),
+            format!(
+                "ssh: connect to host web port 22: Connection refused\r\n\x1b]133;D;255\x07{LOCAL_PROMPT}"
+            ),
+        ]);
+        assert!(got.is_empty(), "{got:?}");
+        // Tudo num chunk só.
+        let got = typed_ssh_run(&[format!(
+            "{LOCAL_PROMPT}{}refused\r\n\x1b]133;D;255\x07{LOCAL_PROMPT}",
+            typed_start("ssh web")
+        )]);
+        assert!(got.is_empty(), "{got:?}");
+    }
+
+    #[test]
+    fn other_commands_never_reach_the_login_watch() {
+        let got = typed_ssh_run(&[
+            typed_start("ssh web uptime"),
+            "Last login: x\r\nweb$ ".into(),
+            format!("\x1b]133;D;0\x07{LOCAL_PROMPT}{}", typed_start("bash")),
+            "laptop$ ".into(),
+        ]);
+        assert!(got.is_empty(), "{got:?}");
     }
 
     /// O portão nasce fechado: sem isso a espera passaria direto e a linha
