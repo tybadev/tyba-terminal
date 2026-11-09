@@ -6,6 +6,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_notification::NotificationExt;
 
 use crate::agent::notify;
+use crate::agent::prompt_queue::{self, Signal as QueueSignal};
 
 use crate::agent::claude_settings::claude_settings_are_broad;
 use crate::agent::hooks_settings::{claude_session_settings, hook_command};
@@ -1287,11 +1288,15 @@ fn handle_event(ctx: &HandlerCtx, event: HookEvent) -> HookAction {
                         ctx.session_id,
                         SessionStatus::Idle { summary },
                     );
+                    prompt_queue::on_signal(&ctx.app, ctx.session_id, QueueSignal::TurnEnded);
                 }
             }
         }
         Some(AgentSignal::TurnFailed) => on_stop_failure(ctx, &event),
         Some(AgentSignal::Ended) => {
+            // Antes do status: o `Idle` que o `SessionEnd` causa não é o
+            // agente esperando o próximo prompt.
+            prompt_queue::on_signal(&ctx.app, ctx.session_id, QueueSignal::AgentEnded);
             if session_end_ends_subagents(&event.raw) {
                 ctx.subagents.on_session_ended(&ctx.app, ctx.session_id);
             }
@@ -1320,6 +1325,7 @@ fn handle_event(ctx: &HandlerCtx, event: HookEvent) -> HookAction {
             // cuidado do `Stop` com subagente vivo — a sessão segue `Running`
             // até o último terminar.
             ctx.turn_settle.fetch_add(1, Ordering::SeqCst);
+            prompt_queue::on_signal(&ctx.app, ctx.session_id, QueueSignal::Interrupted);
             let summary = Some(INTERRUPTED_SUMMARY.to_string());
             if ctx
                 .subagents
@@ -1406,6 +1412,7 @@ fn handle_event(ctx: &HandlerCtx, event: HookEvent) -> HookAction {
                             ctx.session_id,
                             SessionStatus::Idle { summary },
                         );
+                        prompt_queue::on_signal(&ctx.app, ctx.session_id, QueueSignal::TurnEnded);
                         let transcript_path = event
                             .raw
                             .get("transcript_path")
@@ -1452,6 +1459,7 @@ fn on_stop_failure(ctx: &HandlerCtx, event: &HookEvent) {
     ctx.turn_settle.fetch_add(1, Ordering::SeqCst);
     // Antes do `set_status`: o `running → idle` que ele causa não é "terminou".
     crate::notifications::record(&ctx.app, |n| n.stop_failure(ctx.session_id, reason));
+    prompt_queue::on_signal(&ctx.app, ctx.session_id, QueueSignal::Failed);
     ctx.sessions.set_status(&ctx.app, ctx.session_id, status);
     let _ = ctx.app.emit(
         EVENT_AGENT_ALERT,

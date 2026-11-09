@@ -5524,6 +5524,74 @@ fn dismiss_ask(app: AppHandle, id: SessionId) {
     agent::asking::clear(&app, id);
 }
 
+/// Proposta 12: a fila de prompts da sessão (só memória). O mesmo estado sai
+/// em `prompt-queue://changed` a cada mudança.
+#[tauri::command]
+async fn prompt_queue_list(id: SessionId) -> agent::prompt_queue::QueueState {
+    agent::prompt_queue::book().state(id)
+}
+
+/// Enfileira um prompt. Com o agente parado (status `Idle`, que só vem de
+/// hook), ele sai na hora; senão espera o fim do turno.
+#[tauri::command]
+async fn prompt_queue_enqueue(app: AppHandle, id: SessionId, text: String) -> Result<(), String> {
+    if text.trim().is_empty() {
+        return Err("prompt vazio".into());
+    }
+    off_main(app, move |app, state| {
+        let session = state
+            .sessions
+            .get(id)
+            .ok_or_else(|| format!("sessão não encontrada: {id}"))?;
+        if !matches!(session.kind, SessionKind::Agent { .. } | SessionKind::Shell) {
+            return Err("fila de prompts só em sessão de agente ou pane local".into());
+        }
+        let idle = matches!(session.status, SessionStatus::Idle { .. });
+        let outcome = agent::prompt_queue::book().enqueue(id, idle, text);
+        agent::prompt_queue::apply(app, id, outcome);
+        Ok(())
+    })
+    .await?
+}
+
+#[tauri::command]
+async fn prompt_queue_remove(app: AppHandle, id: SessionId, prompt_id: uuid::Uuid) {
+    let outcome = agent::prompt_queue::book().remove(id, prompt_id);
+    agent::prompt_queue::apply(&app, id, outcome);
+}
+
+/// `order`: todos os ids da fila, na ordem nova.
+#[tauri::command]
+async fn prompt_queue_reorder(
+    app: AppHandle,
+    id: SessionId,
+    order: Vec<uuid::Uuid>,
+) -> Result<(), String> {
+    let outcome = agent::prompt_queue::book().reorder(id, &order)?;
+    agent::prompt_queue::apply(&app, id, outcome);
+    Ok(())
+}
+
+#[tauri::command]
+async fn prompt_queue_pause(app: AppHandle, id: SessionId) {
+    let outcome = agent::prompt_queue::book().pause(id);
+    agent::prompt_queue::apply(&app, id, outcome);
+}
+
+/// Tira a pausa (da pessoa ou automática). Só manda o próximo se o agente
+/// está parado; senão espera o fim do turno.
+#[tauri::command]
+async fn prompt_queue_resume(app: AppHandle, id: SessionId) {
+    let outcome = agent::prompt_queue::book().resume(id);
+    agent::prompt_queue::apply(&app, id, outcome);
+}
+
+#[tauri::command]
+async fn prompt_queue_clear(app: AppHandle, id: SessionId) {
+    let outcome = agent::prompt_queue::book().clear(id);
+    agent::prompt_queue::apply(&app, id, outcome);
+}
+
 /// Fatia 5: o "Ir" do card de pedido — workspace, aba e pane da sessão. Só
 /// por clique; o foco da janela nunca troca de pane sozinho.
 #[tauri::command]
@@ -10218,6 +10286,11 @@ pub fn run() {
                                 session,
                                 SessionStatus::Idle { summary },
                             );
+                            agent::prompt_queue::on_signal(
+                                &coord_app,
+                                session,
+                                agent::prompt_queue::Signal::TurnEnded,
+                            );
                             agent::session::notify_native(
                                 &coord_app,
                                 &coord_sessions,
@@ -10523,6 +10596,13 @@ pub fn run() {
             focus_session,
             agent_asks,
             dismiss_ask,
+            prompt_queue_list,
+            prompt_queue_enqueue,
+            prompt_queue_remove,
+            prompt_queue_reorder,
+            prompt_queue_pause,
+            prompt_queue_resume,
+            prompt_queue_clear,
             search_command_history,
             scan_shell_history_sources,
             import_shell_history,
