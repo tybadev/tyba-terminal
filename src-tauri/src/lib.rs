@@ -5289,8 +5289,10 @@ fn set_workspace_group(
     Ok(())
 }
 
+/// Async **de propósito**: criar janela em command síncrono trava no Windows
+/// (o build espera a main thread, que está presa no próprio command).
 #[tauri::command]
-fn new_window(app: AppHandle) -> Result<(), String> {
+async fn new_window(app: AppHandle) -> Result<(), String> {
     let label = format!("tyba-{}", uuid::Uuid::new_v4().simple());
     let builder = tauri::WebviewWindowBuilder::new(&app, label, tauri::WebviewUrl::default())
         .title(profile::product_name(app.config()))
@@ -8675,14 +8677,14 @@ fn command_history_total(state: State<'_, AppState>) -> Result<i64, String> {
 }
 
 #[tauri::command]
-fn clear_command_history(
-    state: State<'_, AppState>,
-    repo_root: Option<String>,
-) -> Result<(), String> {
-    state
-        .store
-        .clear_command_history(repo_root.as_deref())
-        .map_err(|e| e.to_string())
+async fn clear_command_history(app: AppHandle, repo_root: Option<String>) -> Result<(), String> {
+    off_main(app, move |_app, state| {
+        state
+            .store
+            .clear_command_history(repo_root.as_deref())
+            .map_err(|e| e.to_string())
+    })
+    .await?
 }
 
 /// Painel de estatísticas de agente: agregação em SQL, no core (princípio #1).
