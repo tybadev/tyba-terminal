@@ -1042,21 +1042,6 @@ pub struct ContainerStats {
     pub mem: String,
 }
 
-pub fn parse_stats(raw: &str) -> Option<ContainerStats> {
-    let line = raw.lines().find(|l| !l.trim().is_empty())?;
-    let value: serde_json::Value = serde_json::from_str(line).ok()?;
-    let cpu = value.get("CPUPerc")?.as_str()?.to_string();
-    let mem = value
-        .get("MemUsage")?
-        .as_str()?
-        .split('/')
-        .next()
-        .unwrap_or_default()
-        .trim()
-        .to_string();
-    Some(ContainerStats { cpu, mem })
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ContainerAction {
@@ -1224,29 +1209,57 @@ pub fn parse_size(raw: &str) -> Option<u64> {
     Some((value * factor).round() as u64)
 }
 
+/// Uma linha de `docker stats --format '{{json .}}'`, com o texto cru.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct StatsLine {
+    // Só `ID`: o `{{json .}}` traz também `Container`, e um alias para ele
+    // faria o serde recusar a linha como campo duplicado.
+    #[serde(rename = "ID", default)]
+    pub id: String,
+    #[serde(rename = "CPUPerc")]
+    pub cpu: Option<String>,
+    /// `usado / limite`, como o docker escreve.
+    #[serde(rename = "MemUsage")]
+    pub mem: Option<String>,
+}
+
+impl StatsLine {
+    fn mem_used(&self) -> Option<&str> {
+        self.mem.as_deref()?.split('/').next().map(str::trim)
+    }
+
+    /// Para o painel: números, `--` vira `None`. Sem id válido não casa com
+    /// nenhum container, então sai.
+    pub fn usage(self) -> Option<ContainerUsage> {
+        if !is_valid_container_id(&self.id) {
+            return None;
+        }
+        Some(ContainerUsage {
+            cpu_percent: self
+                .cpu
+                .as_deref()
+                .and_then(|c| c.trim().trim_end_matches('%').trim().parse().ok()),
+            mem_bytes: self.mem_used().and_then(parse_size),
+            id: self.id,
+        })
+    }
+
+    /// Para a faixa do container: o texto do docker, sem conversão. Exige os
+    /// dois campos.
+    pub fn stats(self) -> Option<ContainerStats> {
+        Some(ContainerStats {
+            mem: self.mem_used()?.to_string(),
+            cpu: self.cpu?,
+        })
+    }
+}
+
 /// Uma linha JSON por container de `docker stats --format '{{json .}}'`.
 /// Linha que não parseia é ignorada (o docker às vezes emite `--` em
 /// container que acabou de parar).
-pub fn parse_stats_output(raw: &str) -> Vec<ContainerUsage> {
-    #[derive(Deserialize)]
-    struct Line {
-        // Só `ID`: o `{{json .}}` traz também `Container`, e um alias para ele
-        // faria o serde recusar a linha como campo duplicado.
-        #[serde(rename = "ID")]
-        id: String,
-        #[serde(rename = "CPUPerc", default)]
-        cpu: String,
-        #[serde(rename = "MemUsage", default)]
-        mem: String,
-    }
+pub fn parse_stats_output(raw: &str) -> Vec<StatsLine> {
     raw.lines()
-        .filter_map(|line| serde_json::from_str::<Line>(line.trim()).ok())
-        .filter(|l| is_valid_container_id(&l.id))
-        .map(|l| ContainerUsage {
-            id: l.id,
-            cpu_percent: l.cpu.trim().trim_end_matches('%').trim().parse().ok(),
-            mem_bytes: l.mem.split('/').next().and_then(parse_size),
-        })
+        .filter_map(|line| serde_json::from_str::<StatsLine>(line.trim()).ok())
         .collect()
 }
 
@@ -1448,6 +1461,7 @@ impl DockerManager {
         let known: Vec<String> = self.known.lock().keys().cloned().collect();
         let usage = parse_stats_output(&raw)
             .into_iter()
+            .filter_map(StatsLine::usage)
             .filter_map(|mut u| {
                 let full = known.iter().find(|id| id.starts_with(&u.id))?;
                 u.id = full.clone();
@@ -1642,7 +1656,10 @@ impl DockerManager {
             STATS_TIMEOUT,
             host,
         )?;
-        parse_stats(&raw).ok_or_else(|| DockerError::Failed("stats ilegível".into()))
+        parse_stats_output(&raw)
+            .into_iter()
+            .find_map(StatsLine::stats)
+            .ok_or_else(|| DockerError::Failed("stats ilegível".into()))
     }
 
     pub fn action(
@@ -2506,7 +2523,10 @@ not-json-line
             "lixo\n",
             r#"{"CPUPerc":"1%","ID":"--rm","MemUsage":"1MiB / 1GiB"}"#,
         );
-        let out = parse_stats_output(raw);
+        let out: Vec<ContainerUsage> = parse_stats_output(raw)
+            .into_iter()
+            .filter_map(StatsLine::usage)
+            .collect();
         assert_eq!(out.len(), 2, "linha inválida e id inválido saem");
         assert_eq!(out[0].id, "a1b2c3d4e5f6");
         assert_eq!(out[0].cpu_percent, Some(4.12));
@@ -2568,6 +2588,11 @@ not-json-line
     #[test]
     fn parse_stats_keeps_cpu_and_used_memory() {
         let raw = r#"{"BlockIO":"0B / 0B","CPUPerc":"4.12%","MemPerc":"2.3%","MemUsage":"182MiB / 7.66GiB","Name":"api"}"#;
+        let parse_stats = |raw: &str| {
+            parse_stats_output(raw)
+                .into_iter()
+                .find_map(StatsLine::stats)
+        };
         assert_eq!(
             parse_stats(raw),
             Some(ContainerStats {
@@ -2576,6 +2601,70 @@ not-json-line
             })
         );
         assert_eq!(parse_stats(""), None);
+    }
+
+    // Onde os dois parsers antigos divergiam.
+
+    #[test]
+    fn stats_line_without_id_feeds_strip_but_not_panel() {
+        // A faixa pede `stats <id>` e nunca precisou do `ID`; o painel casa
+        // pelo id e descarta a linha sem ele.
+        let raw = r#"{"CPUPerc":"4.12%","MemUsage":"182MiB / 7.66GiB"}"#;
+        let line = parse_stats_output(raw).remove(0);
+        assert_eq!(line.clone().usage(), None);
+        assert_eq!(
+            line.stats(),
+            Some(ContainerStats {
+                cpu: "4.12%".into(),
+                mem: "182MiB".into()
+            })
+        );
+    }
+
+    #[test]
+    fn stats_line_missing_field_is_none_for_strip_and_empty_for_panel() {
+        // Sem `MemUsage`: a faixa recusa (como antes), o painel mostra só CPU.
+        let raw = r#"{"ID":"a1b2c3d4e5f6","CPUPerc":"4.12%"}"#;
+        let line = parse_stats_output(raw).remove(0);
+        assert_eq!(line.clone().stats(), None);
+        let usage = line.usage().unwrap();
+        assert_eq!(usage.cpu_percent, Some(4.12));
+        assert_eq!(usage.mem_bytes, None);
+    }
+
+    #[test]
+    fn stats_dashes_stay_text_for_strip() {
+        // Container parando: a faixa recebe o `--` do docker como texto; o
+        // painel (testado acima) vira `None`.
+        let raw = r#"{"CPUPerc":"--","ID":"bbbbbbbbbbbb","MemUsage":"-- / --"}"#;
+        let stats = parse_stats_output(raw).remove(0).stats();
+        assert_eq!(
+            stats,
+            Some(ContainerStats {
+                cpu: "--".into(),
+                mem: "--".into()
+            })
+        );
+    }
+
+    #[test]
+    fn stats_strip_skips_garbage_before_the_json_line() {
+        // O antigo `parse_stats` olhava só a primeira linha não vazia e
+        // falhava se ela fosse lixo; agora pula até a primeira legível.
+        let raw = "aviso qualquer
+
+{\"CPUPerc\":\"1%\",\"MemUsage\":\"1MiB / 1GiB\"}
+";
+        let stats = parse_stats_output(raw)
+            .into_iter()
+            .find_map(StatsLine::stats);
+        assert_eq!(
+            stats,
+            Some(ContainerStats {
+                cpu: "1%".into(),
+                mem: "1MiB".into()
+            })
+        );
     }
 
     #[test]
