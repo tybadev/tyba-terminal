@@ -14,10 +14,11 @@ import { bodyLines, columnsFor } from "../lib/blockMetrics";
 import { cwdChange, formatDuration } from "../lib/blockLayout";
 import { blockMarkdown, blockOutput, failed, shortPath } from "../lib/blockText";
 import { writeClipboardText } from "../lib/clipboard";
+import { ensureContrast, parseRgb, type Rgb } from "../lib/contrast";
 import type { Block, BlockColor, LogicalLine, StyleRun } from "../lib/ipc";
 import { toastError } from "../lib/toast";
 import { compactPath } from "../lib/workspaceCwd";
-import { ansiColor, onTerminalThemeChange } from "../theme";
+import { ansiColor, getTerminalTheme, onTerminalThemeChange } from "../theme";
 import type { PaneRectStyle } from "./TerminalView";
 
 /**
@@ -34,10 +35,43 @@ function cssColor(color: BlockColor): string | undefined {
   return undefined;
 }
 
+/**
+ * O papel dos blocos é o fundo da área de terminal. Lido uma vez e esquecido a
+ * cada troca de tema, junto com as cores já ajustadas.
+ */
+let paper: Rgb | null | undefined;
+const adjusted = new Map<string, string>();
+onTerminalThemeChange(() => {
+  paper = undefined;
+  adjusted.clear();
+});
+
+/**
+ * Mesma regra do `minimumContrastRatio` do xterm: cor de frente sem 4.5 de
+ * contraste contra o fundo efetivo (o do run, ou o papel) é ajustada. Cor que
+ * já passa sai como veio.
+ */
+function readableColor(fg: string | undefined, bg: string | undefined): string | undefined {
+  if (!fg) return fg;
+  const key = `${fg}|${bg ?? ""}`;
+  const hit = adjusted.get(key);
+  if (hit) return hit;
+  if (paper === undefined) paper = parseRgb(getTerminalTheme().background ?? "");
+  const fgRgb = parseRgb(fg);
+  const bgRgb = bg ? parseRgb(bg) : paper;
+  const fixed = fgRgb && bgRgb ? ensureContrast(fgRgb, bgRgb) : null;
+  const out = fixed ? `rgb(${fixed[0]} ${fixed[1]} ${fixed[2]})` : fg;
+  // Truecolor em degradê (lolcat) gera par novo a cada célula: teto simples.
+  if (adjusted.size > 4096) adjusted.clear();
+  adjusted.set(key, out);
+  return out;
+}
+
 function runStyle(run: StyleRun): React.CSSProperties {
+  const bg = cssColor(run.bg);
   return {
-    color: cssColor(run.fg),
-    backgroundColor: cssColor(run.bg),
+    color: readableColor(cssColor(run.fg), bg),
+    backgroundColor: bg,
     fontWeight: run.bold ? 600 : undefined,
     fontStyle: run.italic ? "italic" : undefined,
     textDecoration: run.underline ? "underline" : undefined,

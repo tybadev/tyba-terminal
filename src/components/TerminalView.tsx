@@ -83,9 +83,8 @@ import {
   type Bindings,
 } from "../lib/keys";
 import { getTerminalTheme, onTerminalThemeChange } from "../theme";
+import { MIN_CONTRAST, transparentOf } from "../lib/contrast";
 import { nodeFontSize, nodeGrid, nodeLiveClip, nodeZoomStyle, type Cell } from "../lib/nodeTerminal";
-
-const TRANSPARENT_BG = "rgba(0, 0, 0, 0)";
 
 export const RELAYOUT_EVENT = "tyba:relayout";
 
@@ -635,11 +634,16 @@ export function TerminalView({
     };
 
     // A folha do terminal é acrílico (opção G): quem pinta o papel é a peça
-    // em volta, e o xterm desenha por cima com fundo transparente.
-    const theme = { ...getTerminalTheme(), background: TRANSPARENT_BG };
+    // em volta, e o xterm desenha por cima com fundo transparente — que ainda
+    // carrega o RGB do papel, para o contraste mínimo medir contra ele.
+    const initial = getTerminalTheme();
+    const theme = { ...initial, background: transparentOf(initial.background) };
     const term = new Terminal({
       theme,
       allowTransparency: true,
+      // Cor RGB/256 forçada pelo programa (o Monokai do `bat`) sem contraste
+      // contra o papel é escurecida ou clareada até 4.5 — padrão do VS Code.
+      minimumContrastRatio: MIN_CONTRAST,
       fontFamily:
         '"JetBrains Mono", "Symbols Nerd Font Mono", "Fira Code", ui-monospace, SFMono-Regular, Menlo, monospace',
       fontSize: defaultFontSize,
@@ -745,7 +749,7 @@ export function TerminalView({
 
     el.style.backgroundColor = theme.background ?? "";
     const offTheme = onTerminalThemeChange((next) => {
-      const themed = { ...next, background: TRANSPARENT_BG };
+      const themed = { ...next, background: transparentOf(next.background) };
       term.options.theme = themed;
       el.style.backgroundColor = themed.background;
     });
