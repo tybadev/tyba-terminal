@@ -15,5 +15,7 @@ regexes = [
   '''glpat-abcdefghij1234567890''',
   '''AKIAIOSFODNN7EXAMPLE''',
   '''sk-abcdef1234567890ABCDEFghijkl''',
+  '''sk-abcdefghij0123456789ABCD''',
+  '''abc123def456''',
   '''eyJhbGciOiJIUzI1NiJ9\.eyJzdWIiOiIxMjM0NTY3ODkwIn0\.''',
 ]
