@@ -420,6 +420,7 @@ import {
   termRect,
   usedFraction,
 } from "./components/ActiveBlock";
+import { termCovered } from "./lib/liveSeam";
 import { SessionBlocks } from "./components/SessionBlocks";
 import { sessionBlocksData } from "./lib/sessionBlocks";
 
@@ -5594,7 +5595,7 @@ export default function App() {
             liveUsed={
               blocked && liveOf(s.id) ? liveUsed[s.id] : undefined
             }
-            covered={blocked && !liveOf(s.id)}
+            covered={termCovered(blocked, liveOf(s.id))}
             swallowArrows={swallowsArrow({
               running: Boolean(sessionCommands[s.id]?.running),
               lineEcho: lineEcho[s.id] ?? false,
