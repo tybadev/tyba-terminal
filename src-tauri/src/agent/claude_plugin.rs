@@ -11,7 +11,8 @@
 //!   gerenciada/hospedada, ou `TYBA_HOSTED=1`) também sai: os eventos já
 //!   chegam pelos hooks da sessão, e não podem chegar duas vezes.
 //! - Num claude cru dentro de um pane: `SessionStart`, `Notification`,
-//!   `PermissionRequest`, `Stop` e `Subagent*` só avisam o core — nenhum
+//!   `PermissionRequest`, `PostToolUse*`, `UserPromptSubmit`, `Stop` e
+//!   `Subagent*` só avisam o core — nenhum
 //!   responde nada ao Claude. O `PreToolUse` (só `Bash`) aplica a parte de
 //!   texto do guarda-corpo ([`crate::agent::guard_rail`]): merge e aprovação
 //!   de PR/MR e desligar o hook do git são recusados com motivo; todo o resto
@@ -45,6 +46,9 @@ const OBSERVED_EVENTS: &[&str] = &[
     "SessionStart",
     "Notification",
     "PermissionRequest",
+    "PostToolUse",
+    "PostToolUseFailure",
+    "UserPromptSubmit",
     "Stop",
     "SubagentStart",
     "SubagentStop",
@@ -397,8 +401,9 @@ pub fn resolve_plugin_event(
 pub enum PluginSignal {
     /// Pedido de permissão: marca e avisa.
     Asking,
-    /// O pedido não está mais aberto: o turno fechou (`Stop`) ou a sessão
-    /// recomeçou (`SessionStart`). Sem veredito.
+    /// O pedido não está mais aberto: a ferramenta rodou (`PostToolUse*`), o
+    /// usuário mandou a próxima mensagem (`UserPromptSubmit`), o turno fechou
+    /// (`Stop`) ou a sessão recomeçou (`SessionStart`). Sem veredito.
     Settled,
     None,
 }
@@ -410,7 +415,12 @@ pub fn plugin_signal(event: &str, notification_type: Option<&str>) -> PluginSign
     match (event, notification_type) {
         ("PermissionRequest", _) => PluginSignal::Asking,
         ("Notification", Some("permission_prompt")) => PluginSignal::Asking,
-        ("Stop" | "SessionStart", _) => PluginSignal::Settled,
+        // Os mesmos que tiram o gerenciado do prompt nativo
+        // (`status::agent_events::signal_for`), mais `Stop`/`SessionStart`.
+        (
+            "PostToolUse" | "PostToolUseFailure" | "UserPromptSubmit" | "Stop" | "SessionStart",
+            _,
+        ) => PluginSignal::Settled,
         _ => PluginSignal::None,
     }
 }
@@ -699,6 +709,23 @@ mod tests {
         assert_eq!(plugin_signal("Stop", None), PluginSignal::Settled);
         assert_eq!(plugin_signal("SessionStart", None), PluginSignal::Settled);
         assert_eq!(plugin_signal("SubagentStop", None), PluginSignal::None);
+    }
+
+    /// Aprovado no prompt nativo, a ferramenta roda (`PostToolUse`, ou
+    /// `PostToolUseFailure` se falhou); negado, o próximo sinal é o
+    /// `UserPromptSubmit`. Os três tiram o "pedindo" do pane, como no caminho
+    /// gerenciado — sem depender do palpite de tela.
+    #[test]
+    fn tool_ran_or_next_prompt_settles_the_ask() {
+        let v = hooks_json();
+        for event in ["PostToolUse", "PostToolUseFailure", "UserPromptSubmit"] {
+            assert!(v["hooks"][event].is_array(), "{event} no plugin");
+            assert!(
+                v["hooks"][event][0].get("matcher").is_none(),
+                "{event} vale para toda ferramenta"
+            );
+            assert_eq!(plugin_signal(event, None), PluginSignal::Settled, "{event}");
+        }
     }
 
     #[test]
