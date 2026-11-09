@@ -27,8 +27,8 @@ use crate::session::{
 };
 use crate::status::agent_events::{
     native_prompt_status, note_for_event, signal_for, status_for, status_on_idle_prompt,
-    status_on_interrupt, status_on_session_end, status_on_stop_failure, AgentSignal,
-    INTERRUPTED_SUMMARY,
+    status_on_interrupt, status_on_needs_input, status_on_session_end, status_on_stop_failure,
+    AgentSignal, INTERRUPTED_SUMMARY,
 };
 
 pub const EVENT_AGENT_READY: &str = "agent://ready";
@@ -1350,6 +1350,16 @@ fn handle_event(ctx: &HandlerCtx, event: HookEvent) -> HookAction {
                 .and_then(|s| status_on_session_end(&s.status))
             {
                 ctx.sessions.set_status(&ctx.app, ctx.session_id, status);
+            }
+        }
+        Some(AgentSignal::NeedsInput) => {
+            if let Some(next) = ctx
+                .sessions
+                .get(ctx.session_id)
+                .and_then(|s| status_on_needs_input(&s.status))
+            {
+                ctx.sessions.set_status(&ctx.app, ctx.session_id, next);
+                notify_awaiting_input(ctx, "Agente precisa de você");
             }
         }
         Some(AgentSignal::Interrupted) => {
