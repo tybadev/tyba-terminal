@@ -859,18 +859,16 @@ enum StopOutcome {
     /// agendado (`session_crons`), e o Claude acorda sozinho. A sessão segue
     /// `Running`; o próximo `Stop` sem pendência fecha o turno.
     Pause,
-    /// `stop_hook_active`: o `Stop` de uma continuação forçada por hook — não
-    /// conta como fim de turno.
-    Ignore,
+    /// `stop_hook_active`: o `Stop` de uma continuação forçada por hook. Fecha
+    /// o turno (status e fila de sempre), só sem o aviso "terminou" — o mesmo
+    /// que o plugin faz.
+    EndQuiet,
 }
 
 /// Lido do payload do `Stop`. Campo ausente (Claude Code antigo, Codex) conta
 /// como lista vazia: o comportamento de antes. Ideia do plugin
 /// `claude-code-warp` (MIT).
 fn stop_outcome(raw: &serde_json::Value) -> StopOutcome {
-    if raw.get("stop_hook_active").and_then(|v| v.as_bool()) == Some(true) {
-        return StopOutcome::Ignore;
-    }
     let pending = |key: &str| {
         raw.get(key)
             .and_then(|v| v.as_array())
@@ -878,6 +876,8 @@ fn stop_outcome(raw: &serde_json::Value) -> StopOutcome {
     };
     if pending("background_tasks") || pending("session_crons") {
         StopOutcome::Pause
+    } else if raw.get("stop_hook_active").and_then(|v| v.as_bool()) == Some(true) {
+        StopOutcome::EndQuiet
     } else {
         StopOutcome::End
     }
@@ -1418,8 +1418,6 @@ fn handle_event(ctx: &HandlerCtx, event: HookEvent) -> HookAction {
                     }
                 }
                 Some(SessionStatus::Idle { .. })
-                    if stop_outcome(&event.raw) == StopOutcome::Ignore => {}
-                Some(SessionStatus::Idle { .. })
                     if stop_outcome(&event.raw) == StopOutcome::Pause =>
                 {
                     // Pendência em background: o Claude acorda sozinho. Sem
@@ -1468,7 +1466,9 @@ fn handle_event(ctx: &HandlerCtx, event: HookEvent) -> HookAction {
                             .get("transcript_path")
                             .and_then(|p| p.as_str())
                             .map(str::to_string);
-                        notify_turn_ended(ctx, transcript_path, needs_settle);
+                        if stop_outcome(&event.raw) == StopOutcome::End {
+                            notify_turn_ended(ctx, transcript_path, needs_settle);
+                        }
                     }
                 }
                 _ => {}
@@ -2190,6 +2190,8 @@ fn note_turn_tail(tail: &mut TurnTail, event: &HookEvent) {
         tail.transcript_path = Some(PathBuf::from(path));
     }
     match event.hook_event_name.as_str() {
+        // Stop com pendência não é fim de turno: ver [`StopOutcome::Pause`].
+        "Stop" if stop_outcome(&event.raw) == StopOutcome::Pause => {}
         "Stop" => {
             if let Some(m) = event
                 .raw
@@ -3415,6 +3417,29 @@ mod build_hosted_command_tests {
     }
 
     #[test]
+    fn paused_stop_does_not_record_the_turn_end() {
+        let mut tail = TurnTail::default();
+        note_turn_tail(
+            &mut tail,
+            &hook(
+                serde_json::json!({"hook_event_name": "Stop", "last_assistant_message": "pausa",
+                    "background_tasks": [{"id": "bg-1"}]}),
+                None,
+            ),
+        );
+        assert!(tail.last_message.is_none());
+        note_turn_tail(
+            &mut tail,
+            &hook(
+                serde_json::json!({"hook_event_name": "Stop", "last_assistant_message": "pronto",
+                    "background_tasks": []}),
+                None,
+            ),
+        );
+        assert_eq!(tail.last_message.as_deref(), Some("pronto"));
+    }
+
+    #[test]
     fn turn_tail_keeps_only_the_main_thread() {
         let mut tail = TurnTail::default();
         note_turn_tail(
@@ -3738,11 +3763,15 @@ mod stop_pending_tests {
     }
 
     #[test]
-    fn stop_hook_active_is_ignored() {
+    fn stop_hook_active_ends_the_turn_without_notifying() {
         let raw = json!({"hook_event_name": "Stop", "stop_hook_active": true});
-        assert_eq!(stop_outcome(&raw), StopOutcome::Ignore);
+        assert_eq!(stop_outcome(&raw), StopOutcome::EndQuiet);
         let raw = json!({"hook_event_name": "Stop", "stop_hook_active": false});
         assert_eq!(stop_outcome(&raw), StopOutcome::End);
+        // Pendência vence: fechar soltaria a fila com o Claude ainda por acordar.
+        let raw = json!({"hook_event_name": "Stop", "stop_hook_active": true,
+            "background_tasks": [{"id": "bg-1"}]});
+        assert_eq!(stop_outcome(&raw), StopOutcome::Pause);
     }
 
     #[test]
