@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter, Manager, UserAttentionType};
 
 use crate::agent::usage::{AgentUsage, LimitWindow, USAGE_WARN_PCT};
 use crate::approvals::{ApprovalRequest, Decision, RiskLevel};
@@ -330,6 +330,66 @@ impl EmitThrottle {
     }
 }
 
+/// Badge do Dock/barra de tarefas: a mesma conta do badge do sino
+/// (`attentionCount` em `src/lib/notifications.ts`) — pedidos do TYBA
+/// pendentes + erros não lidos. O pendente do prompt nativo não conta.
+pub fn attention_count(entries: &[NotificationEntry]) -> usize {
+    entries
+        .iter()
+        .filter(|e| {
+            (e.kind == NotificationKind::Approval && e.pending)
+                || (!e.read && e.category == NotificationCategory::Error)
+        })
+        .count()
+}
+
+/// Rótulo do Dock (macOS). Só o número, nunca o conteúdo do pedido. Zero
+/// some; em build de dev o selo "DEV" fica junto, para não confundir com o
+/// app instalado.
+pub fn dock_label(count: usize, dev: Option<&str>) -> Option<String> {
+    let n = match count {
+        0 => return dev.map(str::to_owned),
+        1..=99 => count.to_string(),
+        _ => "99+".to_owned(),
+    };
+    Some(match dev {
+        Some(dev) => format!("{dev} {n}"),
+        None => n,
+    })
+}
+
+/// Atenção do SO para uma entrada recém-gravada: crítica para pedido do TYBA
+/// que bloqueia o agente, informativa para "terminou". O prompt nativo fica de
+/// fora, como no badge (estado deduzido, ver `rules.md`).
+pub fn attention_level(entry: &NotificationEntry) -> Option<UserAttentionType> {
+    match entry.kind {
+        NotificationKind::Approval if entry.pending => Some(UserAttentionType::Critical),
+        NotificationKind::AgentFinished => Some(UserAttentionType::Informational),
+        _ => None,
+    }
+}
+
+/// Numa rajada, vale a mais forte.
+fn stronger(
+    a: Option<UserAttentionType>,
+    b: Option<UserAttentionType>,
+) -> Option<UserAttentionType> {
+    match (a, b) {
+        (Some(UserAttentionType::Critical), _) | (_, Some(UserAttentionType::Critical)) => {
+            Some(UserAttentionType::Critical)
+        }
+        (a, b) => a.or(b),
+    }
+}
+
+/// Com a janela em foco não se pede atenção.
+fn attention_request(
+    level: Option<UserAttentionType>,
+    focused: bool,
+) -> Option<UserAttentionType> {
+    level.filter(|_| !focused)
+}
+
 pub struct Notifications {
     store: Arc<Store>,
     sessions: SharedSessionManager,
@@ -342,6 +402,9 @@ pub struct Notifications {
     /// Teto por sessão; só sessões com janela aberta ficam aqui.
     caps: Mutex<HashMap<SessionId, CapWindow>>,
     emit: Mutex<EmitThrottle>,
+    /// Atenção do SO pedida pelas entradas gravadas desde a última vez que
+    /// [`record`] a tomou.
+    attention: Mutex<Option<UserAttentionType>>,
 }
 
 impl Notifications {
@@ -359,6 +422,7 @@ impl Notifications {
             suppress_finished: Mutex::new(HashSet::new()),
             caps: Mutex::new(HashMap::new()),
             emit: Mutex::new(EmitThrottle::default()),
+            attention: Mutex::new(None),
         }
     }
 
@@ -427,7 +491,11 @@ impl Notifications {
 
     fn insert(&self, entry: &NotificationEntry) -> bool {
         match self.store.insert_notification(entry, entry.at_ms) {
-            Ok(_) => true,
+            Ok(_) => {
+                let mut attention = self.attention.lock();
+                *attention = stronger(*attention, attention_level(entry));
+                true
+            }
             Err(e) => {
                 eprintln!("[tyba] notificações: falha ao gravar: {e}");
                 false
@@ -616,10 +684,49 @@ impl Notifications {
     pub fn mark_read(&self, ids: Option<&[u64]>) -> Result<bool, StoreError> {
         self.store.mark_notifications_read(ids).map(|n| n > 0)
     }
+
+    /// A atenção acumulada desde a última tomada; zera.
+    fn take_attention(&self) -> Option<UserAttentionType> {
+        self.attention.lock().take()
+    }
+}
+
+/// Põe no Dock (macOS) / barra de tarefas a contagem de [`attention_count`].
+/// Só o número. SO sem suporte (Windows, Linux fora do Unity): no-op
+/// silencioso. Também é o que põe o selo "DEV" no arranque.
+pub fn refresh_dock_badge(app: &AppHandle) {
+    let count = app
+        .try_state::<Notifications>()
+        .and_then(|n| n.list().ok())
+        .map(|entries| attention_count(&entries))
+        .unwrap_or(0);
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    #[cfg(target_os = "macos")]
+    let _ = window.set_badge_label(dock_label(count, crate::app_icon::DEV_BADGE));
+    #[cfg(not(target_os = "macos"))]
+    let _ = window.set_badge_count((count > 0).then_some(count as i64));
+}
+
+/// Pede a atenção do SO para o que acabou de entrar, se a janela não está em
+/// foco. Nunca mostra o conteúdo: é o pulo do Dock / o piscar da barra.
+fn request_attention(app: &AppHandle, n: &Notifications) {
+    let Some(level) = n.take_attention() else {
+        return;
+    };
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    let focused = window.is_focused().unwrap_or(false);
+    if let Some(level) = attention_request(Some(level), focused) {
+        let _ = window.request_user_attention(Some(level));
+    }
 }
 
 /// Avisa o webview que o histórico mudou, agrupado: no máximo um aviso a cada
-/// [`EMIT_INTERVAL`], com um último aviso depois da última mudança.
+/// [`EMIT_INTERVAL`], com um último aviso depois da última mudança. O badge do Dock
+/// acompanha cada aviso.
 pub fn emit_changed(app: &AppHandle) {
     let Some(n) = app.try_state::<Notifications>() else {
         return;
@@ -628,6 +735,7 @@ pub fn emit_changed(app: &AppHandle) {
     match action {
         EmitAction::Now => {
             let _ = app.emit(EVENT_NOTIFICATIONS_CHANGED, ());
+            refresh_dock_badge(app);
         }
         EmitAction::After(wait) => {
             let app = app.clone();
@@ -637,6 +745,7 @@ pub fn emit_changed(app: &AppHandle) {
                     n.emit.lock().on_timer(Instant::now());
                 }
                 let _ = app.emit(EVENT_NOTIFICATIONS_CHANGED, ());
+                refresh_dock_badge(&app);
             });
         }
         EmitAction::Skip => {}
@@ -649,6 +758,7 @@ pub fn record(app: &AppHandle, f: impl FnOnce(&Notifications) -> bool) {
     if let Some(n) = app.try_state::<Notifications>() {
         if f(&n) {
             emit_changed(app);
+            request_attention(app, &n);
         }
     }
 }
@@ -1347,5 +1457,93 @@ mod tests {
         ] {
             assert!(v.get(field).is_some(), "falta {field}");
         }
+    }
+
+    fn of(kind: NotificationKind, category: NotificationCategory) -> NotificationEntry {
+        let mut e = entry(SessionId::nil(), NOW);
+        e.kind = kind;
+        e.category = category;
+        e
+    }
+
+    fn pending_approval() -> NotificationEntry {
+        let mut e = of(NotificationKind::Approval, NotificationCategory::Request);
+        e.pending = true;
+        e
+    }
+
+    #[test]
+    fn badge_conta_pedidos_pendentes_e_erros_nao_lidos() {
+        let mut lido = of(NotificationKind::AgentFailed, NotificationCategory::Error);
+        lido.read = true;
+        let mut resolvido = pending_approval();
+        resolvido.pending = false;
+        let mut nativo = of(NotificationKind::NativeApproval, NotificationCategory::Request);
+        nativo.pending = true;
+        let entries = vec![
+            pending_approval(),
+            pending_approval(),
+            of(NotificationKind::AgentFailed, NotificationCategory::Error),
+            of(NotificationKind::UsageLimit, NotificationCategory::Error),
+            lido,
+            resolvido,
+            nativo,
+            of(NotificationKind::AgentFinished, NotificationCategory::Done),
+            of(NotificationKind::UsageLimit, NotificationCategory::Info),
+        ];
+        assert_eq!(attention_count(&entries), 4);
+        assert_eq!(attention_count(&[]), 0);
+    }
+
+    #[test]
+    fn rotulo_do_dock_some_no_zero_e_guarda_o_selo_dev() {
+        assert_eq!(dock_label(0, None), None);
+        assert_eq!(dock_label(3, None).as_deref(), Some("3"));
+        assert_eq!(dock_label(0, Some("DEV")).as_deref(), Some("DEV"));
+        assert_eq!(dock_label(3, Some("DEV")).as_deref(), Some("DEV 3"));
+        assert_eq!(dock_label(150, None).as_deref(), Some("99+"));
+    }
+
+    #[test]
+    fn atencao_critica_para_pedido_informativa_para_terminou() {
+        use tauri::UserAttentionType::{Critical, Informational};
+        assert_eq!(attention_level(&pending_approval()), Some(Critical));
+        assert_eq!(
+            attention_level(&of(NotificationKind::AgentFinished, NotificationCategory::Done)),
+            Some(Informational)
+        );
+        let mut resolvido = pending_approval();
+        resolvido.pending = false;
+        assert_eq!(attention_level(&resolvido), None);
+        let mut nativo = of(NotificationKind::NativeApproval, NotificationCategory::Request);
+        nativo.pending = true;
+        assert_eq!(attention_level(&nativo), None);
+        for (k, c) in [
+            (NotificationKind::AgentFailed, NotificationCategory::Error),
+            (NotificationKind::UsageLimit, NotificationCategory::Info),
+        ] {
+            assert_eq!(attention_level(&of(k, c)), None);
+        }
+    }
+
+    #[test]
+    fn atencao_de_uma_rajada_fica_com_a_mais_forte_e_some_com_foco() {
+        use tauri::UserAttentionType::{Critical, Informational};
+        assert_eq!(stronger(None, Some(Informational)), Some(Informational));
+        assert_eq!(stronger(Some(Critical), Some(Informational)), Some(Critical));
+        assert_eq!(stronger(Some(Informational), Some(Critical)), Some(Critical));
+        assert_eq!(stronger(Some(Informational), None), Some(Informational));
+        assert_eq!(attention_request(Some(Critical), false), Some(Critical));
+        assert_eq!(attention_request(Some(Critical), true), None);
+        assert_eq!(attention_request(None, false), None);
+    }
+
+    #[test]
+    fn insercao_guarda_a_atencao_ate_alguem_tomar() {
+        use tauri::UserAttentionType::Critical;
+        let (n, _store, session) = center();
+        assert!(n.approval_requested(&request(1, session.id, "rm -rf build")));
+        assert_eq!(n.take_attention(), Some(Critical));
+        assert_eq!(n.take_attention(), None);
     }
 }

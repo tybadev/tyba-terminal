@@ -153,40 +153,20 @@ fn set_dock_icon(png: &'static [u8]) {
     unsafe { ns_app.setApplicationIconImage(Some(&image)) };
 }
 
-/// macOS: o selo "DEV" no Dock. Windows/Linux não têm onde pô-lo sem gerar
-/// outro ícone (o Tauri só expõe o overlay do Windows e a contagem); ficam sem.
-fn show_dev_badge(app: &AppHandle) {
-    let Some(label) = DEV_BADGE else {
-        return;
-    };
-    #[cfg(target_os = "macos")]
-    {
-        let result = app.run_on_main_thread(move || {
-            let Some(mtm) = objc2::MainThreadMarker::new() else {
-                return;
-            };
-            let tile = objc2_app_kit::NSApplication::sharedApplication(mtm).dockTile();
-            tile.setBadgeLabel(Some(&objc2_foundation::NSString::from_str(label)));
-        });
-        if let Err(e) = result {
-            eprintln!("[tyba] selo DEV: {e}");
-        }
-    }
-    #[cfg(not(target_os = "macos"))]
-    let _ = (app, label);
-}
-
 /// O ícone salvo no `config.toml` (`[appearance] app_icon`).
 pub fn current(config: &ConfigManager) -> AppIcon {
     resolve(Some(config.app_icon()))
 }
 
-/// O arranque: reaplica a escolha salva e, em dev, o selo. Roda no
+/// O arranque: reaplica a escolha salva e o rótulo do Dock (selo "DEV" em dev,
+/// junto da contagem de pendências — ver
+/// [`crate::notifications::refresh_dock_badge`]). Windows/Linux não têm onde
+/// pôr o selo; ficam só com a contagem onde o SO suporta. Roda no
 /// `RunEvent::Ready`, e não no `setup`: no `tauri dev` o Tauri põe o ícone de
 /// dev no Dock entre os dois, e passaria por cima da escolha.
 pub fn apply_at_startup(app: &AppHandle, config: &ConfigManager) {
     apply(app, current(config));
-    show_dev_badge(app);
+    crate::notifications::refresh_dock_badge(app);
 }
 
 /// Aplica toda mudança publicada pelo `config`: a da UI (`set_app_icon`) e a
