@@ -383,10 +383,7 @@ fn stronger(
 }
 
 /// Com a janela em foco não se pede atenção.
-fn attention_request(
-    level: Option<UserAttentionType>,
-    focused: bool,
-) -> Option<UserAttentionType> {
+fn attention_request(level: Option<UserAttentionType>, focused: bool) -> Option<UserAttentionType> {
     level.filter(|_| !focused)
 }
 
@@ -1478,7 +1475,10 @@ mod tests {
         lido.read = true;
         let mut resolvido = pending_approval();
         resolvido.pending = false;
-        let mut nativo = of(NotificationKind::NativeApproval, NotificationCategory::Request);
+        let mut nativo = of(
+            NotificationKind::NativeApproval,
+            NotificationCategory::Request,
+        );
         nativo.pending = true;
         let entries = vec![
             pending_approval(),
@@ -1509,13 +1509,19 @@ mod tests {
         use tauri::UserAttentionType::{Critical, Informational};
         assert_eq!(attention_level(&pending_approval()), Some(Critical));
         assert_eq!(
-            attention_level(&of(NotificationKind::AgentFinished, NotificationCategory::Done)),
+            attention_level(&of(
+                NotificationKind::AgentFinished,
+                NotificationCategory::Done
+            )),
             Some(Informational)
         );
         let mut resolvido = pending_approval();
         resolvido.pending = false;
         assert_eq!(attention_level(&resolvido), None);
-        let mut nativo = of(NotificationKind::NativeApproval, NotificationCategory::Request);
+        let mut nativo = of(
+            NotificationKind::NativeApproval,
+            NotificationCategory::Request,
+        );
         nativo.pending = true;
         assert_eq!(attention_level(&nativo), None);
         for (k, c) in [
@@ -1530,8 +1536,14 @@ mod tests {
     fn atencao_de_uma_rajada_fica_com_a_mais_forte_e_some_com_foco() {
         use tauri::UserAttentionType::{Critical, Informational};
         assert_eq!(stronger(None, Some(Informational)), Some(Informational));
-        assert_eq!(stronger(Some(Critical), Some(Informational)), Some(Critical));
-        assert_eq!(stronger(Some(Informational), Some(Critical)), Some(Critical));
+        assert_eq!(
+            stronger(Some(Critical), Some(Informational)),
+            Some(Critical)
+        );
+        assert_eq!(
+            stronger(Some(Informational), Some(Critical)),
+            Some(Critical)
+        );
         assert_eq!(stronger(Some(Informational), None), Some(Informational));
         assert_eq!(attention_request(Some(Critical), false), Some(Critical));
         assert_eq!(attention_request(Some(Critical), true), None);
