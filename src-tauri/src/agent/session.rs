@@ -275,6 +275,7 @@ pub(crate) fn notify_asking(
         store,
         notify::NotifyKind::NativePrompt,
         id,
+        None,
         &body,
     )
 }
@@ -386,7 +387,7 @@ pub(crate) fn notify_native(
     id: SessionId,
     body: &str,
 ) {
-    notify_native_shown(app, sessions, store, kind, id, body);
+    notify_native_shown(app, sessions, store, kind, id, None, body);
 }
 
 /// [`notify_native`], dizendo se o aviso saiu de fato.
@@ -396,6 +397,9 @@ fn notify_native_shown(
     store: &Store,
     kind: notify::NotifyKind,
     id: SessionId,
+    // Título no lugar do nome da sessão (o prompt do fim de turno). Já vem
+    // redigido; só existe aqui, no aviso.
+    headline: Option<&str>,
     body: &str,
 ) -> bool {
     let focused = main_window_focused(app);
@@ -414,15 +418,21 @@ fn notify_native_shown(
         eprintln!("[tyba] aviso {kind:?} de {id} desligado nas preferências");
         return false;
     }
-    let title = sessions
-        .get(id)
-        .map(|s| s.title)
-        .unwrap_or_else(|| "sessão de agente".into());
+    let title = match headline {
+        Some(headline) => crate::session::redact::redact(headline).into_owned(),
+        None => {
+            let title = sessions
+                .get(id)
+                .map(|s| s.title)
+                .unwrap_or_else(|| "sessão de agente".into());
+            format!("Tyba — {title}")
+        }
+    };
     let body = crate::session::redact::redact(body);
     let mut builder = app
         .notification()
         .builder()
-        .title(format!("Tyba — {title}"))
+        .title(title)
         .body(body.as_ref());
     if let Some(sound) = policy.sound {
         builder = builder.sound(sound);
@@ -493,10 +503,48 @@ fn turn_summary(event: &HookEvent) -> TurnSummary {
     }
 }
 
+/// Teto do prompt no título do aviso de fim de turno.
+const TURN_PROMPT_MAX_CHARS: usize = 80;
+
+/// O fim de turno depois do settle. `summary` vai para o status (e dali para
+/// o SQLite); `prompt` é só o título do aviso do SO, em memória — nunca entra
+/// em status nem em registro gravado.
+pub(crate) struct TurnEnd {
+    pub summary: Option<String>,
+    /// O settle achou uma fala diferente da que o status tinha.
+    pub refreshed: bool,
+    pub prompt: Option<String>,
+}
+
+/// Sem efeito colateral, para ser testável. O transcript já sai redigido
+/// antes do corte (`status::transcript`).
+pub(crate) fn turn_end(
+    transcript: Option<&std::path::Path>,
+    settle: bool,
+    summary: Option<&str>,
+) -> TurnEnd {
+    let fresh = transcript.filter(|_| settle).and_then(|path| {
+        crate::status::transcript::last_assistant_text(path, TURN_SUMMARY_MAX_CHARS)
+    });
+    let prompt = transcript
+        .and_then(|path| crate::status::transcript::last_user_prompt(path, TURN_PROMPT_MAX_CHARS));
+    match fresh {
+        Some(fresh) => TurnEnd {
+            refreshed: summary != Some(fresh.as_str()),
+            summary: Some(fresh),
+            prompt,
+        },
+        None => TurnEnd {
+            summary: summary.map(str::to_string),
+            refreshed: false,
+            prompt,
+        },
+    }
+}
+
 fn notify_turn_ended(ctx: &HandlerCtx, transcript_path: Option<String>, needs_settle: bool) {
     use std::sync::atomic::Ordering;
 
-    let transcript_path = needs_settle.then_some(transcript_path).flatten();
     let generation = ctx.turn_settle.fetch_add(1, Ordering::SeqCst) + 1;
     let app = ctx.app.clone();
     let sessions = ctx.sessions.clone();
@@ -519,28 +567,32 @@ fn notify_turn_ended(ctx: &HandlerCtx, transcript_path: Option<String>, needs_se
             );
             return;
         };
-        let settled = transcript_path.as_deref().and_then(|path| {
-            crate::status::transcript::last_assistant_text(
-                std::path::Path::new(path),
-                TURN_SUMMARY_MAX_CHARS,
-            )
-        });
-        let summary = match settled {
-            Some(fresh) if summary.as_deref() != Some(fresh.as_str()) => {
-                sessions.set_status(
-                    &app,
-                    id,
-                    SessionStatus::Idle {
-                        summary: Some(fresh.clone()),
-                    },
-                );
-                Some(fresh)
-            }
-            Some(fresh) => Some(fresh),
-            None => summary.clone(),
-        };
-        let body = summary.unwrap_or_else(|| "Terminou o que tinha pra rodar".into());
-        notify_native(&app, &sessions, &store, notify::NotifyKind::Done, id, &body);
+        let end = turn_end(
+            transcript_path.as_deref().map(std::path::Path::new),
+            needs_settle,
+            summary.as_deref(),
+        );
+        if end.refreshed {
+            sessions.set_status(
+                &app,
+                id,
+                SessionStatus::Idle {
+                    summary: end.summary.clone(),
+                },
+            );
+        }
+        let body = end
+            .summary
+            .unwrap_or_else(|| "Terminou o que tinha pra rodar".into());
+        notify_native_shown(
+            &app,
+            &sessions,
+            &store,
+            notify::NotifyKind::Done,
+            id,
+            end.prompt.as_deref(),
+            &body,
+        );
     });
 }
 
