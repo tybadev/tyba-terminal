@@ -40,6 +40,42 @@ const TMUX_MARK: &str = "tmux";
 const PROBE_SCRIPT: &str =
     "printf %s \"$SHELL\"; echo; command -v tmux >/dev/null 2>&1 && printf %s tmux";
 
+/// Os chips de uma sessão numa ida só: `pasta\0branch\0` seguido do
+/// `status --porcelain -z`. O nome do pane chega como `$1`, nunca colado no
+/// texto do script. Pane sem pasta sai mudo, e o git nem é perguntado. As
+/// flags do git são as do princípio #8, as mesmas de `git_argv`.
+const CHIPS_SCRIPT: &str = r#"cwd=$(tmux display-message -p -t "$1" -F '#{pane_current_path}' 2>/dev/null) || exit 0
+[ -n "$cwd" ] || exit 0
+printf '%s\0' "$cwd"
+g() { git -C "$cwd" -c core.quotePath=false -c color.ui=false "$@" 2>/dev/null; }
+b=$(g rev-parse --abbrev-ref HEAD) || b=
+printf '%s\0' "$b"
+g status --porcelain -z"#;
+
+fn parse_chips(raw: &[u8]) -> RemoteChips {
+    let mut parts = raw.splitn(3, |b| *b == 0);
+    let cwd = parts
+        .next()
+        .map(|p| String::from_utf8_lossy(p).trim().to_string());
+    // Sem o NUL depois da pasta o script não chegou até ela.
+    let (Some(cwd), Some(branch)) = (cwd.filter(|c| !c.is_empty()), parts.next()) else {
+        return RemoteChips::default();
+    };
+    let branch = String::from_utf8_lossy(branch).trim().to_string();
+    let changed = parts
+        .next()
+        .map(crate::repo::count_status_entries)
+        .unwrap_or(0);
+    RemoteChips {
+        cwd: Some(cwd),
+        git: GitChips {
+            // `HEAD` solto é detached: nome nenhum é mais honesto que o literal.
+            branch: (!branch.is_empty() && branch != "HEAD").then_some(branch),
+            changed,
+        },
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostProbe {
     pub shell: crate::ssh::remote_rc::RemoteShell,
@@ -191,35 +227,16 @@ impl HostQuery {
         Some(chips)
     }
 
+    /// Pasta do pane, branch e status numa ida só ao servidor. Em série eram
+    /// três `exec` — três processos `ssh` e três idas pela rede a cada prompt.
     fn chips_now(&self, tmux_name: &str) -> RemoteChips {
-        let cwd = self.remote_cwd(tmux_name);
-        let git = match cwd.as_deref() {
-            Some(cwd) => self.git_chips(cwd).unwrap_or_default(),
-            None => GitChips::default(),
+        let Ok(fs) = self.fs() else {
+            return RemoteChips::default();
         };
-        RemoteChips { cwd, git }
-    }
-
-    /// A pasta do pane remoto. Um `exec` só, e o mesmo formato que o painel de
-    /// arquivos remoto já usa.
-    pub fn remote_cwd(&self, tmux_name: &str) -> Option<String> {
-        let fs = self.fs().ok()?;
-        let out = fs
-            .exec(&[
-                "tmux",
-                "display-message",
-                "-p",
-                "-t",
-                tmux_name,
-                "-F",
-                "#{pane_current_path}",
-            ])
-            .ok()?;
-        if !out.ok() {
-            return None;
+        match fs.exec(&["sh", "-c", CHIPS_SCRIPT, "tyba-chips", tmux_name]) {
+            Ok(out) if out.ok() => parse_chips(&out.stdout),
+            _ => RemoteChips::default(),
         }
-        let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        (!path.is_empty()).then_some(path)
     }
 
     fn enter(&self, session: uuid::Uuid) -> bool {
@@ -719,9 +736,7 @@ mod tests {
     #[test]
     fn os_chips_da_sessao_saem_todos_do_servidor() {
         let fs = Arc::new(FakeRemote::default());
-        fs.reply("pane_current_path", 0, b"/srv/app\n");
-        fs.reply("rev-parse --abbrev-ref HEAD", 0, b"main\n");
-        fs.reply("status --porcelain -z", 0, b" M a.rs\0");
+        fs.reply("pane_current_path", 0, b"/srv/app\0main\n\0 M a.rs\0");
         let q = query(Arc::clone(&fs), Arc::new(FakeClock(Mutex::new(0))));
 
         let chips = q.session_chips(session(), "tyba-a3f-9f3a").unwrap();
@@ -729,13 +744,78 @@ mod tests {
         assert_eq!(chips.cwd.as_deref(), Some("/srv/app"));
         assert_eq!(chips.git.branch.as_deref(), Some("main"));
         assert_eq!(chips.git.changed, 1);
+        // A pasta nem passa pelo lado de cá: o git é perguntado na que o pane
+        // do servidor respondeu, no mesmo script.
         assert!(
-            fs.calls()
-                .iter()
-                .any(|c| c.contains(&"-C".to_string()) && c.contains(&"/srv/app".to_string())),
+            fs.calls()[0][2].contains("git -C \"$cwd\""),
             "o git tem de ser perguntado na pasta do servidor: {:?}",
             fs.calls()
         );
+    }
+
+    /// Os chips de um prompt numa ida só ao servidor.
+    ///
+    /// Cada `exec` do `SshRemote` é um processo `ssh` novo (um canal no master
+    /// e um `sh` no servidor): pasta, branch e status em série eram três idas
+    /// por prompt, e o chip esperava as três.
+    #[test]
+    fn os_chips_de_um_prompt_custam_uma_ida_so_ao_servidor() {
+        let fs = Arc::new(FakeRemote::default());
+        fs.reply(
+            "pane_current_path",
+            0,
+            b"/srv/app\0main\n\0 M a.rs\0?? b.rs\0",
+        );
+        let q = query(Arc::clone(&fs), Arc::new(FakeClock(Mutex::new(0))));
+
+        let chips = q.session_chips(session(), "tyba-a3f-9f3a").unwrap();
+
+        assert_eq!(fs.calls().len(), 1, "uma ida por prompt: {:?}", fs.calls());
+        assert_eq!(chips.cwd.as_deref(), Some("/srv/app"));
+        assert_eq!(chips.git.branch.as_deref(), Some("main"));
+        assert_eq!(chips.git.changed, 2);
+    }
+
+    /// O nome do pane vai como argumento posicional, nunca colado no script:
+    /// o que vem da sessão não vira código no shell do servidor.
+    #[test]
+    fn o_nome_do_pane_vai_como_argumento_e_nao_dentro_do_script() {
+        let fs = Arc::new(FakeRemote::default());
+        let q = query(Arc::clone(&fs), Arc::new(FakeClock(Mutex::new(0))));
+
+        q.session_chips(session(), "tyba-a3f-9f3a").unwrap();
+
+        let argv = &fs.calls()[0];
+        assert_eq!(&argv[..2], ["sh", "-c"]);
+        assert!(!argv[2].contains("tyba-a3f-9f3a"));
+        assert_eq!(argv.last().map(String::as_str), Some("tyba-a3f-9f3a"));
+        for flag in ["core.quotePath=false", "color.ui=false", "--porcelain -z"] {
+            assert!(argv[2].contains(flag), "princípio #8 no script: {flag}");
+        }
+    }
+
+    #[test]
+    fn pane_sem_pasta_nao_pergunta_git_nem_inventa_chip() {
+        let fs = Arc::new(FakeRemote::default());
+        fs.reply("pane_current_path", 0, b"");
+        let q = query(Arc::clone(&fs), Arc::new(FakeClock(Mutex::new(0))));
+
+        assert_eq!(
+            q.session_chips(session(), "tyba-a3f-9f3a").unwrap(),
+            RemoteChips::default()
+        );
+    }
+
+    #[test]
+    fn fora_de_repo_os_chips_mostram_a_pasta_e_nenhum_git() {
+        let fs = Arc::new(FakeRemote::default());
+        fs.reply("pane_current_path", 0, b"/srv/app\0\0");
+        let q = query(Arc::clone(&fs), Arc::new(FakeClock(Mutex::new(0))));
+
+        let chips = q.session_chips(session(), "tyba-a3f-9f3a").unwrap();
+
+        assert_eq!(chips.cwd.as_deref(), Some("/srv/app"));
+        assert_eq!(chips.git, GitChips::default());
     }
 
     /// Regra 24: **uma** consulta em voo por sessão.
