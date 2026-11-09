@@ -1500,7 +1500,12 @@ export function TerminalView({
           className={`overflow-hidden bg-transparent ${fullBleed ? "" : "rounded-[4px] px-2.5"}`}
           style={
             visible && zoom !== undefined
-              ? { ...nodeZoomStyle(zoom), ...nodeLiveClip(hidden) }
+              ? {
+                  ...nodeZoomStyle(zoom),
+                  ...nodeLiveClip(hidden),
+                  // O nó Terminal do Orbit também tem a lista por cima.
+                  ...(covered ? { opacity: 0 } : {}),
+                }
               : visible && rect
               ? {
                   paddingTop: fullBleed ? 0 : LIVE_PAD_TOP_PX,
