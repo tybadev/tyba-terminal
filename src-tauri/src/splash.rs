@@ -64,12 +64,45 @@ pub fn open<R: Runtime>(app: &AppHandle<R>, boot_json: &str) {
         .resizable(false)
         .maximizable(false)
         .minimizable(false)
-        .decorations(false)
         .skip_taskbar(true)
-        .initialization_script(boot_script(boot_json))
-        .build();
-    if let Err(e) = built {
-        eprintln!("[tyba] splash não abriu: {e}");
+        .initialization_script(boot_script(boot_json));
+    // No macOS, janela sem decoração é `NSWindowStyleMask::Borderless`, de
+    // canto reto. A `main` tem canto arredondado porque é titulada, com a barra
+    // sobreposta e escondida (tauri.macos.conf.json); o splash faz o mesmo e
+    // some com os três botões. Fora do macOS segue sem decoração.
+    #[cfg(target_os = "macos")]
+    let built = built
+        .title_bar_style(tauri::TitleBarStyle::Overlay)
+        .hidden_title(true);
+    #[cfg(not(target_os = "macos"))]
+    let built = built.decorations(false);
+    match built.build() {
+        #[cfg(target_os = "macos")]
+        Ok(window) => hide_window_buttons(&window),
+        #[cfg(not(target_os = "macos"))]
+        Ok(_) => {}
+        Err(e) => eprintln!("[tyba] splash não abriu: {e}"),
+    }
+}
+
+/// Esconde fechar, minimizar e zoom (os botões nativos da barra sobreposta).
+/// Roda na thread principal: [`open`] é chamado no `.setup()`.
+#[cfg(target_os = "macos")]
+fn hide_window_buttons<R: Runtime>(window: &tauri::WebviewWindow<R>) {
+    use objc2::msg_send;
+    use objc2::runtime::AnyObject;
+    let Ok(ns_window) = window.ns_window() else {
+        return;
+    };
+    let ns_window = ns_window.cast::<AnyObject>();
+    // NSWindowCloseButton = 0, NSWindowMiniaturizeButton = 1, NSWindowZoomButton = 2.
+    for kind in 0usize..3 {
+        unsafe {
+            let button: *mut AnyObject = msg_send![ns_window, standardWindowButton: kind];
+            if !button.is_null() {
+                let _: () = msg_send![button, setHidden: true];
+            }
+        }
     }
 }
 
