@@ -49,12 +49,14 @@ fn literal_specs(paths: &[String]) -> Result<Vec<String>, String> {
     })
 }
 
-/// `git add` dos paths (vazio = tudo, `-A`).
+/// `git add` dos paths. Vazio = só o que o git já rastreia (`-u`): arquivo
+/// novo (um `.env` fora do .gitignore) nunca entra num "stage de tudo" —
+/// só preparado um a um.
 pub fn stage(worktree: &Path, paths: &[String]) -> Result<(), String> {
     let mut c = git_in_rw(worktree);
     c.arg("add");
     if paths.is_empty() {
-        c.arg("-A");
+        c.arg("-u");
     } else {
         c.arg("--").args(literal_specs(paths)?);
     }
@@ -1072,6 +1074,28 @@ mod tests {
         commit(&repo, "feat: staged").unwrap();
         // O que não estava staged continua no worktree.
         assert!(status_porcelain(&repo).starts_with(" M"));
+        fs::remove_dir_all(&repo).ok();
+    }
+
+    #[test]
+    fn stage_all_then_commit_leaves_untracked_out() {
+        let repo = temp_repo();
+        fs::write(repo.join("a.txt"), "b\n").unwrap();
+        // .env fora do .gitignore: não pode ir para o commit sem ser marcado.
+        fs::write(repo.join(".env"), "TOKEN=sintetico\n").unwrap();
+        stage(&repo, &[]).unwrap();
+        commit(&repo, "fix: só rastreados").unwrap();
+        let raw = run_git(
+            {
+                let mut c = git_in(&repo);
+                c.args(["show", "--name-only", "--format=", "-z", "HEAD"]);
+                c
+            },
+            "show",
+        )
+        .unwrap();
+        assert_eq!(String::from_utf8_lossy(&raw), "a.txt\0");
+        assert_eq!(status_porcelain(&repo), "?? .env\n");
         fs::remove_dir_all(&repo).ok();
     }
 
