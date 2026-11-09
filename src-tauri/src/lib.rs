@@ -1037,10 +1037,13 @@ fn cano_logged_in(app: &AppHandle, id: SessionId) {
 /// Sem canal (Windows, Host de senha sem master) a lista fica **vazia**, e
 /// vazia é o certo: a alternativa seria sugerir os binários da máquina local
 /// numa sessão que roda no servidor (regra 25).
+///
+/// Vazia não conta como lida: o próximo prompt pergunta de novo, e uma falha
+/// passageira do login não deixa a sessão sem nomes até o fim.
 fn load_remote_command_names(app: &AppHandle, id: SessionId) {
     let state = app.state::<AppState>();
     let key = id.to_string();
-    if crate::completion::binary::has_remote_names(&key) {
+    if !crate::completion::binary::needs_remote_names(&key) {
         return;
     }
     let Some((host_id, alias, _)) = ssh_target(&state, id) else {
@@ -10278,7 +10281,12 @@ pub fn run() {
                     return;
                 }
                 let app = chips_handle.clone();
-                std::thread::spawn(move || emit_remote_chips(&app, id));
+                std::thread::spawn(move || {
+                    // A leitura do login falhou? Tenta de novo aqui; lida,
+                    // `load_remote_command_names` volta sem tocar no servidor.
+                    load_remote_command_names(&app, id);
+                    emit_remote_chips(&app, id);
+                });
             });
 
             let reconcile_handle = app.handle().clone();
