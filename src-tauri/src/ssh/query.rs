@@ -275,6 +275,13 @@ impl HostQuery {
         let out = fs
             .exec(&["sh", "-c", &script])
             .map_err(|e| AppError::new("ssh.query_failed").with("detail", e.message()))?;
+        // `ssh` que caiu (255) ou servidor que recusou não é "nenhum comando":
+        // gravar a saída vazia envenenaria o cache pela vida da conexão.
+        if !out.ok() {
+            return Err(
+                AppError::new("ssh.query_failed").with("detail", format!("saída {}", out.code))
+            );
+        }
         let names = parse_command_names(&out.stdout);
         let names = Arc::new(names);
         *self.names.lock() = Some(Arc::clone(&names));
@@ -622,6 +629,27 @@ mod tests {
             chamadas,
             "uma vez por conexão: a segunda pergunta sai do cache"
         );
+    }
+
+    /// Falha não vira cache: o `ssh` que caiu (255, saída vazia) não pode
+    /// gravar "o servidor não tem comando nenhum" pela vida da conexão.
+    #[test]
+    fn falha_ao_ler_os_nomes_nao_fica_gravada_e_a_proxima_pergunta_tenta_de_novo() {
+        let fs = Arc::new(FakeRemote::default());
+        fs.reply("for d in $PATH", 255, b"");
+        let q = query(Arc::clone(&fs), Arc::new(FakeClock(Mutex::new(0))));
+
+        assert!(
+            q.command_names().is_err(),
+            "ssh que falhou não é lista vazia"
+        );
+
+        fs.reply("for d in $PATH", 0, b"git\nls\n");
+        assert_eq!(q.command_names().unwrap().as_slice(), ["git", "ls"]);
+        assert_eq!(fs.calls().len(), 2, "a segunda pergunta foi ao servidor");
+
+        q.command_names().unwrap();
+        assert_eq!(fs.calls().len(), 2, "o sucesso, esse sim, fica em cache");
     }
 
     /// Regra 13: a pergunta do tmux viaja na MESMA ida que detecta o shell.

@@ -266,8 +266,11 @@ pub fn remote_names(session_id: &str) -> Option<Vec<String>> {
     REMOTE.lock().get(session_id).cloned()
 }
 
-pub fn has_remote_names(session_id: &str) -> bool {
-    REMOTE.lock().contains_key(session_id)
+/// Ainda falta ler os nomes do servidor? A lista vazia gravada quando o canal
+/// falhou segura a regra 25 mas não conta como lida: o próximo prompt tenta
+/// de novo.
+pub fn needs_remote_names(session_id: &str) -> bool {
+    REMOTE.lock().get(session_id).is_none_or(Vec::is_empty)
 }
 
 /// Absorve um lote reportado pelo hook daquela sessão.
@@ -761,6 +764,22 @@ mod remoto {
             remote_names(session).is_none(),
             "a sessão morreu: os nomes do servidor morrem junto"
         );
+    }
+
+    /// A lista vazia de quando o canal falhou segura a regra 25, mas não conta
+    /// como carregada: o próximo prompt pergunta de novo ao servidor.
+    #[test]
+    fn lista_vazia_de_falha_nao_impede_a_proxima_tentativa() {
+        let session = "sessao-remota-que-falhou";
+        assert!(needs_remote_names(session), "nunca carregada");
+
+        set_remote_names(session, Vec::new());
+        assert!(path_names(session).is_empty(), "regra 25 continua valendo");
+        assert!(needs_remote_names(session), "vazia não é carregada");
+
+        set_remote_names(session, vec!["htop".to_string()]);
+        assert!(!needs_remote_names(session));
+        forget_reported(session);
     }
 
     /// Regra 25: sem canal não há nomes — e a lista fica vazia, não local.
