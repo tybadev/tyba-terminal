@@ -1171,6 +1171,10 @@ pub struct DockerManager {
     /// cada refresh, mas o `docker stats` só roda de novo depois do intervalo.
     usage: Mutex<HashMap<Option<String>, (Instant, PanelUsage)>>,
     compose_runs: Mutex<ComposeRuns>,
+    /// Checagem → spawn → registro da sessão da tela numa trava só: dois
+    /// pedidos quase juntos (StrictMode monta o painel duas vezes) subiam dois
+    /// `docker exec`, e o primeiro ficava vivo sem dono.
+    screen_spawn: Mutex<()>,
 }
 
 /// CPU e memória de um container rodando (`docker stats --no-stream`).
@@ -1746,6 +1750,26 @@ impl DockerManager {
     pub fn remember_tab(&self, id: &str, tab: ContainerTab, session: SessionId) {
         self.tabs.lock().insert((id.to_string(), tab), session);
     }
+
+    /// A sessão da tela (`ScreenShell`/`ScreenLogs`) do container: reaproveita
+    /// a registrada se `reuse` disser que segue viva, senão `spawn` e registra.
+    pub fn screen_session<E>(
+        &self,
+        id: &str,
+        tab: ContainerTab,
+        reuse: impl FnOnce(SessionId) -> bool,
+        spawn: impl FnOnce() -> Result<SessionId, E>,
+    ) -> Result<SessionId, E> {
+        let _one_at_a_time = self.screen_spawn.lock();
+        if let Some(existing) = self.tab_session(id, tab) {
+            if reuse(existing) {
+                return Ok(existing);
+            }
+        }
+        let session = spawn()?;
+        self.remember_tab(id, tab, session);
+        Ok(session)
+    }
 }
 
 #[cfg(test)]
@@ -1975,6 +1999,51 @@ não é json
         assert!(mgr.screen_sessions().is_empty());
         assert_eq!(mgr.tab_session("c1", ContainerTab::Shell), Some(shell_tab));
         assert_eq!(mgr.tab_session("c1", ContainerTab::Logs), Some(logs_tab));
+    }
+
+    // StrictMode monta o painel duas vezes em dev: dois `docker_screen_shell`
+    // quase juntos passavam ambos pela checagem e subiam dois `docker exec`.
+    #[test]
+    fn concurrent_screen_sessions_for_the_same_container_spawn_one() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let mgr = Arc::new(DockerManager::new());
+        let spawned = Arc::new(AtomicUsize::new(0));
+        let handles: Vec<_> = (0..4)
+            .map(|_| {
+                let mgr = Arc::clone(&mgr);
+                let spawned = Arc::clone(&spawned);
+                std::thread::spawn(move || {
+                    mgr.screen_session(
+                        "c1",
+                        ContainerTab::ScreenShell,
+                        |_| true,
+                        || -> Result<SessionId, ()> {
+                            spawned.fetch_add(1, Ordering::SeqCst);
+                            std::thread::sleep(Duration::from_millis(30));
+                            Ok(SessionId::new_v4())
+                        },
+                    )
+                    .unwrap()
+                })
+            })
+            .collect();
+        let ids: Vec<SessionId> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        assert_eq!(spawned.load(Ordering::SeqCst), 1, "um docker exec só");
+        assert!(ids.iter().all(|id| *id == ids[0]));
+        // Sessão morta não é reaproveitada: nasce outra.
+        let fresh = mgr
+            .screen_session(
+                "c1",
+                ContainerTab::ScreenShell,
+                |_| false,
+                || -> Result<_, ()> { Ok(SessionId::new_v4()) },
+            )
+            .unwrap();
+        assert_ne!(fresh, ids[0]);
+        assert_eq!(
+            mgr.tab_session("c1", ContainerTab::ScreenShell),
+            Some(fresh)
+        );
     }
 
     #[test]
