@@ -105,6 +105,12 @@ pub struct Run {
     /// sai ou o dono o fecha ([`Runs::open_terminal`]). `None` no run do ▶.
     #[serde(default)]
     pub terminal: Option<String>,
+    /// Sessão ao vivo do Terminal: as variáveis do grafo (só nomes) cujo
+    /// valor mudou depois que o shell abriu — ele segue com o de antes até
+    /// o dono parar e abrir de novo (quadro GavetasOrbit O2). Sai da lista
+    /// quando o valor volta ao de quando abriu. Vazio fora do Terminal.
+    #[serde(default)]
+    pub stale_vars: Vec<String>,
     /// A fila de atenção (quadro OrbitEsperando): os nós que esperam o dono
     /// agora ([`NodeRun::waiting_you`]), o mais antigo primeiro. Refeita a
     /// cada retrato ([`Sched::snapshot`]).
@@ -574,6 +580,7 @@ impl Scheduler {
             plans: Vec::new(),
             number: 0,
             terminal: None,
+            stale_vars: Vec::new(),
             waiting_you: Vec::new(),
         };
         if run.nodes.is_empty() {
@@ -1826,6 +1833,9 @@ struct Active {
     dir: PathBuf,
     /// Filas da conversa entre agentes deste run.
     talk: Mailbox,
+    /// Sessão ao vivo do Terminal: a impressão do env com que o shell abriu
+    /// ([`super::env::env_prints`]); `None` até ele subir. Só na memória.
+    opened_env: Option<super::env::EnvPrints>,
 }
 
 /// O que sai do lock para ser executado.
@@ -2420,6 +2430,7 @@ impl<H: RunHost> Runs<H> {
                     sched,
                     dir,
                     talk: Mailbox::default(),
+                    opened_env: None,
                 },
             );
         }
@@ -2698,7 +2709,14 @@ impl<H: RunHost> Runs<H> {
                             refused = true;
                             return None;
                         }
-                        prepare_start(a, id)
+                        let start = prepare_start(a, id)?;
+                        // O shell do Terminal leva o env de agora: a lista de
+                        // variáveis mudadas recomeça daqui.
+                        if a.sched.run.terminal.as_deref() == Some(id.as_str()) {
+                            a.opened_env = Some(super::env::env_prints(&start.variables));
+                            a.sched.run.stale_vars.clear();
+                        }
+                        Some(start)
                     })
                     .collect::<Vec<_>>();
                 (starts, refused)
@@ -5518,6 +5536,7 @@ impl<H: RunHost> Runs<H> {
                         }
                     }
                 }
+                changed |= refresh_stale_vars(a);
                 let ids: HashSet<&str> = a.graph.nodes.iter().map(|n| n.id.as_str()).collect();
                 let edges: Vec<Edge> = current_edges(Some(graph), &a.sched.run.created)
                     .into_iter()
@@ -5540,6 +5559,34 @@ impl<H: RunHost> Runs<H> {
         for run_id in touched {
             self.publish_current(&run_id);
             self.advance(&run_id);
+        }
+    }
+
+    /// O dono trocou o valor de uma secreta no cofre (`orbit_secret_set`):
+    /// o Terminal aberto do grafo passa a ver o valor novo no core (a
+    /// impressão compara; o valor não sai daqui) e lista a secreta como
+    /// mudada desde que abriu — ou tira, se voltou ao de antes.
+    pub fn secret_changed(&self, graph_id: &str, name: &str, value: &str) {
+        let mut touched = Vec::new();
+        {
+            let mut active = self.active.lock();
+            for (run_id, a) in active
+                .iter_mut()
+                .filter(|(_, a)| a.graph.id == graph_id && a.sched.run.terminal.is_some())
+            {
+                if !a.graph.secrets.contains(name) {
+                    continue;
+                }
+                if let Some(slot) = a.graph.variables.get_mut(name) {
+                    value.clone_into(slot);
+                }
+                if refresh_stale_vars(a) {
+                    touched.push(run_id.clone());
+                }
+            }
+        }
+        for run_id in touched {
+            self.publish_current(&run_id);
         }
     }
 
@@ -6195,18 +6242,11 @@ fn prepare_start(a: &Active, id: &str) -> Option<Start> {
     let run_dir = a.dir.join(id);
     let node_dir = PathBuf::from(a.graph.node_dir(&node));
     let created = is_created(a, id);
-    let barred = barred_secrets(&node, created, &a.graph.secrets);
     Some(Start {
         in_dir: run_dir.join("in"),
         out_dir: run_dir.join("out"),
         inputs,
-        variables: a
-            .graph
-            .variables
-            .iter()
-            .filter(|(k, _)| !barred.contains(*k))
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect(),
+        variables: start_variables(a, &node, created),
         node,
         node_dir,
         integration,
@@ -6215,6 +6255,36 @@ fn prepare_start(a: &Active, id: &str) -> Option<Start> {
         attempt: a.sched.attempt(id).unwrap_or(0),
         links: super::agent::linked_lines(&a.graph.nodes, &a.graph.edges, &a.integrations, id),
     })
+}
+
+/// As variáveis do grafo que o nó recebe (sem as secretas barradas a ele).
+fn start_variables(a: &Active, node: &Node, created: bool) -> Vec<(String, String)> {
+    let barred = barred_secrets(node, created, &a.graph.secrets);
+    a.graph
+        .variables
+        .iter()
+        .filter(|(k, _)| !barred.contains(*k))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect()
+}
+
+/// Refaz a lista de variáveis mudadas do Terminal aberto ([`Run::stale_vars`])
+/// comparando a impressão de agora com a de quando o shell abriu. Devolve
+/// `true` se a lista mudou.
+fn refresh_stale_vars(a: &mut Active) -> bool {
+    let (Some(id), Some(opened)) = (a.sched.run.terminal.as_deref(), a.opened_env.as_ref()) else {
+        return false;
+    };
+    let Some(node) = a.graph.nodes.iter().find(|n| n.id == id) else {
+        return false;
+    };
+    let now = super::env::env_prints(&start_variables(a, node, is_created(a, id)));
+    let stale = super::env::changed_names(opened, &now);
+    if stale == a.sched.run.stale_vars {
+        return false;
+    }
+    a.sched.run.stale_vars = stale;
+    true
 }
 
 /// O nó foi criado por um agente neste run (não é do grafo do dono).
@@ -7443,6 +7513,94 @@ mod tests {
             host.shells.lock()[0].env,
             vec![("TOKEN".to_string(), "fixture-123".to_string())]
         );
+        runs.stop(&run.id).unwrap();
+    }
+
+    fn stale_vars_of(runs: &Runs<Arc<PtyHost>>, run_id: &str) -> Vec<String> {
+        runs.active.lock()[run_id].sched.run.stale_vars.clone()
+    }
+
+    /// Quadro GavetasOrbit O2: o Terminal aberto fica com as variáveis de
+    /// quando abriu; o core lista as que mudaram depois e tira da lista
+    /// quando o valor volta ao de antes. Nome que não vira env não conta.
+    #[test]
+    fn open_terminal_lists_variables_changed_since_it_opened() {
+        let dir = tempfile::tempdir().unwrap();
+        let work = dir.path().join("api");
+        std::fs::create_dir(&work).unwrap();
+        let (runs, _host, _app) = pty_runs(dir.path().join("runs"));
+        let mut g = graph(vec![terminal("t", &work)], vec![]);
+        g.variables
+            .insert("API_URL".into(), "http://localhost:3000".into());
+        g.variables.insert("porta-api".into(), "8080".into());
+        let run = runs.open_terminal_now(g.clone(), "t").unwrap();
+        assert!(stale_vars_of(&runs, &run.id).is_empty());
+
+        let mut edited = g.clone();
+        edited
+            .variables
+            .insert("API_URL".into(), "http://localhost:4000".into());
+        edited.variables.insert("porta-api".into(), "9090".into());
+        runs.graph_saved(&edited);
+        assert_eq!(stale_vars_of(&runs, &run.id), vec!["API_URL".to_string()]);
+        assert_eq!(
+            runs.get(&run.id).unwrap().stale_vars,
+            vec!["API_URL".to_string()],
+            "o retrato publicado leva a lista"
+        );
+
+        runs.graph_saved(&g);
+        assert!(stale_vars_of(&runs, &run.id).is_empty(), "o valor voltou");
+        runs.stop(&run.id).unwrap();
+    }
+
+    /// Parar e abrir de novo: a sessão nova abre com os valores de agora.
+    #[test]
+    fn reopened_terminal_starts_with_the_current_values() {
+        let dir = tempfile::tempdir().unwrap();
+        let work = dir.path().join("api");
+        std::fs::create_dir(&work).unwrap();
+        let (runs, _host, _app) = pty_runs(dir.path().join("runs"));
+        let mut g = graph(vec![terminal("t", &work)], vec![]);
+        g.variables.insert("MODELO".into(), "sonnet".into());
+        let run = runs.open_terminal_now(g.clone(), "t").unwrap();
+        g.variables.insert("MODELO".into(), "opus".into());
+        runs.graph_saved(&g);
+        assert_eq!(stale_vars_of(&runs, &run.id), vec!["MODELO".to_string()]);
+        runs.stop(&run.id).unwrap();
+        let again = runs.open_terminal_now(g, "t").unwrap();
+        assert!(stale_vars_of(&runs, &again.id).is_empty());
+        runs.stop(&again.id).unwrap();
+    }
+
+    /// A secreta se compara pela impressão: o salvo (sem valor) não marca,
+    /// trocar o valor no cofre marca, voltar ao de antes tira — e o valor
+    /// não aparece no retrato que vai ao front.
+    #[test]
+    fn secret_change_marks_the_terminal_without_exposing_the_value() {
+        let dir = tempfile::tempdir().unwrap();
+        let work = dir.path().join("api");
+        std::fs::create_dir(&work).unwrap();
+        let (runs, _host, _app) = pty_runs(dir.path().join("runs"));
+        // Fixtures sintéticas.
+        let fake = "fixture-open-secret-Hp27";
+        let other = "fixture-new-secret-Qw55";
+        let mut g = graph(vec![terminal("t", &work)], vec![]);
+        g.variables.insert("TOKEN".into(), fake.into());
+        g.secrets.insert("TOKEN".into());
+        let run = runs.open_terminal_now(g.clone(), "t").unwrap();
+        let mut saved = g.clone();
+        crate::orbit::secret::strip(&mut saved);
+        runs.graph_saved(&saved);
+        assert!(stale_vars_of(&runs, &run.id).is_empty());
+
+        runs.secret_changed(&g.id, "TOKEN", other);
+        assert_eq!(stale_vars_of(&runs, &run.id), vec!["TOKEN".to_string()]);
+        let shown = serde_json::to_string(&runs.get(&run.id).unwrap()).unwrap();
+        assert!(!shown.contains(fake) && !shown.contains(other), "{shown}");
+
+        runs.secret_changed(&g.id, "TOKEN", fake);
+        assert!(stale_vars_of(&runs, &run.id).is_empty());
         runs.stop(&run.id).unwrap();
     }
 

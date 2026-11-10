@@ -11,6 +11,7 @@ import { Trans, useTranslation } from "react-i18next";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { homeDir } from "@tauri-apps/api/path";
 import {
+  ArrowClockwise,
   BracketsCurly,
   CaretDown,
   Check,
@@ -112,6 +113,9 @@ import {
   revealSecret,
   secretsSupported,
   setSecret,
+  staleTerminals,
+  toggleDrawer,
+  type OrbitDrawer,
 } from "@/lib/orbit";
 import { browserRetain } from "@/lib/orbitBrowser";
 import { roomAgents } from "@/lib/orbitTalk";
@@ -123,6 +127,7 @@ import { OrbitCanvas, type CreatedView, type OrbitFlowEdge } from "./OrbitCanvas
 import { RunTimeline } from "./RunTimeline";
 import { TerminalFolderPrompt } from "./TerminalFolderPrompt";
 import { CanvasProvider, STATUS_TONE, type OrbitFlowNode } from "./nodes/NodeFrame";
+import { DRAWER } from "./drawer";
 import { SubagentMark, subagentTone, useSubagentTime } from "./nodes/SubagentNode";
 import { useNodeSubagents } from "./useNodeSubagents";
 import { SubagentTranscript } from "@/components/SubagentViewer";
@@ -269,7 +274,11 @@ function OrbitInner({
   const [error, setError] = useState<string | null>(null);
   // O erro que o salvar automático pôs (e só ele o apaga ao salvar de novo).
   const saveError = useRef<string | null>(null);
-  const [showVars, setShowVars] = useState(false);
+  // A gaveta aberta (Variáveis, Integrações ou Papéis): uma por vez.
+  const [drawer, setDrawer] = useState<OrbitDrawer | null>(null);
+  const showVars = drawer?.kind === "vars";
+  const showInts = drawer?.kind === "ints";
+  const showRoles = drawer?.kind === "roles" ? drawer.start : null;
   // Minimapa: `null` = sozinho (liga quando o grafo passa da tela, canvas-10).
   const [minimapPref, setMinimapPref] = useState<boolean | null>(null);
   const [overflow, setOverflow] = useState(false);
@@ -281,11 +290,6 @@ function OrbitInner({
   const appliedPlans = useRef(new Map<string, number>());
   const [runView, dispatchRun] = useReducer(runReducer, EMPTY_RUN_VIEW);
   const [now, setNow] = useState(() => Date.now());
-  const [showInts, setShowInts] = useState(false);
-  // Painel Papéis aberto: `newName`/`assignTo` vêm do "Novo papel…" do card.
-  const [showRoles, setShowRoles] = useState<{ newName?: string; assignTo?: string } | null>(
-    null,
-  );
   const [notice, setNotice] = useState<{ text: string; warn: boolean; undo?: boolean } | null>(
     null,
   );
@@ -464,6 +468,28 @@ function OrbitInner({
   );
   const runsRef = useRef(graphRuns);
   runsRef.current = graphRuns;
+  // Quadro GavetasOrbit O2: Terminais abertos com variável mudada depois.
+  const stale = useMemo(() => staleTerminals(graphRuns), [graphRuns]);
+  // Esc fecha a gaveta também com o foco fora dela (no botão da faixa, no
+  // canvas). Dentro dela o onKeyDown da própria fecha; num terminal, campo,
+  // menu ou diálogo o Esc é de lá.
+  const drawerOpen = drawer !== null;
+  useEffect(() => {
+    if (!drawerOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.defaultPrevented) return;
+      const el = e.target instanceof Element ? e.target : null;
+      if (
+        el?.closest(
+          "[data-orbit-sheet], input, textarea, select, [contenteditable=true], .xterm, [role=dialog], [role=menu]",
+        )
+      )
+        return;
+      setDrawer(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [drawerOpen]);
 
   // A nota de plano que o Orquestrador escreve (`orbit_plan`) vai para o
   // grafo salvo pelo core; a tela põe a nota e a ligação na cópia dela, senão
@@ -1036,7 +1062,8 @@ function OrbitInner({
       closeTerminal,
       reportContainer,
       roles,
-      openRoles: (opts?: { newName?: string; assignTo?: string }) => setShowRoles(opts ?? {}),
+      openRoles: (opts?: { newName?: string; assignTo?: string }) =>
+        setDrawer({ kind: "roles", start: opts ?? {} }),
     }),
     [
       integrations,
@@ -1421,7 +1448,7 @@ function OrbitInner({
                 <button
                   type="button"
                   aria-pressed={showVars}
-                  onClick={() => setShowVars((v) => !v)}
+                  onClick={() => setDrawer((d) => toggleDrawer(d, "vars"))}
                   className={tbtn}
                 >
                   <BracketsCurly size={13} />
@@ -1433,7 +1460,7 @@ function OrbitInner({
                   aria-pressed={showInts}
                   aria-expanded={showInts}
                   aria-controls="orbit-integrations"
-                  onClick={() => setShowInts((v) => !v)}
+                  onClick={() => setDrawer((d) => toggleDrawer(d, "ints"))}
                   className={tbtn}
                 >
                   <PlugsConnected size={13} />
@@ -1445,7 +1472,7 @@ function OrbitInner({
                   aria-pressed={!!showRoles}
                   aria-expanded={!!showRoles}
                   aria-controls="orbit-roles"
-                  onClick={() => setShowRoles((v) => (v ? null : {}))}
+                  onClick={() => setDrawer((d) => toggleDrawer(d, "roles"))}
                   className={tbtn}
                 >
                   <IdentificationBadge size={13} />
@@ -1529,49 +1556,30 @@ function OrbitInner({
                 </button>
               </div>
             </div>
-          </div>
-          {opened && (
-            <SubagentPanel
-              sessionId={opened.sessionId}
-              run={opened.run}
-              onClose={() => setOpenSub(null)}
-            />
-          )}
-          {showVars && meta && (
-            <VariablesPanel
-              graphId={meta.id}
-              variables={meta.variables}
-              secrets={meta.secrets ?? []}
-              onChange={(variables, secrets) =>
-                setMeta((m) => (m ? { ...m, variables, secrets } : m))
-              }
-              onClose={() => setShowVars(false)}
-            />
-          )}
-          {showInts && meta && (
-            <>
-              <div
-                aria-hidden
-                onMouseDown={() => setShowInts(false)}
-                className="absolute inset-0 z-10 bg-tyba-bg/55"
+            {showVars && meta && (
+              <VariablesPanel
+                graphId={meta.id}
+                variables={meta.variables}
+                secrets={meta.secrets ?? []}
+                stale={stale}
+                nodeTitle={(id) => graph.nodes.find((n) => n.id === id)?.title ?? id}
+                onChange={(variables, secrets) =>
+                  setMeta((m) => (m ? { ...m, variables, secrets } : m))
+                }
+                onClose={() => setDrawer(null)}
               />
+            )}
+            {showInts && meta && (
               <IntegrationsPanel
                 integrations={integrations}
                 nodes={graph.nodes}
                 onSaved={integrationSaved}
                 onDeleted={(gone) => setIntegrations((list) => list.filter((i) => i.id !== gone))}
                 onTest={testIntegration}
-                onClose={() => setShowInts(false)}
+                onClose={() => setDrawer(null)}
               />
-            </>
-          )}
-          {showRoles && meta && (
-            <>
-              <div
-                aria-hidden
-                onMouseDown={() => setShowRoles(null)}
-                className="absolute inset-0 z-10 bg-tyba-bg/55"
-              />
+            )}
+            {showRoles && meta && (
               <RolesPanel
                 roles={roles}
                 graphs={graphs}
@@ -1588,14 +1596,21 @@ function OrbitInner({
                         ? { ...node, kind: { ...node.kind, role: role.name } }
                         : node,
                     );
-                    setShowRoles({});
+                    setDrawer({ kind: "roles", start: {} });
                   }
                 }}
                 onRenamed={roleRenamed}
                 onDeleted={(gone) => setRoles((list) => list.filter((r) => r.name !== gone))}
-                onClose={() => setShowRoles(null)}
+                onClose={() => setDrawer(null)}
               />
-            </>
+            )}
+          </div>
+          {opened && (
+            <SubagentPanel
+              sessionId={opened.sessionId}
+              run={opened.run}
+              onClose={() => setOpenSub(null)}
+            />
           )}
           {askDelete && meta && (
             <ConfirmDelete
@@ -1738,12 +1753,17 @@ function VariablesPanel({
   graphId,
   variables,
   secrets,
+  stale,
+  nodeTitle,
   onChange,
   onClose,
 }: {
   graphId: string;
   variables: Record<string, string>;
   secrets: string[];
+  /** Terminais ao vivo com variável mudada depois que abriram (do core). */
+  stale: { nodes: string[]; vars: string[] };
+  nodeTitle: (id: string) => string;
   onChange: (variables: Record<string, string>, secrets: string[]) => void;
   onClose: () => void;
 }) {
@@ -1810,8 +1830,13 @@ function VariablesPanel({
 
   return (
     <aside
+      data-orbit-sheet
+      role="dialog"
       aria-label={t("orbitVariables")}
-      className="flex w-[320px] shrink-0 flex-col gap-2 border-l border-tyba-border bg-tyba-surface p-3"
+      onKeyDown={(e) => {
+        if (e.key === "Escape") onClose();
+      }}
+      className={`${DRAWER} max-h-[calc(100%-76px)] w-[400px] gap-2 p-3`}
     >
       <div className="flex items-center justify-between">
         <span className="text-[13px] font-medium text-tyba-text">{t("orbitVariables")}</span>
@@ -1826,6 +1851,30 @@ function VariablesPanel({
           components={{ m: <span className="font-mono text-tyba-text-muted" /> }}
         />
       </p>
+      {stale.nodes.length > 0 && (
+        // O2: peça neutra com contorno inteiro e o ↻ âmbar; sem botão de
+        // reabrir — parar o terminal ao vivo é do dono (■ no nó).
+        <div
+          role="status"
+          className="grid shrink-0 grid-cols-[auto_1fr] gap-x-2.5 gap-y-1.5 rounded-[8px] border border-tyba-border-field bg-tyba-text/[.02] px-[11px] py-2.5 text-[11.5px] leading-[17px] text-tyba-text-muted"
+        >
+          <span className="row-span-2 flex size-[22px] items-center justify-center rounded-[6px] bg-tyba-amber-tint text-tyba-amber">
+            <ArrowClockwise size={13} />
+          </span>
+          <span>{t("orbitVarsReapply")}</span>
+          <span className="flex flex-wrap gap-1.5">
+            {stale.nodes.map((id) => (
+              <span
+                key={id}
+                className="inline-flex h-[22px] items-center gap-1.5 rounded-[5px] px-2 text-[11px] whitespace-nowrap text-tyba-text-muted shadow-[inset_0_0_0_1px_var(--tyba-border-field)]"
+              >
+                <i className="size-[7px] shrink-0 rounded-full bg-tyba-green-fill shadow-[0_0_8px_color-mix(in_srgb,var(--tyba-green-fill)_50%,transparent)]" />
+                {nodeTitle(id)}
+              </span>
+            ))}
+          </span>
+        </div>
+      )}
       <div className="flex gap-1.5 pr-[54px] text-[10.5px] tracking-[.08em] text-tyba-text-faint">
         <span className="min-w-0 flex-1">{t("orbitVarNameHead")}</span>
         <span className="min-w-0 flex-[1.25]">{t("orbitVarValueHead")}</span>
@@ -1834,18 +1883,27 @@ function VariablesPanel({
         {rows.map((row, i) => (
           <div key={i} className="flex flex-col gap-1">
             <div className="flex items-center gap-1.5">
-              <input
-                aria-label={t("orbitVarName")}
-                placeholder={t("orbitVarName")}
-                spellCheck={false}
-                autoCorrect="off"
-                autoCapitalize="off"
-                value={row.name}
-                readOnly={row.secret}
-                title={row.secret ? t("orbitVarSecretRename") : undefined}
-                onChange={(e) => update(i, { name: e.target.value })}
-                className={`${field} flex-1 font-mono`}
-              />
+              <span
+                className={`${field} flex flex-1 items-center gap-1 font-mono focus-within:border-tyba-border-strong`}
+              >
+                <input
+                  aria-label={t("orbitVarName")}
+                  placeholder={t("orbitVarName")}
+                  spellCheck={false}
+                  autoCorrect="off"
+                  autoCapitalize="off"
+                  value={row.name}
+                  readOnly={row.secret}
+                  title={row.secret ? t("orbitVarSecretRename") : undefined}
+                  onChange={(e) => update(i, { name: e.target.value })}
+                  className="h-full min-w-0 flex-1 bg-transparent outline-none"
+                />
+                {row.name.trim() !== "" && stale.vars.includes(row.name) && (
+                  <span title={t("orbitVarChanged")} className="shrink-0 text-[12px] text-tyba-amber">
+                    ↻
+                  </span>
+                )}
+              </span>
               {row.secret ? (
                 <SecretValue graphId={graphId} name={row.name} field={field} />
               ) : (
@@ -1956,7 +2014,11 @@ function SecretValue({ graphId, name, field }: { graphId: string; name: string; 
         onBlur={save}
         onKeyDown={(e) => {
           if (e.key === "Enter") save();
-          if (e.key === "Escape") setDraft(null);
+          if (e.key === "Escape") {
+            // Só desiste da troca: a gaveta fica.
+            e.stopPropagation();
+            setDraft(null);
+          }
         }}
         className={`${field} flex-[1.25] font-mono`}
       />

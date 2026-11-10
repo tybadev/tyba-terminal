@@ -197,6 +197,7 @@ mod tests {
             plans: Vec::new(),
             number: 0,
             terminal: None,
+            stale_vars: Vec::new(),
             waiting_you: Vec::new(),
         }
     }
