@@ -267,6 +267,21 @@ impl PaneNode {
         }
     }
 
+    /// Põe `new` no pane de terminal de `old`, no mesmo lugar da árvore e com
+    /// o mesmo id: posição, tamanho e o split em volta não mudam.
+    fn swap_leaf_session(&mut self, old: SessionId, new: SessionId) -> Option<PaneId> {
+        match self {
+            PaneNode::Leaf { id, session_id } if *session_id == old => {
+                *session_id = new;
+                Some(*id)
+            }
+            PaneNode::Leaf { .. } | PaneNode::AgentViewer { .. } => None,
+            PaneNode::Split { first, second, .. } => first
+                .swap_leaf_session(old, new)
+                .or_else(|| second.swap_leaf_session(old, new)),
+        }
+    }
+
     fn leaf_sessions(&self, out: &mut Vec<SessionId>) {
         match self {
             PaneNode::Leaf { session_id, .. } => out.push(*session_id),
@@ -1148,6 +1163,39 @@ impl LayoutManager {
             }
         }
         Err(LayoutError::PaneNotFound(pane))
+    }
+
+    /// A sessão `new` assume o pane de terminal de `old` (o `ssh` digitado
+    /// que vira sessão integrada): mesmo pane, mesma posição no split, e o
+    /// foco vai para ele. `old` sai do layout sem fechar nada — quem a
+    /// encerra é quem pediu a troca.
+    pub fn replace_session(&self, old: SessionId, new: SessionId) -> Result<PaneId, LayoutError> {
+        let mut inner = self.inner.write();
+        if find_session_any_pane(&inner.workspaces, new).is_some() {
+            return Err(LayoutError::SessionAlreadyBound(new));
+        }
+        let Some((ws_id, tab_id, _)) = find_session_pane(&inner.workspaces, old) else {
+            return Err(LayoutError::SessionNotVisible(old));
+        };
+        let w_idx = ws_index(&inner.workspaces, ws_id)?;
+        let ws = &mut inner.workspaces[w_idx];
+        let tab = ws
+            .tabs
+            .iter_mut()
+            .find(|t| t.id == tab_id)
+            .ok_or(LayoutError::TabNotFound(tab_id))?;
+        let pane = tab
+            .root
+            .as_mut()
+            .and_then(|r| r.swap_leaf_session(old, new))
+            .ok_or(LayoutError::SessionNotVisible(old))?;
+        tab.active_pane = Some(pane);
+        ws.set_active_tab(tab_id);
+        inner.active = Some(ws_id);
+        drop_stale_diff_views(&mut inner);
+        drop(inner);
+        self.persist()?;
+        Ok(pane)
     }
 
     pub fn close_pane(&self, pane: PaneId) -> Result<Vec<SessionId>, LayoutError> {
@@ -2717,6 +2765,82 @@ mod tests {
             mgr.state().workspaces[0].side_view,
             Some(diff_view(s)),
             "foco continua na sessão do diff — o painel não pode fechar"
+        );
+    }
+
+    #[test]
+    fn replace_session_keeps_the_pane_in_place_inside_the_split() {
+        let mgr = manager();
+        let left = sid();
+        mgr.create_workspace("api", None, left).unwrap();
+        let left_pane = mgr.state().workspaces[0].tabs[0].active_pane.unwrap();
+        let shell = sid();
+        let shell_pane = mgr.split_pane(left_pane, SplitKind::V, shell).unwrap();
+        let split_id = mgr.state().workspaces[0].tabs[0]
+            .root
+            .as_ref()
+            .unwrap()
+            .id();
+        mgr.set_split_ratio(split_id, 0.3, true).unwrap();
+        mgr.focus_pane(left_pane).unwrap();
+        let integrated = sid();
+
+        let pane = mgr.replace_session(shell, integrated).unwrap();
+
+        assert_eq!(pane, shell_pane, "o pane é o mesmo, não um novo");
+        let state = mgr.state();
+        assert_eq!(state.workspaces.len(), 1, "nenhum workspace novo");
+        let tab = &state.workspaces[0].tabs[0];
+        assert_eq!(state.workspaces[0].tabs.len(), 1);
+        assert_eq!(tab.active_pane, Some(shell_pane));
+        match tab.root.as_ref().unwrap() {
+            PaneNode::Split {
+                id,
+                split,
+                ratio,
+                first,
+                second,
+            } => {
+                assert_eq!(*id, split_id);
+                assert_eq!(*split, SplitKind::V);
+                assert!((ratio - 0.3).abs() < f64::EPSILON, "o tamanho não muda");
+                assert!(matches!(
+                    first.as_ref(),
+                    PaneNode::Leaf { id, session_id } if *id == left_pane && *session_id == left
+                ));
+                assert!(matches!(
+                    second.as_ref(),
+                    PaneNode::Leaf { id, session_id }
+                        if *id == shell_pane && *session_id == integrated
+                ));
+            }
+            other => panic!("o split sumiu: {other:?}"),
+        }
+        assert_eq!(mgr.pane_of_session(shell), None);
+        assert_eq!(mgr.active_session(), Some(integrated));
+    }
+
+    #[test]
+    fn replace_session_refuses_unknown_or_already_bound_sessions() {
+        let mgr = manager();
+        let a = sid();
+        mgr.create_workspace("api", None, a).unwrap();
+        let pane = mgr.state().workspaces[0].tabs[0].active_pane.unwrap();
+        let b = sid();
+        mgr.split_pane(pane, SplitKind::H, b).unwrap();
+
+        assert!(matches!(
+            mgr.replace_session(sid(), sid()),
+            Err(LayoutError::SessionNotVisible(_))
+        ));
+        assert!(matches!(
+            mgr.replace_session(a, b),
+            Err(LayoutError::SessionAlreadyBound(id)) if id == b
+        ));
+        assert_eq!(
+            mgr.pane_of_session(a),
+            Some(pane),
+            "recusa não mexe no layout"
         );
     }
 
