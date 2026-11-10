@@ -157,6 +157,12 @@ describe("toFlow / fromFlow", () => {
     expect(fromFlow(graph, flow.nodes, flow.edges)).toEqual(graph);
   });
 
+  test("round-trip mantém quais variáveis são secretas (sem valor)", () => {
+    const secret = { ...graph, variables: { ...graph.variables, TOKEN: "" }, secrets: ["TOKEN"] };
+    const flow = toFlow(secret);
+    expect(fromFlow(secret, flow.nodes, flow.edges)).toEqual(secret);
+  });
+
   test("portas: uma saída e uma entrada por nó, o tipo vai na ligação", () => {
     const { nodes: fn, edges: fe } = toFlow(graph);
     expect(fn[0]).toMatchObject({

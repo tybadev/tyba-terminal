@@ -8982,13 +8982,64 @@ fn orbit_save_graph(
         .store
         .save_orbit_graph(&graph, true, None)
         .map_err(|e| e.to_string())?;
-    runs.graph_saved(&graph);
+    // O que o front manda nunca traz valor de secreta (o run segura o dele).
+    let mut stripped = graph.clone();
+    orbit::secret::strip(&mut stripped);
+    runs.graph_saved(&stripped);
     if let Some(before) = before {
         for node in orbit::browser::removed_browsers(&before.value, &graph) {
             views.forget(&app, &browser_key(graph.id.clone(), node));
         }
+        forget_secrets_off_main(before.value, Some(stripped));
     }
     Ok(())
+}
+
+/// Secreta destrancada, removida ou do grafo apagado sai do Keychain. Fora
+/// da main thread: o Keychain pode abrir o diálogo de acesso do macOS.
+fn forget_secrets_off_main(before: orbit::Graph, after: Option<orbit::Graph>) {
+    if before.secrets.is_empty() {
+        return;
+    }
+    std::thread::spawn(move || {
+        orbit::secret::forget_removed(&orbit::secret::Keychain, &before, after.as_ref());
+    });
+}
+
+/// O Keychain existe neste sistema (só macOS por enquanto). Sem ele o cadeado
+/// das variáveis fica desligado, com aviso.
+#[tauri::command]
+fn orbit_secrets_supported() -> bool {
+    orbit::secret::SUPPORTED
+}
+
+/// Guarda o valor de uma variável secreta no Keychain. O valor só entra:
+/// nunca vai ao banco nem volta ao front por aqui.
+#[tauri::command]
+async fn orbit_secret_set(
+    app: AppHandle,
+    graph_id: String,
+    name: String,
+    value: String,
+) -> Result<(), String> {
+    off_main(app, move |_app, _state| {
+        orbit::secret::set(&orbit::secret::Keychain, &graph_id, &name, &value)
+    })
+    .await?
+}
+
+/// O valor de uma secreta para o Revelar (o olho, enquanto pressionado). O
+/// front mostra e descarta; nada é guardado do lado de lá.
+#[tauri::command]
+async fn orbit_secret_reveal(
+    app: AppHandle,
+    graph_id: String,
+    name: String,
+) -> Result<Option<String>, String> {
+    off_main(app, move |_app, _state| {
+        orbit::secret::reveal(&orbit::secret::Keychain, &graph_id, &name)
+    })
+    .await?
 }
 
 #[tauri::command]
@@ -9010,10 +9061,14 @@ fn orbit_delete_graph(
         .delete_orbit_graph(&id)
         .map_err(|e| e.to_string())?;
     for node in before
+        .as_ref()
         .map(|g| orbit::browser::browsers(&g.value))
         .unwrap_or_default()
     {
         views.forget(&app, &browser_key(id.clone(), node));
+    }
+    if let Some(before) = before {
+        forget_secrets_off_main(before.value, None);
     }
     Ok(())
 }
@@ -9160,12 +9215,14 @@ async fn orbit_run_start(app: AppHandle, graph_id: String) -> Result<String, Str
             .get_orbit_graph(&graph_id)
             .map_err(|e| e.to_string())?
             .ok_or("grafo não encontrado")?;
-        let graph = orbit::run::startable(stored)?;
+        let mut graph = orbit::run::startable(stored)?;
         let integrations = state
             .store
             .list_orbit_integrations()
             .map_err(|e| e.to_string())?;
         orbit::validate_graph(&graph, &integrations).map_err(|e| e.to_string())?;
+        // O valor das secretas só em memória, para este run.
+        orbit::secret::fill(&mut graph, &orbit::secret::Keychain)?;
         let runs = app.state::<orbit::run::SharedRuns>();
         Ok(runs.start(graph, integrations)?.id)
     })
@@ -9187,12 +9244,13 @@ async fn orbit_terminal_open(
             .get_orbit_graph(&graph_id)
             .map_err(|e| e.to_string())?
             .ok_or("grafo não encontrado")?;
-        let graph = orbit::run::startable(stored)?;
+        let mut graph = orbit::run::startable(stored)?;
         let integrations = state
             .store
             .list_orbit_integrations()
             .map_err(|e| e.to_string())?;
         orbit::validate_graph(&graph, &integrations).map_err(|e| e.to_string())?;
+        orbit::secret::fill(&mut graph, &orbit::secret::Keychain)?;
         app.state::<orbit::run::SharedRuns>()
             .open_terminal(graph, &node_id)
     })
@@ -10777,6 +10835,9 @@ pub fn run() {
             orbit_service_logs_start,
             orbit_browser_native,
             orbit_var_env_problems,
+            orbit_secrets_supported,
+            orbit_secret_set,
+            orbit_secret_reveal,
             orbit_browser_navigate,
             orbit_browser_view,
             orbit_browser_back,

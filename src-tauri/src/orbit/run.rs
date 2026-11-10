@@ -9,7 +9,7 @@
 //! é o [`RunHost`] — no app, [`TauriHost`], que passa pelo `SessionManager`.
 //! Cada nó roda na própria pasta (`Graph::node_dir`), como o dono. Sem worktree.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Weak};
 
@@ -1394,9 +1394,26 @@ pub fn missing_variable(graph: &Graph, integrations: &[&Integration]) -> Result<
                 .copied(),
             _ => None,
         };
-        node_missing_variable(node, integration, &graph.variables)?;
+        let barred = barred_secrets(node, false, &graph.secrets);
+        node_missing_variable(node, integration, &graph.variables, barred)?;
     }
     Ok(())
+}
+
+/// Variável secreta não vai a agente (prompt nem env) nem a nó criado por
+/// agente: o valor sairia do TYBA (transcript do agente, API) ou um agente
+/// o leria por um nó que ele mesmo escreveu. Devolve as barradas do nó.
+fn barred_secrets<'a>(
+    node: &Node,
+    created: bool,
+    secrets: &'a BTreeSet<String>,
+) -> &'a BTreeSet<String> {
+    static NONE: BTreeSet<String> = BTreeSet::new();
+    if created || matches!(node.kind, NodeKind::Agent { .. }) {
+        secrets
+    } else {
+        &NONE
+    }
 }
 
 /// O texto que o nó roda e onde entram as variáveis: o comando, o prompt ou
@@ -1416,6 +1433,7 @@ fn node_missing_variable(
     node: &Node,
     integration: Option<&Integration>,
     variables: &std::collections::BTreeMap<String, String>,
+    barred: &BTreeSet<String>,
 ) -> Result<(), String> {
     let Some(text) = run_text(node, integration) else {
         return Ok(());
@@ -1426,6 +1444,16 @@ fn node_missing_variable(
         return Err(format!(
             "{}: falta o comando — escreva o que ele roda antes do ▶",
             node_label(node)
+        ));
+    }
+    if let Some(p) = crate::snippet::placeholders(text)
+        .into_iter()
+        .find(|p| barred.contains(&p.name))
+    {
+        return Err(format!(
+            "{}: a variável {{{{{}}}}} é secreta e não vai para agente nem para nó criado por agente",
+            node_label(node),
+            p.name
         ));
     }
     let empty = crate::snippet::placeholders(text).into_iter().find(|p| {
@@ -1451,7 +1479,8 @@ fn active_missing_variable(a: &Active, id: &str) -> Result<(), String> {
         NodeKind::Integration { integration_id, .. } => a.integrations.get(integration_id),
         _ => None,
     };
-    node_missing_variable(node, integration, &a.graph.variables)
+    let barred = barred_secrets(node, is_created(a, id), &a.graph.secrets);
+    node_missing_variable(node, integration, &a.graph.variables, barred)
 }
 
 /// Id de nó vira nome de pasta: só o que não escapa de `runs/<run>/`.
@@ -4909,7 +4938,7 @@ impl<H: RunHost> Runs<H> {
             if let NodeKind::Agent { prompt: p, .. } = &mut next.kind {
                 *p = prompt.to_string();
             }
-            node_missing_variable(&next, None, &a.graph.variables)?;
+            node_missing_variable(&next, None, &a.graph.variables, &a.graph.secrets)?;
             set(a, prompt, role);
             old
         };
@@ -5456,9 +5485,22 @@ impl<H: RunHost> Runs<H> {
                 }
                 // As variáveis do salvo valem no próximo começo (o reinício
                 // inclusive); quem já começou e usa uma que mudou fica "↻
-                // para aplicar".
-                if a.graph.variables != graph.variables {
-                    let old = std::mem::replace(&mut a.graph.variables, graph.variables.clone());
+                // para aplicar". Quais são secretas também vale já; o valor
+                // de uma secreta não vem no salvo (banco sem valor) e fica o
+                // que o run carregou do Keychain no começo.
+                let mut variables = graph.variables.clone();
+                for name in &graph.secrets {
+                    if let (Some(v), Some(kept)) =
+                        (variables.get_mut(name), a.graph.variables.get(name))
+                    {
+                        if v.is_empty() {
+                            v.clone_from(kept);
+                        }
+                    }
+                }
+                a.graph.secrets.clone_from(&graph.secrets);
+                if a.graph.variables != variables {
+                    let old = std::mem::replace(&mut a.graph.variables, variables.clone());
                     for node in &a.graph.nodes {
                         let integration = match &node.kind {
                             NodeKind::Integration { integration_id, .. } => {
@@ -5469,7 +5511,7 @@ impl<H: RunHost> Runs<H> {
                         let uses_changed = run_text(node, integration).is_some_and(|text| {
                             crate::snippet::placeholders(text)
                                 .iter()
-                                .any(|p| old.get(&p.name) != graph.variables.get(&p.name))
+                                .any(|p| old.get(&p.name) != variables.get(&p.name))
                         });
                         if uses_changed {
                             changed |= a.sched.mark_changed(&node.id, StaleReason::Variable);
@@ -6152,8 +6194,9 @@ fn prepare_start(a: &Active, id: &str) -> Option<Start> {
         .collect();
     let run_dir = a.dir.join(id);
     let node_dir = PathBuf::from(a.graph.node_dir(&node));
+    let created = is_created(a, id);
+    let barred = barred_secrets(&node, created, &a.graph.secrets);
     Some(Start {
-        node,
         in_dir: run_dir.join("in"),
         out_dir: run_dir.join("out"),
         inputs,
@@ -6161,12 +6204,14 @@ fn prepare_start(a: &Active, id: &str) -> Option<Start> {
             .graph
             .variables
             .iter()
+            .filter(|(k, _)| !barred.contains(*k))
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect(),
+        node,
         node_dir,
         integration,
         graph_id: a.graph.id.clone(),
-        created: is_created(a, id),
+        created,
         attempt: a.sched.attempt(id).unwrap_or(0),
         links: super::agent::linked_lines(&a.graph.nodes, &a.graph.edges, &a.integrations, id),
     })
@@ -6619,6 +6664,7 @@ mod tests {
             nodes,
             edges,
             variables: BTreeMap::new(),
+            secrets: Default::default(),
         }
     }
 
@@ -7309,6 +7355,76 @@ mod tests {
         );
         assert!(!log.contains("/tmp/sequestro"), "{log:?}");
         assert!(log.contains("path-ok"), "{log:?}");
+    }
+
+    /// Secreta carregada do cofre chega ao processo do dono como `$NOME` e o
+    /// valor sai redigido do `log.txt`; agente que a pede no prompt é recusado.
+    #[cfg(unix)]
+    #[test]
+    fn secret_reaches_the_owner_process_redacted_and_never_an_agent() {
+        use crate::orbit::secret::{self, tests::MemoryStore};
+        let dir = tempfile::tempdir().unwrap();
+        let (runs, _host, _app) = pty_runs(dir.path().join("runs"));
+        // Fixture sintética.
+        let fake = "fixture-run-secret-Tq93Vb";
+        let vault = MemoryStore::default();
+        let mut g = graph(
+            vec![process("p", "echo \"tok=$TOKEN\"; echo \"arg={{TOKEN}}\"")],
+            vec![],
+        );
+        g.variables.insert("TOKEN".into(), String::new());
+        g.secrets.insert("TOKEN".into());
+        secret::set(&vault, &g.id, "TOKEN", fake).unwrap();
+        let mut filled = g.clone();
+        secret::fill(&mut filled, &vault).unwrap();
+        let run = runs.start_now(filled.clone(), vec![]).unwrap();
+        let run = wait_finished(&runs, &run.id);
+        assert_eq!(run.status, RunStatus::Done, "{run:?}");
+        let log = std::fs::read_to_string(&run.nodes["p"].outputs[&EdgeKind::Log]).unwrap();
+        assert!(!log.contains(fake), "{log:?}");
+        assert!(log.contains("tok=[REDACTED]"), "{log:?}");
+        assert!(log.contains("arg=[REDACTED]"), "{log:?}");
+
+        let mut a = filled;
+        a.nodes = vec![agent("a", "use {{TOKEN}} no curl")];
+        let err = runs.start_now(a, vec![]).unwrap_err();
+        assert!(err.contains("{{TOKEN}} é secreta"), "{err}");
+    }
+
+    /// O salvo não traz o valor da secreta: o run segue com o que carregou,
+    /// sem marcar o nó para reaplicar.
+    #[cfg(unix)]
+    #[test]
+    fn saving_the_graph_mid_run_keeps_the_loaded_secret() {
+        let dir = tempfile::tempdir().unwrap();
+        let (runs, _host, _app) = pty_runs(dir.path().join("runs"));
+        let fake = "fixture-saved-secret-Mn40";
+        let mut g = graph(vec![process("p", "sleep 30 # {{TOKEN}}")], vec![]);
+        g.variables.insert("TOKEN".into(), fake.into());
+        g.secrets.insert("TOKEN".into());
+        let run = runs.start_now(g.clone(), vec![]).unwrap();
+        let mut saved = g.clone();
+        crate::orbit::secret::strip(&mut saved);
+        runs.graph_saved(&saved);
+        {
+            let active = runs.active.lock();
+            let a = &active[&run.id];
+            assert_eq!(a.graph.variables["TOKEN"], fake);
+            assert!(
+                !a.sched.run.nodes["p"].stale,
+                "{:?}",
+                a.sched.run.nodes["p"]
+            );
+        }
+        runs.stop(&run.id).unwrap();
+    }
+
+    #[test]
+    fn secrets_are_barred_only_for_agents_and_created_nodes() {
+        let secrets: BTreeSet<String> = ["TOKEN".to_string()].into();
+        assert!(barred_secrets(&process("p", "x"), false, &secrets).is_empty());
+        assert_eq!(barred_secrets(&process("p", "x"), true, &secrets), &secrets);
+        assert_eq!(barred_secrets(&agent("a", "x"), false, &secrets), &secrets);
     }
 
     /// O shell do nó Terminal recebe as variáveis do grafo filtradas.

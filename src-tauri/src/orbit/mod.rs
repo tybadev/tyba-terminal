@@ -18,6 +18,7 @@ pub mod log;
 pub mod mcp;
 pub mod orchestrator;
 pub mod run;
+pub mod secret;
 pub mod service;
 pub mod talk;
 
@@ -43,6 +44,11 @@ pub struct Graph {
     /// antes da pasta por nó) e é onde o front sugere a pasta de nó novo.
     #[serde(default)]
     pub dir: String,
+    /// Nomes de `variables` marcados como secretos: o valor vive no Keychain
+    /// ([`secret`]) e fica vazio no grafo (banco, arquivo, webview). Antes de
+    /// `nodes`: no TOML um array simples não pode vir depois de tabela.
+    #[serde(default)]
+    pub secrets: std::collections::BTreeSet<String>,
     #[serde(default)]
     pub nodes: Vec<Node>,
     #[serde(default)]
@@ -602,6 +608,9 @@ pub fn validate_structure(graph: &Graph, integrations: &[Integration]) -> Result
         check_text(|| format!("variável {name}"), name)?;
         check_text(|| format!("variável {name}"), value)?;
     }
+    for name in &graph.secrets {
+        check_text(|| format!("variável {name}"), name)?;
+    }
     check_text(|| "pasta do grafo".to_string(), &graph.dir)?;
 
     let by_id: HashMap<&str, &Integration> =
@@ -859,6 +868,7 @@ mod tests {
             nodes,
             edges,
             variables: BTreeMap::new(),
+            secrets: Default::default(),
         }
     }
 

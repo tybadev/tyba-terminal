@@ -16,6 +16,7 @@ import {
   Check,
   ClockCounterClockwise,
   CornersOut,
+  Eye,
   FileArrowDown,
   FileArrowUp,
   GearSix,
@@ -25,6 +26,8 @@ import {
   PencilSimple,
   Play,
   IdentificationBadge,
+  Lock,
+  LockOpen,
   PlugsConnected,
   Plus,
   Stop,
@@ -106,6 +109,9 @@ import {
   runStatusKey,
   type VarEnvProblem,
   varEnvProblems,
+  revealSecret,
+  secretsSupported,
+  setSecret,
 } from "@/lib/orbit";
 import { browserRetain } from "@/lib/orbitBrowser";
 import { roomAgents } from "@/lib/orbitTalk";
@@ -240,7 +246,10 @@ function OrbitInner({
   const nameInput = useRef<HTMLInputElement>(null);
   const renaming = useRef(false);
 
-  const [meta, setMeta] = useState<Pick<Graph, "id" | "name" | "dir" | "variables"> | null>(null);
+  const [meta, setMeta] = useState<Pick<
+    Graph,
+    "id" | "name" | "dir" | "variables" | "secrets"
+  > | null>(null);
   const [nodes, setNodes] = useState<OrbitFlowNode[]>([]);
   // O modelo de cada nó, sem a posição do xyflow: arrastar troca o objeto do
   // nó a cada quadro, mas não o modelo, e esta lista fica a mesma (canvas-7).
@@ -317,7 +326,13 @@ function OrbitInner({
         // Outro grafo: o ⌘Z começa do zero (o retrato dele entra no próximo assentar).
         historyRef.current = EMPTY_HISTORY;
         settledRef.current = null;
-        setMeta({ id: graph.id, name: graph.name, dir: graph.dir, variables: graph.variables });
+        setMeta({
+          id: graph.id,
+          name: graph.name,
+          dir: graph.dir,
+          variables: graph.variables,
+          secrets: graph.secrets ?? [],
+        });
         setError(null);
         if (found) {
           void runsList(graph.id)
@@ -1524,8 +1539,12 @@ function OrbitInner({
           )}
           {showVars && meta && (
             <VariablesPanel
+              graphId={meta.id}
               variables={meta.variables}
-              onChange={(variables) => setMeta((m) => (m ? { ...m, variables } : m))}
+              secrets={meta.secrets ?? []}
+              onChange={(variables, secrets) =>
+                setMeta((m) => (m ? { ...m, variables, secrets } : m))
+              }
               onClose={() => setShowVars(false)}
             />
           )}
@@ -1708,20 +1727,36 @@ function SubagentPanel({
 /**
  * Variáveis do grafo: pares nome/valor. A lista local guarda linhas ainda sem
  * nome; o grafo só recebe as que têm nome.
+ *
+ * Secreta (cadeado): o valor vai ao Keychain pelo core e a linha fica com o
+ * valor vazio; o campo mostra a máscara e o olho revela só enquanto
+ * pressionado, sem guardar o valor aqui.
  */
+type VarRow = { name: string; value: string; secret: boolean };
+
 function VariablesPanel({
+  graphId,
   variables,
+  secrets,
   onChange,
   onClose,
 }: {
+  graphId: string;
   variables: Record<string, string>;
-  onChange: (variables: Record<string, string>) => void;
+  secrets: string[];
+  onChange: (variables: Record<string, string>, secrets: string[]) => void;
   onClose: () => void;
 }) {
   const { t } = useTranslation();
-  const [rows, setRows] = useState<[string, string][]>(() => Object.entries(variables));
+  const [rows, setRows] = useState<VarRow[]>(() =>
+    Object.entries(variables).map(([name, value]) => ({
+      name,
+      value,
+      secret: secrets.includes(name),
+    })),
+  );
   // Aviso de nome que não vira `$NOME`: a regra é do core.
-  const namesKey = JSON.stringify(rows.map(([name]) => name));
+  const namesKey = JSON.stringify(rows.map((r) => r.name));
   const [envProblems, setEnvProblems] = useState<VarEnvProblem[]>([]);
   useEffect(() => {
     let live = true;
@@ -1732,12 +1767,41 @@ function VariablesPanel({
       live = false;
     };
   }, [namesKey]);
-  const commit = (next: [string, string][]) => {
+  const [canLock, setCanLock] = useState(false);
+  useEffect(() => {
+    secretsSupported()
+      .then(setCanLock)
+      .catch(() => setCanLock(false));
+  }, []);
+  const [lockError, setLockError] = useState<string | null>(null);
+  const commit = (next: VarRow[]) => {
     setRows(next);
-    onChange(Object.fromEntries(next.filter(([name]) => name.trim() !== "")));
+    const named = next.filter((r) => r.name.trim() !== "");
+    onChange(
+      Object.fromEntries(named.map((r) => [r.name, r.secret ? "" : r.value])),
+      named.filter((r) => r.secret).map((r) => r.name),
+    );
+  };
+  const update = (i: number, patch: Partial<VarRow>) =>
+    commit(rows.map((r, j) => (j === i ? { ...r, ...patch } : r)));
+  // Trancar leva o valor digitado ao Keychain; destrancar deixa o valor vazio
+  // (o core apaga o do Keychain ao salvar).
+  const toggleSecret = (i: number) => {
+    const row = rows[i];
+    if (row.secret) {
+      update(i, { secret: false, value: "" });
+      return;
+    }
+    if (!canLock || row.name.trim() === "") return;
+    setLockError(null);
+    const stored = row.value === "" ? Promise.resolve() : setSecret(graphId, row.name, row.value);
+    stored
+      .then(() => update(i, { secret: true, value: "" }))
+      .catch((e) => setLockError(String(e)));
   };
   const field =
-    "h-7 min-w-0 flex-1 rounded-[4px] border border-tyba-border bg-tyba-text/[.02] px-2 text-[12px] text-tyba-text outline-none focus:border-tyba-border-strong";
+    "h-7 min-w-0 rounded-[4px] border border-tyba-border bg-tyba-text/[.02] px-2 text-[12px] text-tyba-text outline-none focus:border-tyba-border-strong";
+  const vbtn = "rounded-[4px] p-1 text-tyba-text-faint hover:text-tyba-text";
 
   return (
     <aside
@@ -1746,12 +1810,7 @@ function VariablesPanel({
     >
       <div className="flex items-center justify-between">
         <span className="text-[13px] font-medium text-tyba-text">{t("orbitVariables")}</span>
-        <button
-          type="button"
-          aria-label={t("close")}
-          onClick={onClose}
-          className="rounded-[4px] p-1 text-tyba-text-faint hover:text-tyba-text"
-        >
+        <button type="button" aria-label={t("close")} onClick={onClose} className={vbtn}>
           <X size={13} />
         </button>
       </div>
@@ -1762,12 +1821,12 @@ function VariablesPanel({
           components={{ m: <span className="font-mono text-tyba-text-muted" /> }}
         />
       </p>
-      <div className="flex gap-1.5 pr-[26px] text-[10.5px] tracking-[.08em] text-tyba-text-faint">
+      <div className="flex gap-1.5 pr-[54px] text-[10.5px] tracking-[.08em] text-tyba-text-faint">
         <span className="min-w-0 flex-1">{t("orbitVarNameHead")}</span>
-        <span className="min-w-0 flex-1">{t("orbitVarValueHead")}</span>
+        <span className="min-w-0 flex-[1.25]">{t("orbitVarValueHead")}</span>
       </div>
       <div className="flex min-h-0 flex-col gap-1.5 overflow-y-auto">
-        {rows.map(([name, value], i) => (
+        {rows.map((row, i) => (
           <div key={i} className="flex flex-col gap-1">
             <div className="flex items-center gap-1.5">
               <input
@@ -1776,24 +1835,43 @@ function VariablesPanel({
                 spellCheck={false}
                 autoCorrect="off"
                 autoCapitalize="off"
-                value={name}
-                onChange={(e) =>
-                  commit(rows.map((r, j) => (j === i ? [e.target.value, r[1]] : r)))
-                }
-                className={field}
+                value={row.name}
+                readOnly={row.secret}
+                title={row.secret ? t("orbitVarSecretRename") : undefined}
+                onChange={(e) => update(i, { name: e.target.value })}
+                className={`${field} flex-1 font-mono`}
               />
-              <input
-                aria-label={t("orbitVarValue")}
-                placeholder={t("orbitVarValue")}
-                spellCheck={false}
-                autoCorrect="off"
-                autoCapitalize="off"
-                value={value}
-                onChange={(e) =>
-                  commit(rows.map((r, j) => (j === i ? [r[0], e.target.value] : r)))
+              {row.secret ? (
+                <SecretValue graphId={graphId} name={row.name} field={field} />
+              ) : (
+                <input
+                  aria-label={t("orbitVarValue")}
+                  placeholder={t("orbitVarValue")}
+                  spellCheck={false}
+                  autoCorrect="off"
+                  autoCapitalize="off"
+                  value={row.value}
+                  onChange={(e) => update(i, { value: e.target.value })}
+                  className={`${field} flex-[1.25] font-mono`}
+                />
+              )}
+              <button
+                type="button"
+                aria-pressed={row.secret}
+                aria-label={row.secret ? t("orbitVarSecret") : t("orbitVarMakeSecret")}
+                title={
+                  row.secret
+                    ? t("orbitVarSecret")
+                    : canLock
+                      ? t("orbitVarMakeSecret")
+                      : t("orbitVarSecretUnsupported")
                 }
-                className={field}
-              />
+                disabled={!row.secret && (!canLock || row.name.trim() === "")}
+                onClick={() => toggleSecret(i)}
+                className={`${vbtn} disabled:cursor-not-allowed disabled:opacity-50 ${row.secret ? "text-tyba-amber hover:text-tyba-amber" : ""}`}
+              >
+                {row.secret ? <Lock size={14} /> : <LockOpen size={14} />}
+              </button>
               <button
                 type="button"
                 aria-label={t("orbitVarRemove")}
@@ -1803,25 +1881,106 @@ function VariablesPanel({
                 <X size={12} />
               </button>
             </div>
-            {name.trim() !== "" && envProblems[i] && (
+            {row.secret && (
+              <p className="flex items-center gap-1.5 text-[11px] leading-[15px] text-tyba-text-faint">
+                <Lock size={11} className="shrink-0 text-tyba-amber" />
+                {t("orbitVarSecretNote")}
+              </p>
+            )}
+            {row.name.trim() !== "" && envProblems[i] && (
               <p className="text-[11px] leading-[15px] text-tyba-amber">
                 {t(
                   envProblems[i] === "invalid" ? "orbitVarEnvInvalid" : "orbitVarEnvReserved",
-                  { env: `$${name}` },
+                  { env: `$${row.name}` },
                 )}
               </p>
             )}
           </div>
         ))}
       </div>
+      {lockError && <p className="text-[11px] leading-[15px] text-tyba-red">{lockError}</p>}
       <button
         type="button"
-        onClick={() => setRows([...rows, ["", ""]])}
+        onClick={() => setRows([...rows, { name: "", value: "", secret: false }])}
         className="inline-flex h-7 items-center gap-1.5 self-start rounded-[6px] px-2 text-[12px] text-tyba-text-muted hover:bg-tyba-raised hover:text-tyba-text"
       >
         <Plus size={12} />
         {t("orbitVarAdd")}
       </button>
     </aside>
+  );
+}
+
+/**
+ * Valor de uma secreta: a máscara, o olho que revela só enquanto pressionado
+ * (o valor vem do core a cada vez e some ao soltar) e, ao clicar na máscara,
+ * um campo de senha vazio para trocar o valor.
+ */
+function SecretValue({ graphId, name, field }: { graphId: string; name: string; field: string }) {
+  const { t } = useTranslation();
+  const [shown, setShown] = useState<string | null>(null);
+  const [draft, setDraft] = useState<string | null>(null);
+  const holding = useRef(false);
+  const press = () => {
+    holding.current = true;
+    revealSecret(graphId, name)
+      .then((v) => holding.current && setShown(v ?? ""))
+      .catch(() => setShown(null));
+  };
+  const release = () => {
+    holding.current = false;
+    setShown(null);
+  };
+  const save = () => {
+    const value = draft;
+    setDraft(null);
+    if (value) void setSecret(graphId, name, value).catch(() => {});
+  };
+  if (draft !== null) {
+    return (
+      <input
+        type="password"
+        autoFocus
+        spellCheck={false}
+        autoCorrect="off"
+        autoCapitalize="off"
+        aria-label={t("orbitVarValue")}
+        placeholder={t("orbitVarSecretNew")}
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={save}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") save();
+          if (e.key === "Escape") setDraft(null);
+        }}
+        className={`${field} flex-[1.25] font-mono`}
+      />
+    );
+  }
+  return (
+    <span className={`${field} flex flex-[1.25] items-center justify-between gap-1 font-mono`}>
+      <button
+        type="button"
+        aria-label={t("orbitVarSecretEdit")}
+        title={t("orbitVarSecretEdit")}
+        onClick={() => setDraft("")}
+        className="min-w-0 flex-1 overflow-hidden text-left whitespace-nowrap"
+      >
+        {shown ?? <span className="tracking-[.12em]">••••••••••••</span>}
+      </button>
+      <button
+        type="button"
+        aria-label={t("orbitVarSecretReveal")}
+        title={t("orbitVarSecretReveal")}
+        onPointerDown={press}
+        onPointerUp={release}
+        onPointerLeave={release}
+        onPointerCancel={release}
+        onBlur={release}
+        className="flex shrink-0 text-tyba-text-faint hover:text-tyba-text"
+      >
+        <Eye size={14} />
+      </button>
+    </span>
   );
 }

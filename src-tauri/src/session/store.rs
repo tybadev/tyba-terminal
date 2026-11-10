@@ -3227,6 +3227,11 @@ impl Store {
         consented: bool,
         imported_hash: Option<&str>,
     ) -> Result<(), StoreError> {
+        // A barreira: valor de variável secreta nunca chega ao banco, venha
+        // o grafo de onde vier (front, run, import).
+        let mut graph = graph.clone();
+        crate::orbit::secret::strip(&mut graph);
+        let graph = &graph;
         let body = serde_json::to_string(graph)?;
         let conn = self.conn.lock();
         conn.execute(
@@ -5489,6 +5494,7 @@ mod tests {
             nodes: Vec::new(),
             edges: Vec::new(),
             variables: Default::default(),
+            secrets: Default::default(),
         };
         let integration = Integration {
             id: "i-1".into(),
@@ -7859,6 +7865,7 @@ mod tests {
                 kind: EdgeKind::Diff,
             }],
             variables: [("alvo".to_string(), "parser".to_string())].into(),
+            secrets: Default::default(),
         };
         assert!(store.get_orbit_graph("g-1").unwrap().is_none());
 
@@ -7884,6 +7891,39 @@ mod tests {
 
         store.delete_orbit_graph("g-1").unwrap();
         assert!(store.list_orbit_graphs().unwrap().is_empty());
+    }
+
+    /// Valor de variável secreta nunca chega ao banco, nem por um grafo que
+    /// o traga preenchido: só o nome em `secrets`.
+    #[test]
+    fn orbit_graph_secret_value_never_reaches_sqlite() {
+        let store = Store::open_in_memory().unwrap();
+        // Fixture sintética.
+        let fake = "fixture-db-secret-Rr51Pq";
+        let mut graph: crate::orbit::Graph = serde_json::from_value(serde_json::json!({
+            "id": "g-s", "name": "s", "dir": "/tmp",
+            "variables": {"TOKEN": fake, "PORT": "3000"},
+            "secrets": ["TOKEN"]
+        }))
+        .unwrap();
+        store.save_orbit_graph(&graph, true, None).unwrap();
+        let body: String = store
+            .conn
+            .lock()
+            .query_row(
+                "SELECT body_json FROM orbit_graph WHERE id = 'g-s'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(!body.contains(fake), "{body}");
+        let saved = store.get_orbit_graph("g-s").unwrap().unwrap().value;
+        assert_eq!(saved.variables["TOKEN"], "");
+        assert_eq!(saved.variables["PORT"], "3000");
+        assert!(saved.secrets.contains("TOKEN"));
+        // Quem chamou fica com o grafo dele intacto (a cópia é que é limpa).
+        graph.variables.remove("PORT");
+        assert_eq!(graph.variables["TOKEN"], fake);
     }
 
     #[test]

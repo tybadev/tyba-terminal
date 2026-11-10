@@ -279,6 +279,8 @@ pub fn export_toml(
             }
         }
     }
+    // Secreta sai só com o nome (em `secrets`), sem valor.
+    super::secret::strip(&mut graph);
     let mut cleared = Vec::new();
     for (name, value) in graph.variables.iter_mut() {
         if contains_secret(name) || contains_secret(value) {
@@ -396,9 +398,12 @@ pub fn parse_import(bytes: &[u8]) -> Result<Imported, ExportError> {
     // está na prévia, não o que por acaso já existe no TYBA do dono. A pasta
     // é de outra máquina: só se confere no Confirmar, depois da escolha.
     validate_structure(&file.graph, &file.integrations)?;
+    // Valor que o arquivo traga para uma secreta não entra: o dono preenche.
+    let mut graph = file.graph;
+    super::secret::strip(&mut graph);
     Ok(Imported {
         hash,
-        graph: file.graph,
+        graph,
         integrations: file.integrations,
         roles,
     })
@@ -690,6 +695,7 @@ mod tests {
                 },
             ],
             variables,
+            secrets: Default::default(),
         };
         // Uma integração que o grafo não usa não vai para o arquivo.
         let mut unused = integration();
@@ -1064,6 +1070,28 @@ mod tests {
         let imported = parse_import(text.as_bytes()).unwrap();
         assert_eq!(imported.graph.variables["API_KEY"], "");
         assert_eq!(imported.graph.variables["alvo"], "main");
+    }
+
+    /// Variável marcada secreta sai só com o nome, sem valor; um arquivo que
+    /// traga valor para ela entra sem o valor.
+    #[test]
+    fn marked_secret_exports_only_its_name() {
+        let (mut graph, integrations) = sample();
+        // Fixture sintética, sem cara de chave (o heurístico não a pegaria).
+        let fake = "fixture-export-secret-Kd73";
+        graph.variables.insert("TOKEN".into(), fake.into());
+        graph.secrets.insert("TOKEN".into());
+        let (text, _) = export_toml(&graph, &integrations, &[]).unwrap();
+        assert!(!text.contains(fake), "{text}");
+        assert!(text.contains("secrets = [\"TOKEN\"]"), "{text}");
+        let imported = parse_import(text.as_bytes()).unwrap();
+        assert!(imported.graph.secrets.contains("TOKEN"));
+        assert_eq!(imported.graph.variables["TOKEN"], "");
+
+        let forged = text.replace("TOKEN = \"\"", &format!("TOKEN = \"{fake}\""));
+        assert!(forged.contains(fake), "{forged}");
+        let imported = parse_import(forged.as_bytes()).unwrap();
+        assert_eq!(imported.graph.variables["TOKEN"], "");
     }
 
     #[test]

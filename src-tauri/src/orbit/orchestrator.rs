@@ -1887,6 +1887,7 @@ Binary files a/logo.png and b/logo.png differ
             nodes: vec![note("o", 0.0, 0.0, 10.0, 10.0)],
             edges: vec![],
             variables: Default::default(),
+            secrets: Default::default(),
         };
         // Só a página: o controle do orquestrador vai; a url do web, ainda não.
         merge_kept(&mut graph, std::slice::from_ref(&page), &all);
