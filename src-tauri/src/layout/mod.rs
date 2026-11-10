@@ -1652,68 +1652,6 @@ impl LayoutManager {
         true
     }
 
-    /// Garante o painel Agentes da sessão aberto no workspace ativo. Devolve
-    /// `true` quando, depois da chamada, o painel mostra esta sessão (aberto
-    /// agora ou já aberto) — é o que diz ao chamador que a rodada foi
-    /// coordenada.
-    ///
-    /// A fila de agentes cede o lugar: é a mesma família ("Agentes" no menu
-    /// lateral) e o dono que a abriu queria ver os agentes. Antes ela segurava
-    /// o slot e a rodada nova nascia sem painel (A5.3, tela 4). Qualquer outra
-    /// side view (diff, arquivos, túneis) é escolha do usuário e não é tomada.
-    pub fn ensure_agents_panel(&self, session: SessionId) -> bool {
-        let mut inner = self.inner.write();
-        let Some(active_ws) = inner.active else {
-            return false;
-        };
-        let Ok(idx) = ws_index(&inner.workspaces, active_ws) else {
-            return false;
-        };
-        if !session_in_workspace(&inner.workspaces[idx], session) {
-            return false;
-        }
-        let wanted = agents_view(session);
-        match inner.workspaces[idx].side_view.as_deref() {
-            Some(current) if current == wanted => return true,
-            Some(VIEW_AGENT_QUEUE) | None => {}
-            Some(_) => return false,
-        }
-        inner.workspaces[idx].side_view = Some(wanted);
-        drop(inner);
-        let _ = self.persist();
-        true
-    }
-
-    /// O painel Agentes desta sessão está aberto em algum workspace?
-    pub fn agents_panel_open(&self, session: SessionId) -> bool {
-        let wanted = agents_view(session);
-        self.inner
-            .read()
-            .workspaces
-            .iter()
-            .any(|ws| ws.side_view.as_deref() == Some(wanted.as_str()))
-    }
-
-    /// Fecha o painel Agentes desta sessão onde ele estiver aberto. Devolve
-    /// `true` se fechou algum — outra view no lugar dele não é tocada.
-    pub fn close_agents_panel(&self, session: SessionId) -> bool {
-        let wanted = agents_view(session);
-        let mut inner = self.inner.write();
-        let mut closed = false;
-        for ws in inner.workspaces.iter_mut() {
-            if ws.side_view.as_deref() == Some(wanted.as_str()) {
-                ws.side_view = None;
-                ws.side_expanded = false;
-                closed = true;
-            }
-        }
-        drop(inner);
-        if closed {
-            let _ = self.persist();
-        }
-        closed
-    }
-
     pub fn open_agent_viewer(&self, session: SessionId) -> Result<bool, LayoutError> {
         let mut inner = self.inner.write();
         let active_ws = inner.active.ok_or(LayoutError::NoActiveWorkspace)?;
@@ -1872,14 +1810,6 @@ fn find_session_leaf_in_active_tab_of(
         .as_ref()
         .and_then(|r| r.find_leaf_by_session(session))?;
     Some((wi, ti, pane))
-}
-
-fn session_in_workspace(ws: &Workspace, session: SessionId) -> bool {
-    ws.tabs.iter().any(|t| {
-        t.root
-            .as_ref()
-            .is_some_and(|r| r.find_leaf_by_session(session).is_some())
-    })
 }
 
 fn split_leaf_with_viewer(
@@ -3252,76 +3182,12 @@ mod tests {
         let fg_ws = mgr.state().active_workspace.unwrap();
 
         assert!(!mgr.ensure_agent_viewer(background));
-        assert!(!mgr.ensure_agents_panel(background));
 
         let state = mgr.state();
         assert_eq!(state.active_workspace, Some(fg_ws));
         assert!(!has_agent_viewer(&state.workspaces, background));
         let bg = state.workspaces.iter().find(|w| w.id == bg_ws).unwrap();
         assert!(bg.side_view.is_none());
-    }
-
-    #[test]
-    fn ensure_agents_panel_opens_only_in_active_workspace() {
-        let mgr = manager();
-        let s = sid();
-        mgr.create_workspace("api", None, s).unwrap();
-
-        assert!(mgr.ensure_agents_panel(s));
-        assert_eq!(
-            mgr.state().workspaces[0].side_view.as_deref(),
-            Some(agents_view(s).as_str())
-        );
-        assert!(
-            mgr.ensure_agents_panel(s),
-            "já aberto conta como coordenado"
-        );
-    }
-
-    #[test]
-    fn close_agents_panel_closes_only_the_agents_view() {
-        let mgr = manager();
-        let s = sid();
-        mgr.create_workspace("api", None, s).unwrap();
-
-        assert!(mgr.ensure_agents_panel(s));
-        assert!(mgr.agents_panel_open(s));
-        assert!(mgr.close_agents_panel(s));
-        assert!(!mgr.agents_panel_open(s));
-        assert!(mgr.state().workspaces[0].side_view.is_none());
-
-        // O dono trocou para o diff: o fechamento automático não toca nele.
-        mgr.open_workspace_side_view(s, &format!("diff:{s}"))
-            .unwrap();
-        assert!(!mgr.close_agents_panel(s));
-        assert_eq!(
-            mgr.state().workspaces[0].side_view,
-            Some(format!("diff:{s}"))
-        );
-    }
-
-    #[test]
-    fn ensure_agents_panel_takes_the_queue_slot_but_not_other_views() {
-        let mgr = manager();
-        let s = sid();
-        mgr.create_workspace("api", None, s).unwrap();
-
-        // A fila aberta pelo menu lateral não segura a rodada nova (tela 4).
-        mgr.toggle_agent_queue().unwrap();
-        assert!(mgr.ensure_agents_panel(s));
-        assert_eq!(
-            mgr.state().workspaces[0].side_view.as_deref(),
-            Some(agents_view(s).as_str())
-        );
-
-        // Uma view que o usuário escolheu (diff) não é tomada.
-        mgr.open_workspace_side_view(s, &format!("diff:{s}"))
-            .unwrap();
-        assert!(!mgr.ensure_agents_panel(s));
-        assert_eq!(
-            mgr.state().workspaces[0].side_view,
-            Some(format!("diff:{s}"))
-        );
     }
 
     #[test]

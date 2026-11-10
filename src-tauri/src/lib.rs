@@ -771,41 +771,36 @@ pub(crate) fn coordinate_subagent_viewer(
     session: SessionId,
     coordination: agent::subagents::Coordination,
 ) {
-    // A5.3: uma superfície só. O painel Agentes mostra a árvore e o detalhe
-    // inline; o split de viewer não abre mais sozinho. Antes o viewer abria,
-    // marcava a rodada como coordenada mesmo com o painel barrado pelo slot
-    // ocupado (fila aberta pelo menu lateral), e a rodada seguia sem painel.
-    // Agora só o painel conta: se não deu para abrir, a próxima chegada tenta
-    // de novo.
+    // Quadro 4B′: a rodada começou, a gaveta Fila/Agentes da sessão abre
+    // sozinha. Ela mora no canto do pane e não disputa slot de layout: abrir
+    // sempre dá, e a rodada fica coordenada na primeira chegada.
     let state = app.state::<AppState>();
+    state.subagents.mark_coordinated(session);
     if coordination.panel_disarmed {
-        state.subagents.mark_coordinated(session);
         return;
     }
-    let was_open = state.layout.agents_panel_open(session);
-    if state.layout.ensure_agents_panel(session) {
-        state.subagents.mark_coordinated(session);
-        if !was_open {
-            state.subagents.note_panel_auto_opened(session);
-        }
-        emit_layout(app, &state);
+    if state.subagents.auto_open_drawer(session) {
+        let _ = app.emit(
+            agent::subagents::EVENT_DRAWER_CHANGED,
+            state.subagents.drawer_state(session),
+        );
     }
 }
 
-/// Tick do fechamento automático do painel Agentes: o relógio mora no
-/// `SubagentTracker`; aqui só se aplica o que venceu. Fecha junto os splits
-/// de viewer da sessão — viewer e painel são uma feature só.
+/// Tick do recolhimento automático da gaveta (quadro 4D): o relógio mora no
+/// `SubagentTracker`; aqui só se emite o que venceu. Fecha junto os splits
+/// de viewer da sessão; o detalhe aberto na lateral (4E) fica.
 fn spawn_agents_panel_closer(app: AppHandle) {
     std::thread::spawn(move || loop {
         std::thread::sleep(std::time::Duration::from_secs(1));
         let state = app.state::<AppState>();
-        let due = state.subagents.due_panel_closes(approvals::now_ms());
+        let due = state.subagents.due_drawer_collapses(approvals::now_ms());
         let mut changed = false;
-        for session in due {
-            changed |= state.layout.close_agents_panel(session);
-            for pane in state.layout.agent_viewer_panes(session) {
+        for drawer in due {
+            for pane in state.layout.agent_viewer_panes(drawer.session_id) {
                 changed |= state.layout.close_pane(pane).is_ok();
             }
+            let _ = app.emit(agent::subagents::EVENT_DRAWER_CHANGED, drawer);
         }
         if changed {
             emit_layout(&app, &state);
@@ -3177,13 +3172,6 @@ fn close_side_view(
         .layout
         .close_side_view(workspace_id)
         .map_err(|e| e.to_string())?;
-    if let Some(session) = previous
-        .as_deref()
-        .and_then(|v| v.strip_prefix(layout::VIEW_AGENTS_PREFIX))
-        .and_then(|s| s.parse::<SessionId>().ok())
-    {
-        state.subagents.disarm_panel(session);
-    }
     close_orphaned_files_panel(&state, previous, None);
     emit_layout(&app, &state);
     Ok(())
@@ -7702,17 +7690,49 @@ fn open_agents_panel(
         .layout
         .open_workspace_side_view(id, &layout::agents_view(id))
         .map_err(|e| e.to_string())?;
-    state.subagents.keep_panel(id);
     close_orphaned_files_panel(&state, previous, None);
     emit_layout(&app, &state);
     Ok(())
 }
 
-/// O dono mexeu no painel Agentes (clicou, rolou, expandiu): ele não fecha
-/// mais sozinho. O front manda com throttle.
+/// Estado das gavetas Fila/Agentes (quadros 4A′–4E), para a carga inicial.
 #[tauri::command]
-fn agents_panel_touched(state: State<'_, AppState>, session_id: SessionId) {
-    state.subagents.keep_panel(session_id);
+fn agents_drawer_list(state: State<'_, AppState>) -> Vec<agent::subagents::DrawerState> {
+    state.subagents.drawer_states()
+}
+
+fn emit_drawer(app: &AppHandle, drawer: agent::subagents::DrawerState) {
+    let _ = app.emit(agent::subagents::EVENT_DRAWER_CHANGED, drawer);
+}
+
+/// O dono clicou na pílula: a gaveta abre e fica até ele recolher.
+#[tauri::command]
+fn agents_drawer_open(app: AppHandle, state: State<'_, AppState>, session_id: SessionId) {
+    emit_drawer(&app, state.subagents.open_drawer(session_id));
+}
+
+/// O dono recolheu a gaveta (⌄ ou Esc).
+#[tauri::command]
+fn agents_drawer_collapse(app: AppHandle, state: State<'_, AppState>, session_id: SessionId) {
+    emit_drawer(&app, state.subagents.collapse_drawer(session_id));
+}
+
+/// O dono escolheu a aba; vale até a gaveta recolher.
+#[tauri::command]
+fn agents_drawer_tab(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    session_id: SessionId,
+    tab: agent::subagents::DrawerTab,
+) {
+    emit_drawer(&app, state.subagents.set_drawer_tab(session_id, tab));
+}
+
+/// Mouse em cima ou foco dentro da gaveta: segura o recolhimento automático
+/// até o dono sair.
+#[tauri::command]
+fn agents_drawer_presence(state: State<'_, AppState>, session_id: SessionId, present: bool) {
+    state.subagents.set_drawer_presence(session_id, present);
 }
 
 #[tauri::command]
@@ -10822,7 +10842,11 @@ pub fn run() {
             resume_shell_conversation,
             dismiss_shell_resume_offer,
             open_subagent_viewer,
-            agents_panel_touched,
+            agents_drawer_list,
+            agents_drawer_open,
+            agents_drawer_collapse,
+            agents_drawer_tab,
+            agents_drawer_presence,
             agent_repo_config,
             set_agent_config_consent,
             set_app_menu,

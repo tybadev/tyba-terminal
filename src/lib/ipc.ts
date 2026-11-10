@@ -2240,6 +2240,40 @@ export const openSubagentViewer = (sessionId: SessionId) =>
 export const agentsPanelTouched = (sessionId: SessionId) =>
   invoke<void>("agents_panel_touched", { sessionId });
 
+/** Aba da gaveta Fila/Agentes escolhida pelo dono (quadro 4C). */
+export type DrawerTab = "queue" | "agents";
+
+/** A gaveta Fila/Agentes de uma sessão, como o core a decide (4A′–4E). */
+export interface DrawerState {
+  session_id: SessionId;
+  open: boolean;
+  /** A aba que o dono escolheu; `null` segue a regra (`drawerTab`). */
+  tab: DrawerTab | null;
+  /** O dono já abriu a gaveta depois que a rodada assentou: a pílula larga
+   * o ✓ (ou o vermelho). */
+  outcome_seen: boolean;
+}
+
+export const agentsDrawerList = () => invoke<DrawerState[]>("agents_drawer_list");
+
+export const onAgentsDrawerChanged = (
+  handler: (state: DrawerState) => void,
+): Promise<UnlistenFn> =>
+  listen<DrawerState>("agents-drawer://changed", (e) => handler(e.payload));
+
+export const agentsDrawerOpen = (sessionId: SessionId) =>
+  invoke<void>("agents_drawer_open", { sessionId });
+
+export const agentsDrawerCollapse = (sessionId: SessionId) =>
+  invoke<void>("agents_drawer_collapse", { sessionId });
+
+export const agentsDrawerTab = (sessionId: SessionId, tab: DrawerTab) =>
+  invoke<void>("agents_drawer_tab", { sessionId, tab });
+
+/** Mouse em cima ou foco dentro da gaveta: o core adia o recolhimento. */
+export const agentsDrawerPresence = (sessionId: SessionId, present: boolean) =>
+  invoke<void>("agents_drawer_presence", { sessionId, present });
+
 export const subagentTranscript = (
   sessionId: SessionId,
   agentId: string,
