@@ -7,6 +7,7 @@ import type { ShellBoot } from "./loading";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 import type { MenuSpec } from "./appMenu";
+import type { QueueState } from "./promptQueue";
 
 export type SessionId = string;
 
@@ -945,6 +946,29 @@ export const agentAsks = () => invoke<AgentAsk[]>("agent_asks");
 
 /** Só o card some; o pedido segue aberto no prompt do agente. */
 export const dismissAsk = (id: SessionId) => invoke<void>("dismiss_ask", { id });
+
+/** Fila de prompts da sessão (quadros 4A/4B). O core guarda e manda o
+ * estado inteiro a cada mudança; daqui só saem intenções. */
+export const onPromptQueueChanged = (
+  handler: (state: QueueState) => void,
+): Promise<UnlistenFn> =>
+  listen<QueueState>("prompt-queue://changed", (e) => handler(e.payload));
+
+export const promptQueueList = (id: SessionId) =>
+  invoke<QueueState>("prompt_queue_list", { id });
+export const promptQueueEnqueue = (id: SessionId, text: string) =>
+  invoke<void>("prompt_queue_enqueue", { id, text });
+export const promptQueueRemove = (id: SessionId, promptId: string) =>
+  invoke<void>("prompt_queue_remove", { id, promptId });
+/** `order`: todos os ids da fila, na ordem nova. */
+export const promptQueueReorder = (id: SessionId, order: string[]) =>
+  invoke<void>("prompt_queue_reorder", { id, order });
+export const promptQueuePause = (id: SessionId) =>
+  invoke<void>("prompt_queue_pause", { id });
+export const promptQueueResume = (id: SessionId) =>
+  invoke<void>("prompt_queue_resume", { id });
+export const promptQueueClear = (id: SessionId) =>
+  invoke<void>("prompt_queue_clear", { id });
 
 /** Workspace, aba e pane da sessão — só pelo clique no "Ir". */
 export const focusSession = (id: SessionId) =>
