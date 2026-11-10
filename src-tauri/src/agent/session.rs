@@ -963,6 +963,7 @@ pub fn resume_agent_session(
         worktree_task: None,
         attach_existing: true,
         shell: None,
+        inherit_cwd_from: None,
         initial_prompt: None,
         // Nunca `true` aqui: a origem do gate não é desta chamada, é da
         // sessão anterior que ocupava o mesmo `SessionId` — `spawn_session`
