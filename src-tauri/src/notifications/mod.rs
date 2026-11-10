@@ -987,6 +987,48 @@ mod tests {
         assert_eq!(list[0].detail.as_deref(), Some("pronto"));
     }
 
+    /// O prompt do usuário vai só para o título do aviso do SO (memória). O
+    /// fim de turno grava o status — entrada "terminou" e a sessão — e nada
+    /// disso pode carregar o prompt. Transcript sintético, escrito à mão.
+    #[test]
+    fn prompt_do_fim_de_turno_nao_vai_para_o_sqlite() {
+        let (n, store, mut s) = center();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.jsonl");
+        std::fs::write(
+            &path,
+            [
+                r#"{"type":"user","message":{"content":"deixa o checkout do Zebra mais rapido"}}"#,
+                r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Pronto, cache ligado."}]}}"#,
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+
+        let end = crate::agent::session::turn_end(Some(&path), true, None);
+        assert_eq!(
+            end.prompt.as_deref(),
+            Some("deixa o checkout do Zebra mais rapido")
+        );
+        assert_eq!(end.summary.as_deref(), Some("Pronto, cache ligado."));
+
+        s.status = SessionStatus::Idle {
+            summary: end.summary.clone(),
+        };
+        assert!(n.status_changed(Some(&SessionStatus::Running), &s));
+        store.upsert_session(&s).unwrap();
+        let gravado = format!(
+            "{:?} {:?}",
+            store.list_notifications(now_ms()).unwrap(),
+            store.load_sessions().unwrap()
+        );
+        assert!(gravado.contains("Pronto, cache ligado."));
+        assert!(
+            !gravado.contains("Zebra"),
+            "prompt foi para o SQLite: {gravado}"
+        );
+    }
+
     #[test]
     fn failed_cria_agent_failed_e_shell_nao_cria() {
         let (n, store, _) = center();

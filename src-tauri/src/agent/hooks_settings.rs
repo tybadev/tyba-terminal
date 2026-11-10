@@ -83,8 +83,11 @@ pub fn hooks_settings_json(hook_cmd: &str) -> Value {
                     "timeout": 60
                 }]
             }],
+            // `agent_needs_input`: um terminal do Claude parou esperando o
+            // usuário (pergunta de teammate, aviso do auto mode, sessão em
+            // background com o agent view aberto).
             "Notification": [{
-                "matcher": "idle_prompt",
+                "matcher": "idle_prompt|agent_needs_input",
                 "hooks": [{
                     "type": "command",
                     "command": hook_cmd,
@@ -481,7 +484,10 @@ mod tests {
         assert_eq!(v["hooks"]["PermissionRequest"][0]["matcher"], "*");
         assert_eq!(v["hooks"]["PostToolUse"][0]["matcher"], "*");
         assert_eq!(v["hooks"]["PostToolUseFailure"][0]["matcher"], "*");
-        assert_eq!(v["hooks"]["Notification"][0]["matcher"], "idle_prompt");
+        assert_eq!(
+            v["hooks"]["Notification"][0]["matcher"],
+            "idle_prompt|agent_needs_input"
+        );
         for name in [
             "UserPromptSubmit",
             "SessionStart",
@@ -520,7 +526,7 @@ mod tests {
         let cmd = "x _hook";
         let v = hooks_settings_json(cmd);
         let entry = &v["hooks"]["Notification"][0];
-        assert_eq!(entry["matcher"], "idle_prompt");
+        assert_eq!(entry["matcher"], "idle_prompt|agent_needs_input");
         let hook = &entry["hooks"][0];
         assert_eq!(hook["type"], "command");
         assert_eq!(hook["command"], cmd);

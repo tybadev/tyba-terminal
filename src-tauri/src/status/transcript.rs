@@ -4,6 +4,24 @@ use std::path::Path;
 const TAIL_BYTES: u64 = 256 * 1024;
 
 pub fn last_assistant_text(path: &Path, max_chars: usize) -> Option<String> {
+    last_text(path, max_chars, |entry| {
+        assistant_text(entry).or_else(|| codex_agent_text(entry))
+    })
+}
+
+/// O último prompt que o usuário escreveu, redigido e cortado. Só para o
+/// título do aviso do SO: nunca vai para o SQLite.
+pub fn last_user_prompt(path: &Path, max_chars: usize) -> Option<String> {
+    last_text(path, max_chars, |entry| {
+        user_text(entry).or_else(|| codex_user_text(entry))
+    })
+}
+
+fn last_text(
+    path: &Path,
+    max_chars: usize,
+    pick: impl Fn(&serde_json::Value) -> Option<String>,
+) -> Option<String> {
     let mut file = std::fs::File::open(path).ok()?;
     let len = file.metadata().ok()?.len();
     let start = len.saturating_sub(TAIL_BYTES);
@@ -18,7 +36,7 @@ pub fn last_assistant_text(path: &Path, max_chars: usize) -> Option<String> {
     tail.lines()
         .rev()
         .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-        .find_map(|entry| assistant_text(&entry).or_else(|| codex_agent_text(&entry)))
+        .find_map(|entry| pick(&entry))
         .map(|text| truncate_chars(&redacted_collapsed(&text), max_chars))
         .filter(|text| !text.is_empty())
 }
@@ -49,7 +67,31 @@ fn codex_agent_text(entry: &serde_json::Value) -> Option<String> {
 }
 
 fn assistant_text(entry: &serde_json::Value) -> Option<String> {
-    if entry.get("type").and_then(|t| t.as_str()) != Some("assistant") {
+    message_text(entry, "assistant")
+}
+
+/// O `user` do Claude também carrega `tool_result` (sem bloco `text`, cai
+/// fora) e mensagens de meta (`isMeta`), que o usuário não escreveu.
+fn user_text(entry: &serde_json::Value) -> Option<String> {
+    if entry.get("isMeta").and_then(|m| m.as_bool()) == Some(true) {
+        return None;
+    }
+    message_text(entry, "user")
+}
+
+fn codex_user_text(entry: &serde_json::Value) -> Option<String> {
+    if entry.get("type").and_then(|t| t.as_str()) != Some("event_msg") {
+        return None;
+    }
+    let payload = entry.get("payload")?;
+    if payload.get("type").and_then(|t| t.as_str()) != Some("user_message") {
+        return None;
+    }
+    non_empty(payload.get("message")?.as_str()?.to_string())
+}
+
+fn message_text(entry: &serde_json::Value, role: &str) -> Option<String> {
+    if entry.get("type").and_then(|t| t.as_str()) != Some(role) {
         return None;
     }
     let content = entry.get("message")?.get("content")?;
@@ -241,5 +283,53 @@ mod tests {
         let path = write_transcript(&refs);
         assert_eq!(last_assistant_text(&path, 140).as_deref(), Some("recente"));
         std::fs::remove_file(&path).unwrap();
+    }
+
+    /// O prompt do usuário para o título do aviso: o último texto que ELE
+    /// escreveu — não o `tool_result` (que também chega como `user`) nem a
+    /// mensagem de meta do Claude. Mascarado antes de cortar.
+    #[test]
+    fn last_user_prompt_skips_tool_results_and_meta_and_masks_before_cutting() {
+        let prompt = format!(
+            "{} ghp_{}",
+            "y".repeat(55),
+            "A1b2C3d4E5".repeat(4).get(..36).unwrap()
+        );
+        let user = serde_json::json!({"type": "user", "message": {"content": prompt}}).to_string();
+        let path = write_transcript(&[
+            r#"{"type":"user","message":{"content":"pedido antigo"}}"#,
+            &user,
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash"}]}}"#,
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","content":"saída do comando"}]}}"#,
+            r#"{"type":"user","isMeta":true,"message":{"content":"<local-command-caveat>x</local-command-caveat>"}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"feito"}]}}"#,
+        ]);
+        let out = last_user_prompt(&path, 80).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert!(out.starts_with("yyyy"), "{out}");
+        assert!(!out.contains("ghp_"), "meio token vazou: {out}");
+        assert!(out.chars().count() <= 80);
+    }
+
+    #[test]
+    fn last_user_prompt_reads_text_blocks_and_codex_user_message() {
+        let path = write_transcript(&[
+            r#"{"type":"user","message":{"content":[{"type":"text","text":"corrige  o parser"}]}}"#,
+        ]);
+        assert_eq!(
+            last_user_prompt(&path, 80).as_deref(),
+            Some("corrige o parser")
+        );
+        std::fs::remove_file(&path).unwrap();
+        let path = write_transcript(&[
+            r#"{"type":"event_msg","payload":{"type":"user_message","message":"roda os testes"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"agent_message","message":"rodei"}}"#,
+        ]);
+        assert_eq!(
+            last_user_prompt(&path, 80).as_deref(),
+            Some("roda os testes")
+        );
+        std::fs::remove_file(&path).unwrap();
+        assert!(last_user_prompt(Path::new("/nope/x.jsonl"), 80).is_none());
     }
 }

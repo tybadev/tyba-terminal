@@ -9,6 +9,9 @@ pub enum AgentSignal {
     /// `Stop`). O handler monta o status com o motivo.
     TurnFailed,
     AwaitingInput,
+    /// `Notification` `agent_needs_input`: o Claude parou esperando o usuário
+    /// num terminal. Vira "precisa de você" e avisa.
+    NeedsInput,
     Ended,
     SubagentStarted,
     SubagentEnded,
@@ -51,6 +54,7 @@ pub fn signal_for(hook_event_name: &str, notification_type: Option<&str>) -> Opt
         "Interrupt" => Some(AgentSignal::Interrupted),
         "Notification" => match notification_type {
             Some("idle_prompt") => Some(AgentSignal::AwaitingInput),
+            Some("agent_needs_input") => Some(AgentSignal::NeedsInput),
             _ => None,
         },
         _ => None,
@@ -127,6 +131,16 @@ pub fn status_on_idle_prompt(_current: &SessionStatus) -> Option<SessionStatus> 
     None
 }
 
+/// O que o `Notification` `agent_needs_input` faz com o status atual:
+/// "precisa de você" (`Reply`), menos com o prompt nativo aberto — a
+/// permissão continua sendo o motivo, e ela só sai pelos eventos de sempre.
+pub fn status_on_needs_input(current: &SessionStatus) -> Option<SessionStatus> {
+    (!is_native_prompt(current)).then_some(SessionStatus::AwaitingInput {
+        hint: None,
+        reason: AwaitingReason::Reply,
+    })
+}
+
 /// O que o `Interrupt` faz com o status atual: o turno que rodava acaba.
 ///
 /// Só sai de `Running`. Esperando aprovação ou resposta, quem decide a saída é
@@ -159,10 +173,12 @@ pub fn status_for(signal: &AgentSignal) -> Option<SessionStatus> {
     match signal {
         AgentSignal::Working => Some(SessionStatus::Running),
         AgentSignal::TurnEnded => Some(SessionStatus::Idle { summary: None }),
-        AgentSignal::AwaitingInput => Some(SessionStatus::AwaitingInput {
-            hint: None,
-            reason: AwaitingReason::Reply,
-        }),
+        AgentSignal::AwaitingInput | AgentSignal::NeedsInput => {
+            Some(SessionStatus::AwaitingInput {
+                hint: None,
+                reason: AwaitingReason::Reply,
+            })
+        }
         AgentSignal::Ready => None,
         AgentSignal::TurnFailed => None,
         AgentSignal::Ended => None,
@@ -313,6 +329,26 @@ mod tests {
             signal_for("Notification", Some("idle_prompt")),
             Some(AgentSignal::AwaitingInput)
         );
+    }
+
+    /// `agent_needs_input`: um terminal do Claude está parado esperando o
+    /// usuário (pergunta de teammate, aviso do auto mode, sessão em
+    /// background). É "precisa de você" — ao contrário do `idle_prompt`.
+    #[test]
+    fn signal_notification_agent_needs_input_is_needs_input() {
+        assert_eq!(
+            signal_for("Notification", Some("agent_needs_input")),
+            Some(AgentSignal::NeedsInput)
+        );
+        assert_eq!(
+            status_on_needs_input(&SessionStatus::Running),
+            Some(SessionStatus::AwaitingInput {
+                hint: None,
+                reason: AwaitingReason::Reply
+            })
+        );
+        // Não rebaixa o prompt nativo aberto: a permissão segue sendo o motivo.
+        assert_eq!(status_on_needs_input(&native_prompt_status(None)), None);
     }
 
     #[test]
