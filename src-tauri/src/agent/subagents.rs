@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, Runtime};
 
@@ -23,6 +23,9 @@ pub(crate) type SharedCoordinator = Arc<Mutex<Option<IdleCoordinator>>>;
 
 pub const EVENT_SUBAGENTS_CHANGED: &str = "subagents://changed";
 
+/// Estado da gaveta Fila/Agentes de uma sessão (quadros 4A′–4E).
+pub const EVENT_DRAWER_CHANGED: &str = "agents-drawer://changed";
+
 const SUMMARY_MAX_CHARS: usize = 280;
 
 const MIN_SUBAGENT_ID_LEN: usize = 8;
@@ -34,8 +37,8 @@ const MAX_SETTLED_RUNS: usize = 40;
 /// Quantas ações anteriores o painel mostra embaixo do AGORA.
 const MAX_RECENT_ACTIVITY: usize = 2;
 
-/// Quanto o painel Agentes aberto sozinho fica na tela depois que a rodada
-/// assenta, antes de o core fechá-lo.
+/// Quanto a gaveta aberta sozinha fica na tela depois que a rodada assenta,
+/// antes de o core recolhê-la para a pílula.
 pub const PANEL_AUTO_CLOSE_MS: u64 = 10_000;
 
 /// Um `agent_id` real de subagente do Claude Code é hexadecimal (17 chars nesta
@@ -237,6 +240,27 @@ pub struct Coordination {
     pub panel_disarmed: bool,
 }
 
+/// A aba da gaveta que o dono escolheu. Sem escolha, o front aplica a regra
+/// do quadro 4C (aprovação pendente → Agentes; rodada rodando → Agentes;
+/// senão Fila).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DrawerTab {
+    Queue,
+    Agents,
+}
+
+/// O que o front desenha da gaveta de uma sessão: aberta ou pílula, a aba
+/// escolhida pelo dono e se ele já viu como a rodada terminou (a pílula
+/// mantém o ✓ ou o vermelho até a próxima rodada ou até o dono abrir).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DrawerState {
+    pub session_id: SessionId,
+    pub open: bool,
+    pub tab: Option<DrawerTab>,
+    pub outcome_seen: bool,
+}
+
 #[derive(Default)]
 pub(crate) struct SessionSubagents {
     runs: Vec<SubagentRun>,
@@ -248,13 +272,22 @@ pub(crate) struct SessionSubagents {
     orchestrator_idle_summary: Option<String>,
     /// Rodada corrente. 0 antes do primeiro subagente.
     round: u32,
-    /// O painel Agentes aberto agora foi aberto pela coordenação (não pelo
-    /// dono) e o dono ainda não mexeu nele. Só esse painel fecha sozinho.
+    /// A gaveta aberta agora foi aberta pela coordenação (não pelo dono).
+    /// Só essa recolhe sozinha.
     panel_auto_open: bool,
     /// Desde quando (rodada, ms) a rodada corrente está assentada, enquanto
     /// `panel_auto_open`. A rodada no par faz uma rodada nova inteira entre
     /// dois ticks reiniciar o relógio.
     panel_settled_since: Option<(u32, u64)>,
+    /// A gaveta Fila/Agentes está aberta (senão é a pílula).
+    drawer_open: bool,
+    /// O dono está nela: mouse em cima ou foco dentro. Segura o recolhimento
+    /// automático até ele sair.
+    drawer_present: bool,
+    /// A aba que o dono escolheu; vale até a gaveta recolher.
+    drawer_tab: Option<DrawerTab>,
+    /// O dono abriu a gaveta depois que a rodada corrente assentou.
+    outcome_seen: bool,
 }
 
 impl SessionSubagents {
@@ -287,6 +320,7 @@ impl SessionSubagents {
             self.coordinated = false;
             self.viewer_disarmed = false;
             self.panel_disarmed = false;
+            self.outcome_seen = false;
             self.orchestrator_idle = false;
             self.orchestrator_idle_summary = None;
             self.trim_settled();
@@ -303,9 +337,10 @@ impl SessionSubagents {
         any_done && !any_running
     }
 
-    /// Relógio do fechamento automático. Painel aberto sozinho + rodada
-    /// assentada há `PANEL_AUTO_CLOSE_MS` → `true` (uma vez: o painel deixa
-    /// de ser "automático"). Rodada que volta a rodar zera o relógio.
+    /// Relógio do recolhimento automático. Gaveta aberta sozinha + rodada
+    /// assentada há `PANEL_AUTO_CLOSE_MS` + dono fora dela → recolhe e
+    /// devolve `true` (uma vez). Rodada que volta a rodar zera o relógio; dono
+    /// em cima só adia: recolhe no primeiro tick depois que ele sai.
     fn panel_close_due(&mut self, now: u64) -> bool {
         if !self.panel_auto_open || !self.current_round_settled() {
             self.panel_settled_since = None;
@@ -318,15 +353,31 @@ impl SessionSubagents {
                 now
             }
         };
-        if now.saturating_sub(since) < PANEL_AUTO_CLOSE_MS {
+        if now.saturating_sub(since) < PANEL_AUTO_CLOSE_MS || self.drawer_present {
             return false;
         }
-        self.keep_panel();
+        self.collapse_drawer();
         true
     }
 
-    /// O painel passou a ser do dono (abriu, mexeu ou fechou): não fecha
-    /// sozinho.
+    fn collapse_drawer(&mut self) {
+        self.drawer_open = false;
+        self.drawer_present = false;
+        self.drawer_tab = None;
+        self.keep_panel();
+    }
+
+    fn drawer_state(&self, session: SessionId) -> DrawerState {
+        DrawerState {
+            session_id: session,
+            open: self.drawer_open,
+            tab: self.drawer_tab,
+            outcome_seen: self.outcome_seen,
+        }
+    }
+
+    /// A gaveta passou a ser do dono (abriu ou recolheu): não recolhe
+    /// sozinha.
     fn keep_panel(&mut self) {
         self.panel_auto_open = false;
         self.panel_settled_since = None;
@@ -1040,39 +1091,87 @@ impl SubagentTracker {
         }
     }
 
-    pub fn disarm_panel(&self, session: SessionId) {
+    /// A rodada começou: a gaveta abre sozinha na sessão. Devolve `true` se
+    /// abriu agora — já aberta (pelo dono ou antes) não vira "automática".
+    pub fn auto_open_drawer(&self, session: SessionId) -> bool {
+        let mut sessions = self.sessions.lock().expect("subagents lock");
+        let entry = sessions.entry(session).or_default();
+        if entry.drawer_open {
+            return false;
+        }
+        entry.drawer_open = true;
+        entry.panel_auto_open = true;
+        entry.panel_settled_since = None;
+        true
+    }
+
+    /// O dono abriu a gaveta (clicou na pílula): fica até ele recolher. Abrir
+    /// com a rodada assentada é ver como ela terminou.
+    pub fn open_drawer(&self, session: SessionId) -> DrawerState {
+        let mut sessions = self.sessions.lock().expect("subagents lock");
+        let entry = sessions.entry(session).or_default();
+        entry.drawer_open = true;
+        entry.keep_panel();
+        if entry.current_round_settled() {
+            entry.outcome_seen = true;
+        }
+        entry.drawer_state(session)
+    }
+
+    /// O dono recolheu a gaveta (⌄ ou Esc): esta rodada não a reabre.
+    pub fn collapse_drawer(&self, session: SessionId) -> DrawerState {
+        let mut sessions = self.sessions.lock().expect("subagents lock");
+        let entry = sessions.entry(session).or_default();
+        entry.collapse_drawer();
+        entry.panel_disarmed = true;
+        entry.drawer_state(session)
+    }
+
+    /// O dono escolheu a aba; vale até a gaveta recolher.
+    pub fn set_drawer_tab(&self, session: SessionId, tab: DrawerTab) -> DrawerState {
+        let mut sessions = self.sessions.lock().expect("subagents lock");
+        let entry = sessions.entry(session).or_default();
+        if entry.drawer_open {
+            entry.drawer_tab = Some(tab);
+        }
+        entry.drawer_state(session)
+    }
+
+    /// Mouse em cima ou foco dentro da gaveta (`true`), ou os dois fora.
+    pub fn set_drawer_presence(&self, session: SessionId, present: bool) {
         let mut sessions = self.sessions.lock().expect("subagents lock");
         if let Some(entry) = sessions.get_mut(&session) {
-            entry.panel_disarmed = true;
-            entry.keep_panel();
+            entry.drawer_present = present && entry.drawer_open;
         }
     }
 
-    /// A coordenação acabou de abrir o painel desta sessão (não estava
-    /// aberto): ele fecha sozinho quando a rodada assentar.
-    pub fn note_panel_auto_opened(&self, session: SessionId) {
-        let mut sessions = self.sessions.lock().expect("subagents lock");
-        if let Some(entry) = sessions.get_mut(&session) {
-            entry.panel_auto_open = true;
-            entry.panel_settled_since = None;
-        }
+    pub fn drawer_state(&self, session: SessionId) -> DrawerState {
+        let sessions = self.sessions.lock().expect("subagents lock");
+        sessions
+            .get(&session)
+            .map(|entry| entry.drawer_state(session))
+            .unwrap_or_else(|| SessionSubagents::default().drawer_state(session))
     }
 
-    /// O dono abriu o painel ou mexeu nele: fica até ele fechar.
-    pub fn keep_panel(&self, session: SessionId) {
-        let mut sessions = self.sessions.lock().expect("subagents lock");
-        if let Some(entry) = sessions.get_mut(&session) {
-            entry.keep_panel();
-        }
+    pub fn drawer_states(&self) -> Vec<DrawerState> {
+        let sessions = self.sessions.lock().expect("subagents lock");
+        sessions
+            .iter()
+            .map(|(id, entry)| entry.drawer_state(*id))
+            .collect()
     }
 
-    /// Sessões cujo painel aberto sozinho deve fechar agora. `now` injetável
-    /// para os testes do relógio; o tick do core passa `now_ms()`.
-    pub fn due_panel_closes(&self, now: u64) -> Vec<SessionId> {
+    /// Gavetas abertas sozinhas que recolhem agora, já recolhidas. `now`
+    /// injetável para os testes do relógio; o tick do core passa `now_ms()`.
+    pub fn due_drawer_collapses(&self, now: u64) -> Vec<DrawerState> {
         let mut sessions = self.sessions.lock().expect("subagents lock");
         sessions
             .iter_mut()
-            .filter_map(|(id, entry)| entry.panel_close_due(now).then_some(*id))
+            .filter_map(|(id, entry)| {
+                entry
+                    .panel_close_due(now)
+                    .then(|| entry.drawer_state(*id))
+            })
             .collect()
     }
 
@@ -2296,7 +2395,7 @@ mod tests {
         assert!(after.is_none());
     }
 
-    /// Rodada com um subagente que já começou e terminou, painel aberto pela
+    /// Rodada com um subagente que já começou e terminou, gaveta aberta pela
     /// coordenação. Devolve o tracker e a sessão.
     fn settled_auto_panel(
         handle: &tauri::AppHandle<tauri::test::MockRuntime>,
@@ -2308,122 +2407,207 @@ mod tests {
             .on_subagent_started(handle, session, "a1".into(), "explorer".into(), None, None)
             .expect("rodada 1 coordena");
         tracker.mark_coordinated(session);
-        tracker.note_panel_auto_opened(session);
-        assert!(tracker.due_panel_closes(0).is_empty(), "rodando não fecha");
+        assert!(tracker.auto_open_drawer(session), "a rodada abre a gaveta");
+        assert!(tracker.drawer_state(session).open);
+        assert!(tracker.due_drawer_collapses(0).is_empty(), "rodando não recolhe");
         tracker.on_subagent_stopped(handle, session, "a1".into(), None, None);
         (tracker, session)
     }
 
+    fn collapsed(states: Vec<DrawerState>) -> Vec<SessionId> {
+        assert!(states.iter().all(|s| !s.open && s.tab.is_none()));
+        states.into_iter().map(|s| s.session_id).collect()
+    }
+
     #[test]
-    fn settled_round_closes_auto_panel_after_the_delay_once() {
+    fn settled_round_collapses_auto_drawer_after_the_delay_once() {
         let app = tauri::test::mock_app();
         let (tracker, session) = settled_auto_panel(app.handle());
 
-        assert!(tracker.due_panel_closes(1_000).is_empty(), "relógio começa");
+        assert!(tracker.due_drawer_collapses(1_000).is_empty(), "relógio começa");
         assert!(tracker
-            .due_panel_closes(1_000 + PANEL_AUTO_CLOSE_MS - 1)
+            .due_drawer_collapses(1_000 + PANEL_AUTO_CLOSE_MS - 1)
             .is_empty());
         assert_eq!(
-            tracker.due_panel_closes(1_000 + PANEL_AUTO_CLOSE_MS),
+            collapsed(tracker.due_drawer_collapses(1_000 + PANEL_AUTO_CLOSE_MS)),
             vec![session]
         );
+        assert!(!tracker.drawer_state(session).open);
         assert!(
             tracker
-                .due_panel_closes(1_000 + 2 * PANEL_AUTO_CLOSE_MS)
+                .due_drawer_collapses(1_000 + 2 * PANEL_AUTO_CLOSE_MS)
                 .is_empty(),
-            "fecha uma vez só"
+            "recolhe uma vez só"
         );
     }
 
     #[test]
-    fn owner_touch_keeps_the_auto_panel_open() {
+    fn owner_in_the_drawer_holds_the_collapse_until_he_leaves() {
         let app = tauri::test::mock_app();
         let (tracker, session) = settled_auto_panel(app.handle());
 
-        assert!(tracker.due_panel_closes(1_000).is_empty());
-        tracker.keep_panel(session); // clicou, rolou, expandiu
+        assert!(tracker.due_drawer_collapses(1_000).is_empty());
+        tracker.set_drawer_presence(session, true); // mouse em cima, foco dentro
         assert!(tracker
-            .due_panel_closes(1_000 + 10 * PANEL_AUTO_CLOSE_MS)
+            .due_drawer_collapses(1_000 + 10 * PANEL_AUTO_CLOSE_MS)
             .is_empty());
+        assert!(tracker.drawer_state(session).open);
+
+        tracker.set_drawer_presence(session, false); // saiu
+        assert_eq!(
+            collapsed(tracker.due_drawer_collapses(1_001 + 10 * PANEL_AUTO_CLOSE_MS)),
+            vec![session]
+        );
     }
 
     #[test]
-    fn new_round_before_the_delay_cancels_the_close() {
+    fn new_round_before_the_delay_cancels_the_collapse() {
         let app = tauri::test::mock_app();
         let handle = app.handle();
         let (tracker, session) = settled_auto_panel(handle);
 
-        assert!(tracker.due_panel_closes(1_000).is_empty());
-        // Rodada nova aos 5 s: o painel já está aberto (a coordenação não
+        assert!(tracker.due_drawer_collapses(1_000).is_empty());
+        // Rodada nova aos 5 s: a gaveta já está aberta (a coordenação não
         // reabre), e o relógio para enquanto ela roda.
         tracker.on_subagent_started(handle, session, "b2".into(), "reviewer".into(), None, None);
-        assert!(tracker.due_panel_closes(6_000).is_empty());
+        assert!(!tracker.auto_open_drawer(session), "já aberta");
+        assert!(tracker.due_drawer_collapses(6_000).is_empty());
         assert!(tracker
-            .due_panel_closes(1_000 + PANEL_AUTO_CLOSE_MS)
+            .due_drawer_collapses(1_000 + PANEL_AUTO_CLOSE_MS)
             .is_empty());
         assert!(
-            tracker.due_panel_closes(30_000).is_empty(),
-            "rodando não fecha"
+            tracker.due_drawer_collapses(30_000).is_empty(),
+            "rodando não recolhe"
         );
 
-        // Ela assenta: o relógio recomeça do zero, e o painel continua sendo
-        // o aberto sozinho.
+        // Ela assenta: o relógio recomeça do zero, e a gaveta continua sendo
+        // a aberta sozinha.
         tracker.on_subagent_stopped(handle, session, "b2".into(), None, None);
-        assert!(tracker.due_panel_closes(31_000).is_empty());
+        assert!(tracker.due_drawer_collapses(31_000).is_empty());
         assert!(tracker
-            .due_panel_closes(31_000 + PANEL_AUTO_CLOSE_MS - 1)
+            .due_drawer_collapses(31_000 + PANEL_AUTO_CLOSE_MS - 1)
             .is_empty());
         assert_eq!(
-            tracker.due_panel_closes(31_000 + PANEL_AUTO_CLOSE_MS),
+            collapsed(tracker.due_drawer_collapses(31_000 + PANEL_AUTO_CLOSE_MS)),
             vec![session]
         );
     }
 
     #[test]
-    fn owner_opened_panel_never_closes_by_itself() {
+    fn owner_opened_drawer_never_collapses_by_itself() {
+        let app = tauri::test::mock_app();
+        let handle = app.handle();
+        let tracker = SubagentTracker::new();
+        let session = SessionId::new_v4();
+        tracker.register_session(session);
+        // O dono abriu antes da rodada: a coordenação não a marca automática.
+        tracker.open_drawer(session);
+        tracker.on_subagent_started(handle, session, "a1".into(), "explorer".into(), None, None);
+        tracker.mark_coordinated(session);
+        assert!(!tracker.auto_open_drawer(session));
+        tracker.on_subagent_stopped(handle, session, "a1".into(), None, None);
+        assert!(tracker.due_drawer_collapses(0).is_empty());
+        assert!(tracker
+            .due_drawer_collapses(10 * PANEL_AUTO_CLOSE_MS)
+            .is_empty());
+        assert!(tracker.drawer_state(session).open);
+
+        // Aberta sozinha e depois reaberta pela pílula: passa a ser do dono.
+        let (tracker, session) = settled_auto_panel(handle);
+        tracker.collapse_drawer(session);
+        tracker.open_drawer(session);
+        assert!(tracker.due_drawer_collapses(0).is_empty());
+        assert!(tracker
+            .due_drawer_collapses(10 * PANEL_AUTO_CLOSE_MS)
+            .is_empty());
+    }
+
+    #[test]
+    fn auto_collapse_rearms_the_next_round() {
+        let app = tauri::test::mock_app();
+        let handle = app.handle();
+        let (tracker, session) = settled_auto_panel(handle);
+        tracker.set_drawer_tab(session, DrawerTab::Queue);
+        assert!(tracker.due_drawer_collapses(0).is_empty());
+        assert_eq!(
+            collapsed(tracker.due_drawer_collapses(PANEL_AUTO_CLOSE_MS)),
+            vec![session]
+        );
+
+        let next = tracker
+            .on_subagent_started(handle, session, "b2".into(), "reviewer".into(), None, None)
+            .expect("a próxima leva coordena de novo");
+        assert!(!next.panel_disarmed, "recolher sozinha não desarma");
+        tracker.mark_coordinated(session);
+        assert!(tracker.auto_open_drawer(session), "rodada nova reabre");
+        assert_eq!(tracker.drawer_state(session).tab, None, "aba volta à regra");
+        tracker.on_subagent_stopped(handle, session, "b2".into(), None, None);
+        assert!(tracker.due_drawer_collapses(50_000).is_empty());
+        assert_eq!(
+            collapsed(tracker.due_drawer_collapses(50_000 + PANEL_AUTO_CLOSE_MS)),
+            vec![session]
+        );
+    }
+
+    #[test]
+    fn owner_collapse_disarms_only_this_round() {
         let app = tauri::test::mock_app();
         let handle = app.handle();
         let tracker = SubagentTracker::new();
         let session = SessionId::new_v4();
         tracker.register_session(session);
         tracker.on_subagent_started(handle, session, "a1".into(), "explorer".into(), None, None);
-        // Painel já aberto pelo dono: a coordenação não o marca automático.
         tracker.mark_coordinated(session);
+        tracker.auto_open_drawer(session);
+        let state = tracker.collapse_drawer(session);
+        assert!(!state.open);
         tracker.on_subagent_stopped(handle, session, "a1".into(), None, None);
-        assert!(tracker.due_panel_closes(0).is_empty());
-        assert!(tracker
-            .due_panel_closes(10 * PANEL_AUTO_CLOSE_MS)
-            .is_empty());
-
-        // Aberto sozinho e depois reaberto pelo menu: passa a ser do dono.
-        let (tracker, session) = settled_auto_panel(handle);
-        tracker.keep_panel(session);
-        assert!(tracker.due_panel_closes(0).is_empty());
-        assert!(tracker
-            .due_panel_closes(10 * PANEL_AUTO_CLOSE_MS)
-            .is_empty());
-    }
-
-    #[test]
-    fn auto_close_does_not_disarm_the_next_round() {
-        let app = tauri::test::mock_app();
-        let handle = app.handle();
-        let (tracker, session) = settled_auto_panel(handle);
-        assert!(tracker.due_panel_closes(0).is_empty());
-        assert_eq!(tracker.due_panel_closes(PANEL_AUTO_CLOSE_MS), vec![session]);
 
         let next = tracker
             .on_subagent_started(handle, session, "b2".into(), "reviewer".into(), None, None)
-            .expect("a próxima leva coordena de novo");
-        assert!(!next.panel_disarmed, "fechar sozinho não desarma");
-        tracker.mark_coordinated(session);
-        tracker.note_panel_auto_opened(session);
-        tracker.on_subagent_stopped(handle, session, "b2".into(), None, None);
-        assert!(tracker.due_panel_closes(50_000).is_empty());
+            .expect("rodada nova coordena");
+        assert!(!next.panel_disarmed);
+    }
+
+    #[test]
+    fn opening_after_the_round_settles_marks_the_outcome_seen() {
+        let app = tauri::test::mock_app();
+        let handle = app.handle();
+        let tracker = SubagentTracker::new();
+        let session = SessionId::new_v4();
+        tracker.register_session(session);
+        tracker.on_subagent_started(handle, session, "a1".into(), "explorer".into(), None, None);
+        // Aberta com a rodada rodando: ainda não viu como terminou.
+        assert!(!tracker.open_drawer(session).outcome_seen);
+        tracker.collapse_drawer(session);
+        tracker.on_subagent_stopped(handle, session, "a1".into(), None, None);
+        assert!(!tracker.drawer_state(session).outcome_seen, "pílula mantém o ✓");
+        assert!(tracker.open_drawer(session).outcome_seen);
+
+        tracker.on_subagent_started(handle, session, "b2".into(), "reviewer".into(), None, None);
+        assert!(!tracker.drawer_state(session).outcome_seen, "rodada nova zera");
+    }
+
+    #[test]
+    fn tab_choice_lasts_until_the_drawer_collapses() {
+        let tracker = SubagentTracker::new();
+        let session = SessionId::new_v4();
+        tracker.register_session(session);
         assert_eq!(
-            tracker.due_panel_closes(50_000 + PANEL_AUTO_CLOSE_MS),
-            vec![session]
+            tracker.set_drawer_tab(session, DrawerTab::Agents).tab,
+            None,
+            "pílula não guarda aba"
         );
+        tracker.open_drawer(session);
+        assert_eq!(
+            tracker.set_drawer_tab(session, DrawerTab::Agents).tab,
+            Some(DrawerTab::Agents)
+        );
+        assert_eq!(tracker.collapse_drawer(session).tab, None);
+        // Presença com a gaveta recolhida não segura nada.
+        tracker.set_drawer_presence(session, true);
+        tracker.open_drawer(session);
+        assert_eq!(tracker.drawer_state(session).tab, None);
     }
 
     #[test]
@@ -2442,7 +2626,7 @@ mod tests {
             .expect("rodada 1 coordena");
         assert!(!first.panel_disarmed);
         tracker.mark_coordinated(session);
-        tracker.disarm_panel(session);
+        tracker.collapse_drawer(session);
         tracker.on_subagent_stopped(&handle, session, "a1".into(), None, None);
 
         let second = tracker
@@ -2489,7 +2673,7 @@ mod tests {
             .expect("rodada 1 coordena");
         tracker.mark_coordinated(session);
         tracker.on_subagent_stopped(&handle, session, "aaaa1111".into(), None, None);
-        tracker.disarm_panel(session); // o dono fechou o painel
+        tracker.collapse_drawer(session); // o dono recolheu a gaveta
 
         let next = tracker
             .on_subagent_started(
