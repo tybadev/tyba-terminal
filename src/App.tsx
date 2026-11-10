@@ -195,6 +195,7 @@ import {
   TERMINAL_LINE_HEIGHT,
   TerminalView,
 } from "./components/TerminalView";
+import { PromptQueue } from "./components/PromptQueue";
 import {
   activateTab,
   activateWorkspace,
@@ -5747,6 +5748,23 @@ export default function App() {
               onSshNote={answerSshNote}
             />
           )}
+          {/* Quadros 4A/4B: a fila de prompts, só no pane com agente (a
+              sessão de agente ou o claude cru que o probe achou no shell).
+              A gaveta fica acima da caixa de agente quando ela flutua aqui. */}
+          {!bare &&
+            paneRect &&
+            (s.kind.type === "agent" ||
+              (s.kind.type === "shell" && detected !== null)) && (
+              <PromptQueue
+                sessionId={s.id}
+                status={s.status}
+                bottomPx={
+                  s.id === activeId && richInputVisible && !ownsCommandLine
+                    ? 66
+                    : 12
+                }
+              />
+            )}
         </div>
         {(paneRect || bare) && line?.visible && (
           // Clicar (ou focar) a linha de outro painel passa o
