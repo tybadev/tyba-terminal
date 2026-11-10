@@ -7,7 +7,7 @@ import {
   useState,
   type DragEvent,
 } from "react";
-import { useTranslation } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { homeDir } from "@tauri-apps/api/path";
 import {
@@ -104,6 +104,8 @@ import {
   runElapsed,
   runShownStatus,
   runStatusKey,
+  type VarEnvProblem,
+  varEnvProblems,
 } from "@/lib/orbit";
 import { browserRetain } from "@/lib/orbitBrowser";
 import { roomAgents } from "@/lib/orbitTalk";
@@ -1718,6 +1720,18 @@ function VariablesPanel({
 }) {
   const { t } = useTranslation();
   const [rows, setRows] = useState<[string, string][]>(() => Object.entries(variables));
+  // Aviso de nome que não vira `$NOME`: a regra é do core.
+  const namesKey = JSON.stringify(rows.map(([name]) => name));
+  const [envProblems, setEnvProblems] = useState<VarEnvProblem[]>([]);
+  useEffect(() => {
+    let live = true;
+    varEnvProblems(JSON.parse(namesKey) as string[])
+      .then((p) => live && setEnvProblems(p))
+      .catch(() => live && setEnvProblems([]));
+    return () => {
+      live = false;
+    };
+  }, [namesKey]);
   const commit = (next: [string, string][]) => {
     setRows(next);
     onChange(Object.fromEntries(next.filter(([name]) => name.trim() !== "")));
@@ -1741,44 +1755,62 @@ function VariablesPanel({
           <X size={13} />
         </button>
       </div>
-      <p className="text-[11.5px] text-tyba-text-faint">
-        {t("orbitVarsHint", { example: "{{nome}}" })}
+      <p className="text-[11.5px] leading-[17px] text-tyba-text-faint">
+        <Trans
+          i18nKey="orbitVarsHint"
+          values={{ example: "{{nome}}", env: "$NOME" }}
+          components={{ m: <span className="font-mono text-tyba-text-muted" /> }}
+        />
       </p>
+      <div className="flex gap-1.5 pr-[26px] text-[10.5px] tracking-[.08em] text-tyba-text-faint">
+        <span className="min-w-0 flex-1">{t("orbitVarNameHead")}</span>
+        <span className="min-w-0 flex-1">{t("orbitVarValueHead")}</span>
+      </div>
       <div className="flex min-h-0 flex-col gap-1.5 overflow-y-auto">
         {rows.map(([name, value], i) => (
-          <div key={i} className="flex items-center gap-1.5">
-            <input
-              aria-label={t("orbitVarName")}
-              placeholder={t("orbitVarName")}
-              spellCheck={false}
-              autoCorrect="off"
-              autoCapitalize="off"
-              value={name}
-              onChange={(e) =>
-                commit(rows.map((r, j) => (j === i ? [e.target.value, r[1]] : r)))
-              }
-              className={field}
-            />
-            <input
-              aria-label={t("orbitVarValue")}
-              placeholder={t("orbitVarValue")}
-              spellCheck={false}
-              autoCorrect="off"
-              autoCapitalize="off"
-              value={value}
-              onChange={(e) =>
-                commit(rows.map((r, j) => (j === i ? [r[0], e.target.value] : r)))
-              }
-              className={field}
-            />
-            <button
-              type="button"
-              aria-label={t("orbitVarRemove")}
-              onClick={() => commit(rows.filter((_, j) => j !== i))}
-              className="rounded-[4px] p-1 text-tyba-text-faint hover:text-tyba-red"
-            >
-              <X size={12} />
-            </button>
+          <div key={i} className="flex flex-col gap-1">
+            <div className="flex items-center gap-1.5">
+              <input
+                aria-label={t("orbitVarName")}
+                placeholder={t("orbitVarName")}
+                spellCheck={false}
+                autoCorrect="off"
+                autoCapitalize="off"
+                value={name}
+                onChange={(e) =>
+                  commit(rows.map((r, j) => (j === i ? [e.target.value, r[1]] : r)))
+                }
+                className={field}
+              />
+              <input
+                aria-label={t("orbitVarValue")}
+                placeholder={t("orbitVarValue")}
+                spellCheck={false}
+                autoCorrect="off"
+                autoCapitalize="off"
+                value={value}
+                onChange={(e) =>
+                  commit(rows.map((r, j) => (j === i ? [r[0], e.target.value] : r)))
+                }
+                className={field}
+              />
+              <button
+                type="button"
+                aria-label={t("orbitVarRemove")}
+                onClick={() => commit(rows.filter((_, j) => j !== i))}
+                className="rounded-[4px] p-1 text-tyba-text-faint hover:text-tyba-red"
+              >
+                <X size={12} />
+              </button>
+            </div>
+            {name.trim() !== "" && envProblems[i] && (
+              <p className="text-[11px] leading-[15px] text-tyba-amber">
+                {t(
+                  envProblems[i] === "invalid" ? "orbitVarEnvInvalid" : "orbitVarEnvReserved",
+                  { env: `$${name}` },
+                )}
+              </p>
+            )}
           </div>
         ))}
       </div>

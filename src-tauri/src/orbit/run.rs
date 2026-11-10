@@ -1694,8 +1694,9 @@ pub struct ProcessLaunch {
     pub cwd: PathBuf,
     pub program: PathBuf,
     pub args: Vec<String>,
-    /// Env por cima do do TYBA: o `pre-push` do TYBA quando o nó foi criado
-    /// por agente ([`agent_process_git_env`]); vazio no nó do dono.
+    /// Env por cima do do TYBA: as variáveis do grafo
+    /// ([`super::env::graph_env`]) e, quando o nó foi criado por agente, o
+    /// `pre-push` do TYBA ([`agent_process_git_env`]).
     pub env: Vec<(String, String)>,
 }
 
@@ -1718,6 +1719,8 @@ pub struct AgentLaunch {
 pub struct ShellLaunch {
     pub title: String,
     pub cwd: PathBuf,
+    /// As variáveis do grafo como env ([`super::env::graph_env`]).
+    pub env: Vec<(String, String)>,
 }
 
 /// Efeitos fora do agendador: subir processo, matar, avisar o front.
@@ -2816,6 +2819,7 @@ impl<H: RunHost> Runs<H> {
         let launch = ShellLaunch {
             title: start.node.title.clone(),
             cwd: start.node_dir.clone(),
+            env: super::env::graph_env(&start.variables),
         };
         match self.host.spawn_shell(launch, on_exit) {
             Ok(session) => {
@@ -2999,20 +3003,20 @@ impl<H: RunHost> Runs<H> {
                 runs.process_exited(&run, &node, attempt, &config);
             }
         });
-        let env = if start.created {
+        // `GIT_*` é reservado ([`super::env::RESERVED_PREFIXES`]): a variável
+        // do grafo não desfaz o `pre-push` do nó criado por agente.
+        let mut env = super::env::graph_env(&start.variables);
+        if start.created {
             match crate::session::ensure_git_hooks() {
-                Ok(hooks) => agent_process_git_env(std::env::vars().collect(), &hooks),
+                Ok(hooks) => env.extend(agent_process_git_env(std::env::vars().collect(), &hooks)),
                 Err(detail) => {
                     eprintln!(
                         "tyba: nó {} criado por agente sobe sem o pre-push do TYBA: {detail}",
                         start.node.id
                     );
-                    Vec::new()
                 }
             }
-        } else {
-            Vec::new()
-        };
+        }
         let launch = ProcessLaunch {
             title: start.node.title.clone(),
             cwd: start.node_dir.clone(),
@@ -6353,6 +6357,7 @@ impl RunHost for TauriHost {
                 &state.pty_pool,
                 opts,
                 crate::session::SessionOwner::Orbit,
+                &launch.env,
                 move |id| {
                     let state = handle.state::<crate::AppState>();
                     // O `claude` que rodava nele: socket de hooks e subagentes.
@@ -7268,6 +7273,61 @@ mod tests {
                 .mode();
             assert_eq!(mode & 0o777, 0o700);
         }
+    }
+
+    /// A variável do grafo chega ao processo como `$NOME`, além do
+    /// `{{nome}}`; nome reservado (`TYBA_OUT`, `PATH`) não sobrescreve o do
+    /// TYBA nem o do sistema, e nome inválido não exporta.
+    #[cfg(unix)]
+    #[test]
+    fn graph_variables_reach_the_process_as_env_without_touching_reserved_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        let (runs, _host, _app) = pty_runs(dir.path().join("runs"));
+        let mut g = graph(
+            vec![process(
+                "p",
+                "echo \"base=$BASE_URL tok=${TOKEN}\"; echo \"out=$TYBA_OUT\"; \
+                 command -v sh >/dev/null && echo path-ok",
+            )],
+            vec![],
+        );
+        // Fixtures sintéticas.
+        g.variables
+            .insert("BASE_URL".into(), "http://localhost:3999".into());
+        g.variables.insert("TOKEN".into(), "fixture-123".into());
+        g.variables
+            .insert("TYBA_OUT".into(), "/tmp/sequestro".into());
+        g.variables.insert("PATH".into(), "/nao/existe".into());
+        g.variables.insert("modo-dev".into(), "1".into());
+        let run = runs.start_now(g, vec![]).unwrap();
+        let run = wait_finished(&runs, &run.id);
+        assert_eq!(run.status, RunStatus::Done, "{run:?}");
+        let log = std::fs::read_to_string(&run.nodes["p"].outputs[&EdgeKind::Log]).unwrap();
+        assert!(
+            log.contains("base=http://localhost:3999 tok=fixture-123"),
+            "{log:?}"
+        );
+        assert!(!log.contains("/tmp/sequestro"), "{log:?}");
+        assert!(log.contains("path-ok"), "{log:?}");
+    }
+
+    /// O shell do nó Terminal recebe as variáveis do grafo filtradas.
+    #[test]
+    fn terminal_shell_gets_the_graph_variables_as_env() {
+        let dir = tempfile::tempdir().unwrap();
+        let work = dir.path().join("api");
+        std::fs::create_dir(&work).unwrap();
+        let (runs, host, _app) = pty_runs(dir.path().join("runs"));
+        let mut g = graph(vec![terminal("t", &work)], vec![]);
+        g.variables.insert("TOKEN".into(), "fixture-123".into());
+        g.variables.insert("HOME".into(), "/tmp/outra".into());
+        g.variables.insert("1X".into(), "x".into());
+        let run = runs.open_terminal_now(g, "t").unwrap();
+        assert_eq!(
+            host.shells.lock()[0].env,
+            vec![("TOKEN".to_string(), "fixture-123".to_string())]
+        );
+        runs.stop(&run.id).unwrap();
     }
 
     /// Sem `| tee`: o comando vê um terminal (cor, sem buffer de pipe) e o

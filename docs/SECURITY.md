@@ -55,6 +55,7 @@ O maior risco de um produto de aprovações é o usuário virar autômato de "y"
 ## Secrets
 
 - **Env do agente**: no agente livre, o env do shell do pane no agente digitado e o env completo do shell de login no agente que o TYBA abre (ver "Modelo de execução"). O env por allowlist definida em `.tyba/config` por repo é do modelo anterior; do `.tyba/config.toml` valem hoje o agente padrão e os snippets, depois do consentimento.
+- **Variáveis do Orbit como env** (`orbit/env.rs`): viram `$NOME` no shell do nó Terminal e nos processos do grafo (processo e integração), além do `{{nome}}`. Só nome `[A-Za-z_][A-Za-z0-9_]*` fora da lista reservada (PATH, HOME, SHELL, IFS, ZDOTDIR, BASH_ENV, `TYBA_*`, `GIT_*`, `LD_*`, `DYLD_*`, `SSH_*`, `LC_*`, `XDG_*` e outras, sem caixa); o resto não exporta e o painel avisa. **Nó Agente não recebe** as variáveis no env: chegam a ele só pelo `{{nome}}` que o dono escreveu no prompt. Limite conhecido: um agente pode criar um nó de processo que lê `$NOME` (como já podia usar `{{nome}}`), e o `claude` digitado dentro do shell do nó Terminal herda o env desse shell.
 - **Runtime secrets** via 1Password CLI (`op run`): planejado, não construído. No agente livre, o agente tem o env do shell do dono; a proteção que sobra é a redação em persistência.
 - **Redação em persistência**: padrões de secret (AWS keys, JWTs, `sk-...`, private keys PEM) são redigidos antes de qualquer scrollback ir para o SQLite. Nada de secret em log.
 - Repo é público: nunca commitar exemplo com secret real.

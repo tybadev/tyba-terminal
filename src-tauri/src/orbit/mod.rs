@@ -10,6 +10,7 @@
 
 pub mod agent;
 pub mod browser;
+pub mod env;
 pub mod export;
 pub mod failure;
 pub mod integration;
@@ -46,7 +47,8 @@ pub struct Graph {
     pub nodes: Vec<Node>,
     #[serde(default)]
     pub edges: Vec<Edge>,
-    /// Substituem `{{nome}}` em `prompt`, `command` e `script` antes de rodar.
+    /// Substituem `{{nome}}` em `prompt`, `command` e `script` antes de rodar
+    /// e viram env nos terminais do grafo ([`env`]).
     #[serde(default)]
     pub variables: BTreeMap<String, String>,
 }
