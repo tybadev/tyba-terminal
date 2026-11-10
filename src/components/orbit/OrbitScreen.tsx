@@ -1784,12 +1784,17 @@ function VariablesPanel({
   };
   const update = (i: number, patch: Partial<VarRow>) =>
     commit(rows.map((r, j) => (j === i ? { ...r, ...patch } : r)));
-  // Trancar leva o valor digitado ao Keychain; destrancar deixa o valor vazio
-  // (o core apaga o do Keychain ao salvar).
+  // Trancar leva o valor digitado ao Keychain; destrancar traz o valor de volta
+  // como texto comum (o core apaga o do Keychain ao salvar). Se o Keychain
+  // não entrega (acesso negado), a variável continua trancada: nunca perde o
+  // valor em silêncio.
   const toggleSecret = (i: number) => {
     const row = rows[i];
     if (row.secret) {
-      update(i, { secret: false, value: "" });
+      setLockError(null);
+      revealSecret(graphId, row.name)
+        .then((value) => update(i, { secret: false, value: value ?? "" }))
+        .catch((e) => setLockError(String(e)));
       return;
     }
     if (!canLock || row.name.trim() === "") return;
