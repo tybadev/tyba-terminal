@@ -60,7 +60,8 @@ export const CONNECTION_COLORS = [
 ];
 
 export type HostDialogState =
-  | { mode: "create" }
+  /** `prefill`: o cadastro já vem com o destino (o `ssh` digitado). */
+  | { mode: "create"; prefill?: HostFormValues; connect?: boolean }
   | { mode: "edit"; host: Host }
   | null;
 
@@ -218,7 +219,9 @@ export function HostFormDialog({
 
   useEffect(() => {
     if (state === null) return;
-    setValues(state.mode === "edit" ? hostToForm(state.host) : emptyHostForm());
+    setValues(
+      state.mode === "edit" ? hostToForm(state.host) : (state.prefill ?? emptyHostForm()),
+    );
     // Host gravado antes desta versão chega sem o campo, e ausente é LIGADA —
     // o mesmo default do serde no core (regra 11).
     setIntegrationEnabled(
