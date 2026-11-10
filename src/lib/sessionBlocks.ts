@@ -1,4 +1,11 @@
-import type { Block, PaneId, SessionCwd, SessionId, TypedSshDetected } from "./ipc";
+import type {
+  Block,
+  PaneId,
+  ReplacedShell,
+  SessionCwd,
+  SessionId,
+  TypedSshDetected,
+} from "./ipc";
 
 /**
  * A lista vazia, com identidade fixa.
@@ -47,6 +54,8 @@ export interface SessionBlocksData {
   sshNote: TypedSshDetected | null;
   /** O nome do Host cadastrado do aviso, quando há. */
   sshNoteAlias: string | null;
+  /** A troca no mesmo pane, quando esta sessão substituiu um shell — a referência do estado do `App`. */
+  swapMark: ReplacedShell | null;
 }
 
 /**
@@ -76,6 +85,7 @@ export function sessionBlocksData(input: {
   copyCombo: string;
   sshNote?: TypedSshDetected | null;
   sshNoteAlias?: string | null;
+  swapMark?: ReplacedShell | null;
 }): SessionBlocksData {
   return {
     sessionId: input.session.id,
@@ -101,5 +111,6 @@ export function sessionBlocksData(input: {
     copyCombo: input.copyCombo,
     sshNote: input.sshNote ?? null,
     sshNoteAlias: input.sshNoteAlias ?? null,
+    swapMark: input.swapMark ?? null,
   };
 }

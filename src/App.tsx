@@ -126,8 +126,14 @@ import {
   sessionDot,
 } from "./lib/sessionCard";
 import { matchSshHost } from "./lib/sshCommand";
-import { hostFormFromDetected, liveSshNote, targetLabel } from "./lib/typedSsh";
+import {
+  hostFormFromDetected,
+  hostInputFromDetected,
+  liveSshNote,
+  targetLabel,
+} from "./lib/typedSsh";
 import type { SshNoteAction } from "./components/SshTypedNote";
+import { SshSwapToast } from "./components/SshSwap";
 import { DockerIcon } from "./components/icons/DockerIcon";
 import { TybaMark } from "./components/icons/TybaMark";
 import { NewSessionPrompt } from "./components/NewSessionPrompt";
@@ -245,6 +251,7 @@ import {
   onTypedSshDetected,
   sshTypedDeny,
   type TypedSshDetected,
+  type ReplacedShell,
   onSessionIntegration,
   onSessionRemoteChips,
   onSessionStatus,
@@ -319,6 +326,7 @@ import {
   broadcastWrite,
   broadcastSubmit,
   connectHost,
+  createHost,
   connectHostGroup,
   reconnectSsh,
   listHosts,
@@ -3411,18 +3419,52 @@ export default function App() {
     return ids;
   }, [sessions, connectRequests]);
 
-  const connectToHost = useCallback(async (host: Host) => {
+  // A troca no mesmo pane (quadros 1C/1D de SshTrocaNoPane): a marca no topo
+  // do pane integrado e, na troca automática, o toast no pé dele. O que trocou
+  // e quando vem do core (`replaced`); aqui só se mostra.
+  const [swapMarks, setSwapMarks] = useState<Record<SessionId, ReplacedShell>>({});
+  const [swapToasts, setSwapToasts] = useState<ReadonlySet<SessionId>>(() => new Set());
+  const closeSwapToast = useCallback((id: SessionId) => {
+    setSwapToasts((prev) => {
+      if (!prev.has(id)) return prev;
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
+  }, []);
+
+  // "Ajustar" do toast: Configurações já na seção SSH. Volta ao normal quando
+  // a tela de Configurações sai.
+  const [settingsSection, setSettingsSection] = useState<"ssh" | undefined>();
+  const activeView = activeTab?.view;
+  useEffect(() => {
+    if (activeView !== "settings") setSettingsSection(undefined);
+  }, [activeView]);
+  const openSshSettings = useCallback(() => {
+    setSettingsSection("ssh");
+    void openViewTab("settings").catch(() => {});
+  }, []);
+
+  /** `replace`: o shell do `ssh` digitado que a sessão integrada substitui. */
+  const connectToHost = useCallback(async (host: Host, replace: SessionId | null = null) => {
     setConnectRequests((prev) => new Set(prev).add(host.id));
     try {
-      const result = await connectHost(host.id);
+      const result = await connectHost(host.id, replace);
       if (result.type === "opened") {
-        const { session } = result;
+        const { session, replaced } = result;
         setSessions((prev) =>
           prev.some((s) => s.id === session.id) ? prev : [...prev, session],
         );
+        if (replaced) {
+          setSwapMarks((prev) => ({ ...prev, [session.id]: replaced }));
+          if (replaced.auto) setSwapToasts((prev) => new Set(prev).add(session.id));
+          // O shell foi encerrado no core: a lista dele sai daqui também.
+          void refreshSessions();
+        }
       }
     } catch (e) {
       console.error("connect_host", e);
+      if (replace) toastError(t("connectionsActionFailed"), translateError(e, t));
     } finally {
       setConnectRequests((prev) => {
         const next = new Set(prev);
@@ -3430,7 +3472,7 @@ export default function App() {
         return next;
       });
     }
-  }, []);
+  }, [refreshSessions, t]);
 
   // O `ssh` digitado que logou (`ssh-typed://detected`): o aviso no bloco vivo,
   // por sessão. O core já decidiu se ele sai (detecção, modo, negados); aqui só
@@ -3438,18 +3480,19 @@ export default function App() {
   const [sshNotes, setSshNotes] = useState<Record<SessionId, TypedSshDetected>>({});
   const sshHostsRef = useRef(sshHosts);
   sshHostsRef.current = sshHosts;
+  // A sessão integrada abre no lugar do shell que detectou o `ssh`.
   const openDetectedHost = useCallback(
-    (hostId: string) => {
+    (hostId: string, replace: SessionId) => {
       const known = sshHostsRef.current.find((h) => h.id === hostId);
       if (known) {
-        void connectToHost(known);
+        void connectToHost(known, replace);
         return;
       }
       void listHosts()
         .then((hosts) => {
           setSshHosts(hosts);
           const host = hosts.find((h) => h.id === hostId);
-          if (host) void connectToHost(host);
+          if (host) void connectToHost(host, replace);
         })
         .catch((e) => toastError(t("connectionsActionFailed"), translateError(e, t)));
     },
@@ -3461,7 +3504,7 @@ export default function App() {
     void onTypedSshDetected((e) => {
       // "Sempre abrir integrado": o core só manda `open` com host cadastrado.
       if (e.open && e.host_id) {
-        openDetectedHost(e.host_id);
+        openDetectedHost(e.host_id, e.session_id);
         return;
       }
       setSshNotes((prev) => ({ ...prev, [e.session_id]: e }));
@@ -3486,10 +3529,28 @@ export default function App() {
         );
         return;
       }
-      if (note.host_id) openDetectedHost(note.host_id);
-      else setHostEditor({ mode: "create", prefill: hostFormFromDetected(note), connect: true });
+      if (note.host_id) {
+        openDetectedHost(note.host_id, sessionId);
+        return;
+      }
+      // "Cadastrar e abrir integrado" (1B′): cadastra com o destino detectado,
+      // sem formulário, e faz a mesma troca. O formulário só volta quando o
+      // cadastro direto não fecha (ex.: apelido já usado por outro host).
+      const openForm = () =>
+        setHostEditor({ mode: "create", prefill: hostFormFromDetected(note), connect: true });
+      const input = hostInputFromDetected(note);
+      if (!input) {
+        openForm();
+        return;
+      }
+      void createHost(input)
+        .then((host) => void connectToHost(host, sessionId))
+        .catch((e) => {
+          toastError(t("connectionsActionFailed"), translateError(e, t));
+          openForm();
+        });
     },
-    [sshNotes, openDetectedHost, t],
+    [sshNotes, openDetectedHost, connectToHost, t],
   );
 
   const newAgentSession = useCallback(
@@ -5739,6 +5800,7 @@ export default function App() {
                 sshNote: liveSshNote(sshNotes[s.id], sessionCommands[s.id]),
                 sshNoteAlias:
                   sshHosts.find((h) => h.id === sshNotes[s.id]?.host_id)?.alias ?? null,
+                swapMark: swapMarks[s.id],
               })}
               onInject={injectInto}
               onFocusPane={bare ? noFocusPane : focusPane}
@@ -5765,6 +5827,13 @@ export default function App() {
                 }
               />
             )}
+          {!bare && paneRect && swapToasts.has(s.id) && (
+            <SshSwapToast
+              sessionId={s.id}
+              onAdjust={openSshSettings}
+              onClose={closeSwapToast}
+            />
+          )}
         </div>
         {(paneRect || bare) && line?.visible && (
           // Clicar (ou focar) a linha de outro painel passa o
@@ -6979,6 +7048,7 @@ export default function App() {
                   {activeTab?.view === "settings" && (
                     <div className="tyba-git-screen absolute inset-0 flex" data-exiting={settingsExiting}>
                       <SettingsView
+                        initialSection={settingsSection}
                         onClose={closeSettingsAnimated}
                         onOpenConfig={() => void openUserConfig()}
                         launchConfigs={launchConfigs}

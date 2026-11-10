@@ -74,6 +74,7 @@ export const SessionBlocks = memo(function SessionBlocks({
   copyCombo,
   sshNote,
   sshNoteAlias,
+  swapMark,
   onInject,
   onFocusPane,
   onPick,
@@ -128,6 +129,7 @@ export const SessionBlocks = memo(function SessionBlocks({
         lineHeightPx={lineHeightPx}
         cellWidthPx={cellWidthPx}
         opened={opened}
+        swapMark={swapMark}
         onInject={active ? inject : undefined}
         onActivate={active ? undefined : activate}
         marked={marked}

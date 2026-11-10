@@ -333,6 +333,8 @@ function SettingsRail({
 interface Props {
   /** Fecha a tela e volta para onde estava. */
   onClose: () => void;
+  /** Abre (ou leva) a tela direto nesta seção — o "Ajustar" do toast da troca SSH. */
+  initialSection?: Section;
   /** Abre o `config.toml` no editor do TYBA. */
   onOpenConfig: () => void;
   launchConfigs: LaunchConfig[];
@@ -778,6 +780,7 @@ function ShortcutRow({
 
 export function SettingsView({
   onClose,
+  initialSection,
   onOpenConfig,
   launchConfigs,
   onApplyLaunchConfig,
@@ -816,7 +819,10 @@ export function SettingsView({
   onReviewAgentChange,
 }: Props) {
   const { t, i18n } = useTranslation();
-  const [section, setSection] = useState<Section>("general");
+  const [section, setSection] = useState<Section>(initialSection ?? "general");
+  useEffect(() => {
+    if (initialSection) setSection(initialSection);
+  }, [initialSection]);
   const [railCollapsed, setRailCollapsed] = useState(false);
   const [configPath, setConfigPath] = useState<string | null>(null);
   const [dockerUp, setDockerUp] = useState<boolean | null>(null);
