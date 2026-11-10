@@ -2,7 +2,6 @@ import type {
   ApprovalRequest,
   Session,
   SessionId,
-  SessionKind,
   SessionStatus,
   SubagentRun,
   Workspace,
@@ -82,15 +81,6 @@ export const deadAgentsPanels = (
     }
   }
   return out;
-};
-
-export const showAgentsButton = (
-  kind: SessionKind,
-  detected: boolean,
-): boolean => {
-  if (kind.type === "agent") return true;
-  if (kind.type === "shell") return detected;
-  return false;
 };
 
 const anyActive = (subagents: SubagentRun[]): boolean =>

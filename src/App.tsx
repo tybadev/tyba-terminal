@@ -165,13 +165,12 @@ import {
   parseContentView,
   setEditorDirty,
 } from "./lib/contentTabs";
-import { AgentsPanel } from "./components/AgentsPanel";
 import { PrListView } from "./components/PrListView";
 import { GitScreen } from "./components/GitScreen";
 import { activeFile, allScreenEditors, closeTarget, screenOf, sideSlotView, sshTunnelTargets } from "./lib/screens";
 import { openGitScreen } from "./lib/gitScreen";
 import { PrDetailView } from "./components/PrDetailView";
-import { SubagentViewer } from "./components/SubagentViewer";
+import { SubagentDetail, SubagentViewer } from "./components/SubagentViewer";
 import { ForgePanel } from "./components/ForgePanel";
 import { PasteConfirmDialog } from "./components/PasteConfirmDialog";
 import { SnippetArgsDialog } from "./components/SnippetArgsDialog";
@@ -270,6 +269,9 @@ import {
   listSubagents,
   focusSubagent,
   onSubagentsChanged,
+  agentsDrawerList,
+  onAgentsDrawerChanged,
+  type DrawerState,
   detectedAgent,
   canResumeAgentSession,
   resumeAgentSession,
@@ -365,12 +367,15 @@ import {
 } from "./lib/sessionStatus";
 import {
   agentsPanelActionableIds,
-  agentsPanelSession,
   deadAgentsPanels,
   mainColumn,
-  showAgentsButton,
   subagentInlineApprovals,
 } from "./lib/agentsPanel";
+import {
+  drawerTab,
+  pendingSubagentApprovals,
+  roundProgress,
+} from "./lib/agentsDrawer";
 import { usePresence } from "./lib/usePresence";
 import {
   SPINNER_FRAMES,
@@ -779,6 +784,10 @@ export default function App() {
   const [subagentsBySession, setSubagentsBySession] = useState<
     Map<SessionId, SubagentSnapshot>
   >(() => new Map());
+  // Gaveta Fila/Agentes de cada sessão (aberta, aba do dono): o core decide.
+  const [drawers, setDrawers] = useState<Map<SessionId, DrawerState>>(
+    () => new Map(),
+  );
   const [detectedBySession, setDetectedBySession] = useState<
     Map<SessionId, DetectedAgentState>
   >(() => new Map());
@@ -1908,6 +1917,33 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | null = null;
+    const put = (d: DrawerState) =>
+      setDrawers((prev) => new Map(prev).set(d.session_id, d));
+    void onAgentsDrawerChanged((d) => {
+      if (!cancelled) put(d);
+    }).then((un) => {
+      if (cancelled) un();
+      else unlisten = un;
+    });
+    void agentsDrawerList()
+      .then((list) => {
+        if (cancelled) return;
+        setDrawers((prev) => {
+          const next = new Map(prev);
+          for (const d of list) if (!next.has(d.session_id)) next.set(d.session_id, d);
+          return next;
+        });
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
+
+  useEffect(() => {
     const live = new Set(sessions.map((s) => s.id));
     setSubagentsBySession((prev) => {
       let changed = false;
@@ -2072,23 +2108,23 @@ export default function App() {
     [goToSession],
   );
 
-  // "Agentes" no menu lateral: com a sessão ativa tendo subagentes, abre (ou
-  // fecha) a árvore dela — é o que o dono espera achar ali, e é o caminho de
-  // volta depois de fechar o painel. Sem subagentes, segue sendo a fila.
-  const openAgentsFromSidebar = useCallback(() => {
-    const hasSubagents =
-      activeId != null &&
-      (subagentsBySession.get(activeId)?.subagents.length ?? 0) > 0;
-    if (!hasSubagents || !activeWorkspace) {
-      void toggleAgentQueue().catch(() => {});
-      return;
-    }
-    if (sideView === `agents:${activeId}`) {
-      void closeSideView(activeWorkspace.id).catch(() => {});
-    } else {
-      void openAgentsPanel(activeId).catch(() => {});
-    }
-  }, [activeId, activeWorkspace, sideView, subagentsBySession]);
+  // Linha de subagente na gaveta (4E): abre o detalhe dele na lateral,
+  // troca de subagente, ou fecha quando é a linha já aberta.
+  const selectSubagent = useCallback(
+    (sessionId: SessionId, agentId: string) => {
+      const open =
+        sideView === `agents:${sessionId}` &&
+        subagentsBySession.get(sessionId)?.focused === agentId;
+      if (open && activeWorkspace) {
+        void closeSideView(activeWorkspace.id).catch(() => {});
+        return;
+      }
+      void focusSubagent(sessionId, agentId)
+        .then(() => openAgentsPanel(sessionId))
+        .catch(() => {});
+    },
+    [activeWorkspace, sideView, subagentsBySession],
+  );
 
   // Conta as duas seções do quadro: o agente deduzido da tela também pede alguém, e o
 
@@ -2127,20 +2163,31 @@ export default function App() {
       ),
     [approvals, paneLayout],
   );
-  // Painel de agentes aberto: os pedidos que ele deixa aprovar na linha do
-  // subagente (não-vermelhos) saem do toast. A mesma derivação que o painel
-  // usa para desenhar — `subagentInlineApprovals` —, para os dois concordarem.
+  // Gaveta aberta na aba Agentes, num pane na tela: os pedidos que ela deixa
+  // aprovar na linha do subagente (não-vermelhos) saem do toast. A mesma
+  // derivação que a gaveta usa para desenhar — `subagentInlineApprovals` e
+  // `drawerTab` —, para as duas concordarem.
   const agentsPanelIds = useMemo(() => {
-    const panelSession = agentsPanelSession(sideView);
-    if (!panelSession) return new Set<number>();
-    return agentsPanelActionableIds(
-      subagentInlineApprovals(
-        panelSession,
-        subagentsBySession.get(panelSession)?.subagents ?? [],
-        approvals,
-      ),
-    );
-  }, [sideView, subagentsBySession, approvals]);
+    const ids = new Set<number>();
+    for (const sessionId of new Set(paneLayout?.panes.map((p) => p.session) ?? [])) {
+      const drawer = drawers.get(sessionId);
+      if (!drawer?.open) continue;
+      const subagents = subagentsBySession.get(sessionId)?.subagents ?? [];
+      const tab = drawerTab({
+        owner: drawer.tab,
+        hasSubagents: subagents.length > 0,
+        pending: pendingSubagentApprovals(sessionId, subagents, approvals),
+        running: roundProgress(subagents)?.running ?? false,
+      });
+      if (tab !== "agents") continue;
+      for (const id of agentsPanelActionableIds(
+        subagentInlineApprovals(sessionId, subagents, approvals),
+      )) {
+        ids.add(id);
+      }
+    }
+    return ids;
+  }, [paneLayout, drawers, subagentsBySession, approvals]);
   // Cápsulas dos nós do grafo na tela (Permitir/Negar no próprio nó): o que
   // elas mostram sai do toast. A tela do grafo avisa e zera ao fechar.
   const [nodeCardIds, setNodeCardIds] = useState<ReadonlySet<number>>(
@@ -2657,12 +2704,6 @@ export default function App() {
         : null;
   const [logsRestart, setLogsRestart] = useState<Record<string, number>>({});
   const activeCommand = activeId ? sessionCommands[activeId] : undefined;
-  const agentsButtonVisible =
-    activeSession != null &&
-    showAgentsButton(
-      activeSession.kind,
-      activeId != null && detectedBySession.has(activeId),
-    );
 
   // Painel lateral único: os ícones do header são as abas dele, e qual está
   // aberta é o `side_view` do workspace no core — aqui só se deriva o que o
@@ -2676,16 +2717,12 @@ export default function App() {
     dockerUp,
     dockerRunning,
     gitDirty: activeGitStatus?.dirty ?? false,
-    pendingApprovals: activeId
-      ? approvals.filter((a) => a.session_id === activeId).length
-      : 0,
   };
   const panelTabs: PanelTab[] = visiblePanels({
     hasSession: fileSessionId != null,
     isSsh: activeSession?.kind.type === "ssh",
     showDocker: showContainers,
     hasRepo: gitTone != null,
-    agentsAvailable: agentsButtonVisible,
   }).map((kind) => {
     const label = panelAriaLabel(
       kind,
@@ -2717,7 +2754,6 @@ export default function App() {
       git: openGitPanel,
       // O Diff abre a tela de Git na seção Revisar, não um painel lateral.
       diff: openDiffContentTab,
-      agents: openAgentsPanel,
     }[kind];
     void open(fileSessionId).catch(() => {});
   };
@@ -5756,13 +5792,32 @@ export default function App() {
             (s.kind.type === "agent" ||
               (s.kind.type === "shell" && detected !== null)) && (
               <PromptQueue
-                sessionId={s.id}
-                status={s.status}
+                session={s}
                 bottomPx={
                   s.id === activeId && richInputVisible && !ownsCommandLine
                     ? 66
                     : 12
                 }
+                drawer={drawers.get(s.id) ?? null}
+                snapshot={subagentsBySession.get(s.id) ?? null}
+                approvals={approvals}
+                agentName={agentBinaryName(
+                  s.kind.type === "agent" ? s.kind.runner : (detected?.kind ?? "claude_code"),
+                )}
+                orchestratorTitle={
+                  s.kind.type === "shell" && detected
+                    ? agentBinaryName(detected.kind)
+                    : null
+                }
+                runner={
+                  s.kind.type === "agent" ? s.kind.runner : (detected?.kind ?? null)
+                }
+                selectedSubagent={
+                  sideView === `agents:${s.id}`
+                    ? (subagentsBySession.get(s.id)?.focused ?? null)
+                    : null
+                }
+                onSelectSubagent={(agentId) => selectSubagent(s.id, agentId)}
               />
             )}
         </div>
@@ -6552,7 +6607,7 @@ export default function App() {
                       <TooltipTrigger asChild>
                         <Button
                           variant="ghost"
-                          onClick={openAgentsFromSidebar}
+                          onClick={() => void toggleAgentQueue().catch(() => {})}
                           aria-label={t("agentsQueue")}
                           // Peça de vidro (quadro): o painel Agentes é o que
                           // flutua, então a entrada dele já tem a lente.
@@ -6608,14 +6663,6 @@ export default function App() {
                           open={open}
                           onSelect={(sessionId, place) => {
                             jumpToAgent(sessionId, place);
-                            // A linha da sessão também reabre a árvore dela,
-                            // se ela tem subagentes: fechar nunca é sem volta.
-                            if (
-                              (subagentsBySession.get(sessionId)?.subagents
-                                .length ?? 0) > 0
-                            ) {
-                              void openAgentsPanel(sessionId).catch(() => {});
-                            }
                           }}
                         />
                       </div>
@@ -7288,49 +7335,17 @@ export default function App() {
                         />
                       ) : renderSideView?.startsWith("agents:") ? (
                         agentsTarget ? (
-                          <AgentsPanel
+                          <SubagentDetail
                             key={agentsTarget.id}
-                            session={agentsTarget}
+                            sessionId={agentsTarget.id}
                             snapshot={
                               subagentsBySession.get(agentsTarget.id) ?? null
-                            }
-                            approvals={approvals}
-                            orchestratorTitle={
-                              agentsTarget.kind.type === "shell"
-                                ? (() => {
-                                    const d = detectedBySession.get(
-                                      agentsTarget.id,
-                                    );
-                                    return d ? agentBinaryName(d.kind) : null;
-                                  })()
-                                : null
-                            }
-                            runner={
-                              agentsTarget.kind.type === "agent"
-                                ? agentsTarget.kind.runner
-                                : (detectedBySession.get(agentsTarget.id)
-                                    ?.kind ?? null)
-                            }
-                            expanded={sideExpanded}
-                            onToggleExpand={() =>
-                              void setSideViewExpanded(
-                                activeWorkspace.id,
-                                !sideExpanded,
-                              ).catch(() => {})
                             }
                             onClose={() =>
                               void closeSideView(activeWorkspace.id).catch(
                                 () => {},
                               )
                             }
-                            onSelect={(agentId) => {
-                              // O detalhe abre inline no próprio painel (A5.3):
-                              // nada de split de viewer ao lado.
-                              void focusSubagent(
-                                agentsTarget.id,
-                                agentId,
-                              ).catch(() => {});
-                            }}
                           />
                         ) : (
                           <div className="flex flex-1 items-center justify-center text-[12px] text-tyba-text-faint">

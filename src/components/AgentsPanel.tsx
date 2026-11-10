@@ -1,15 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import {
-  ArrowsInSimple,
-  ArrowsOutSimple,
-  CaretDown,
-  CaretRight,
-  X,
-} from "@phosphor-icons/react";
+import { ArrowsOutSimple, CaretDown, CaretRight } from "@phosphor-icons/react";
 
 import {
-  agentsPanelTouched,
   resolveApproval,
   type AgentRunner,
   type ApprovalDecision,
@@ -41,9 +34,6 @@ import {
 import { AgentIcon } from "./icons/AgentIcon";
 import { ClaudeIcon } from "./icons/ClaudeIcon";
 import { OpenAIIcon } from "./icons/OpenAIIcon";
-import { TybaMarkMono } from "./icons/TybaMark";
-import { SubagentTranscript } from "./SubagentViewer";
-import { PANEL_HEADER } from "./SidePanelBar";
 
 interface Props {
   session: Session;
@@ -54,9 +44,9 @@ interface Props {
   orchestratorTitle?: string | null;
   /** O CLI que roda: a linha do agente usa a marca dele (Claude, OpenAI). */
   runner?: AgentRunner | null;
-  expanded: boolean;
-  onToggleExpand: () => void;
-  onClose: () => void;
+  /** O subagente com o detalhe aberto na lateral (4E): a linha fica marcada. */
+  selectedId: string | null;
+  /** Clicar na linha abre, troca ou (na marcada) fecha o detalhe. */
   onSelect: (agentId: string) => void;
 }
 
@@ -85,12 +75,10 @@ function PendingBadge({ count }: { count: number }) {
   );
 }
 
-const TOUCH_THROTTLE_MS = 1_000;
-
 /**
- * A superfície única de agentes (A5.3): a árvore agente principal → subagentes
- * com luz de status por nível, e o detalhe do subagente aberto INLINE, na
- * própria linha. Um X fecha tudo; não existe mais metade órfã.
+ * A aba Agentes da gaveta (quadros 4B′/4C): resumo da sessão e a árvore
+ * agente principal → subagentes, com luz de status por nível. O detalhe do
+ * subagente abre na lateral (4E), não aqui.
  */
 export function AgentsPanel({
   session,
@@ -98,14 +86,11 @@ export function AgentsPanel({
   approvals,
   orchestratorTitle,
   runner,
-  expanded,
-  onToggleExpand,
-  onClose,
+  selectedId,
   onSelect,
 }: Props) {
   const { t, i18n } = useTranslation();
   const [now, setNow] = useState(() => Date.now());
-  const [openId, setOpenId] = useState<string | null>(null);
   const subagents = useMemo(() => snapshot?.subagents ?? [], [snapshot]);
   // O pedido que cada linha mostra — a mesma derivação que o `App` usa para
   // tirar do toast o que este painel deixa aprovar.
@@ -139,65 +124,13 @@ export function AgentsPanel({
     orchestratorVisual(session.status, session.attention, subagents),
     session.subagents_working === true,
   );
-  // Clicar, rolar, expandir ou teclar no painel diz ao core que o dono está
-  // nele: o painel aberto sozinho deixa de fechar no fim da rodada. Com
-  // throttle — o core só precisa ouvir uma vez.
-  const lastTouch = useRef(0);
-  const touched = () => {
-    const at = Date.now();
-    if (at - lastTouch.current < TOUCH_THROTTLE_MS) return;
-    lastTouch.current = at;
-    void agentsPanelTouched(session.id).catch(() => {});
-  };
-
-  const toggle = (agentId: string) => {
-    setOpenId((current) => (current === agentId ? null : agentId));
-    if (openId !== agentId) onSelect(agentId);
-  };
-
   return (
-    // Sem fundo próprio: o container no App já é `surface` com
-    // `tyba-divide-l`, e a divisa é sombra `inset` — um fundo aqui a cobria,
-    // e painel e terminal se fundiam no escuro.
-    <div
-      className="flex min-h-0 min-w-0 flex-1 flex-col"
-      onPointerDownCapture={touched}
-      onWheelCapture={touched}
-      onKeyDownCapture={touched}
-    >
-      <header className={PANEL_HEADER}>
-        {/* A marca de uma cor só, no âmbar de agentes. */}
-        <TybaMarkMono size={16} className="shrink-0 text-tyba-amber" />
-        <span className="min-w-0 truncate text-[13px] text-tyba-text">
-          {t("agentsTitle")}
-        </span>
-        {tree.active > 0 && (
-          <span className="shrink-0 text-[11px] text-tyba-text-faint">
-            {t("agentsActiveCount", { count: tree.active })}
-          </span>
-        )}
-        <div className="flex-1" />
-        <button
-          onClick={onToggleExpand}
-          aria-label={t(expanded ? "agentsCollapse" : "agentsExpand")}
-          className="text-tyba-text-faint hover:text-tyba-text"
-        >
-          {expanded ? <ArrowsInSimple size={13} /> : <ArrowsOutSimple size={13} />}
-        </button>
-        <button
-          onClick={onClose}
-          aria-label={t("agentsClose")}
-          className="text-tyba-text-faint hover:text-tyba-text"
-        >
-          <X size={13} />
-        </button>
-      </header>
-
+    <div className="flex min-h-0 min-w-0 flex-col">
       {/* Resumo da sessão: quem, onde, em que estado; embaixo, o que o core
           sabe dela. Com o `statusLine` do Claude: modelo, contexto, tokens,
           custo e tempo. Sem ele (Codex, Claude sem sessão do TYBA): só o
           tempo de sessão — o que não chega do core não se inventa. */}
-      <div className="flex shrink-0 flex-col gap-1 shadow-[inset_0_-1px_0_var(--tyba-line)] px-4 py-3.5">
+      <div className="mx-3 flex shrink-0 flex-col gap-1 px-0.5 pb-2 pt-1 shadow-[inset_0_-1px_0_var(--tyba-border-soft)]">
         <div className="flex min-w-0 items-center gap-2">
           {runner === "claude_code" ? (
             <ClaudeIcon size={13} className="shrink-0 text-tyba-amber" />
@@ -251,7 +184,7 @@ export function AgentsPanel({
         })()}
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-4 py-3">
+      <div className="max-h-[45vh] min-h-0 overflow-y-auto overflow-x-hidden px-3 pb-2.5 pt-2">
         {rounds.length === 0 ? (
           <p className="text-[12px] leading-relaxed text-tyba-text-faint">
             {t("agentsEmpty")}
@@ -286,7 +219,6 @@ export function AgentsPanel({
                     {visible.map((row) => (
                       <SubagentRow
                         key={row.key}
-                        sessionId={session.id}
                         row={row}
                         compactNow={compactNow}
                         approval={
@@ -294,8 +226,8 @@ export function AgentsPanel({
                             ? (inline.get(row.run.agent_id) ?? null)
                             : null
                         }
-                        open={row.run.agent_id != null && row.run.agent_id === openId}
-                        onToggle={toggle}
+                        selected={row.run.agent_id != null && row.run.agent_id === selectedId}
+                        onSelect={onSelect}
                       />
                     ))}
                   </ul>
@@ -360,21 +292,19 @@ function RoundHeader({
 }
 
 function SubagentRow({
-  sessionId,
   row,
   approval,
-  open,
-  onToggle,
+  selected,
+  onSelect,
   compactNow = false,
 }: {
-  sessionId: Session["id"];
   row: AgentTreeRow;
   /** Muitos rodando na rodada: a ação em curso numa linha só. */
   compactNow?: boolean;
   /** O pedido pendente mais antigo deste subagente, se houver. */
   approval: ApprovalRequest | null;
-  open: boolean;
-  onToggle: (agentId: string) => void;
+  selected: boolean;
+  onSelect: (agentId: string) => void;
 }) {
   const { t } = useTranslation();
   const id = row.run.agent_id;
@@ -387,15 +317,17 @@ function SubagentRow({
       // (escuro: 3× o glow do tema; claro: glow 0, sem halo).
       className={`min-w-0 rounded-[8px] ${
         awaiting
-          ? "-mx-2.5 bg-tyba-amber/[.08] px-2.5 py-1.5 shadow-[0_0_calc(var(--tyba-glow-size)*3)_color-mix(in_srgb,var(--tyba-amber)_8%,transparent)]"
-          : ""
+          ? "-mx-2 bg-tyba-amber/[.08] px-2 py-1.5 shadow-[0_0_calc(var(--tyba-glow-size)*3)_color-mix(in_srgb,var(--tyba-amber)_8%,transparent)]"
+          : selected
+            ? "tyba-pill-on -mx-2 px-2 py-1"
+            : ""
       }`}
     >
       <button
         type="button"
         disabled={id == null}
-        aria-expanded={open}
-        onClick={() => id && onToggle(id)}
+        aria-pressed={selected}
+        onClick={() => id && onSelect(id)}
         className={`group flex w-full min-w-0 items-start gap-2.5 rounded-[5px] py-1 text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-tyba-green ${
           id ? "" : "cursor-default opacity-70"
         }`}
@@ -422,14 +354,12 @@ function SubagentRow({
             <span className="shrink-0 font-mono text-[11px] tabular-nums text-tyba-text-faint">
               {formatElapsed(row.elapsedMs)}
             </span>
-            {id && (
-              <CaretRight
-                size={10}
-                className={`shrink-0 text-tyba-text-faint transition-transform ${
-                  open ? "rotate-90" : ""
-                }`}
-              />
-            )}
+            {id &&
+              (selected ? (
+                <ArrowsOutSimple size={11} className="shrink-0 text-tyba-text-faint" />
+              ) : (
+                <CaretRight size={10} className="shrink-0 text-tyba-text-faint" />
+              ))}
           </span>
           {!awaiting && line && line.kind !== "run" && line.kind !== "tool" && (
             <SubagentLineText line={line} />
@@ -441,35 +371,17 @@ function SubagentRow({
       {line && (line.kind === "run" || line.kind === "tool") && (
         <NowBox
           line={line}
-          compact={compactNow && !open}
-          recent={compactNow && !open ? [] : (row.run.recent_activity ?? [])}
+          compact={compactNow && !selected}
+          recent={compactNow && !selected ? [] : (row.run.recent_activity ?? [])}
         />
       )}
       {awaiting && approval && <InlineApproval approval={approval} />}
-      {open && (
-        <div className="min-w-0 pb-2 pl-[17px] pt-1">
-          <p className="flex min-w-0 items-center gap-2 pb-1 text-[10.5px] text-tyba-text-faint">
-            <span className="min-w-0 truncate">
-              {row.run.agent_type || t("agentsUnknownType")} ·{" "}
-              {t(LIGHT_LABEL[row.light])}
-            </span>
-            {row.run.status !== "done" && (
-              <span className="shrink-0 text-tyba-green">● {t("agentsLive")}</span>
-            )}
-          </p>
-          <SubagentTranscript
-            sessionId={sessionId}
-            run={row.run}
-            scrollClassName="max-h-[45vh] min-w-0 overflow-y-auto overflow-x-hidden rounded-[5px] border border-tyba-border/60 p-1.5"
-          />
-        </div>
-      )}
     </li>
   );
 }
 
 /** A ação em curso, inteira: ferramenta + comando ou caminho, em mono. */
-function NowBox({
+export function NowBox({
   line,
   compact = false,
   recent = [],

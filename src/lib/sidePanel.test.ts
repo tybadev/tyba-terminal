@@ -19,7 +19,6 @@ const base = {
   dockerUp: true,
   dockerRunning: 0,
   gitDirty: false,
-  pendingApprovals: 0,
 };
 
 describe("parseSideView", () => {
@@ -70,10 +69,6 @@ describe("panelClick", () => {
     expect(panelClick("git", "git:s2", "s1")).toBe("open");
   });
 
-  test("Agentes com a fila aberta troca pela aba da sessão", () => {
-    expect(panelClick("agents", "agent-queue", "s1")).toBe("open");
-  });
-
   test("histórico é aba como as outras", () => {
     expect(panelClick("history", "git:s1", "s1")).toBe("open");
     expect(panelClick("history", "history:s1", "s1")).toBe("close");
@@ -117,14 +112,6 @@ describe("panelIndicator", () => {
     expect(panelIndicator("git", base).dot).toBeNull();
   });
 
-  test("agentes: selo com a contagem de aprovações", () => {
-    expect(panelIndicator("agents", { ...base, pendingApprovals: 2 })).toEqual({
-      dot: null,
-      count: 2,
-    });
-    expect(panelIndicator("agents", base).count).toBeNull();
-  });
-
   test("demais abas não mostram indicador", () => {
     for (const kind of ["history", "files", "diff", "services"] as const) {
       expect(panelIndicator(kind, { ...base, gitDirty: true, dockerRunning: 2 })).toEqual({
@@ -143,15 +130,11 @@ describe("panelAriaLabel", () => {
     expect(
       panelAriaLabel("git", { ...base, gitDirty: true, gitChanged: 4 }, t),
     ).toBe("sidePanelGitChanges:4");
-    expect(
-      panelAriaLabel("agents", { ...base, pendingApprovals: 1, gitChanged: null }, t),
-    ).toBe("sidePanelAgentsPending:1");
   });
 
   test("sem estado, só o nome", () => {
     const input = { ...base, gitChanged: null };
     expect(panelAriaLabel("git", input, t)).toBe("sidePanelGit");
-    expect(panelAriaLabel("agents", input, t)).toBe("agentsAction");
     expect(panelAriaLabel("docker", { ...input, dockerUp: false }, t)).toBe(
       "sidePanelDockerDown",
     );
@@ -164,7 +147,6 @@ describe("visiblePanels", () => {
     isSsh: true,
     showDocker: true,
     hasRepo: true,
-    agentsAvailable: true,
   };
 
   test("ordem do mockup", () => {
@@ -173,13 +155,12 @@ describe("visiblePanels", () => {
       "docker",
       "services",
       "git",
-      "agents",
     ]);
   });
 
   test("serviços em toda sessão (local ou SSH); arquivos fora do header (menu, paleta e atalho); git só com repo (Diff é seção da tela de Git); docker pela preferência", () => {
     expect(
-      visiblePanels({ ...all, isSsh: false, hasRepo: false, showDocker: false, agentsAvailable: false }),
+      visiblePanels({ ...all, isSsh: false, hasRepo: false, showDocker: false }),
     ).toEqual(["history", "services"]);
   });
 
