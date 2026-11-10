@@ -910,6 +910,12 @@ export interface Run {
    * (`orbit_terminal_open`). Ausente/null no run do ▶.
    */
   terminal?: string | null;
+  /**
+   * Sessão ao vivo do Terminal: as variáveis do grafo (só nomes) que mudaram
+   * depois que o shell abriu — ele segue com os valores de antes. O core
+   * compara (a secreta pela impressão) e tira da lista o que voltou.
+   */
+  staleVars?: string[];
   /** A fila de atenção do core: ids dos nós que esperam o dono, o mais antigo primeiro. */
   waitingYou?: string[];
 }
@@ -1255,6 +1261,41 @@ export const terminalRun = <R extends Pick<Run, "terminal" | "status" | "nodes">
   runs: readonly R[],
   nodeId: string,
 ): R | null => runs.find((r) => terminalLive(r, nodeId)) ?? null;
+
+/**
+ * Quadro GavetasOrbit O2: os Terminais ao vivo que abriram com valores que
+ * mudaram depois (um chip por nó) e as variáveis mudadas (o ↻ na linha). A
+ * lista vem pronta do core (`Run.staleVars`); aqui só junta os runs.
+ */
+export function staleTerminals(runs: readonly Run[]): { nodes: string[]; vars: string[] } {
+  const nodes: string[] = [];
+  const vars = new Set<string>();
+  for (const r of runs) {
+    if (!r.terminal || !terminalLive(r, r.terminal) || !r.staleVars?.length) continue;
+    nodes.push(r.terminal);
+    for (const v of r.staleVars) vars.add(v);
+  }
+  return { nodes, vars: [...vars] };
+}
+
+/** As variáveis que mudaram desde que o Terminal `nodeId` abriu (o chip "↻ variáveis"). */
+export const terminalStaleVars = (runs: readonly Run[], nodeId: string): string[] =>
+  terminalRun(runs, nodeId)?.staleVars ?? [];
+
+/** As gavetas do Orbit (Variáveis, Integrações, Papéis): uma por vez. */
+export type OrbitDrawer =
+  | { kind: "vars" }
+  | { kind: "ints" }
+  | { kind: "roles"; start: { newName?: string; assignTo?: string } };
+
+/** O botão da faixa: abre a gaveta trocando a de cima, ou fecha a dele. */
+export function toggleDrawer(
+  current: OrbitDrawer | null,
+  kind: OrbitDrawer["kind"],
+): OrbitDrawer | null {
+  if (current?.kind === kind) return null;
+  return kind === "roles" ? { kind, start: {} } : { kind };
+}
 
 /** O agente com as ferramentas do Orbit no shell do Terminal `nodeId` (ver `NodeRun.hostedAgent`). */
 export const hostedAgentOf = (runs: readonly Run[], nodeId: string): Runner | null =>

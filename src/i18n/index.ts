@@ -2002,6 +2002,11 @@ const resources = {
       orbitVarValue: "valor",
       orbitVarAdd: "Adicionar variável",
       orbitVarRemove: "Remover variável",
+      orbitVarsReapply:
+        "Terminais abertos usam os valores de quando abriram. Pare (■) e abra de novo para aplicar.",
+      orbitVarChanged: "Mudou desde que os terminais abriram",
+      orbitStaleVars: "variáveis",
+      orbitStaleVarsHint: "Variáveis mudaram desde que abriu",
       orbitIntSubtitle: "scripts que viram nós do harness",
       orbitIntClose: "Fechar integrações",
       orbitIntList: "Lista de integrações",
@@ -4622,6 +4627,11 @@ const resources = {
       orbitVarValue: "value",
       orbitVarAdd: "Add variable",
       orbitVarRemove: "Remove variable",
+      orbitVarsReapply:
+        "Open terminals use the values they opened with. Stop (■) and open them again to apply.",
+      orbitVarChanged: "Changed since the terminals opened",
+      orbitStaleVars: "variables",
+      orbitStaleVarsHint: "Variables changed since it opened",
       orbitIntSubtitle: "scripts that become harness nodes",
       orbitIntClose: "Close integrations",
       orbitIntList: "Integration list",

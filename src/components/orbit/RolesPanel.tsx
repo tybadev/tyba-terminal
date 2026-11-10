@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { Copy, IdentificationBadge, Plus, Trash, Warning, X } from "@phosphor-icons/react";
 
 import { Button } from "@/components/ui/button";
+import { LINE_B } from "@/components/plate";
 import {
   MAX_ROLE_INSTRUCTIONS_CHARS,
   MAX_ROLE_NAME_CHARS,
@@ -17,6 +18,7 @@ import {
   type Role,
 } from "@/lib/orbit";
 import { ConfirmDelete } from "./ConfirmDelete";
+import { DRAWER_WIDE, LINE_R } from "./drawer";
 
 /** O papel em edição e, se já gravado, o nome com que está no banco. */
 interface Draft {
@@ -127,7 +129,7 @@ export function RolesPanel({
   };
 
   const item =
-    "flex flex-col gap-[5px] rounded-[7px] border border-transparent px-2.5 py-2 text-left text-[12px] leading-4 text-tyba-text hover:bg-tyba-raised aria-[current=true]:border-tyba-border-strong aria-[current=true]:bg-tyba-raised";
+    "flex flex-col gap-[5px] rounded-[7px] border border-transparent px-2.5 py-2 text-left text-[12px] leading-4 text-tyba-text hover:bg-tyba-raised aria-[current=true]:bg-[var(--tyba-glass-active)] aria-[current=true]:bg-[image:var(--tyba-pill-sheen)] aria-[current=true]:shadow-[var(--tyba-pill-on)]";
   const count = [...(draft?.role.instructions ?? "")].length;
   const used = draft?.savedName ? usage(draft.savedName) : { nodes: 0, graphs: 0 };
 
@@ -140,9 +142,9 @@ export function RolesPanel({
       onKeyDown={(e) => {
         if (e.key === "Escape") onClose();
       }}
-      className="absolute top-0 right-0 bottom-0 z-[11] flex w-[580px] max-w-full flex-col border-l border-tyba-border-strong bg-tyba-surface font-mono shadow-[-30px_0_60px_rgba(0,0,0,0.55)]"
+      className={`${DRAWER_WIDE} font-mono`}
     >
-      <div className="flex h-14 shrink-0 items-center gap-3 border-b border-tyba-border pr-2.5 pl-5">
+      <div className={`flex h-14 shrink-0 items-center gap-3 pr-2.5 pl-5 ${LINE_B}`}>
         <span className="flex size-6 shrink-0 items-center justify-center rounded-[6px] bg-tyba-violet/15 text-tyba-violet">
           <IdentificationBadge size={14} weight="bold" />
         </span>
@@ -164,7 +166,7 @@ export function RolesPanel({
       <div className="flex min-h-0 flex-1">
         <nav
           aria-label={t("orbitRolesList")}
-          className="flex w-44 shrink-0 flex-col gap-[3px] overflow-y-auto border-r border-tyba-border px-2 py-3"
+          className={`flex w-44 shrink-0 flex-col gap-[3px] overflow-y-auto px-2 py-3 ${LINE_R}`}
         >
           <span className="px-2.5 pb-1 text-[10px] tracking-[0.08em] text-tyba-text-faint uppercase">
             {t("orbitIntLibrary")}

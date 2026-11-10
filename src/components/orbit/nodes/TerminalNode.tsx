@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Terminal } from "@phosphor-icons/react";
+import { ArrowClockwise, Terminal } from "@phosphor-icons/react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 
 import { OpenAIIcon } from "@/components/icons/OpenAIIcon";
@@ -11,6 +11,7 @@ import {
   shownSession,
   shortDir,
   terminalRun,
+  terminalStaleVars,
   type NodeKind,
 } from "@/lib/orbit";
 import { NodeDir, NodeFrame, useOrbit, type OrbitFlowNode } from "./NodeFrame";
@@ -37,6 +38,9 @@ export function TerminalNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
   // O claude/codex digitado no shell, com as ferramentas do Orbit (quadro
   // OrbitTerminalTyba, B): o nome na cápsula e o anel trabalhando.
   const hostedAgent = open ? hostedAgentOf(runs, id) : null;
+  // Quadro GavetasOrbit O2: variável mudou depois que o shell abriu (o core
+  // compara); ele segue com o valor de antes até o dono parar e abrir de novo.
+  const staleVars = terminalStaleVars(runs, id);
   // Trava o Abrir até o core responder: sem dois cliques abrindo dois shells.
   const [opening, setOpening] = useState(false);
   const openNow = () => {
@@ -56,6 +60,15 @@ export function TerminalNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
       status={
         open ? (
           <>
+            {staleVars.length > 0 && (
+              <span
+                title={`${t("orbitStaleVarsHint")}: ${staleVars.join(", ")}`}
+                className="inline-flex h-5 shrink-0 items-center gap-1 rounded-full px-[7px] text-[10.5px] whitespace-nowrap text-tyba-amber shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--tyba-amber)_45%,transparent)]"
+              >
+                <ArrowClockwise size={11} />
+                {t("orbitStaleVars")}
+              </span>
+            )}
             {hostedAgent === "claude" && (
               <span className="shrink-0 text-[11.5px] leading-[20px] text-tyba-amber">✳ claude</span>
             )}
