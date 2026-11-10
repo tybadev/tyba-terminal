@@ -54,6 +54,9 @@ rustix = { version = "1", features = ["fs"] }
 # um só), e as partes do WebKit/AppKit que ele não expõe (delegate de UI,
 # monitor de eventos, print).
 [target.'cfg(target_os = "macos")'.dependencies]
+# Variável secreta do Orbit no Keychain (`orbit::secret`); já vinha no
+# lockfile pelo `rustls-platform-verifier`.
+security-framework = "3"
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSData", "NSString", "NSArray", "NSURL", "NSURLRequest", "NSError", "NSGeometry", "NSProcessInfo", "NSValue", "NSDictionary"] }
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSResponder", "NSImage", "NSDockTile", "NSView", "NSWindow", "NSEvent", "NSOpenPanel", "NSSavePanel", "NSPanel", "NSBitmapImageRep", "NSImageRep", "NSGraphics", "block2"] }

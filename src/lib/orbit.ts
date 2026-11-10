@@ -247,6 +247,8 @@ export interface Graph {
   nodes: OrbitNode[];
   edges: OrbitEdge[];
   variables: Record<string, string>;
+  /** Nomes de `variables` secretos: o valor vive no Keychain e chega vazio aqui. */
+  secrets?: string[];
 }
 
 export type Trigger = { type: "onInput"; kind: EdgeKind } | { type: "manual" };
@@ -650,7 +652,7 @@ export interface FlowEdgeLike {
  * resto do nó sai do `data`.
  */
 export function fromFlow(
-  base: Pick<Graph, "id" | "name" | "dir" | "variables">,
+  base: Pick<Graph, "id" | "name" | "dir" | "variables" | "secrets">,
   nodes: readonly Pick<FlowNode, "id" | "position" | "width" | "height" | "data">[],
   edges: readonly FlowEdgeLike[],
 ): Graph {
@@ -659,6 +661,7 @@ export function fromFlow(
     name: base.name,
     dir: base.dir,
     variables: { ...base.variables },
+    ...(base.secrets ? { secrets: [...base.secrets] } : {}),
     nodes: nodes.map((n) => ({
       ...n.data.node,
       id: n.id,
@@ -1617,6 +1620,17 @@ export function concurrentAgents(
 /** "Testar com a última entrada": roda só o script com o `in/` da última execução do nó. */
 export const integrationTest = (integrationId: string, graphId: string, nodeId: string) =>
   invoke<Run>("orbit_integration_test", { integrationId, graphId, nodeId });
+
+/** O Keychain existe neste sistema (só macOS por enquanto). */
+export const secretsSupported = () => invoke<boolean>("orbit_secrets_supported");
+
+/** Guarda o valor da secreta no Keychain. O valor só vai; nunca volta por aqui. */
+export const setSecret = (graphId: string, name: string, value: string) =>
+  invoke<void>("orbit_secret_set", { graphId, name, value });
+
+/** O valor da secreta para o olho, enquanto pressionado. Quem chama descarta. */
+export const revealSecret = (graphId: string, name: string) =>
+  invoke<string | null>("orbit_secret_reveal", { graphId, name });
 
 /** Por que o nome não vira `$NOME` nos terminais do grafo (regra do core). */
 export type VarEnvProblem = "invalid" | "reserved" | null;

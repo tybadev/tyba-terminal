@@ -1638,6 +1638,7 @@ mod tests {
                 },
             ],
             variables: Default::default(),
+            secrets: Default::default(),
         };
         assert_eq!(
             file_roots(&graph, "b"),
@@ -1938,6 +1939,7 @@ mod tests {
             nodes,
             edges: vec![],
             variables: Default::default(),
+            secrets: Default::default(),
         };
         let old = graph(vec![browser("a"), browser("b"), note("n")]);
         let new = graph(vec![browser("b")]);

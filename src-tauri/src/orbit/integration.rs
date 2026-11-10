@@ -132,6 +132,7 @@ mod tests {
             ],
             edges: Vec::new(),
             variables: BTreeMap::new(),
+            secrets: Default::default(),
         }
     }
 

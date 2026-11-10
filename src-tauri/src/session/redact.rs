@@ -1,5 +1,8 @@
 use std::borrow::Cow;
+use std::collections::BTreeMap;
 use std::sync::LazyLock;
+
+use parking_lot::RwLock;
 
 use regex::Regex;
 
@@ -99,7 +102,60 @@ static KEY_END_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(KEY_END).unwrap
 static KEY_BODY_LINE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(&format!(r"^\s*(?:[A-Za-z0-9+/=]*|{KEY_HEADER}.*)\s*$")).unwrap());
 
+/// Valores literais a redigir além dos padrões: as variáveis secretas do
+/// Orbit vigentes ([`crate::orbit::secret`]), por chave de quem registrou.
+static LITERALS: LazyLock<RwLock<BTreeMap<String, String>>> = LazyLock::new(Default::default);
+
+/// Literal mais curto que isto não é redigido: "1" ou "ok" virariam marca em
+/// toda saída.
+pub const MIN_LITERAL_CHARS: usize = 4;
+
+/// Passa a redigir `value` (ou para, se for curto demais), sob `key`.
+pub fn set_literal(key: &str, value: &str) {
+    let mut literals = LITERALS.write();
+    if value.chars().count() < MIN_LITERAL_CHARS {
+        literals.remove(key);
+    } else {
+        literals.insert(key.to_string(), value.to_string());
+    }
+}
+
+/// Para de redigir o literal de `key`.
+pub fn forget_literal(key: &str) {
+    LITERALS.write().remove(key);
+}
+
+/// Os literais vigentes no texto, o mais longo primeiro (um literal que
+/// contém outro sai inteiro). `Borrowed` quando nenhum aparece.
+fn redact_literals(input: &str) -> Cow<'_, str> {
+    let literals = LITERALS.read();
+    if literals.is_empty() {
+        return Cow::Borrowed(input);
+    }
+    let mut found: Vec<&str> = literals
+        .values()
+        .map(String::as_str)
+        .filter(|v| input.contains(v))
+        .collect();
+    if found.is_empty() {
+        return Cow::Borrowed(input);
+    }
+    found.sort_by_key(|v| std::cmp::Reverse(v.len()));
+    let mut out = input.to_string();
+    for v in found {
+        out = out.replace(v, REDACTION_MARK);
+    }
+    Cow::Owned(out)
+}
+
 pub fn redact(input: &str) -> Cow<'_, str> {
+    match redact_literals(input) {
+        Cow::Borrowed(s) => redact_patterns(s),
+        Cow::Owned(s) => Cow::Owned(redact_patterns(&s).into_owned()),
+    }
+}
+
+fn redact_patterns(input: &str) -> Cow<'_, str> {
     // O bloco de chave vira UMA marca seguida das quebras que ele tinha: o
     // texto mantém o número de linhas (`error_line` do CI, export de logs).
     let mark = |c: &regex::Captures| {
@@ -118,7 +174,8 @@ pub fn redact(input: &str) -> Cow<'_, str> {
 
 /// Mesmos padrões do [`redact`], como pergunta: o texto carrega um segredo?
 pub fn contains_secret(input: &str) -> bool {
-    SECRETS.is_match(input)
+    matches!(redact_literals(input), Cow::Owned(_))
+        || SECRETS.is_match(input)
         || URL_PASSWORD
             .captures_iter(input)
             .any(|c| c.get(2).is_none())
@@ -184,6 +241,37 @@ impl LineRedactor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn redacts_registered_literals_until_forgotten() {
+        // Fixtures sintéticas e únicas: o registro é global aos testes.
+        let slot = "teste:redacts_registered_literals";
+        let value = "fixture-literal-Zq81Ww";
+        let line = format!("curl -H 'Authorization: Bearer {value}' http://x");
+        assert_eq!(redact(&line), line);
+        set_literal(slot, value);
+        let out = redact(&line).into_owned();
+        assert!(!out.contains(value), "{out}");
+        assert!(out.contains(REDACTION_MARK), "{out}");
+        assert!(contains_secret(&line));
+        let mut lines = LineRedactor::default();
+        assert!(!lines.line(&line).contains(value));
+        forget_literal(slot);
+        assert_eq!(redact(&line), line);
+    }
+
+    #[test]
+    fn short_literal_is_not_registered() {
+        let slot = "teste:short_literal";
+        set_literal(slot, "xyz");
+        assert_eq!(redact("xyz abc"), "xyz abc");
+        set_literal(slot, "fixture-short-to-long-Hh2");
+        set_literal(slot, "xy");
+        assert_eq!(
+            redact("fixture-short-to-long-Hh2"),
+            "fixture-short-to-long-Hh2"
+        );
+    }
 
     #[test]
     fn redacts_forge_tokens() {
