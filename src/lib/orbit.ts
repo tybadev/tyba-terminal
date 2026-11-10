@@ -1618,6 +1618,13 @@ export function concurrentAgents(
 export const integrationTest = (integrationId: string, graphId: string, nodeId: string) =>
   invoke<Run>("orbit_integration_test", { integrationId, graphId, nodeId });
 
+/** Por que o nome não vira `$NOME` nos terminais do grafo (regra do core). */
+export type VarEnvProblem = "invalid" | "reserved" | null;
+
+/** Um aviso por nome, na ordem dos nomes. */
+export const varEnvProblems = (names: string[]) =>
+  invoke<VarEnvProblem[]>("orbit_var_env_problems", { names });
+
 /** Campo que saiu no arquivo com segredo literal (o core não reescreve o texto). */
 export interface SecretField {
   owner: "node" | "integration" | "role";

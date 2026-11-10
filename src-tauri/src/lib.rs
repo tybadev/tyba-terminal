@@ -9397,6 +9397,22 @@ fn orbit_service_logs_retain(
     logs.0.retain(&container_ids.into_iter().collect());
 }
 
+/// Por que cada nome de variável do grafo não vira `$NOME` nos terminais do
+/// grafo (`"invalid"`, `"reserved"`), ou `None` quando vira. A regra é a do
+/// core ([`orbit::env::env_name_problem`]); o painel só mostra o aviso.
+#[tauri::command]
+fn orbit_var_env_problems(names: Vec<String>) -> Vec<Option<&'static str>> {
+    names
+        .iter()
+        .map(|n| {
+            orbit::env::env_name_problem(n).map(|p| match p {
+                orbit::env::EnvNameProblem::Invalid => "invalid",
+                orbit::env::EnvNameProblem::Reserved => "reserved",
+            })
+        })
+        .collect()
+}
+
 /// Navegador nativo do nó (Fase 5): o nó existe neste sistema? Sem ele, o
 /// front segue no iframe.
 #[tauri::command]
@@ -10705,6 +10721,7 @@ pub fn run() {
             orbit_terminal_close,
             orbit_service_logs_start,
             orbit_browser_native,
+            orbit_var_env_problems,
             orbit_browser_navigate,
             orbit_browser_view,
             orbit_browser_back,

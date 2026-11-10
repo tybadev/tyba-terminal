@@ -436,18 +436,21 @@ impl SessionManager {
         opts: CreateSessionOpts,
         on_exit: impl FnOnce(SessionId) + Send + 'static,
     ) -> Result<Session, PtyError> {
-        self.create_shell_session_as(app, pty_pool, opts, SessionOwner::Grid, on_exit)
+        self.create_shell_session_as(app, pty_pool, opts, SessionOwner::Grid, &[], on_exit)
     }
 
     /// [`Self::create_shell_session`] com o dono da sessão: o nó Terminal do
     /// Orbit abre o mesmo shell com `SessionOwner::Orbit` (fora da grade e do
-    /// banco).
+    /// banco) e `extra_env` (as variáveis do grafo, já filtradas por
+    /// [`crate::orbit::env::graph_env`]); a aba Terminal passa vazio.
+    #[allow(clippy::too_many_arguments)]
     pub fn create_shell_session_as(
         &self,
         app: AppHandle,
         pty_pool: &SharedPtyPool,
         mut opts: CreateSessionOpts,
         owner: SessionOwner,
+        extra_env: &[(String, String)],
         on_exit: impl FnOnce(SessionId) + Send + 'static,
     ) -> Result<Session, PtyError> {
         let id = Uuid::new_v4();
@@ -483,6 +486,11 @@ impl SessionManager {
         let mut cmd = CommandBuilder::new(&program);
         for arg in &pre_args {
             cmd.arg(arg);
+        }
+        // Antes do env do TYBA abaixo: nome reservado já ficou de fora, e o
+        // que o TYBA põe depois sempre vale.
+        for (k, v) in extra_env {
+            cmd.env(k, v);
         }
 
         let bash_rc = if cfg!(unix) && label == "bash" && integration {
