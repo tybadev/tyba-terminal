@@ -10968,6 +10968,42 @@ pub fn run() {
         });
 }
 
+/// Todo `git` que a suíte dispara — helper de teste ou builder de produção
+/// (`worktree::git_in*`) — lê só a config do repositório temporário. Sem isto
+/// a config global do dono vaza para os testes: `commit.gpgsign=true` com
+/// assinatura pelo 1Password faz o commit depender de um agente externo
+/// (falha com "agent returned an error" e pode abrir prompt no meio do
+/// `cargo test`). Roda antes do `main` do harness, sem thread nenhuma ainda,
+/// e só existe no binário de teste: o app real segue com a config do usuário.
+#[cfg(test)]
+#[ctor::ctor]
+fn hermetic_git_config() {
+    #[cfg(windows)]
+    const NULL: &str = "NUL";
+    #[cfg(not(windows))]
+    const NULL: &str = "/dev/null";
+    std::env::set_var("GIT_CONFIG_GLOBAL", NULL);
+    std::env::set_var("GIT_CONFIG_NOSYSTEM", "1");
+}
+
+#[cfg(test)]
+mod hermetic_git_tests {
+    #[test]
+    fn git_of_the_suite_sees_no_global_or_system_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = crate::worktree::git_in(dir.path())
+            .args(["config", "--list", "--show-scope"])
+            .output()
+            .expect("git config");
+        let listed = String::from_utf8_lossy(&out.stdout);
+        let leaked: Vec<&str> = listed
+            .lines()
+            .filter(|l| l.starts_with("global") || l.starts_with("system"))
+            .collect();
+        assert!(leaked.is_empty(), "config do dono vazou: {leaked:?}");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
