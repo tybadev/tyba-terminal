@@ -5,7 +5,9 @@ import {
   useReducer,
   useRef,
   useState,
+  type CSSProperties,
   type DragEvent,
+  type ReactElement,
 } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
@@ -17,6 +19,7 @@ import {
   Check,
   ClockCounterClockwise,
   CornersOut,
+  DotsThree,
   Eye,
   FileArrowDown,
   FileArrowUp,
@@ -43,8 +46,14 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { Shortcut } from "@/components/ui/kbd";
+import { cn } from "@/lib/utils";
 import { PLATE, PLATE_ACRYLIC, PLATE_LINE } from "@/components/plate";
 import {
   EMPTY_RUN_VIEW,
@@ -128,6 +137,7 @@ import { RunTimeline } from "./RunTimeline";
 import { TerminalFolderPrompt } from "./TerminalFolderPrompt";
 import { CanvasProvider, STATUS_TONE, type OrbitFlowNode } from "./nodes/NodeFrame";
 import { DRAWER } from "./drawer";
+import { useStripLevel } from "./useStripLevel";
 import { SubagentMark, subagentTone, useSubagentTime } from "./nodes/SubagentNode";
 import { useNodeSubagents } from "./useNodeSubagents";
 import { SubagentTranscript } from "@/components/SubagentViewer";
@@ -170,6 +180,38 @@ const tbtn =
   "inline-flex h-7 items-center gap-1.5 whitespace-nowrap rounded-[6px] border border-transparent px-2.5 font-mono text-[12px] text-tyba-text-muted hover:bg-tyba-raised hover:text-tyba-text disabled:cursor-not-allowed disabled:text-tyba-text-ghost disabled:hover:bg-transparent aria-pressed:border-tyba-border-strong aria-pressed:bg-tyba-raised aria-pressed:text-tyba-text";
 
 const sep = <span aria-hidden className="mx-2 h-5 w-px bg-tyba-border-strong" />;
+
+/** Botão da faixa só ícone: padding 7, como a engrenagem (quadro FaixaOrbit). */
+const ico = (on: boolean, base = tbtn) => (on ? cn(base, "px-[7px]") : base);
+
+/**
+ * Botão da faixa que perde o rótulo num degrau (quadro FaixaOrbit F4): o
+ * rótulo vira o tooltip do TYBA, embaixo do botão. Fora do modo ícone o
+ * tooltip não aparece — o rótulo está à vista.
+ */
+function StripTip({
+  label,
+  combo,
+  on,
+  children,
+}: {
+  label: string;
+  combo?: string;
+  on: boolean;
+  children: ReactElement;
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>{children}</TooltipTrigger>
+      {on && (
+        <TooltipContent side="bottom" sideOffset={8} className="flex items-center gap-2">
+          {label}
+          {combo && <Shortcut combo={combo} />}
+        </TooltipContent>
+      )}
+    </Tooltip>
+  );
+}
 
 /**
  * O Orbit em tela cheia (quadro OrbitHarness): barra do grafo, canvas e,
@@ -249,6 +291,13 @@ function OrbitInner({
   }));
   const [graphs, setGraphs] = useState<Graph[]>([]);
   const nameInput = useRef<HTMLInputElement>(null);
+  // Quadro FaixaOrbit: degrau da faixa pela largura da linha dela.
+  const stripRow = useRef<HTMLDivElement>(null);
+  const stripLeft = useRef<HTMLDivElement>(null);
+  const stripRight = useRef<HTMLDivElement>(null);
+  const { level: strip, height: stripHeight } = useStripLevel(stripRow, stripLeft, stripRight);
+  // O nome do grafo trunca do degrau 2 em diante, menos com o foco nele.
+  const [nameFocus, setNameFocus] = useState(false);
   const renaming = useRef(false);
 
   const [meta, setMeta] = useState<Pick<
@@ -1225,6 +1274,36 @@ function OrbitInner({
     // `switchTo` é refeito a cada render e fica fora; `want` diz o que já foi pedido.
   }, [goTo, meta, runView.runs, want.id, fitView]);
 
+  // As execuções, no menu do botão e no submenu do ⋯ (degrau 3).
+  const runItems = runView.runs.map((r) => (
+    <DropdownMenuItem
+      key={r.id}
+      className="gap-2 font-mono text-xs"
+      onSelect={() => dispatchRun({ type: "select", runId: r.id })}
+    >
+      <i className={`size-[7px] shrink-0 rounded-full ${STATUS_TONE[runShownStatus(r)].dot}`} />
+      <span className={r.id === run?.id ? "text-tyba-text" : "text-tyba-text-muted"}>
+        #{runNumber(runView, r.id)}
+      </span>
+      <span className="text-tyba-text-faint">
+        {new Date(r.startedAt).toLocaleString(i18n.language, {
+          day: "2-digit",
+          month: "2-digit",
+          hour: "2-digit",
+          minute: "2-digit",
+        })}
+      </span>
+      <span className="ml-auto text-tyba-text-faint">
+        {t(runStatusKey(r))} · {formatDuration(runElapsed(r, now))}
+      </span>
+    </DropdownMenuItem>
+  ));
+  const runBadge = latest && (
+    <span className="rounded-[4px] bg-tyba-raised px-[5px] text-[10.5px] leading-4 text-tyba-text-muted">
+      #{runNumber(runView, latest.id)}
+    </span>
+  );
+
   return (
     <CanvasProvider actions={actions} state={ctx} now={now}>
       <div data-graph-screen className="flex min-w-0 flex-1 flex-col bg-tyba-bg font-mono">
@@ -1237,7 +1316,11 @@ function OrbitInner({
           }}
           onDrop={dropIntegration}
         >
-          <div className="relative flex min-w-0 flex-1">
+          <div
+            className="relative flex min-w-0 flex-1"
+            // Gavetas 8 abaixo da faixa, que cresce quando a placa da direita desce.
+            style={{ "--orbit-strip-bottom": `${12 + stripHeight + 8}px` } as CSSProperties}
+          >
             {/* Só monta com o grafo carregado: o `fitView` inicial enquadra os nós dele. */}
             {meta ? (
               <OrbitCanvas
@@ -1268,22 +1351,33 @@ function OrbitInner({
             {/* A paleta flutua em vidro por cima do canvas (visual-vidro, 15ª
                 rodada): o canvas passa por baixo e recebe pan/zoom em toda a
                 área; só as placas capturam o clique. */}
+            {/* Quadro FaixaOrbit: os rótulos saem em degraus antes de as placas
+                se sobreporem; abaixo do último, a placa da direita desce. */}
             <div
+              ref={stripRow}
               role="toolbar"
               aria-label={meta?.name || t("orbitGraphUntitled")}
-              className="pointer-events-none absolute top-3 right-3 left-3 z-[5] flex items-start justify-between gap-3"
+              className="pointer-events-none absolute top-3 right-3 left-3 z-[5] flex flex-wrap items-start justify-between gap-x-3 gap-y-2"
             >
               <div
-                className={`pointer-events-auto flex h-11 min-w-0 items-center gap-1.5 px-2.5 ${PLATE} ${PLATE_LINE} ${PLATE_ACRYLIC}`}
+                ref={stripLeft}
+                className={`pointer-events-auto flex h-11 items-center gap-1.5 px-2.5 ${PLATE} ${PLATE_LINE} ${PLATE_ACRYLIC}`}
               >
                 {onBackToTerminal && (
                   <>
-                    <button type="button" onClick={onBackToTerminal} className={tbtn}>
-                      <span aria-hidden className="text-tyba-green">
-                        ❯
-                      </span>
-                      {t("terminalView")}
-                    </button>
+                    <StripTip label={t("terminalView")} on={strip >= 4}>
+                      <button
+                        type="button"
+                        aria-label={strip >= 4 ? t("terminalView") : undefined}
+                        onClick={onBackToTerminal}
+                        className={ico(strip >= 4)}
+                      >
+                        <span aria-hidden className="text-tyba-green">
+                          ❯
+                        </span>
+                        {strip < 4 && t("terminalView")}
+                      </button>
+                    </StripTip>
                     {sep}
                   </>
                 )}
@@ -1300,8 +1394,15 @@ function OrbitInner({
                     const name = e.target.value;
                     setMeta((m) => (m ? { ...m, name } : m));
                   }}
-                  style={{ width: `${Math.max(12, (meta?.name.length ?? 12) + 1)}ch` }}
-                  className="bg-transparent text-[14px] font-medium text-tyba-text outline-none placeholder:text-tyba-text-ghost"
+                  onFocus={() => setNameFocus(true)}
+                  onBlur={() => setNameFocus(false)}
+                  style={{
+                    width: `${Math.min(
+                      Math.max(12, (meta?.name.length ?? 12) + 1),
+                      strip >= 2 && !nameFocus ? 15 : Infinity,
+                    )}ch`,
+                  }}
+                  className="bg-transparent text-[14px] font-medium text-ellipsis text-tyba-text outline-none placeholder:text-tyba-text-ghost"
                 />
                 <DropdownMenu
                   onOpenChange={(open) => {
@@ -1377,107 +1478,175 @@ function OrbitInner({
                   </span>
                 )}
                 {sep}
-                <button
-                  type="button"
-                  disabled={!meta}
-                  onClick={() => addTerminal(null)}
-                  className={`${tbtn} rounded-full enabled:border-tyba-green/30 enabled:bg-tyba-green-tint enabled:text-tyba-green enabled:hover:border-tyba-green/60`}
-                >
-                  <Plus size={13} weight="bold" />
-                  {t("orbitAddTerminal")}
-                </button>
+                <StripTip label={t("orbitAddTerminal")} on={strip >= 2}>
+                  <button
+                    type="button"
+                    aria-label={strip >= 2 ? t("orbitAddTerminal") : undefined}
+                    disabled={!meta}
+                    onClick={() => addTerminal(null)}
+                    className={ico(
+                      strip >= 2,
+                      `${tbtn} rounded-full enabled:border-tyba-green/30 enabled:bg-tyba-green-tint enabled:text-tyba-green enabled:hover:border-tyba-green/60`,
+                    )}
+                  >
+                    <Plus size={13} weight="bold" />
+                    {strip < 2 && t("orbitAddTerminal")}
+                  </button>
+                </StripTip>
                 {/* Com Terminal aberto o ▶ fica clicável: o core recusa e diz por quê. */}
-                <button
-                  type="button"
-                  disabled={
-                    !meta || nodes.length === 0 || (running !== null && !isLiveRun(running)) || starting
-                  }
-                  onClick={() => void start()}
-                  className={`${tbtn} enabled:border-tyba-green/45 enabled:bg-tyba-green-tint enabled:font-medium enabled:text-tyba-green enabled:hover:border-tyba-green enabled:hover:bg-tyba-green-tint`}
-                >
-                  <Play size={13} weight="fill" />
-                  {t("orbitRun")}
-                </button>
-                <button type="button" disabled={stoppable.length === 0} onClick={stop} className={tbtn}>
-                  <Stop size={13} weight="fill" />
-                  {t("orbitStop")}
-                </button>
+                <StripTip label={t("orbitRun")} on={strip >= 4}>
+                  <button
+                    type="button"
+                    aria-label={strip >= 4 ? t("orbitRun") : undefined}
+                    disabled={
+                      !meta || nodes.length === 0 || (running !== null && !isLiveRun(running)) || starting
+                    }
+                    onClick={() => void start()}
+                    className={ico(
+                      strip >= 4,
+                      `${tbtn} enabled:border-tyba-green/45 enabled:bg-tyba-green-tint enabled:font-medium enabled:text-tyba-green enabled:hover:border-tyba-green enabled:hover:bg-tyba-green-tint`,
+                    )}
+                  >
+                    <Play size={13} weight="fill" />
+                    {strip < 4 && t("orbitRun")}
+                  </button>
+                </StripTip>
+                <StripTip label={t("orbitStop")} on={strip >= 4}>
+                  <button
+                    type="button"
+                    aria-label={strip >= 4 ? t("orbitStop") : undefined}
+                    disabled={stoppable.length === 0}
+                    onClick={stop}
+                    className={ico(strip >= 4)}
+                  >
+                    <Stop size={13} weight="fill" />
+                    {strip < 4 && t("orbitStop")}
+                  </button>
+                </StripTip>
                 {sep}
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <button type="button" disabled={runView.runs.length === 0} className={tbtn}>
-                      <ClockCounterClockwise size={13} />
-                      {t("orbitRuns")}
-                      {latest && (
-                        <span className="rounded-[4px] bg-tyba-raised px-[5px] text-[10.5px] leading-4 text-tyba-text-muted">
-                          #{runNumber(runView, latest.id)}
-                        </span>
-                      )}
-                    </button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="start" className="w-72">
-                    {runView.runs.map((r) => (
+                {strip >= 3 ? (
+                  // Degrau 3: os quatro painéis no menu ⋯, aceso com a gaveta aberta.
+                  <DropdownMenu>
+                    <StripTip label={t("orbitPanels")} on>
+                      <DropdownMenuTrigger asChild>
+                        <button
+                          type="button"
+                          aria-label={t("orbitPanels")}
+                          className={cn(
+                            ico(true),
+                            "data-[state=open]:border-tyba-border-strong data-[state=open]:bg-tyba-raised data-[state=open]:text-tyba-text",
+                            drawerOpen && "border-tyba-border-strong bg-tyba-raised text-tyba-text",
+                          )}
+                        >
+                          <DotsThree size={13} weight="bold" />
+                        </button>
+                      </DropdownMenuTrigger>
+                    </StripTip>
+                    <DropdownMenuContent align="start" className="w-56">
+                      <DropdownMenuSub>
+                        <DropdownMenuSubTrigger
+                          disabled={runView.runs.length === 0}
+                          className="gap-2 text-xs [&>svg:last-child]:ml-0"
+                        >
+                          <ClockCounterClockwise size={13} />
+                          {t("orbitRuns")}
+                          <span className="ml-auto">{runBadge}</span>
+                        </DropdownMenuSubTrigger>
+                        <DropdownMenuSubContent className="w-72">{runItems}</DropdownMenuSubContent>
+                      </DropdownMenuSub>
                       <DropdownMenuItem
-                        key={r.id}
-                        className="gap-2 font-mono text-xs"
-                        onSelect={() => dispatchRun({ type: "select", runId: r.id })}
+                        className="gap-2 text-xs"
+                        onSelect={() => setDrawer((d) => toggleDrawer(d, "vars"))}
                       >
-                        <i
-                          className={`size-[7px] shrink-0 rounded-full ${
-                            STATUS_TONE[runShownStatus(r)].dot
-                          }`}
-                        />
-                        <span className={r.id === run?.id ? "text-tyba-text" : "text-tyba-text-muted"}>
-                          #{runNumber(runView, r.id)}
-                        </span>
-                        <span className="text-tyba-text-faint">
-                          {new Date(r.startedAt).toLocaleString(i18n.language, {
-                            day: "2-digit",
-                            month: "2-digit",
-                            hour: "2-digit",
-                            minute: "2-digit",
-                          })}
-                        </span>
-                        <span className="ml-auto text-tyba-text-faint">
-                          {t(runStatusKey(r))} · {formatDuration(runElapsed(r, now))}
-                        </span>
+                        <BracketsCurly size={13} />
+                        {t("orbitVariables")}
+                        {showVars && <Check size={13} className="ml-auto" />}
                       </DropdownMenuItem>
-                    ))}
-                  </DropdownMenuContent>
-                </DropdownMenu>
-                <button
-                  type="button"
-                  aria-pressed={showVars}
-                  onClick={() => setDrawer((d) => toggleDrawer(d, "vars"))}
-                  className={tbtn}
-                >
-                  <BracketsCurly size={13} />
-                  {t("orbitVariables")}
-                </button>
-                <button
-                  type="button"
-                  disabled={!meta}
-                  aria-pressed={showInts}
-                  aria-expanded={showInts}
-                  aria-controls="orbit-integrations"
-                  onClick={() => setDrawer((d) => toggleDrawer(d, "ints"))}
-                  className={tbtn}
-                >
-                  <PlugsConnected size={13} />
-                  {t("orbitIntegrations")}
-                </button>
-                <button
-                  type="button"
-                  disabled={!meta}
-                  aria-pressed={!!showRoles}
-                  aria-expanded={!!showRoles}
-                  aria-controls="orbit-roles"
-                  onClick={() => setDrawer((d) => toggleDrawer(d, "roles"))}
-                  className={tbtn}
-                >
-                  <IdentificationBadge size={13} />
-                  {t("orbitRoles")}
-                </button>
+                      <DropdownMenuItem
+                        className="gap-2 text-xs"
+                        disabled={!meta}
+                        onSelect={() => setDrawer((d) => toggleDrawer(d, "ints"))}
+                      >
+                        <PlugsConnected size={13} />
+                        {t("orbitIntegrations")}
+                        {showInts && <Check size={13} className="ml-auto" />}
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        className="gap-2 text-xs"
+                        disabled={!meta}
+                        onSelect={() => setDrawer((d) => toggleDrawer(d, "roles"))}
+                      >
+                        <IdentificationBadge size={13} />
+                        {t("orbitRoles")}
+                        {!!showRoles && <Check size={13} className="ml-auto" />}
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                ) : (
+                  <>
+                    <DropdownMenu>
+                      <StripTip label={t("orbitRuns")} on={strip >= 1}>
+                        <DropdownMenuTrigger asChild>
+                          <button
+                            type="button"
+                            aria-label={strip >= 1 ? t("orbitRuns") : undefined}
+                            disabled={runView.runs.length === 0}
+                            className={ico(strip >= 1)}
+                          >
+                            <ClockCounterClockwise size={13} />
+                            {strip < 1 && t("orbitRuns")}
+                            {runBadge}
+                          </button>
+                        </DropdownMenuTrigger>
+                      </StripTip>
+                      <DropdownMenuContent align="start" className="w-72">
+                        {runItems}
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                    <StripTip label={t("orbitVariables")} on={strip >= 1}>
+                      <button
+                        type="button"
+                        aria-label={strip >= 1 ? t("orbitVariables") : undefined}
+                        aria-pressed={showVars}
+                        onClick={() => setDrawer((d) => toggleDrawer(d, "vars"))}
+                        className={ico(strip >= 1)}
+                      >
+                        <BracketsCurly size={13} />
+                        {strip < 1 && t("orbitVariables")}
+                      </button>
+                    </StripTip>
+                    <StripTip label={t("orbitIntegrations")} on={strip >= 1}>
+                      <button
+                        type="button"
+                        aria-label={strip >= 1 ? t("orbitIntegrations") : undefined}
+                        disabled={!meta}
+                        aria-pressed={showInts}
+                        aria-expanded={showInts}
+                        aria-controls="orbit-integrations"
+                        onClick={() => setDrawer((d) => toggleDrawer(d, "ints"))}
+                        className={ico(strip >= 1)}
+                      >
+                        <PlugsConnected size={13} />
+                        {strip < 1 && t("orbitIntegrations")}
+                      </button>
+                    </StripTip>
+                    <StripTip label={t("orbitRoles")} on={strip >= 1}>
+                      <button
+                        type="button"
+                        aria-label={strip >= 1 ? t("orbitRoles") : undefined}
+                        disabled={!meta}
+                        aria-pressed={!!showRoles}
+                        aria-expanded={!!showRoles}
+                        aria-controls="orbit-roles"
+                        onClick={() => setDrawer((d) => toggleDrawer(d, "roles"))}
+                        className={ico(strip >= 1)}
+                      >
+                        <IdentificationBadge size={13} />
+                        {strip < 1 && t("orbitRoles")}
+                      </button>
+                    </StripTip>
+                  </>
+                )}
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
                     <button
@@ -1503,7 +1672,8 @@ function OrbitInner({
                 </DropdownMenu>
               </div>
               <div
-                className={`pointer-events-auto flex h-11 shrink-0 items-center gap-1.5 px-2.5 ${PLATE} ${PLATE_LINE} ${PLATE_ACRYLIC}`}
+                ref={stripRight}
+                className={`pointer-events-auto ml-auto flex h-11 shrink-0 items-center gap-1.5 px-2.5 ${PLATE} ${PLATE_LINE} ${PLATE_ACRYLIC}`}
               >
                 <div
                   role="group"
@@ -1535,15 +1705,22 @@ function OrbitInner({
                     <MagnifyingGlassPlus size={13} />
                   </button>
                 </div>
-                <button
-                  type="button"
-                  title={`${t("orbitFit")} · ${mod}1`}
-                  onClick={() => void fitView({ padding: 0.15, maxZoom: 1, duration: 200 })}
-                  className={tbtn}
+                <StripTip
+                  label={t("orbitFit")}
+                  combo={`${IS_MAC ? "meta" : "ctrl"}+1`}
+                  on={strip >= 1}
                 >
-                  <CornersOut size={13} />
-                  {t("orbitFit")}
-                </button>
+                  <button
+                    type="button"
+                    aria-label={strip >= 1 ? t("orbitFit") : undefined}
+                    title={strip >= 1 ? undefined : `${t("orbitFit")} · ${mod}1`}
+                    onClick={() => void fitView({ padding: 0.15, maxZoom: 1, duration: 200 })}
+                    className={ico(strip >= 1)}
+                  >
+                    <CornersOut size={13} />
+                    {strip < 1 && t("orbitFit")}
+                  </button>
+                </StripTip>
                 <button
                   type="button"
                   aria-label={t("orbitMinimap")}
@@ -1836,7 +2013,7 @@ function VariablesPanel({
       onKeyDown={(e) => {
         if (e.key === "Escape") onClose();
       }}
-      className={`${DRAWER} max-h-[calc(100%-76px)] w-[400px] gap-2 p-3`}
+      className={`${DRAWER} max-h-[calc(100%-var(--orbit-strip-bottom,64px)-12px)] w-[400px] gap-2 p-3`}
     >
       <div className="flex items-center justify-between">
         <span className="text-[13px] font-medium text-tyba-text">{t("orbitVariables")}</span>
