@@ -1167,11 +1167,7 @@ impl SubagentTracker {
         let mut sessions = self.sessions.lock().expect("subagents lock");
         sessions
             .iter_mut()
-            .filter_map(|(id, entry)| {
-                entry
-                    .panel_close_due(now)
-                    .then(|| entry.drawer_state(*id))
-            })
+            .filter_map(|(id, entry)| entry.panel_close_due(now).then(|| entry.drawer_state(*id)))
             .collect()
     }
 
@@ -2409,7 +2405,10 @@ mod tests {
         tracker.mark_coordinated(session);
         assert!(tracker.auto_open_drawer(session), "a rodada abre a gaveta");
         assert!(tracker.drawer_state(session).open);
-        assert!(tracker.due_drawer_collapses(0).is_empty(), "rodando não recolhe");
+        assert!(
+            tracker.due_drawer_collapses(0).is_empty(),
+            "rodando não recolhe"
+        );
         tracker.on_subagent_stopped(handle, session, "a1".into(), None, None);
         (tracker, session)
     }
@@ -2424,7 +2423,10 @@ mod tests {
         let app = tauri::test::mock_app();
         let (tracker, session) = settled_auto_panel(app.handle());
 
-        assert!(tracker.due_drawer_collapses(1_000).is_empty(), "relógio começa");
+        assert!(
+            tracker.due_drawer_collapses(1_000).is_empty(),
+            "relógio começa"
+        );
         assert!(tracker
             .due_drawer_collapses(1_000 + PANEL_AUTO_CLOSE_MS - 1)
             .is_empty());
@@ -2581,11 +2583,17 @@ mod tests {
         assert!(!tracker.open_drawer(session).outcome_seen);
         tracker.collapse_drawer(session);
         tracker.on_subagent_stopped(handle, session, "a1".into(), None, None);
-        assert!(!tracker.drawer_state(session).outcome_seen, "pílula mantém o ✓");
+        assert!(
+            !tracker.drawer_state(session).outcome_seen,
+            "pílula mantém o ✓"
+        );
         assert!(tracker.open_drawer(session).outcome_seen);
 
         tracker.on_subagent_started(handle, session, "b2".into(), "reviewer".into(), None, None);
-        assert!(!tracker.drawer_state(session).outcome_seen, "rodada nova zera");
+        assert!(
+            !tracker.drawer_state(session).outcome_seen,
+            "rodada nova zera"
+        );
     }
 
     #[test]
