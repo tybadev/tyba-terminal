@@ -417,9 +417,13 @@ fn install_typed_ssh(app: &AppHandle, pty_pool: &SharedPtyPool) {
             on_detect: Box::new(move |detected| {
                 let state = app.state::<AppState>();
                 let hosts = state.store.load_hosts().unwrap_or_default();
-                if let Some(event) =
-                    crate::ssh::typed::DetectedEvent::build(id.to_string(), detected, &hosts)
-                {
+                let prefs = crate::ssh::typed_prefs::load(&state.store);
+                if let Some(event) = crate::ssh::typed::DetectedEvent::build(
+                    id.to_string(),
+                    detected,
+                    &hosts,
+                    &prefs,
+                ) {
                     let _ = app.emit(crate::ssh::typed::EVENT_DETECTED, event);
                 }
             }),
@@ -1617,6 +1621,53 @@ async fn list_hosts(
     state: State<'_, AppState>,
 ) -> Result<Vec<crate::ssh::Host>, crate::error::AppError> {
     state.store.load_hosts().map_err(store_err)
+}
+
+/// Configurações › SSH › Integração: detectar, "Quando detectar" e os hosts
+/// negados. Ver [`crate::ssh::typed_prefs`].
+#[tauri::command]
+fn ssh_typed_prefs(state: State<'_, AppState>) -> crate::ssh::typed_prefs::TypedPrefs {
+    crate::ssh::typed_prefs::load(&state.store)
+}
+
+#[tauri::command]
+fn ssh_typed_set(
+    state: State<'_, AppState>,
+    detect: Option<bool>,
+    mode: Option<crate::ssh::typed_prefs::TypedMode>,
+) -> Result<crate::ssh::typed_prefs::TypedPrefs, String> {
+    crate::ssh::typed_prefs::update(&state.store, |p| {
+        if let Some(detect) = detect {
+            p.detect = detect;
+        }
+        if let Some(mode) = mode {
+            p.mode = mode;
+        }
+        Ok(())
+    })
+}
+
+/// Adiciona aos hosts negados. `target` é `user@host:porta`, validado aqui.
+#[tauri::command]
+fn ssh_typed_deny(
+    state: State<'_, AppState>,
+    target: String,
+) -> Result<crate::ssh::typed_prefs::TypedPrefs, String> {
+    let target = crate::ssh::typed_prefs::TypedTarget::parse(&target)?;
+    let now = chrono::Utc::now().timestamp_millis();
+    crate::ssh::typed_prefs::update(&state.store, |p| p.deny(target, now))
+}
+
+#[tauri::command]
+fn ssh_typed_allow(
+    state: State<'_, AppState>,
+    target: String,
+) -> Result<crate::ssh::typed_prefs::TypedPrefs, String> {
+    let target = crate::ssh::typed_prefs::TypedTarget::parse(&target)?;
+    crate::ssh::typed_prefs::update(&state.store, |p| {
+        p.allow(&target);
+        Ok(())
+    })
 }
 
 #[tauri::command]
@@ -10469,6 +10520,10 @@ pub fn run() {
             list_agent_keys,
             test_host_connection,
             list_hosts,
+            ssh_typed_prefs,
+            ssh_typed_set,
+            ssh_typed_deny,
+            ssh_typed_allow,
             list_host_groups,
             create_host,
             update_host,

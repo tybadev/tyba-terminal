@@ -13,6 +13,7 @@ pub mod test_conn;
 pub mod tmux;
 pub mod tunnel;
 pub mod typed;
+pub mod typed_prefs;
 
 /// Como o Host autentica. `Auto` é o de antes desta entrega: nenhuma opção de
 /// autenticação no bloco além do `IdentityFile` legado.

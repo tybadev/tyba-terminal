@@ -1185,6 +1185,28 @@ export interface HostGroupInput {
 export const listHosts = () => invoke<Host[]>("list_hosts");
 export const listHostGroups = () => invoke<HostGroup[]>("list_host_groups");
 
+/** Configurações › SSH › Integração — espelho de `ssh::typed_prefs` no core. */
+export type TypedSshMode = "ask" | "open" | "never";
+export interface TypedSshTarget {
+  user: string | null;
+  host: string;
+  port: number;
+}
+export interface TypedSshDenied extends TypedSshTarget {
+  since_ms: number;
+}
+export interface TypedSshPrefs {
+  detect: boolean;
+  mode: TypedSshMode;
+  denied: TypedSshDenied[];
+}
+export const sshTypedPrefs = () => invoke<TypedSshPrefs>("ssh_typed_prefs");
+export const sshTypedSet = (change: { detect?: boolean; mode?: TypedSshMode }) =>
+  invoke<TypedSshPrefs>("ssh_typed_set", change);
+/** `target` em `user@host:porta`; o core valida. */
+export const sshTypedDeny = (target: string) => invoke<TypedSshPrefs>("ssh_typed_deny", { target });
+export const sshTypedAllow = (target: string) => invoke<TypedSshPrefs>("ssh_typed_allow", { target });
+
 /** Host ou grupo gravado com sucesso. Sem payload: quem escuta relê as listas. */
 export const EVENT_HOSTS_CHANGED = "ssh://hosts-changed";
 
