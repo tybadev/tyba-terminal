@@ -2,7 +2,6 @@ import { describe, expect, test } from "bun:test";
 
 import type {
   Session,
-  SessionKind,
   SessionStatus,
   SubagentRun,
   Workspace,
@@ -12,7 +11,6 @@ import {
   deadAgentsPanels,
   mainColumn,
   orchestratorVisual,
-  showAgentsButton,
 } from "./agentsPanel";
 
 const workspace = (over: Partial<Workspace> = {}): Workspace =>
@@ -130,29 +128,6 @@ describe("deadAgentsPanels", () => {
       seen("s-1", "s-2"),
     );
     expect(dead).toEqual(["w2"]);
-  });
-});
-
-describe("showAgentsButton", () => {
-  const shell: SessionKind = { type: "shell" };
-  const agent: SessionKind = { type: "agent", runner: "claude_code" };
-  const ssh: SessionKind = { type: "ssh", host_id: "h1" };
-
-  test("shell com agente detectado → mostra o botão", () => {
-    expect(showAgentsButton(shell, true)).toBe(true);
-  });
-
-  test("shell sem detecção → sem botão", () => {
-    expect(showAgentsButton(shell, false)).toBe(false);
-  });
-
-  test("sessão de agente gerenciada → botão como hoje, independe de detecção", () => {
-    expect(showAgentsButton(agent, false)).toBe(true);
-    expect(showAgentsButton(agent, true)).toBe(true);
-  });
-
-  test("ssh nunca abre o painel de agentes, mesmo com detecção", () => {
-    expect(showAgentsButton(ssh, true)).toBe(false);
   });
 });
 

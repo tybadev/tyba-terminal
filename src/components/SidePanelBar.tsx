@@ -14,7 +14,6 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { AgentIcon } from "./icons/AgentIcon";
 import { DockerIcon } from "./icons/DockerIcon";
 import { GitIcon } from "./icons/GitIcon";
 import type { PanelIndicator, PanelKind } from "../lib/sidePanel";
@@ -29,7 +28,6 @@ const AREA: Record<PanelKind, { text: string }> = {
   git: { text: "text-tyba-blue" },
   files: { text: "text-tyba-cyan" },
   services: { text: "text-tyba-blue" },
-  agents: { text: "text-tyba-amber" },
   diff: { text: "text-tyba-violet" },
 };
 
@@ -60,8 +58,6 @@ export function PanelIcon({
       return <GitIcon size={size - 1} className={className} />;
     case "diff":
       return <GitDiff size={size} className={className} />;
-    case "agents":
-      return <AgentIcon size={size} className={className} />;
   }
 }
 

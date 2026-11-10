@@ -12,8 +12,10 @@ import type {
   TranscriptEntry,
 } from "@/lib/ipc";
 import { onSubagentTranscript, subagentTranscript } from "@/lib/ipc";
-import { runLabelKey } from "@/lib/agentTree";
+import { formatElapsed, runLabelKey } from "@/lib/agentTree";
+import { subagentLine } from "@/lib/agentsPanel";
 import { translateError } from "@/lib/errors";
+import { NowBox } from "./AgentsPanel";
 
 const MAX_ENTRIES = 1000;
 
@@ -339,6 +341,82 @@ export function SubagentViewer({
           scrollClassName="min-h-0 flex-1 overflow-y-auto p-2"
         />
       </div>
+    </div>
+  );
+}
+
+/**
+ * Quadro 4E: o detalhe de um subagente na lateral de 380px — cabeçalho com
+ * tipo e tarefa, "ao vivo" e tempo, transcript e a caixa AGORA no fim. Abre
+ * pela linha na gaveta; o fim da rodada não o fecha.
+ */
+export function SubagentDetail({
+  sessionId,
+  snapshot,
+  onClose,
+}: {
+  sessionId: SessionId;
+  snapshot: SubagentSnapshot | null;
+  onClose: () => void;
+}) {
+  const { t } = useTranslation();
+  const focusedId = snapshot?.focused ?? null;
+  const run = useMemo(
+    () => snapshot?.subagents.find((s) => s.agent_id === focusedId) ?? null,
+    [snapshot, focusedId],
+  );
+  const live = run != null && run.status !== "done";
+  const now = useLiveClock(live);
+  const line = run ? subagentLine(run) : null;
+  return (
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+      <header className="flex h-10 shrink-0 items-center gap-2 pl-4 pr-3 text-[12px] shadow-[inset_0_-1px_0_var(--tyba-line)]">
+        <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-tyba-amber/[.1] text-tyba-amber">
+          <AgentIcon size={12} />
+        </span>
+        <span className="shrink-0 whitespace-nowrap font-medium text-tyba-text">
+          {run?.agent_type || t("agentsUnknownType")}
+        </span>
+        {run?.description && (
+          <span className="min-w-0 truncate text-tyba-text-faint">
+            {run.description}
+          </span>
+        )}
+        <span className="flex-1" />
+        {live && (
+          <span className="shrink-0 whitespace-nowrap text-[11px] text-tyba-green">
+            ● {t("agentsLive")}
+          </span>
+        )}
+        {run && (
+          <span className="shrink-0 font-mono text-[11px] text-tyba-text-faint">
+            {formatElapsed((run.ended_at_ms ?? now) - run.started_at_ms)}
+          </span>
+        )}
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label={t("subagentsViewerClose")}
+          className="inline-flex size-6 shrink-0 items-center justify-center rounded-[5px] text-tyba-text-faint hover:text-tyba-text"
+        >
+          <X size={13} />
+        </button>
+      </header>
+      {run && (
+        <p className="px-4 pb-1.5 pt-2.5 text-[10.5px] text-tyba-text-faint">
+          {run.agent_type || t("agentsUnknownType")} · {t(runLabelKey(run))}
+        </p>
+      )}
+      <SubagentTranscript
+        sessionId={sessionId}
+        run={run}
+        scrollClassName="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-3.5 pb-2 pt-1"
+      />
+      {line && (line.kind === "run" || line.kind === "tool") && (
+        <div className="shrink-0 px-3.5 pb-2.5 [&>div]:ml-0">
+          <NowBox line={line} />
+        </div>
+      )}
     </div>
   );
 }

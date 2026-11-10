@@ -14,11 +14,11 @@ export type PanelKind =
   | "services"
   | "files"
   | "git"
-  | "diff"
-  | "agents";
+  | "diff";
 
-/** Toda aba vira `side_view` no core. */
-export type SlotPanel = PanelKind;
+/** Toda aba vira `side_view` no core. `agents:` não é aba do header: é o
+ *  detalhe de um subagente (quadro 4E), aberto pela linha na gaveta. */
+export type SlotPanel = PanelKind | "agents";
 
 /** Ordem do mockup (Navegacao/PainelGit). Serviços e portas (o plugue) vem
  *  depois do Docker; os túneis SSH moram numa seção dessa tela. */
@@ -29,7 +29,6 @@ export const PANEL_ORDER: readonly PanelKind[] = [
   "files",
   "git",
   "diff",
-  "agents",
 ];
 
 const PREFIX: Record<SlotPanel, string> = {
@@ -44,8 +43,7 @@ const PREFIX: Record<SlotPanel, string> = {
 
 /**
  * A fila de agentes é o único `side_view` sem sessão. Ocupa o mesmo slot (e a
- * mesma largura), mas não é a aba Agentes desta sessão: não acende ícone, e
- * clicar em Agentes troca a fila pelo painel da sessão em vez de fechá-la.
+ * mesma largura), mas não acende ícone.
  */
 const AGENT_QUEUE_VIEW = "agent-queue";
 
@@ -71,9 +69,9 @@ export function parseSideView(view: string | null | undefined): PanelView | null
 export function litPanel(
   sideView: string | null | undefined,
   activeId: SessionId | null,
-): SlotPanel | null {
+): PanelKind | null {
   const view = parseSideView(sideView);
-  if (!view || view.session !== activeId) return null;
+  if (!view || view.session !== activeId || view.kind === "agents") return null;
   return view.kind;
 }
 
@@ -108,7 +106,6 @@ export type IndicatorInput = {
   dockerUp: boolean;
   dockerRunning: number;
   gitDirty: boolean;
-  pendingApprovals: number;
 };
 
 const NONE: PanelIndicator = { dot: null, count: null };
@@ -121,10 +118,6 @@ export function panelIndicator(kind: PanelKind, input: IndicatorInput): PanelInd
       return input.dockerRunning > 0 ? { dot: "green", count: null } : NONE;
     case "git":
       return input.gitDirty ? { dot: "amber", count: null } : NONE;
-    case "agents":
-      return input.pendingApprovals > 0
-        ? { dot: null, count: input.pendingApprovals }
-        : NONE;
     default:
       return NONE;
   }
@@ -135,7 +128,6 @@ export type VisibilityInput = {
   isSsh: boolean;
   showDocker: boolean;
   hasRepo: boolean;
-  agentsAvailable: boolean;
 };
 
 /** Quais abas existem para a sessão em foco — as mesmas regras de antes. */
@@ -153,8 +145,6 @@ export function visiblePanels(input: VisibilityInput): PanelKind[] {
       // Arquivos abre pelo menu do app, pela paleta e pelo atalho, não pelo header.
       case "files":
         return false;
-      case "agents":
-        return input.agentsAvailable;
       default:
         return true;
     }
@@ -187,10 +177,6 @@ export function panelAriaLabel(
         : t("sidePanelGit");
     case "diff":
       return t("sidePanelDiff");
-    case "agents":
-      return input.pendingApprovals > 0
-        ? t("sidePanelAgentsPending", { count: input.pendingApprovals })
-        : t("agentsAction");
   }
 }
 

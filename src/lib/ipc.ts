@@ -2236,10 +2236,6 @@ export const openAgentsPanel = (id: SessionId) =>
 export const openSubagentViewer = (sessionId: SessionId) =>
   invoke<void>("open_subagent_viewer", { sessionId });
 
-/** O dono mexeu no painel Agentes: o core não o fecha mais sozinho. */
-export const agentsPanelTouched = (sessionId: SessionId) =>
-  invoke<void>("agents_panel_touched", { sessionId });
-
 /** Aba da gaveta Fila/Agentes escolhida pelo dono (quadro 4C). */
 export type DrawerTab = "queue" | "agents";
 
