@@ -15,10 +15,11 @@ import { cwdChange, formatDuration } from "../lib/blockLayout";
 import { blockMarkdown, blockOutput, failed, shortPath } from "../lib/blockText";
 import { writeClipboardText } from "../lib/clipboard";
 import { ensureContrast, parseRgb, type Rgb } from "../lib/contrast";
-import type { Block, BlockColor, LogicalLine, StyleRun } from "../lib/ipc";
+import type { Block, BlockColor, LogicalLine, ReplacedShell, StyleRun } from "../lib/ipc";
 import { toastError } from "../lib/toast";
 import { compactPath } from "../lib/workspaceCwd";
 import { ansiColor, getTerminalTheme, onTerminalThemeChange } from "../theme";
+import { SshSwapMark } from "./SshSwap";
 import type { PaneRectStyle } from "./TerminalView";
 
 /**
@@ -658,6 +659,8 @@ interface Props {
    * início.
    */
   opened?: { cwd: string | null; atMs: number | null };
+  /** A sessão integrada que substituiu o shell do `ssh` digitado: a marca vai acima do cartão-zero. */
+  swapMark?: ReplacedShell | null;
 }
 
 /**
@@ -681,6 +684,7 @@ export const BlockList = memo(function BlockList({
   lineHeightPx,
   cellWidthPx,
   opened,
+  swapMark,
   onInject,
   onActivate,
   marked,
@@ -1070,6 +1074,7 @@ export const BlockList = memo(function BlockList({
             Com a lista maior que o painel não muda nada — ela rola até o fim
             do mesmo jeito (ver o efeito de reancorar). */}
         <div className="flex min-h-full flex-col justify-end">
+          {swapMark && <SshSwapMark mark={swapMark} />}
           {opened && (
             <SessionOpened
               cwd={opened.cwd}

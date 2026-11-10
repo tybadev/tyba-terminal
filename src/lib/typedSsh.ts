@@ -1,6 +1,6 @@
 import type { HostFormValues } from "./hostForm";
-import { emptyHostForm } from "./hostForm";
-import type { SessionCommand, TypedSshDetected, TypedSshTarget } from "./ipc";
+import { emptyHostForm, formToInput } from "./hostForm";
+import type { HostInput, SessionCommand, TypedSshDetected, TypedSshTarget } from "./ipc";
 
 /** `user@host:porta` — espelho de `TypedTarget::label` no core. */
 export function targetLabel(t: TypedSshTarget): string {
@@ -43,4 +43,13 @@ export function hostFormFromDetected(e: TypedSshDetected): HostFormValues {
     identity_file: identity,
     proxy_jump: e.destination.proxy_jump ?? "",
   };
+}
+
+/**
+ * "Cadastrar e abrir integrado" sem formulário (quadro 1B′): o cadastro sai
+ * do destino detectado. `null` quando o destino não fecha um cadastro válido.
+ */
+export function hostInputFromDetected(e: TypedSshDetected): HostInput | null {
+  const result = formToInput(hostFormFromDetected(e));
+  return result.ok ? result.input : null;
 }

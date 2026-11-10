@@ -1,5 +1,5 @@
-import { useTranslation } from "react-i18next";
-import { HardDrives, Plug, Plus } from "@phosphor-icons/react";
+import { Trans, useTranslation } from "react-i18next";
+import { ArrowsLeftRight, HardDrives, Plug, Plus } from "@phosphor-icons/react";
 
 import type { TypedSshDetected } from "../lib/ipc";
 import { targetLabel } from "../lib/typedSsh";
@@ -7,9 +7,9 @@ import { targetLabel } from "../lib/typedSsh";
 export type SshNoteAction = "open" | "dismiss" | "never";
 
 /**
- * O aviso do `ssh` digitado (quadros 1A/1B de SshVariaveisFila): mora no topo
+ * O aviso do `ssh` digitado (quadros 1A′/1B′ de SshTrocaNoPane): mora no topo
  * do bloco vivo, entre o comando e a saída, e só oferece — quem abre a sessão
- * integrada é o gestor de SSH, e nada é escrito no PTY vivo.
+ * integrada no lugar deste terminal é o core, e nada é escrito no PTY vivo.
  */
 export function SshTypedNote({
   note,
@@ -28,7 +28,7 @@ export function SshTypedNote({
       role="status"
       className="tyba-piece mt-1.5 mr-2 ml-[18px] grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 rounded-[8px] px-3.5 py-3"
     >
-      <span className="row-span-3 flex size-7 items-center justify-center rounded-[7px] bg-tyba-blue-tint text-tyba-blue">
+      <span className="row-span-4 flex size-7 items-center justify-center rounded-[7px] bg-tyba-blue-tint text-tyba-blue">
         <Plug size={16} />
       </span>
       <div className="flex min-w-0 flex-wrap items-center gap-2.5 text-[13px] font-medium text-tyba-text">
@@ -71,6 +71,15 @@ export function SshTypedNote({
           {t("sshNoteNever")}
         </button>
       </div>
+      <p className="m-0 mt-0.5 flex items-center gap-1.5 text-[11.5px] text-tyba-text-faint">
+        <ArrowsLeftRight size={12} className="shrink-0" />
+        <span>
+          <Trans
+            i18nKey={registered ? "sshNoteSwap" : "sshNoteRegisterSwap"}
+            components={{ b: <b className="font-medium text-tyba-text-muted" /> }}
+          />
+        </span>
+      </p>
     </div>
   );
 }

@@ -1440,9 +1440,17 @@ export const connectHostGroup = (
 ) =>
   invoke<Session[]>("connect_host_group", { hostIds, name, color, group });
 
+/** A troca no mesmo pane: espelho de `typed_swap::Replaced` no core. */
+export interface ReplacedShell {
+  at_ms: number;
+  /** Veio do "Sempre abrir integrado". */
+  auto: boolean;
+}
+
 /** O que o "Conectar" fez. Espelha `ConnectHostResult` do core. */
 export type ConnectHostResult =
-  | { type: "opened"; session: Session }
+  /** `replaced`: a sessão entrou no pane do shell do `ssh` digitado. */
+  | { type: "opened"; session: Session; replaced: ReplacedShell | null }
   /** Já havia conexão a este Host conectando; o core focou o pane dela. */
   | { type: "existing"; session: Session }
   /** O pedido anterior ainda não tem sessão; nada foi aberto. */
@@ -1450,8 +1458,8 @@ export type ConnectHostResult =
 
 /** "Conectar" de um Host salvo: sessão + workspace. Idempotente por Host
  * enquanto a conexão está em voo — quem garante é o core. */
-export const connectHost = (hostId: string) =>
-  invoke<ConnectHostResult>("connect_host", { hostId });
+export const connectHost = (hostId: string, replace: SessionId | null = null) =>
+  invoke<ConnectHostResult>("connect_host", { hostId, replace });
 
 export const reconnectSsh = (id: SessionId) =>
   invoke<void>("reconnect_ssh", { id });

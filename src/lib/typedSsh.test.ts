@@ -2,7 +2,13 @@ import { describe, expect, test } from "bun:test";
 
 import { emptyHostForm } from "./hostForm";
 import type { SessionCommand, TypedSshDetected } from "./ipc";
-import { dayMonth, hostFormFromDetected, liveSshNote, targetLabel } from "./typedSsh";
+import {
+  dayMonth,
+  hostFormFromDetected,
+  hostInputFromDetected,
+  liveSshNote,
+  targetLabel,
+} from "./typedSsh";
 
 describe("targetLabel", () => {
   test("user@host:porta, como o core", () => {
@@ -82,5 +88,29 @@ describe("hostFormFromDetected", () => {
       identity_file: "~/.ssh/k",
       proxy_jump: "bastion",
     });
+  });
+});
+
+describe("hostInputFromDetected", () => {
+  test("cadastra direto com o destino detectado", () => {
+    expect(hostInputFromDetected(detected())).toMatchObject({
+      alias: "203.0.113.10",
+      hostname: "203.0.113.10",
+      port: null,
+      username: "root",
+      auth_method: "auto",
+      identity_file: null,
+      proxy_jump: null,
+      tunnels: [],
+    });
+  });
+  test("porta e chave digitadas entram no cadastro", () => {
+    const input = hostInputFromDetected(
+      detected({
+        destination: { host: "app", user: null, port: 2222, identity_file: "~/.ssh/k", proxy_jump: null },
+        target: { user: null, host: "app", port: 2222 },
+      }),
+    );
+    expect(input).toMatchObject({ alias: "app", port: 2222, auth_method: "file", identity_file: "~/.ssh/k" });
   });
 });
