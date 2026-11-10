@@ -202,6 +202,7 @@ import {
   TerminalView,
 } from "./components/TerminalView";
 import { PromptQueue } from "./components/PromptQueue";
+import { usePromptQueue } from "./components/usePromptQueue";
 import {
   activateTab,
   activateWorkspace,
@@ -278,6 +279,8 @@ import {
   focusSubagent,
   onSubagentsChanged,
   agentsDrawerList,
+  agentsDrawerCollapse,
+  agentsDrawerOpen,
   onAgentsDrawerChanged,
   type DrawerState,
   detectedAgent,
@@ -381,7 +384,9 @@ import {
   subagentInlineApprovals,
 } from "./lib/agentsPanel";
 import {
+  drawerPill,
   drawerTab,
+  hasAgentDrawer,
   pendingSubagentApprovals,
   roundProgress,
 } from "./lib/agentsDrawer";
@@ -2694,6 +2699,33 @@ export default function App() {
   const gitTone = gitIconTone(activeGitStatus);
 
   const activeSession = activeId ? sessionById.get(activeId) : undefined;
+
+  // A pílula da gaveta mora no rodapé da janela (quadro GavetaPaneEstreito) e
+  // mostra a sessão do pane ativo, como o nome da sessão ao lado dela.
+  const footerRef = useRef<HTMLDivElement>(null);
+  const pillSessionId =
+    activeSession &&
+    hasAgentDrawer(activeSession.kind.type, detectedBySession.has(activeSession.id))
+      ? activeSession.id
+      : null;
+  const pillQueue = usePromptQueue(pillSessionId);
+  const footerPill = useMemo(() => {
+    if (!pillSessionId) return null;
+    const drawer = drawers.get(pillSessionId) ?? null;
+    const subagents = subagentsBySession.get(pillSessionId)?.subagents ?? [];
+    const open = drawer?.open ?? false;
+    return {
+      queueCount: pillQueue?.prompts.length ?? 0,
+      agents: drawerPill(
+        subagents,
+        pendingSubagentApprovals(pillSessionId, subagents, approvals),
+        drawer?.outcome_seen ?? false,
+      ),
+      open,
+      onToggle: () =>
+        void (open ? agentsDrawerCollapse : agentsDrawerOpen)(pillSessionId).catch(() => {}),
+    };
+  }, [pillSessionId, pillQueue, drawers, subagentsBySession, approvals]);
 
   // Abas de conteúdo. Editores moram na tela de Arquivos e ficam montados em
   // TODOS os workspaces enquanto a aba interna existe: o buffer não salvo é do
@@ -5847,20 +5879,17 @@ export default function App() {
               onSshNote={answerSshNote}
             />
           )}
-          {/* Quadros 4A/4B: a fila de prompts, só no pane com agente (a
-              sessão de agente ou o claude cru que o probe achou no shell).
-              A gaveta fica acima da caixa de agente quando ela flutua aqui. */}
+          {/* Gaveta Fila/Agentes, só no pane ATIVO com agente (a sessão de
+              agente ou o claude cru que o probe achou no shell): sobe do
+              rodapé da janela, onde mora a pílula (GavetaPaneEstreito).
+              Recolhida, não desenha nada sobre o pane. */}
           {!bare &&
             paneRect &&
-            (s.kind.type === "agent" ||
-              (s.kind.type === "shell" && detected !== null)) && (
+            s.id === activeId &&
+            hasAgentDrawer(s.kind.type, detected !== null) && (
               <PromptQueue
                 session={s}
-                bottomPx={
-                  s.id === activeId && richInputVisible && !ownsCommandLine
-                    ? 66
-                    : 12
-                }
+                footer={footerRef}
                 drawer={drawers.get(s.id) ?? null}
                 snapshot={subagentsBySession.get(s.id) ?? null}
                 approvals={approvals}
@@ -7537,6 +7566,8 @@ export default function App() {
               false
             }
             sessionId={activeId ?? null}
+            pill={footerPill}
+            rootRef={footerRef}
           />
         )}
         </div>

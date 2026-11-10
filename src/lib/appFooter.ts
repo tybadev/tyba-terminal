@@ -1,5 +1,6 @@
 /**
- * Rodapé do app (quadro GavetaPaneEstreito, escada do Rodapé).
+ * Rodapé do app e a gaveta Fila/Agentes que sobe dele (quadro
+ * GavetaPaneEstreito: Pílulas, R1–R5, escada do Rodapé).
  */
 
 /**
@@ -38,4 +39,49 @@ export const HINT_LABEL_STEP: Record<string, number> = {
 /** A peça que sai no degrau `at` ainda aparece no degrau `step`? */
 export function footerKeeps(step: number, at: number): boolean {
   return step < at;
+}
+
+/** Gaveta: mínimo, máximo, folgas (quadro R3/R4). */
+export const DRAWER_MIN = 360;
+export const DRAWER_MAX = 430;
+/** Borda direita da gaveta para dentro da borda direita do pane ativo. */
+export const DRAWER_INSET = 8;
+/** Distância mínima da borda esquerda da janela. */
+export const DRAWER_EDGE = 8;
+/** Base da gaveta acima do topo do rodapé. */
+export const DRAWER_LIFT = 6;
+
+export type DrawerBox = {
+  /** Em px, da borda esquerda da janela. */
+  left: number;
+  width: number;
+  /** Em px, da borda de baixo da janela. */
+  bottom: number;
+  /** Abaixo de 430 as abas viram ícone + contagem. */
+  compact: boolean;
+};
+
+/**
+ * Onde a gaveta aberta fica: popover que sobe do rodapé, borda direita 8 px
+ * dentro do pane ativo (com o detalhe aberto, o pane termina antes dele, e a
+ * gaveta não o cobre). Largura do pane menos as folgas, entre 360 e 430;
+ * abaixo do pane ela cresce para a esquerda por cima da lateral, e se nem
+ * assim couber encosta a 8 px da borda esquerda da janela.
+ */
+export function drawerBox(input: {
+  paneLeft: number;
+  paneRight: number;
+  footerTop: number;
+  viewportHeight: number;
+}): DrawerBox {
+  const paneWidth = input.paneRight - input.paneLeft;
+  const width = Math.min(DRAWER_MAX, Math.max(DRAWER_MIN, paneWidth - 2 * DRAWER_INSET));
+  const right = input.paneRight - DRAWER_INSET;
+  const left = Math.max(DRAWER_EDGE, right - width);
+  return {
+    left,
+    width,
+    bottom: input.viewportHeight - input.footerTop + DRAWER_LIFT,
+    compact: width < DRAWER_MAX,
+  };
 }

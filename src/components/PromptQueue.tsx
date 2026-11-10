@@ -1,7 +1,9 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
+import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import {
   CaretDown,
+  CaretUp,
   Check,
   DotsSixVertical,
   Pause,
@@ -14,13 +16,10 @@ import {
 import { translateError } from "../lib/errors";
 import {
   agentsDrawerCollapse,
-  agentsDrawerOpen,
   agentsDrawerPresence,
   agentsDrawerTab,
-  onPromptQueueChanged,
   promptQueueClear,
   promptQueueEnqueue,
-  promptQueueList,
   promptQueuePause,
   promptQueueRemove,
   promptQueueReorder,
@@ -33,31 +32,25 @@ import {
   type SubagentSnapshot,
 } from "../lib/ipc";
 import {
-  drawerPill,
   drawerTab,
   pendingSubagentApprovals,
   queueGoesToAgents,
   roundProgress,
   type PillAgents,
 } from "../lib/agentsDrawer";
-import {
-  queueIndicator,
-  reorderIds,
-  slotAt,
-  type QueueState,
-  type QueueTone,
-} from "../lib/promptQueue";
+import { drawerBox, type DrawerBox } from "../lib/appFooter";
+import { queueIndicator, reorderIds, slotAt, type QueueTone } from "../lib/promptQueue";
 import { toastError } from "../lib/toast";
 import { AgentsPanel } from "./AgentsPanel";
 import { AgentIcon } from "./icons/AgentIcon";
 import { PLATE, PLATE_FLOAT, PLATE_LINE } from "./plate";
+import { usePromptQueue } from "./usePromptQueue";
 
 interface Props {
   session: Session;
-  /** Distância da gaveta (e da pílula) ao rodapé do pane: fica acima do
-   *  campo de entrada. */
-  bottomPx: number;
-  /** Aberta/pílula e a aba do dono, decididos pelo core. */
+  /** O rodapé do app: a gaveta sobe dele (quadro R3). */
+  footer: RefObject<HTMLElement | null>;
+  /** Aberta/recolhida e a aba do dono, decididos pelo core. */
   drawer: DrawerState | null;
   snapshot: SubagentSnapshot | null;
   approvals: ApprovalRequest[];
@@ -84,15 +77,16 @@ const VBTN =
   "inline-flex size-6 shrink-0 items-center justify-center rounded-[5px] text-tyba-text-faint hover:text-tyba-text disabled:pointer-events-none disabled:opacity-50";
 
 /**
- * Quadros 4A′–4E (GavetaFilaAgentes): a pílula e a gaveta Fila/Agentes presas
- * ao canto inferior direito do pane do agente. A pílula é a gaveta recolhida,
- * no mesmo canto. Abrir, recolher e a aba do dono são do core
- * (`agents-drawer://changed`); a fila também (`prompt-queue://changed`).
- * Daqui só saem intenções.
+ * A gaveta Fila/Agentes do pane ativo (conteúdo de GavetaFilaAgentes 4A′–4E;
+ * posição de GavetaPaneEstreito R3/R4): popover que sobe do rodapé do app,
+ * ancorado na borda direita do pane. Recolhida, não desenha nada sobre o pane
+ * — a pílula mora no rodapé (`DrawerPill`). Abrir, recolher e a aba do dono
+ * são do core (`agents-drawer://changed`); a fila também
+ * (`prompt-queue://changed`). Daqui só saem intenções.
  */
 export function PromptQueue({
   session,
-  bottomPx,
+  footer,
   drawer,
   snapshot,
   approvals,
@@ -104,28 +98,15 @@ export function PromptQueue({
 }: Props) {
   const { t } = useTranslation();
   const sessionId = session.id;
-  const [queue, setQueue] = useState<QueueState | null>(null);
+  const queue = usePromptQueue(sessionId);
   const [draft, setDraft] = useState("");
   const [drag, setDrag] = useState<{ from: number; slot: number } | null>(null);
   const [hover, setHover] = useState(false);
   const [focusWithin, setFocusWithin] = useState(false);
   const rows = useRef<(HTMLDivElement | null)[]>([]);
 
-  useEffect(() => {
-    let alive = true;
-    const unlisten = onPromptQueueChanged((state) => {
-      if (state.session_id === sessionId) setQueue(state);
-    });
-    void promptQueueList(sessionId)
-      .then((state) => alive && setQueue(state))
-      .catch(() => {});
-    return () => {
-      alive = false;
-      void unlisten.then((f) => f());
-    };
-  }, [sessionId]);
-
   const open = drawer?.open ?? false;
+  const box = usePopoverBox(open, footer);
   // Mouse em cima ou foco de teclado dentro: o core não recolhe a gaveta aberta
   // sozinha enquanto o dono está nela (4D). Foco deixado por clique não conta:
   // o mouse sai e o botão clicado segue focado, e a gaveta nunca recolheria.
@@ -154,7 +135,6 @@ export function PromptQueue({
   const hasSubagents = subagents.length > 0;
   const pending = pendingSubagentApprovals(sessionId, subagents, approvals);
   const progress = roundProgress(subagents);
-  const pill = drawerPill(subagents, pending, drawer?.outcome_seen ?? false);
   const tab = drawerTab({
     owner: drawer?.tab ?? null,
     hasSubagents,
@@ -226,24 +206,17 @@ export function PromptQueue({
   const clearDisabled = prompts.length === 0 && !paused;
   const clear = () => void promptQueueClear(sessionId).catch(fail);
 
-  if (!open) {
-    return (
-      <DrawerPill
-        bottomPx={bottomPx}
-        queueCount={prompts.length}
-        agents={pill}
-        onOpen={() => void agentsDrawerOpen(sessionId).catch(() => {})}
-      />
-    );
-  }
+  // Marcador invisível no pane: a gaveta mede por ele a borda direita do pane.
+  const marker = <span ref={box.anchor} aria-hidden className="hidden" />;
+  if (!open || !box.box) return marker;
 
-  return (
-    // Acima da lista de blocos (z-10) e da busca do terminal (z-20).
+  const panel = (
+    // Fora do pane: ela pode crescer para a esquerda por cima da lateral do app.
     <div
       role="region"
       aria-label={t(hasSubagents ? "agentsDrawerLabel" : "promptQueueTitle")}
-      className={`absolute right-[18px] z-30 w-[430px] max-w-[calc(100%-36px)] overflow-hidden ${PLATE} ${PLATE_LINE} ${PLATE_FLOAT}`}
-      style={{ bottom: bottomPx }}
+      className={`fixed z-30 overflow-hidden ${PLATE} ${PLATE_LINE} ${PLATE_FLOAT}`}
+      style={{ left: box.box.left, width: box.box.width, bottom: box.box.bottom }}
       onPointerEnter={() => setHover(true)}
       onPointerLeave={() => setHover(false)}
       onFocus={(e) => setFocusWithin(e.target.matches(":focus-visible"))}
@@ -268,6 +241,7 @@ export function PromptQueue({
               done={progress?.done ?? 0}
               total={progress?.total ?? 0}
               pending={pending}
+              compact={box.box.compact}
               onTab={setTab}
             />
             <span className="flex-1" />
@@ -441,15 +415,77 @@ export function PromptQueue({
       )}
     </div>
   );
+
+  return (
+    <>
+      {marker}
+      {createPortal(panel, document.body)}
+    </>
+  );
 }
 
-/** As abas do topo da gaveta (4C): o mesmo segmento das abas da janela. */
+/**
+ * Onde a gaveta aberta fica (quadros R3/R4): mede a borda direita do pane pelo
+ * marcador e o topo do rodapé, e refaz quando um dos dois ou a janela mudam.
+ * Sem pane visível (painel lateral em tela cheia) não há gaveta.
+ */
+function usePopoverBox(open: boolean, footer: RefObject<HTMLElement | null>) {
+  const anchor = useRef<HTMLSpanElement | null>(null);
+  const [box, setBox] = useState<DrawerBox | null>(null);
+  useLayoutEffect(() => {
+    if (!open) {
+      setBox(null);
+      return;
+    }
+    const pane = anchor.current?.parentElement;
+    if (!pane) return;
+    const measure = () => {
+      const r = pane.getBoundingClientRect();
+      if (r.width === 0) {
+        setBox(null);
+        return;
+      }
+      const foot = footer.current?.getBoundingClientRect();
+      const next = drawerBox({
+        paneLeft: r.left,
+        paneRight: r.right,
+        footerTop: foot && foot.height > 0 ? foot.top : window.innerHeight,
+        viewportHeight: window.innerHeight,
+      });
+      setBox((prev) =>
+        prev &&
+        prev.left === next.left &&
+        prev.width === next.width &&
+        prev.bottom === next.bottom
+          ? prev
+          : next,
+      );
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(pane);
+    if (footer.current) ro.observe(footer.current);
+    window.addEventListener("resize", measure);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("resize", measure);
+    };
+  }, [open, footer]);
+  return { anchor, box };
+}
+
+/**
+ * As abas do topo da gaveta (4C): o mesmo segmento das abas da janela.
+ * Compactas (gaveta abaixo de 430, quadro R4): ícone + contagem, o nome no
+ * tooltip e no `aria-label`.
+ */
 function DrawerTabs({
   tab,
   queueCount,
   done,
   total,
   pending,
+  compact,
   onTab,
 }: {
   tab: DrawerTab;
@@ -457,13 +493,16 @@ function DrawerTabs({
   done: number;
   total: number;
   pending: number;
+  compact: boolean;
   onTab: (tab: DrawerTab) => void;
 }) {
   const { t } = useTranslation();
   const item = (on: boolean) =>
-    `flex h-[26px] items-center gap-1.5 whitespace-nowrap rounded-[5px] px-2.5 text-[12px] ${
-      on ? "tyba-pill-on text-tyba-text" : "text-tyba-text-faint hover:text-tyba-text-muted"
-    }`;
+    `flex h-[26px] items-center whitespace-nowrap rounded-[5px] text-[12px] ${
+      compact ? "gap-[5px] px-2" : "gap-1.5 px-2.5"
+    } ${on ? "tyba-pill-on text-tyba-text" : "text-tyba-text-faint hover:text-tyba-text-muted"}`;
+  const queueName = `${t("agentsDrawerQueue")} · ${queueCount}`;
+  const agentsName = `${t("agentsTitle")} · ${done}/${total}`;
   return (
     <div
       role="tablist"
@@ -473,22 +512,26 @@ function DrawerTabs({
         type="button"
         role="tab"
         aria-selected={tab === "queue"}
+        aria-label={compact ? queueName : undefined}
+        title={compact ? queueName : undefined}
         className={item(tab === "queue")}
         onClick={() => onTab("queue")}
       >
         <Queue size={13} className="shrink-0 text-tyba-violet" />
-        {t("agentsDrawerQueue")}
+        {!compact && t("agentsDrawerQueue")}
         <span className="text-[11px] text-tyba-text-faint">{queueCount}</span>
       </button>
       <button
         type="button"
         role="tab"
         aria-selected={tab === "agents"}
+        aria-label={compact ? agentsName : undefined}
+        title={compact ? agentsName : undefined}
         className={item(tab === "agents")}
         onClick={() => onTab("agents")}
       >
         <AgentIcon size={13} className="shrink-0 text-tyba-amber" />
-        {t("agentsTitle")}
+        {!compact && t("agentsTitle")}
         <span className="font-mono text-[11px] text-tyba-text-faint">
           {done}/{total}
         </span>
@@ -505,75 +548,120 @@ function DrawerTabs({
   );
 }
 
+const DOT = "size-[6px] shrink-0 rounded-full";
+
 /**
- * A gaveta recolhida (4A′/4D): sempre "Fila · N"; com subagentes, "Agentes
- * x/y" e o estado da rodada. Pede atenção com o contorno inteiro em âmbar.
+ * A pílula da gaveta, chip do rodapé do app (quadro Pílulas, R1–R5): 18 px,
+ * sem placa de vidro. Sempre "Fila · N"; com subagentes, "Agentes x/y" e o
+ * estado da rodada. Pede você: contorno inteiro âmbar. A seta diz para onde a
+ * gaveta vai; aberta, a pílula fica marcada. Compacta (degrau 6 da escada):
+ * só ícones e números, o texto inteiro no tooltip e no `aria-label` — o estado
+ * (cor, contorno, número) nunca sai.
  */
-function DrawerPill({
-  bottomPx,
+export function DrawerPill({
   queueCount,
   agents,
-  onOpen,
+  open,
+  compact,
+  onToggle,
 }: {
-  bottomPx: number;
   queueCount: number;
   agents: PillAgents | null;
-  onOpen: () => void;
+  open: boolean;
+  compact: boolean;
+  onToggle: () => void;
 }) {
   const { t } = useTranslation();
-  const attn = agents?.state?.kind === "attn";
-  const state = agents?.state;
+  const state = agents?.state ?? null;
+  const attn = state?.kind === "attn";
+  const stateText =
+    state?.kind === "run"
+      ? t("subagentsStatusRunning")
+      : state?.kind === "ok"
+        ? t("subagentsStatusDone")
+        : state?.kind === "attn"
+          ? t("agentsDrawerAsksYou", { count: state.count })
+          : state?.kind === "fail"
+            ? t("agentsCountFailed", { count: state.count })
+            : null;
+  const label = [
+    t("promptQueueButton", { count: queueCount }),
+    agents && `${t("agentsTitle")} ${agents.done}/${agents.total}`,
+    stateText,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  const ring = "inset 0 0 0 1px color-mix(in srgb, var(--tyba-amber-fill) 80%, transparent)";
+  const shadow = open
+    ? attn
+      ? `var(--tyba-pill-on), ${ring}`
+      : "var(--tyba-pill-on)"
+    : attn
+      ? ring
+      : undefined;
   return (
-    // Acima da lista de blocos (z-10), abaixo da busca do terminal (z-20).
     <button
       type="button"
-      onClick={onOpen}
-      aria-expanded={false}
-      className={`absolute right-[18px] z-[15] inline-flex h-[30px] items-center gap-2 whitespace-nowrap rounded-full pl-[11px] pr-3 text-[12px] text-tyba-text ${PLATE_FLOAT} ${
-        attn
-          ? "[box-shadow:inset_0_0_0_1.5px_color-mix(in_srgb,var(--tyba-amber-fill)_75%,transparent),var(--tyba-shadow-lg)]"
-          : "[box-shadow:var(--tyba-plate-shadow,var(--tyba-edge),var(--tyba-shadow-lg))] hover:[box-shadow:inset_0_0_0_1px_var(--tyba-border-strong),var(--tyba-shadow-lg)]"
+      onClick={onToggle}
+      aria-expanded={open}
+      aria-label={label}
+      title={label}
+      className={`inline-flex h-[18px] shrink-0 items-center gap-1.5 whitespace-nowrap rounded-[4px] px-[7px] transition-colors ${
+        open
+          ? "bg-[color-mix(in_srgb,var(--tyba-text)_9%,transparent)] text-tyba-text"
+          : "text-tyba-text-muted hover:bg-tyba-text/[.06]"
       }`}
-      style={{ bottom: bottomPx }}
+      style={shadow ? { boxShadow: shadow } : undefined}
     >
-      <Queue size={13} className="shrink-0 text-tyba-violet" />
-      <span>{t("promptQueueButton", { count: queueCount })}</span>
+      <Queue size={12} className="shrink-0 text-tyba-violet" />
+      <span className={`text-tyba-text ${compact ? "font-mono" : ""}`}>
+        {compact ? queueCount : t("promptQueueButton", { count: queueCount })}
+      </span>
       {agents && (
         <>
-          <span className="h-3.5 w-px bg-tyba-border-strong" />
-          <AgentIcon size={13} className="shrink-0 text-tyba-amber" />
-          <span>
-            {t("agentsTitle")}{" "}
-            <span className="font-mono text-tyba-text-muted">
+          <span className="h-2.5 w-px shrink-0 bg-tyba-border-strong" />
+          <AgentIcon size={12} className="shrink-0 text-tyba-amber" />
+          {compact ? (
+            <span className="font-mono">
               {agents.done}/{agents.total}
             </span>
-          </span>
+          ) : (
+            <span className="text-tyba-text">
+              {t("agentsTitle")}{" "}
+              <span className="font-mono text-tyba-text-muted">
+                {agents.done}/{agents.total}
+              </span>
+            </span>
+          )}
           {state?.kind === "run" && (
-            <span className="inline-flex items-center gap-1.5 text-[11.5px] text-tyba-green">
-              <span className="size-[7px] rounded-full bg-tyba-green-fill [box-shadow:var(--tyba-glow-green)]" />
-              {t("subagentsStatusRunning")}
+            <span className="inline-flex items-center gap-[5px] text-tyba-green">
+              <span className={`${DOT} bg-tyba-green-fill [box-shadow:var(--tyba-glow-green)]`} />
+              {!compact && stateText}
             </span>
           )}
           {state?.kind === "ok" && (
-            <span className="inline-flex items-center gap-1.5 text-[11.5px] text-tyba-green">
-              <Check size={12} />
-              {t("subagentsStatusDone")}
+            <span className="inline-flex items-center gap-[5px] text-tyba-green">
+              <Check size={11} />
+              {!compact && stateText}
             </span>
           )}
           {state?.kind === "attn" && (
-            <span className="inline-flex items-center gap-1.5 text-[11.5px] text-tyba-amber">
-              <span className="size-[7px] rounded-full bg-tyba-amber-fill" />
-              {t("agentsDrawerAsksYou", { count: state.count })}
+            <span className="inline-flex items-center gap-[5px] text-tyba-amber">
+              <span className={`${DOT} bg-tyba-amber-fill`} />
+              {compact ? <span className="font-mono">{state.count}</span> : stateText}
             </span>
           )}
           {state?.kind === "fail" && (
-            <span className="inline-flex items-center gap-1.5 text-[11.5px] text-tyba-red">
-              <span className="size-[7px] rounded-full bg-tyba-red-fill" />
-              {t("agentsCountFailed", { count: state.count })}
+            <span className="inline-flex items-center gap-[5px] text-tyba-red">
+              <span className={`${DOT} bg-tyba-red-fill`} />
+              {compact ? <span className="font-mono">{state.count}</span> : stateText}
             </span>
           )}
         </>
       )}
+      <span className="-ml-px flex text-tyba-text-faint">
+        {open ? <CaretDown size={10} /> : <CaretUp size={10} />}
+      </span>
     </button>
   );
 }

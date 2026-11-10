@@ -1,4 +1,4 @@
-import type { ApprovalRequest, DrawerTab, SessionId, SubagentRun } from "./ipc";
+import type { ApprovalRequest, DrawerTab, Session, SessionId, SubagentRun } from "./ipc";
 import type { PauseReason } from "./promptQueue";
 
 /**
@@ -100,4 +100,13 @@ export function drawerTab(input: {
 /** A fila pausada por aprovação de subagente diz "ver em Agentes". */
 export function queueGoesToAgents(paused: PauseReason | null, pending: number): boolean {
   return paused === "approval" && pending > 0;
+}
+
+/**
+ * A sessão tem gaveta Fila/Agentes: a sessão de agente, ou o shell em que o
+ * probe achou um claude cru. No split, a pílula do rodapé mostra a do pane
+ * ativo (como o nome da sessão do rodapé) e some quando ele não tem gaveta.
+ */
+export function hasAgentDrawer(kind: Session["kind"]["type"], detected: boolean): boolean {
+  return kind === "agent" || (kind === "shell" && detected);
 }

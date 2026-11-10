@@ -4,6 +4,7 @@ import type { ApprovalRequest, SubagentRun } from "./ipc";
 import {
   drawerPill,
   drawerTab,
+  hasAgentDrawer,
   pendingSubagentApprovals,
   queueGoesToAgents,
   roundProgress,
@@ -181,5 +182,19 @@ describe("queueGoesToAgents", () => {
     expect(queueGoesToAgents("approval", 0)).toBe(false);
     expect(queueGoesToAgents("user", 1)).toBe(false);
     expect(queueGoesToAgents(null, 1)).toBe(false);
+  });
+});
+
+describe("hasAgentDrawer (qual sessão a pílula mostra)", () => {
+  test("sessão de agente sempre tem gaveta", () => {
+    expect(hasAgentDrawer("agent", false)).toBe(true);
+  });
+  test("shell só com claude cru achado pelo probe", () => {
+    expect(hasAgentDrawer("shell", true)).toBe(true);
+    expect(hasAgentDrawer("shell", false)).toBe(false);
+  });
+  test("ssh e container não têm", () => {
+    expect(hasAgentDrawer("ssh", true)).toBe(false);
+    expect(hasAgentDrawer("container", true)).toBe(false);
   });
 });
