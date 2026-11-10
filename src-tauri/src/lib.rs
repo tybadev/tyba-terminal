@@ -85,6 +85,8 @@ struct AppState {
     host_queries: crate::ssh::query::SharedHostQueries,
     /// Um "Conectar" em voo por Host: clique repetido não abre outra sessão.
     connect_gate: crate::ssh::connect_gate::SharedConnectGate,
+    /// O último `ssh` digitado avisado por shell: autoriza a troca no pane.
+    typed_seen: crate::ssh::typed_swap::SeenBook,
     /// Fecha em `false` e abre quando a thread de boot termina. Ver [`boot`].
     boot: Arc<boot::BootGate>,
     /// Serviços e portas: TERMs pendentes e o chip de portas por sessão.
@@ -424,6 +426,13 @@ fn install_typed_ssh(app: &AppHandle, pty_pool: &SharedPtyPool) {
                     &hosts,
                     &prefs,
                 ) {
+                    state.typed_seen.record(
+                        id,
+                        crate::ssh::typed_swap::Seen {
+                            destination: event.destination.clone(),
+                            open: event.open,
+                        },
+                    );
                     let _ = app.emit(crate::ssh::typed::EVENT_DETECTED, event);
                 }
             }),
@@ -4127,8 +4136,12 @@ fn write_to_session(state: State<'_, AppState>, id: SessionId, data: String) -> 
 #[derive(serde::Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ConnectHostResult {
-    /// Sessão nova, já num workspace próprio.
-    Opened { session: Session },
+    /// Sessão nova, já num workspace próprio — ou, com `replaced`, no pane do
+    /// shell que ela substituiu.
+    Opened {
+        session: Session,
+        replaced: Option<crate::ssh::typed_swap::Replaced>,
+    },
     /// Já havia uma conexão a este Host conectando: nada foi aberto e o foco
     /// foi para o pane dela.
     Existing { session: Session },
@@ -4148,6 +4161,7 @@ async fn connect_host(
     app: AppHandle,
     state: State<'_, AppState>,
     host_id: String,
+    replace: Option<SessionId>,
 ) -> Result<ConnectHostResult, String> {
     // O portão vem antes de qualquer `await`: é nessa janela que o segundo
     // clique chegava.
@@ -4199,6 +4213,34 @@ async fn connect_host(
         None => None,
     };
 
+    // "Abrir como sessão TYBA" no aviso do `ssh` digitado: a sessão nova
+    // assume o pane do shell e o shell é encerrado (quadros 1A′–1D).
+    if let Some(old) = replace {
+        let kind = state.sessions.get(old).map(|s| s.kind);
+        let auto =
+            crate::ssh::typed_swap::check(kind.as_ref(), state.typed_seen.get(old).as_ref(), &host)
+                // Em JSON, para o front traduzir o código (`translateError`).
+                .map_err(|e| serde_json::to_string(&e).unwrap_or_else(|_| e.to_string()))?;
+        let session = open_ssh_session(&app, &state, &host, 100, 30)?;
+        if let Err(e) = crate::ssh::typed_swap::swap(&state.layout, old, session.id, |old| {
+            dispose_session_now(&app, &state, old)
+        }) {
+            state.sessions.dispose(&state.pty_pool, session.id);
+            return Err(e.to_string());
+        }
+        ticket.opened(session.id);
+        emit_layout(&app, &state);
+        run_setup_if_consented(&app, &state, &session);
+        let replaced = crate::ssh::typed_swap::Replaced {
+            at_ms: chrono::Utc::now().timestamp_millis(),
+            auto,
+        };
+        return Ok(ConnectHostResult::Opened {
+            session,
+            replaced: Some(replaced),
+        });
+    }
+
     let session = open_ssh_session(&app, &state, &host, 100, 30)?;
     if let Err(e) = state.layout.create_workspace_tagged(
         &host.alias,
@@ -4217,7 +4259,10 @@ async fn connect_host(
     ticket.opened(session.id);
     emit_layout(&app, &state);
     run_setup_if_consented(&app, &state, &session);
-    Ok(ConnectHostResult::Opened { session })
+    Ok(ConnectHostResult::Opened {
+        session,
+        replaced: None,
+    })
 }
 
 /// Abre um Host Group inteiro como **panes de um workspace só** — é o que dá
@@ -4582,11 +4627,18 @@ fn session_mark_seen(app: AppHandle, state: State<'_, AppState>, id: SessionId) 
 
 #[tauri::command]
 fn dispose_session(app: AppHandle, state: State<'_, AppState>, id: SessionId) {
-    teardown_agent_session(&app, &state, id);
-    state.sessions.dispose(&state.pty_pool, id);
-    close_files_panel(&state, id);
-    let _ = state.layout.session_disposed(id);
+    dispose_session_now(&app, &state, id);
     emit_layout(&app, &state);
+}
+
+/// Encerra a sessão (o PTY morre com o process group, princípio 9) e tira dela
+/// tudo que o layout e os painéis guardavam.
+fn dispose_session_now(app: &AppHandle, state: &AppState, id: SessionId) {
+    teardown_agent_session(app, state, id);
+    state.sessions.dispose(&state.pty_pool, id);
+    state.typed_seen.forget(id);
+    close_files_panel(state, id);
+    let _ = state.layout.session_disposed(id);
 }
 
 #[tauri::command]
@@ -10359,6 +10411,7 @@ pub fn run() {
                 tunnel_states: Arc::new(crate::ssh::tunnel::TunnelStates::default()),
                 host_queries,
                 connect_gate: Arc::default(),
+                typed_seen: Default::default(),
                 boot: Arc::clone(&boot_gate),
                 services: Arc::default(),
             });
