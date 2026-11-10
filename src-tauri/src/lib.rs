@@ -9086,7 +9086,8 @@ fn orbit_secrets_supported() -> bool {
 }
 
 /// Guarda o valor de uma variável secreta no Keychain. O valor só entra:
-/// nunca vai ao banco nem volta ao front por aqui.
+/// nunca vai ao banco nem volta ao front por aqui. O Terminal aberto do
+/// grafo fica sabendo que ela mudou (só o nome chega ao front).
 #[tauri::command]
 async fn orbit_secret_set(
     app: AppHandle,
@@ -9094,8 +9095,12 @@ async fn orbit_secret_set(
     name: String,
     value: String,
 ) -> Result<(), String> {
-    off_main(app, move |_app, _state| {
-        orbit::secret::set(&orbit::secret::Keychain, &graph_id, &name, &value)
+    off_main(app, move |app, _state| {
+        orbit::secret::set(&orbit::secret::Keychain, &graph_id, &name, &value)?;
+        // O Terminal aberto compara pela impressão: "↻ variáveis" (O2).
+        app.state::<orbit::run::SharedRuns>()
+            .secret_changed(&graph_id, &name, &value);
+        Ok(())
     })
     .await?
 }

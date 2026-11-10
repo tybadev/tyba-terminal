@@ -9,6 +9,10 @@
 //! grafo chamada `PATH` ou `TYBA_IN` mudaria o shell ou o wrapper do TYBA por
 //! baixo do dono.
 
+use std::collections::{BTreeMap, BTreeSet};
+
+use sha2::{Digest, Sha256};
+
 /// Por que um nome de variável do grafo não vira variável de ambiente.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EnvNameProblem {
@@ -93,6 +97,30 @@ pub fn graph_env(variables: &[(String, String)]) -> Vec<(String, String)> {
         .collect()
 }
 
+/// A impressão (SHA-256 do valor) de cada variável que vira env, por nome:
+/// com ela o core sabe se o valor mudou sem guardar o valor. Fica só na
+/// memória do core — nunca vai ao front, ao banco nem a log — e é como a
+/// secreta se compara sem sair em claro.
+pub type EnvPrints = BTreeMap<String, [u8; 32]>;
+
+pub fn env_prints(variables: &[(String, String)]) -> EnvPrints {
+    graph_env(variables)
+        .into_iter()
+        .map(|(name, value)| (name, Sha256::digest(value.as_bytes()).into()))
+        .collect()
+}
+
+/// Os nomes cujo env mudou de `opened` para `now` (valor trocado, variável
+/// nova ou removida), em ordem.
+pub fn changed_names(opened: &EnvPrints, now: &EnvPrints) -> Vec<String> {
+    let names: BTreeSet<&String> = opened.keys().chain(now.keys()).collect();
+    names
+        .into_iter()
+        .filter(|name| opened.get(*name) != now.get(*name))
+        .cloned()
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -162,6 +190,51 @@ mod tests {
                 pair("BASE_URL", "http://localhost:3000"),
                 pair("TOKEN", "abc")
             ]
+        );
+    }
+
+    #[test]
+    fn changed_names_follow_the_value_and_return_when_it_goes_back() {
+        let pair = |k: &str, v: &str| (k.to_string(), v.to_string());
+        let opened = env_prints(&[
+            pair("API_URL", "http://localhost:3000"),
+            pair("MODELO", "sonnet"),
+        ]);
+        assert!(changed_names(&opened, &opened).is_empty());
+        let edited = env_prints(&[
+            pair("API_URL", "http://localhost:4000"),
+            pair("MODELO", "sonnet"),
+        ]);
+        assert_eq!(changed_names(&opened, &edited), vec!["API_URL".to_string()]);
+        // Voltou ao valor de antes: nada mudou.
+        let back = env_prints(&[
+            pair("API_URL", "http://localhost:3000"),
+            pair("MODELO", "sonnet"),
+        ]);
+        assert!(changed_names(&opened, &back).is_empty());
+        // Nova, removida e nome que não vira env.
+        let other = env_prints(&[
+            pair("API_URL", "http://localhost:3000"),
+            pair("NOVA", "1"),
+            pair("porta-api", "8080"),
+        ]);
+        assert_eq!(
+            changed_names(&opened, &other),
+            vec!["MODELO".to_string(), "NOVA".to_string()]
+        );
+    }
+
+    /// A impressão não carrega o valor: só o hash.
+    #[test]
+    fn prints_do_not_hold_the_value() {
+        // Fixture sintética.
+        let fake = "fixture-print-secret-Zx81";
+        let prints = env_prints(&[("TOKEN".into(), fake.into())]);
+        let print = prints["TOKEN"];
+        assert!(!print.windows(fake.len()).any(|w| w == fake.as_bytes()));
+        assert_ne!(
+            print,
+            env_prints(&[("TOKEN".into(), "outro".into())])["TOKEN"]
         );
     }
 }

@@ -5532,6 +5532,7 @@ mod tests {
             plans: Vec::new(),
             number: 0,
             terminal: None,
+            stale_vars: Vec::new(),
             waiting_you: Vec::new(),
         };
         {
@@ -7946,6 +7947,7 @@ mod tests {
             plans: Vec::new(),
             number: 0,
             terminal: None,
+            stale_vars: Vec::new(),
             waiting_you: Vec::new(),
         };
         for i in 0..5u64 {
@@ -7997,6 +7999,7 @@ mod tests {
             plans: Vec::new(),
             number: 0,
             terminal: None,
+            stale_vars: Vec::new(),
             waiting_you: Vec::new(),
         };
         store.save_orbit_run(&snap(1, RunStatus::Running)).unwrap();
@@ -8028,6 +8031,7 @@ mod tests {
             plans: Vec::new(),
             number: 0,
             terminal: None,
+            stale_vars: Vec::new(),
             waiting_you: Vec::new(),
         };
         // r0 é o mais velho e está ativo; depois dele, 3 testes e 2 runs.
