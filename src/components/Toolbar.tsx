@@ -23,6 +23,7 @@ import { installClaudePlugin, type RepoSnapshot } from "../lib/ipc";
 import { translateError } from "../lib/errors";
 import { toastError } from "../lib/toast";
 import type { BranchChip, ChipId, ToolbarPref } from "../lib/repoSnapshots";
+import type { PillAgents } from "../lib/agentsDrawer";
 import {
   FOOTER_STEP,
   FOOTER_TOP_STEP,
@@ -31,6 +32,7 @@ import {
 } from "../lib/appFooter";
 import { pickStripLevel } from "../lib/orbitStrip";
 import { BranchPicker } from "./BranchPicker";
+import { DrawerPill } from "./PromptQueue";
 
 interface Props {
   pref: ToolbarPref;
@@ -82,6 +84,19 @@ interface Props {
     icon?: ReactNode;
     onClick: () => void;
   }[];
+  /**
+   * A pílula da gaveta Fila/Agentes da sessão do pane ativo (quadro
+   * GavetaPaneEstreito), à direita, antes do nome da sessão e da hora. `null`
+   * quando o pane ativo não tem gaveta.
+   */
+  pill: {
+    queueCount: number;
+    agents: PillAgents | null;
+    open: boolean;
+    onToggle: () => void;
+  } | null;
+  /** O elemento do rodapé: a gaveta aberta sobe dele. */
+  rootRef: RefObject<HTMLDivElement>;
 }
 
 /** gap-4 entre os grupos e px-3.5 dos dois lados. */
@@ -190,14 +205,17 @@ export function Toolbar({
   suggestPlugin,
   hints = [],
   sessionId,
+  pill,
+  rootRef,
 }: Props) {
   const { t } = useTranslation();
-  const rootRef = useRef<HTMLDivElement>(null);
   const leftRef = useRef<HTMLDivElement>(null);
   const rightRef = useRef<HTMLDivElement>(null);
   const step = useFooterStep(rootRef, leftRef, rightRef);
   const keeps = (at: number) => footerKeeps(step, at);
-  if (!pref.enabled) return null;
+  // Barra desligada nas preferências: fica só a pílula, que é a única entrada
+  // da gaveta.
+  if (!pref.enabled && !pill) return null;
 
   const chip = (id: ChipId) => {
     if (pref.hidden.includes(id)) return null;
@@ -339,11 +357,15 @@ export function Toolbar({
     }
   };
 
-  const left = pref.left.map(chip).filter(Boolean);
-  const right = pref.right.map(chip).filter(Boolean);
+  const left = pref.enabled ? pref.left.map(chip).filter(Boolean) : [];
+  const right = pref.enabled ? pref.right.map(chip).filter(Boolean) : [];
+  const shownHints = pref.enabled ? hints : [];
+  const richInput = pref.enabled && showRichInput;
+  const plugin = pref.enabled && suggestPlugin;
   if (
-    !showRichInput &&
-    !suggestPlugin &&
+    !richInput &&
+    !plugin &&
+    !pill &&
     left.length === 0 &&
     right.length === 0
   ) {
@@ -361,7 +383,7 @@ export function Toolbar({
     >
       <div className="flex min-w-0 overflow-hidden">
         <div ref={leftRef} className="flex w-max items-center gap-4">
-          {showRichInput && (
+          {richInput && (
             <button
               onClick={onOpenRichInput}
               title={t("richInputHint")}
@@ -373,8 +395,8 @@ export function Toolbar({
               <Shortcut combo={richInputCombo} />
             </button>
           )}
-          {suggestPlugin && <PluginChip sessionId={sessionId} />}
-          {hints.map((hint) => {
+          {plugin && <PluginChip sessionId={sessionId} />}
+          {shownHints.map((hint) => {
             const at = HINT_LABEL_STEP[hint.key];
             const labeled = at === undefined || keeps(at);
             return (
@@ -394,6 +416,15 @@ export function Toolbar({
         </div>
       </div>
       <div ref={rightRef} className="flex shrink-0 items-center gap-4">
+        {pill && (
+          <DrawerPill
+            queueCount={pill.queueCount}
+            agents={pill.agents}
+            open={pill.open}
+            compact={!keeps(FOOTER_STEP.pillCompact)}
+            onToggle={pill.onToggle}
+          />
+        )}
         {right}
       </div>
     </div>
