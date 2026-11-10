@@ -7,6 +7,7 @@ import {
   padSlackPx,
 } from "./ActiveBlock";
 import { BLOCK_GAP_PX, BlockList } from "./BlockList";
+import { SshTypedNote, type SshNoteAction } from "./SshTypedNote";
 import { LIVE_PAD_Y_PX } from "./TerminalView";
 import type { PaneId, SessionId } from "../lib/ipc";
 import type { SessionBlocksData } from "../lib/sessionBlocks";
@@ -29,6 +30,8 @@ interface Props extends SessionBlocksData {
   onPick: (id: number, event: React.MouseEvent) => void;
   onClearPick: () => void;
   onHeaderPx: (id: SessionId, px: number) => void;
+  /** Resposta ao aviso do `ssh` digitado; a sessão vai junto, como no `onInject`. */
+  onSshNote: (sessionId: SessionId, action: SshNoteAction) => void;
 }
 
 /**
@@ -69,11 +72,14 @@ export const SessionBlocks = memo(function SessionBlocks({
   runningNote,
   marked,
   copyCombo,
+  sshNote,
+  sshNoteAlias,
   onInject,
   onFocusPane,
   onPick,
   onClearPick,
   onHeaderPx,
+  onSshNote,
 }: Props) {
   const pane = useMemo(
     () => ({ left, top, width, height }),
@@ -97,6 +103,10 @@ export const SessionBlocks = memo(function SessionBlocks({
   const inject = useCallback(
     (text: string) => onInject(sessionId, text),
     [onInject, sessionId],
+  );
+  const answerSshNote = useCallback(
+    (action: SshNoteAction) => onSshNote(sessionId, action),
+    [onSshNote, sessionId],
   );
   const reportHeaderPx = useCallback(
     (px: number) => onHeaderPx(sessionId, px),
@@ -134,6 +144,11 @@ export const SessionBlocks = memo(function SessionBlocks({
           liftPx={lift}
           paneTop={pane.top}
           onHeight={reportHeaderPx}
+          below={
+            sshNote && (
+              <SshTypedNote note={sshNote} alias={sshNoteAlias} onAction={answerSshNote} />
+            )
+          }
         />
       )}
     </>

@@ -126,6 +126,8 @@ import {
   sessionDot,
 } from "./lib/sessionCard";
 import { matchSshHost } from "./lib/sshCommand";
+import { hostFormFromDetected, liveSshNote, targetLabel } from "./lib/typedSsh";
+import type { SshNoteAction } from "./components/SshTypedNote";
 import { DockerIcon } from "./components/icons/DockerIcon";
 import { TybaMark } from "./components/icons/TybaMark";
 import { NewSessionPrompt } from "./components/NewSessionPrompt";
@@ -193,6 +195,7 @@ import {
   TERMINAL_LINE_HEIGHT,
   TerminalView,
 } from "./components/TerminalView";
+import { PromptQueue } from "./components/PromptQueue";
 import {
   activateTab,
   activateWorkspace,
@@ -239,6 +242,9 @@ import {
   onLayoutChanged,
   onSessionCommand,
   onSessionCwd,
+  onTypedSshDetected,
+  sshTypedDeny,
+  type TypedSshDetected,
   onSessionIntegration,
   onSessionRemoteChips,
   onSessionStatus,
@@ -3426,6 +3432,66 @@ export default function App() {
     }
   }, []);
 
+  // O `ssh` digitado que logou (`ssh-typed://detected`): o aviso no bloco vivo,
+  // por sessão. O core já decidiu se ele sai (detecção, modo, negados); aqui só
+  // se mostra e se responde. Nada vai para o PTY vivo.
+  const [sshNotes, setSshNotes] = useState<Record<SessionId, TypedSshDetected>>({});
+  const sshHostsRef = useRef(sshHosts);
+  sshHostsRef.current = sshHosts;
+  const openDetectedHost = useCallback(
+    (hostId: string) => {
+      const known = sshHostsRef.current.find((h) => h.id === hostId);
+      if (known) {
+        void connectToHost(known);
+        return;
+      }
+      void listHosts()
+        .then((hosts) => {
+          setSshHosts(hosts);
+          const host = hosts.find((h) => h.id === hostId);
+          if (host) void connectToHost(host);
+        })
+        .catch((e) => toastError(t("connectionsActionFailed"), translateError(e, t)));
+    },
+    [connectToHost, t],
+  );
+  useEffect(() => {
+    let disposed = false;
+    let off: (() => void) | null = null;
+    void onTypedSshDetected((e) => {
+      // "Sempre abrir integrado": o core só manda `open` com host cadastrado.
+      if (e.open && e.host_id) {
+        openDetectedHost(e.host_id);
+        return;
+      }
+      setSshNotes((prev) => ({ ...prev, [e.session_id]: e }));
+    }).then((un) => (disposed ? un() : (off = un)));
+    return () => {
+      disposed = true;
+      off?.();
+    };
+  }, [openDetectedHost]);
+  const answerSshNote = useCallback(
+    (sessionId: SessionId, action: SshNoteAction) => {
+      const note = sshNotes[sessionId];
+      setSshNotes((prev) => {
+        const next = { ...prev };
+        delete next[sessionId];
+        return next;
+      });
+      if (!note || action === "dismiss") return;
+      if (action === "never") {
+        void sshTypedDeny(targetLabel(note.target)).catch((e) =>
+          toastError(t("sshTypedSaveFailed"), e),
+        );
+        return;
+      }
+      if (note.host_id) openDetectedHost(note.host_id);
+      else setHostEditor({ mode: "create", prefill: hostFormFromDetected(note), connect: true });
+    },
+    [sshNotes, openDetectedHost, t],
+  );
+
   const newAgentSession = useCallback(
     async (
       cwd: string,
@@ -5670,14 +5736,35 @@ export default function App() {
                     ? markedBlocks
                     : null,
                 copyCombo: formatCombo(bindings.copy),
+                sshNote: liveSshNote(sshNotes[s.id], sessionCommands[s.id]),
+                sshNoteAlias:
+                  sshHosts.find((h) => h.id === sshNotes[s.id]?.host_id)?.alias ?? null,
               })}
               onInject={injectInto}
               onFocusPane={bare ? noFocusPane : focusPane}
               onPick={pickerFor(s.id)}
               onClearPick={clearPick}
               onHeaderPx={reportHeaderPx}
+              onSshNote={answerSshNote}
             />
           )}
+          {/* Quadros 4A/4B: a fila de prompts, só no pane com agente (a
+              sessão de agente ou o claude cru que o probe achou no shell).
+              A gaveta fica acima da caixa de agente quando ela flutua aqui. */}
+          {!bare &&
+            paneRect &&
+            (s.kind.type === "agent" ||
+              (s.kind.type === "shell" && detected !== null)) && (
+              <PromptQueue
+                sessionId={s.id}
+                status={s.status}
+                bottomPx={
+                  s.id === activeId && richInputVisible && !ownsCommandLine
+                    ? 66
+                    : 12
+                }
+              />
+            )}
         </div>
         {(paneRect || bare) && line?.visible && (
           // Clicar (ou focar) a linha de outro painel passa o
@@ -5919,6 +6006,8 @@ export default function App() {
         groups={hostGroups}
         onClose={() => setHostEditor(null)}
         onSaved={(saved) => {
+          // "Cadastrar e abrir integrado": gravou, conecta.
+          if (hostEditor?.mode === "create" && hostEditor.connect) void connectToHost(saved);
           setHostEditor(null);
           setSshHosts((prev) => prev.map((h) => (h.id === saved.id ? saved : h)));
         }}

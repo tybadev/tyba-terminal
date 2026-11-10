@@ -510,23 +510,45 @@ pub struct DetectedEvent {
     pub destination: TypedDestination,
     /// `Some` quando casou com um Host cadastrado (`Registered`).
     pub host_id: Option<String>,
+    /// O destino efetivo (`user@host:porta` do chip e de "Nunca para este
+    /// host"), ver [`super::typed_prefs::TypedTarget::of`].
+    pub target: super::typed_prefs::TypedTarget,
+    /// "Sempre abrir integrado" com host cadastrado: a tela abre direto, sem
+    /// aviso.
+    pub open: bool,
 }
 
 impl DetectedEvent {
-    /// `None` quando o aviso fica quieto (ver [`resolve`]).
-    pub fn build(session_id: String, detected: Detected, hosts: &[super::Host]) -> Option<Self> {
+    /// `None` quando o aviso fica quieto: integração desligada no Host (ver
+    /// [`resolve`]), detecção desligada, modo Nunca ou host negado (ver
+    /// [`super::typed_prefs::TypedPrefs::decide`]).
+    pub fn build(
+        session_id: String,
+        detected: Detected,
+        hosts: &[super::Host],
+        prefs: &super::typed_prefs::TypedPrefs,
+    ) -> Option<Self> {
+        use super::typed_prefs::{Decision, TypedTarget};
         let host_id = match resolve(detected.destination.clone(), hosts)? {
             TypedMatch::Registered(id) => Some(id),
             TypedMatch::Unregistered(_) => None,
         };
-        // TODO(ssh-digitado): a lista de hosts negados ("Nunca para este
-        // host", Settings > SSH > Integração) ainda não existe. Quando entrar,
-        // é aqui que um destino negado devolve `None`.
+        let registered = host_id
+            .as_ref()
+            .and_then(|id| hosts.iter().find(|h| &h.id == id));
+        let target = TypedTarget::of(&detected.destination, registered);
+        let open = match prefs.decide(&target, registered.is_some()) {
+            Decision::Quiet => return None,
+            Decision::Ask => false,
+            Decision::Open => true,
+        };
         Some(Self {
             session_id,
             block_started_at_ms: detected.block_started_at_ms,
             destination: detected.destination,
             host_id,
+            target,
+            open,
         })
     }
 }
@@ -1110,25 +1132,33 @@ mod tests {
             destination: parse(line).expect("linha interativa"),
             block_started_at_ms: Some(42),
         };
+        let prefs = crate::ssh::typed_prefs::TypedPrefs::default();
 
-        let event = DetectedEvent::build("s1".into(), detected("ssh prod"), &hosts).expect("avisa");
+        let event =
+            DetectedEvent::build("s1".into(), detected("ssh prod"), &hosts, &prefs).expect("avisa");
         assert_eq!(event.host_id.as_deref(), Some("h-prod"));
         assert_eq!(event.destination, dest("prod"));
         assert_eq!(event.block_started_at_ms, Some(42));
         assert_eq!(event.session_id, "s1");
 
-        let event = DetectedEvent::build("s1".into(), detected("ssh x@new.example.test"), &hosts)
-            .expect("avisa");
+        let event = DetectedEvent::build(
+            "s1".into(),
+            detected("ssh x@new.example.test"),
+            &hosts,
+            &prefs,
+        )
+        .expect("avisa");
         assert_eq!(event.host_id, None);
         assert_eq!(event.destination, with_user("new.example.test", "x"));
 
         assert_eq!(
-            DetectedEvent::build("s1".into(), detected("ssh off"), &hosts),
+            DetectedEvent::build("s1".into(), detected("ssh off"), &hosts, &prefs),
             None
         );
 
         let wire = serde_json::to_value(
-            DetectedEvent::build("s1".into(), detected("ssh -p 2 a@b"), &[]).expect("avisa"),
+            DetectedEvent::build("s1".into(), detected("ssh -p 2 a@b"), &[], &prefs)
+                .expect("avisa"),
         )
         .expect("serializa");
         assert_eq!(
@@ -1140,8 +1170,56 @@ mod tests {
                     "host": "b", "user": "a", "port": 2,
                     "identity_file": null, "proxy_jump": null
                 },
-                "host_id": null
+                "host_id": null,
+                "target": { "user": "a", "host": "b", "port": 2 },
+                "open": false
             })
         );
+    }
+
+    #[test]
+    fn the_event_follows_the_typed_ssh_settings() {
+        use crate::ssh::typed_prefs::{TypedMode, TypedPrefs, TypedTarget};
+        let mut srv = host("h-srv", "srv-01", "203.0.113.10");
+        srv.username = Some("root".into());
+        let hosts = vec![srv];
+        let detected = |line: &str| Detected {
+            destination: parse(line).expect("linha interativa"),
+            block_started_at_ms: Some(7),
+        };
+        let build = |line: &str, prefs: &TypedPrefs| {
+            DetectedEvent::build("s".into(), detected(line), &hosts, prefs)
+        };
+
+        let mut prefs = TypedPrefs::default();
+        let event = build("ssh srv-01", &prefs).expect("pergunta");
+        assert!(!event.open);
+        assert_eq!(
+            event.target,
+            TypedTarget::parse("root@203.0.113.10:22").unwrap()
+        );
+
+        prefs.mode = TypedMode::Open;
+        assert!(build("ssh srv-01", &prefs).expect("abre").open);
+        assert!(
+            !build("ssh x@new.example.test", &prefs)
+                .expect("não cadastrado pergunta")
+                .open
+        );
+
+        prefs.mode = TypedMode::Never;
+        assert_eq!(build("ssh srv-01", &prefs), None);
+
+        prefs.mode = TypedMode::Ask;
+        prefs.detect = false;
+        assert_eq!(build("ssh srv-01", &prefs), None);
+
+        prefs.detect = true;
+        prefs
+            .deny(TypedTarget::parse("root@203.0.113.10:22").unwrap(), 0)
+            .unwrap();
+        assert_eq!(build("ssh srv-01", &prefs), None, "pelo alias");
+        assert_eq!(build("ssh root@203.0.113.10", &prefs), None, "pelo IP");
+        assert!(build("ssh -p 2222 root@203.0.113.10", &prefs).is_some());
     }
 }
