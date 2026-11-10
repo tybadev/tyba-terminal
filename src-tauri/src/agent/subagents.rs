@@ -1453,8 +1453,18 @@ pub(crate) fn resolve_transcript(
     description: Option<&str>,
 ) -> Option<PathBuf> {
     let sidecar = sidecar_dir(parent_transcript_path?);
-    transcript_by_agent_id(&sidecar, agent_id)
-        .or_else(|| transcript_by_meta_scan(&sidecar, agent_type, description))
+    if let Some(path) = transcript_by_agent_id(&sidecar, agent_id) {
+        return Some(path);
+    }
+    // Id real do Claude: o transcript vai ser `agent-<id>.jsonl`. Se ainda não
+    // existe (comum no SubagentStart), o scan por tipo pegaria o de um
+    // subagente anterior já concluído e o run novo fecharia como Done. Fica
+    // `None` e o watcher re-resolve a cada ciclo até o arquivo aparecer.
+    let bare = agent_id.strip_prefix("agent-").unwrap_or(agent_id);
+    if is_plausible_subagent_id(bare) {
+        return None;
+    }
+    transcript_by_meta_scan(&sidecar, agent_type, description)
 }
 
 #[cfg(test)]
@@ -2086,6 +2096,46 @@ mod tests {
             Some("revisar diff"),
         );
         assert_eq!(resolved, Some(wanted));
+    }
+
+    #[test]
+    fn resolve_never_hands_a_new_run_the_transcript_of_a_finished_one() {
+        let dir = TempDir::new().unwrap();
+        let parent = dir.path().join("session.jsonl");
+        write(&parent, "{}");
+        let sidecar = dir.path().join("session").join("subagents");
+        fs::create_dir_all(&sidecar).unwrap();
+
+        // Primeiro reviewer já concluiu: meta + transcript com resposta final.
+        let first = "a1111111111111111";
+        write(
+            &sidecar.join(format!("agent-{first}.meta.json")),
+            r#"{"agentType":"reviewer","description":"revisar diff"}"#,
+        );
+        write(
+            &sidecar.join(format!("agent-{first}.jsonl")),
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"pronto"}]}}"#,
+        );
+
+        // Segundo reviewer acabou de dar SubagentStart: o `.jsonl` dele ainda
+        // não existe no disco.
+        let second = "a2222222222222222";
+        let path = resolve_transcript(Some(&parent), second, "reviewer", Some("revisar diff"));
+        assert_eq!(path, None);
+
+        let mut session = SessionSubagents::default();
+        session.push_pending(Some("reviewer".into()), Some("revisar diff".into()), 10);
+        session.promote(second.into(), "reviewer".into(), None, path, None, 20);
+        assert_eq!(status_of(&session, second), Some(SubagentStatus::Running));
+        assert_eq!(session.runs[0].transcript_path, None);
+
+        // Quando o arquivo dele aparece, a re-resolução acha o certo.
+        let own = sidecar.join(format!("agent-{second}.jsonl"));
+        write(&own, "{}");
+        assert_eq!(
+            resolve_transcript(Some(&parent), second, "reviewer", Some("revisar diff")),
+            Some(own)
+        );
     }
 
     #[test]
