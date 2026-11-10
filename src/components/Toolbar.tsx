@@ -1,8 +1,17 @@
-import { useEffect, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ReactNode,
+  type RefObject,
+} from "react";
 import { useTranslation } from "react-i18next";
 import {
   ArrowDown,
   ArrowUp,
+  Folder,
   GitBranch,
   GitDiff,
   PuzzlePiece,
@@ -14,6 +23,13 @@ import { installClaudePlugin, type RepoSnapshot } from "../lib/ipc";
 import { translateError } from "../lib/errors";
 import { toastError } from "../lib/toast";
 import type { BranchChip, ChipId, ToolbarPref } from "../lib/repoSnapshots";
+import {
+  FOOTER_STEP,
+  FOOTER_TOP_STEP,
+  HINT_LABEL_STEP,
+  footerKeeps,
+} from "../lib/appFooter";
+import { pickStripLevel } from "../lib/orbitStrip";
 import { BranchPicker } from "./BranchPicker";
 
 interface Props {
@@ -58,7 +74,62 @@ interface Props {
    * Clicáveis — a mesma ação do atalho. `combo` vem dos bindings do usuário,
    * nunca fixo, para a dica não ensinar uma tecla que ele trocou.
    */
-  hints?: { key: string; label: string; combo?: string; onClick: () => void }[];
+  hints?: {
+    key: string;
+    label: string;
+    combo?: string;
+    /** Dica sem tecla (atalhos): o ícone fica quando o rótulo sai. */
+    icon?: ReactNode;
+    onClick: () => void;
+  }[];
+}
+
+/** gap-4 entre os grupos e px-3.5 dos dois lados. */
+const FOOTER_CHROME = 16 + 28;
+
+/**
+ * Degrau da escada do rodapé (quadro GavetaPaneEstreito, Rodapé): mede a
+ * largura natural dos dois grupos no degrau em que está, guarda por degrau e
+ * escolhe o menor que cabe, com folga para voltar (o mesmo de
+ * `useStripLevel` da faixa do Orbit). Sem breakpoint fixo.
+ */
+function useFooterStep(
+  row: RefObject<HTMLElement | null>,
+  left: RefObject<HTMLElement | null>,
+  right: RefObject<HTMLElement | null>,
+) {
+  const [step, setStep] = useState(0);
+  const current = useRef(0);
+  const needs = useRef<(number | undefined)[]>([]);
+
+  const measure = useCallback(() => {
+    const r = row.current;
+    const l = left.current;
+    const rt = right.current;
+    if (!r || !l || !rt) return;
+    const at = current.current;
+    const need = l.offsetWidth + rt.offsetWidth + FOOTER_CHROME;
+    if (needs.current[at] !== need) {
+      if (needs.current[at] !== undefined) needs.current = [];
+      needs.current[at] = need;
+    }
+    setStep(pickStripLevel(needs.current, r.clientWidth, at, FOOTER_TOP_STEP));
+  }, [row, left, right]);
+
+  // A cada render: o conteúdo muda (estado da pílula, branch) sem o rodapé
+  // mudar de tamanho.
+  useLayoutEffect(() => {
+    current.current = step;
+    measure();
+  });
+
+  useEffect(() => {
+    const ro = new ResizeObserver(() => measure());
+    for (const el of [row.current, left.current, right.current]) if (el) ro.observe(el);
+    return () => ro.disconnect();
+  }, [measure, row, left, right]);
+
+  return step;
 }
 
 /** O chip de instalar o plugin: só emite a intenção. Quem decide se ainda
@@ -121,6 +192,11 @@ export function Toolbar({
   sessionId,
 }: Props) {
   const { t } = useTranslation();
+  const rootRef = useRef<HTMLDivElement>(null);
+  const leftRef = useRef<HTMLDivElement>(null);
+  const rightRef = useRef<HTMLDivElement>(null);
+  const step = useFooterStep(rootRef, leftRef, rightRef);
+  const keeps = (at: number) => footerKeeps(step, at);
   if (!pref.enabled) return null;
 
   const chip = (id: ChipId) => {
@@ -134,7 +210,10 @@ export function Toolbar({
             className="flex min-w-0 shrink items-center gap-1"
             aria-label={t("toolbarCwd")}
           >
-            <span className="truncate">{basename(cwd)}</span>
+            <Folder size={12} className="shrink-0" />
+            {keeps(FOOTER_STEP.cwdLabel) && (
+              <span className="truncate">{basename(cwd)}</span>
+            )}
           </span>
         ) : null;
       case "branch":
@@ -256,7 +335,7 @@ export function Toolbar({
         );
       }
       case "clock":
-        return <ClockChip key={id} />;
+        return keeps(FOOTER_STEP.clock) ? <ClockChip key={id} /> : null;
     }
   };
 
@@ -274,33 +353,49 @@ export function Toolbar({
   return (
     // Opção G: o rodapé é cromo — o mesmo acrílico da barra e da lateral, com
     // o fio em cima. Transparente, ele mostrava a aurora crua por trás.
-    <div className="tyba-section flex h-[26px] min-w-0 shrink-0 items-center justify-between gap-4 px-3.5 text-[11px] text-tyba-text-faint shadow-[inset_0_1px_0_var(--tyba-line)]">
-      <div className="flex min-w-0 items-center gap-4 overflow-hidden">
-        {showRichInput && (
-          <button
-            onClick={onOpenRichInput}
-            title={t("richInputHint")}
-            className="flex shrink-0 items-center gap-1.5 rounded-[4px] px-1.5 py-0.5 text-tyba-text-muted transition-colors hover:bg-tyba-text/[.06] hover:text-tyba-text"
-          >
-            <TextAlignLeft size={12} />
-            <span>{t("richInputToggle")}</span>
-            <Shortcut combo={richInputCombo} />
-          </button>
-        )}
-        {suggestPlugin && <PluginChip sessionId={sessionId} />}
-        {hints.map((hint) => (
-          <button
-            key={hint.key}
-            onClick={hint.onClick}
-            className="flex shrink-0 items-center gap-1.5 rounded-[4px] px-1 py-0.5 text-tyba-text-faint transition-colors hover:bg-tyba-text/[.06] hover:text-tyba-text"
-          >
-            {hint.combo && <Shortcut combo={hint.combo} />}
-            <span>{hint.label}</span>
-          </button>
-        ))}
-        {left}
+    // A escada mede a largura natural do grupo da esquerda (o `w-max` de
+    // dentro); o de fora só recorta se nem o último degrau couber.
+    <div
+      ref={rootRef}
+      className="tyba-section flex h-[26px] min-w-0 shrink-0 items-center justify-between gap-4 px-3.5 text-[11px] text-tyba-text-faint shadow-[inset_0_1px_0_var(--tyba-line)]"
+    >
+      <div className="flex min-w-0 overflow-hidden">
+        <div ref={leftRef} className="flex w-max items-center gap-4">
+          {showRichInput && (
+            <button
+              onClick={onOpenRichInput}
+              title={t("richInputHint")}
+              aria-label={t("richInputToggle")}
+              className="flex shrink-0 items-center gap-1.5 rounded-[4px] px-1.5 py-0.5 text-tyba-text-muted transition-colors hover:bg-tyba-text/[.06] hover:text-tyba-text"
+            >
+              <TextAlignLeft size={12} />
+              {keeps(FOOTER_STEP.richInputLabel) && <span>{t("richInputToggle")}</span>}
+              <Shortcut combo={richInputCombo} />
+            </button>
+          )}
+          {suggestPlugin && <PluginChip sessionId={sessionId} />}
+          {hints.map((hint) => {
+            const at = HINT_LABEL_STEP[hint.key];
+            const labeled = at === undefined || keeps(at);
+            return (
+              <button
+                key={hint.key}
+                onClick={hint.onClick}
+                aria-label={hint.label}
+                title={labeled ? undefined : hint.label}
+                className="flex shrink-0 items-center gap-1.5 rounded-[4px] px-1 py-0.5 text-tyba-text-faint transition-colors hover:bg-tyba-text/[.06] hover:text-tyba-text"
+              >
+                {hint.combo ? <Shortcut combo={hint.combo} /> : hint.icon}
+                {labeled && <span>{hint.label}</span>}
+              </button>
+            );
+          })}
+          {left}
+        </div>
       </div>
-      <div className="flex shrink-0 items-center gap-4">{right}</div>
+      <div ref={rightRef} className="flex shrink-0 items-center gap-4">
+        {right}
+      </div>
     </div>
   );
 }

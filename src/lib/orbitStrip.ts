@@ -20,17 +20,19 @@ export const STRIP_HYSTERESIS = 24;
  * `needs[l]` é a largura que o degrau `l` pede (placas + vão), ou `undefined`
  * se ainda não foi medido — aí devolve esse degrau para medi-lo antes de
  * decidir. Voltar para um degrau menor que o `current` exige a folga.
+ * `top` é o último degrau (o rodapé do app tem 8).
  */
 export function pickStripLevel(
   needs: readonly (number | undefined)[],
   available: number,
   current: number,
+  top: number = STRIP_TOP_LEVEL,
 ): number {
-  for (let l = 0; l < STRIP_TOP_LEVEL; l++) {
+  for (let l = 0; l < top; l++) {
     const need = needs[l];
     if (need === undefined) return l;
     const slack = l < current ? STRIP_HYSTERESIS : 0;
     if (need + slack <= available) return l;
   }
-  return STRIP_TOP_LEVEL;
+  return top;
 }

@@ -16,6 +16,7 @@ import {
   GitBranch,
   GitDiff,
   HardDrives,
+  Keyboard,
   MagnifyingGlass,
   Plug,
   Plus,
@@ -7507,6 +7508,7 @@ export default function App() {
               {
                 key: "shortcuts",
                 label: t("hintShortcuts"),
+                icon: <Keyboard size={13} />,
                 onClick: () => setShortcutsOpen((open) => !open),
               },
             ]}
