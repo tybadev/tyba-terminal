@@ -1231,6 +1231,26 @@ export const sshTypedSet = (change: { detect?: boolean; mode?: TypedSshMode }) =
 export const sshTypedDeny = (target: string) => invoke<TypedSshPrefs>("ssh_typed_deny", { target });
 export const sshTypedAllow = (target: string) => invoke<TypedSshPrefs>("ssh_typed_allow", { target });
 
+/** `ssh-typed://detected`: um `ssh` digitado logou (espelho de `DetectedEvent`). */
+export interface TypedSshDetected {
+  session_id: SessionId;
+  /** O bloco vivo, pelo `started_at_ms` do `SessionCommand`. */
+  block_started_at_ms: number | null;
+  destination: {
+    host: string;
+    user: string | null;
+    port: number | null;
+    identity_file: string | null;
+    proxy_jump: string | null;
+  };
+  host_id: string | null;
+  target: TypedSshTarget;
+  /** "Sempre abrir integrado" com host cadastrado: abre direto, sem aviso. */
+  open: boolean;
+}
+export const onTypedSshDetected = (handler: (e: TypedSshDetected) => void): Promise<UnlistenFn> =>
+  listen<TypedSshDetected>("ssh-typed://detected", (e) => handler(e.payload));
+
 /** Host ou grupo gravado com sucesso. Sem payload: quem escuta relê as listas. */
 export const EVENT_HOSTS_CHANGED = "ssh://hosts-changed";
 
