@@ -126,8 +126,9 @@ export function PromptQueue({
   }, [sessionId]);
 
   const open = drawer?.open ?? false;
-  // Mouse em cima ou foco dentro: o core não recolhe a gaveta aberta sozinha
-  // enquanto o dono está nela (4D).
+  // Mouse em cima ou foco de teclado dentro: o core não recolhe a gaveta aberta
+  // sozinha enquanto o dono está nela (4D). Foco deixado por clique não conta:
+  // o mouse sai e o botão clicado segue focado, e a gaveta nunca recolheria.
   const present = open && (hover || focusWithin);
   const sentPresent = useRef(false);
   useEffect(() => {
@@ -245,7 +246,7 @@ export function PromptQueue({
       style={{ bottom: bottomPx }}
       onPointerEnter={() => setHover(true)}
       onPointerLeave={() => setHover(false)}
-      onFocus={() => setFocusWithin(true)}
+      onFocus={(e) => setFocusWithin(e.target.matches(":focus-visible"))}
       onBlur={(e) => {
         if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
           setFocusWithin(false);
