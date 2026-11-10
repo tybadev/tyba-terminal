@@ -15,6 +15,7 @@ import {
   CaretDoubleLeft,
   CaretDoubleRight,
   GearSix,
+  HardDrives,
   PlugsConnected,
   X,
   Keyboard,
@@ -35,6 +36,7 @@ import { ThemePicker } from "./settings/ThemePicker";
 import { IS_MAC } from "@/lib/platform";
 import { NOTIFY_KINDS, notifyEnabled } from "@/lib/notifyPrefs";
 import { ClaudePluginSetting } from "./ClaudePluginSetting";
+import { SshSection } from "./settings/SshSection";
 import { AppIconPicker } from "./AppIconPicker";
 import { LANGUAGES, setLanguage, type LanguageCode } from "../i18n";
 import {
@@ -125,6 +127,7 @@ type Section =
   | "agents"
   | "security"
   | "integrations"
+  | "ssh"
   | "notifications"
   | "shortcuts"
   | "about";
@@ -137,6 +140,7 @@ const SECTIONS: { id: Section; label: string; hint: string; long: string; icon: 
   { id: "agents", label: "settingsAgents", hint: "settingsAgentsShort", long: "settingsAgentsHint", icon: <User size={16} /> },
   { id: "security", label: "settingsSecurity", hint: "settingsSecurityShort", long: "settingsSecurityHint", icon: <ShieldCheck size={16} /> },
   { id: "integrations", label: "settingsIntegrations", hint: "settingsIntegrationsShort", long: "settingsIntegrationsHint", icon: <PlugsConnected size={16} /> },
+  { id: "ssh", label: "settingsSsh", hint: "settingsSshShort", long: "settingsSshLong", icon: <HardDrives size={16} /> },
   { id: "notifications", label: "settingsNotifications", hint: "settingsNotificationsShort", long: "settingsNotificationsHint", icon: <Bell size={16} /> },
   { id: "shortcuts", label: "settingsShortcuts", hint: "settingsShortcutsShort", long: "shortcutsHint", icon: <Keyboard size={16} /> },
   { id: "about", label: "settingsAbout", hint: "settingsAboutShort", long: "aboutHint", icon: <Info size={16} /> },
@@ -227,6 +231,7 @@ const searchKeys = (): Record<Section, string[]> => ({
   ],
   security: [...SECURITY_RULES, ...SECURITY_AGENT, "securityRepo"],
   integrations: ["dockerIntegration", "claudePlugin", "fileLinks", "defaultEditor"],
+  ssh: ["sshTypedDetect", "sshTypedWhen", "sshDenied"],
   notifications: [...NOTIFY_KINDS.map((k) => k.label), "notifyMacos"],
   shortcuts: Object.values(ACTION_LABEL_KEYS),
   about: ["version", "aboutCopyDiagnostics"],
@@ -1340,6 +1345,11 @@ export function SettingsView({
                 }}
               />
             </SettingLine>
+          </section>
+        )}
+        {section === "ssh" && (
+          <section className="mx-auto w-full max-w-[860px]">
+            <SshSection />
           </section>
         )}
         {section === "notifications" && (
