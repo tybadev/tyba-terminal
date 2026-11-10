@@ -125,8 +125,6 @@
   --tyba-glass-piece: var(--tyba-raised);         /* faixa, cápsula, campo */
   --tyba-glass-float: var(--tyba-overlay);        /* pílula, gaveta, popover */
   --tyba-glass-active: var(--tyba-raised);        /* item ativo */
-  --tyba-card-glass: var(--tyba-raised);          /* corpo do card do Orbit */
-  --tyba-card-blur: 0px;
   --tyba-lens: var(--tyba-edge);                  /* aresta do que flutua */
   --tyba-lens-shadow: var(--tyba-shadow-md);
   /* Opção G: o fio que separa as peças coladas, e o papel do terminal —
@@ -462,8 +460,6 @@
   --tyba-glass-piece: rgba(255, 255, 255, 0.8);
   --tyba-glass-float: rgba(255, 255, 255, 0.97);
   --tyba-glass-active: #ffffff;
-  --tyba-card-glass: rgba(255, 255, 255, 0.8);
-  --tyba-card-blur: 24px;
   --tyba-lens: 0 0 0 1px rgba(60, 40, 120, 0.08);
   --tyba-lens-shadow: 0 0 transparent;
   --tyba-line: rgba(60, 40, 120, 0.12);
