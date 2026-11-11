@@ -106,6 +106,9 @@ export interface Session {
   subagents_working?: boolean;
   /** O que o `statusLine` do Claude reportou. Só memória no core. */
   agent_usage?: AgentUsage | null;
+  /** Resumo do último turno que terminou. Continua enquanto o turno seguinte
+   * roda; o core troca quando ele acaba. Só memória no core. */
+  last_turn?: TurnDigest | null;
   /** Shell restaurado com uma conversa do Claude que ainda dá para retomar.
    * Decidido pelo core no boot; só em memória. */
   shell_resume_offer?: boolean;
@@ -205,6 +208,27 @@ export interface FileDiff {
   status: FileStatus;
   insertions: number | null;
   deletions: number | null;
+}
+
+/** Espelha `agent::turn::TurnDigest`: o que mudou na pasta entre o prompt e o
+ * fim do turno. Só caminhos e contagens, nunca conteúdo. */
+export interface TurnDigest {
+  outcome: "completed" | "failed" | "interrupted";
+  started_at_ms: number;
+  ended_at_ms: number;
+  duration_ms: number;
+  /** Redigido e cortado pelo core. */
+  prompt: string | null;
+  /** `false` = sem diff (pasta sem git, ou snapshot que não ficou pronto). */
+  git: boolean;
+  /** Lista inteira, ordenada por caminho. */
+  files: FileDiff[];
+  insertions: number;
+  deletions: number;
+  commits: number;
+  /** Custo e tokens do turno; `null` quando o agente não reporta uso. */
+  cost_usd: number | null;
+  tokens: number | null;
 }
 
 export interface CommitInfo {

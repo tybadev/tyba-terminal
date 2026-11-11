@@ -12,6 +12,7 @@ use crate::agent::claude_settings::claude_settings_are_broad;
 use crate::agent::hooks_settings::{claude_session_settings, hook_command};
 use crate::agent::hooks_settings::{observer_hook_command, observer_session_settings};
 use crate::agent::subagents::SharedSubagents;
+use crate::agent::turn::{TurnOutcome, TurnTracker};
 use crate::agent::usage::{AgentAlert, AgentUsage, EVENT_AGENT_ALERT, STATUSLINE_HOOK_EVENT};
 use crate::agent::{AgentRunner, ClaudeCodeRunner, CodexRunner, HookSetup};
 use crate::approvals::hybrid::{plan_pre_tool_use, HybridDecision, PreToolUsePlan};
@@ -142,6 +143,8 @@ struct HandlerCtx {
     /// `CLAUDE_CONFIG_DIR` do app (denylist de env).
     agent_home: Option<PathBuf>,
     turn_settle: Arc<std::sync::atomic::AtomicU64>,
+    /// Turno aberto, para o resumo do turno (ver [`crate::agent::turn`]).
+    turn: Arc<TurnTracker>,
     /// Último `transcript_path` que já virou id de conversa. Existe para o
     /// handler não reabrir o arquivo a cada `PreToolUse`: o id mora no cabeçalho
     /// e não muda enquanto o transcript for o mesmo.
@@ -593,6 +596,53 @@ fn notify_turn_ended(ctx: &HandlerCtx, transcript_path: Option<String>, needs_se
             end.prompt.as_deref(),
             &body,
         );
+    });
+}
+
+/// Folga para o último `statusLine` do turno chegar antes de o resumo ler o
+/// uso: o Claude o dispara depois da mensagem final, junto com o `Stop`.
+const TURN_USAGE_SETTLE_MS: u64 = 1000;
+
+/// `UserPromptSubmit` do fio principal: o turno começou. Só registra e
+/// dispara o snapshot em outra thread — nada aqui segura o hook. Nó do Orbit
+/// fica de fora: ele já tem o resumo dele.
+fn begin_turn(ctx: &HandlerCtx, event: &HookEvent) {
+    let Some(session) = ctx.sessions.get(ctx.session_id) else {
+        return;
+    };
+    if session.owner == crate::session::SessionOwner::Orbit {
+        return;
+    }
+    let prompt = event
+        .raw
+        .get("prompt")
+        .and_then(|p| p.as_str())
+        .and_then(|p| crate::status::transcript::clean_summary(p, TURN_PROMPT_MAX_CHARS));
+    let usage = session.agent_usage;
+    ctx.turn
+        .begin(ctx.worktree_root.clone(), now_ms(), prompt, usage);
+}
+
+/// O turno acabou: compara a pasta com o snapshot do prompt e grava o resumo
+/// na sessão. Fora da thread do hook — espera o snapshot, roda git e dá a
+/// folga do `statusLine`. Sem turno aberto não há resumo.
+fn finish_turn(ctx: &HandlerCtx, outcome: TurnOutcome) {
+    let Some(open) = ctx.turn.end() else {
+        return;
+    };
+    let ended_at_ms = now_ms();
+    let app = ctx.app.clone();
+    let sessions = ctx.sessions.clone();
+    let id = ctx.session_id;
+    let reports_usage = matches!(ctx.runner_kind, AgentRunnerKind::ClaudeCode);
+    std::thread::spawn(move || {
+        let start = open.into_start();
+        if reports_usage {
+            std::thread::sleep(std::time::Duration::from_millis(TURN_USAGE_SETTLE_MS));
+        }
+        let usage = sessions.get(id).and_then(|s| s.agent_usage);
+        let digest = crate::agent::turn::digest(&start, outcome, ended_at_ms, usage.as_ref());
+        sessions.set_last_turn(&app, id, digest);
     });
 }
 
@@ -1304,6 +1354,9 @@ fn handle_event(ctx: &HandlerCtx, event: HookEvent) -> HookAction {
     });
     let signal = signal_for(&event.hook_event_name, event.notification_type.as_deref());
     capture_model(ctx, &event);
+    if event.hook_event_name == "UserPromptSubmit" && event.agent_id.is_none() {
+        begin_turn(ctx, &event);
+    }
     if let Some(note) = note_for_event(signal.as_ref(), event.agent_id.is_some()) {
         ctx.sessions.set_status_note(&ctx.app, ctx.session_id, note);
     }
@@ -1374,10 +1427,15 @@ fn handle_event(ctx: &HandlerCtx, event: HookEvent) -> HookAction {
                         SessionStatus::Idle { summary },
                     );
                     prompt_queue::on_signal(&ctx.app, ctx.session_id, QueueSignal::TurnEnded);
+                    // O `Stop` que ficou segurado por subagente fecha aqui.
+                    finish_turn(ctx, TurnOutcome::Completed);
                 }
             }
         }
-        Some(AgentSignal::TurnFailed) => on_stop_failure(ctx, &event),
+        Some(AgentSignal::TurnFailed) => {
+            on_stop_failure(ctx, &event);
+            finish_turn(ctx, TurnOutcome::Failed);
+        }
         Some(AgentSignal::Ended) => {
             // Antes do status: o `Idle` que o `SessionEnd` causa não é o
             // agente esperando o próximo prompt.
@@ -1439,6 +1497,7 @@ fn handle_event(ctx: &HandlerCtx, event: HookEvent) -> HookAction {
                     ctx.sessions.set_status(&ctx.app, ctx.session_id, status);
                 }
             }
+            finish_turn(ctx, TurnOutcome::Interrupted);
         }
         Some(signal) => {
             use std::sync::atomic::Ordering;
@@ -1523,6 +1582,7 @@ fn handle_event(ctx: &HandlerCtx, event: HookEvent) -> HookAction {
                             SessionStatus::Idle { summary },
                         );
                         prompt_queue::on_signal(&ctx.app, ctx.session_id, QueueSignal::TurnEnded);
+                        finish_turn(ctx, TurnOutcome::Completed);
                         let transcript_path = event
                             .raw
                             .get("transcript_path")
@@ -2174,6 +2234,7 @@ pub fn prepare_hosted_agent(
         agent_home: agent_home(&user_env),
         worktree_root,
         turn_settle: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        turn: Arc::default(),
         seen_transcript: Arc::new(Mutex::new(None)),
         observe_only: true,
         turn_tail: None,
@@ -2466,6 +2527,7 @@ pub fn spawn_free_agent(
         agent_home: agent_home(&env),
         worktree_root: worktree_root.clone(),
         turn_settle: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        turn: Arc::default(),
         seen_transcript: Arc::new(Mutex::new(None)),
         observe_only,
         turn_tail: Some(tail.clone()),
@@ -2956,6 +3018,7 @@ fn spawn_prepared(
             .unwrap_or_else(|_| root.clone()),
         agent_home: agent_home(&env),
         turn_settle: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        turn: Arc::default(),
         seen_transcript: Arc::new(Mutex::new(None)),
         observe_only: free,
         turn_tail: None,

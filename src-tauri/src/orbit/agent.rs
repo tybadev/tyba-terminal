@@ -438,9 +438,9 @@ fn peer_state(status: Option<&SessionStatus>) -> Option<PeerState> {
 /// não produz diff).
 #[derive(Debug, Clone)]
 pub struct Snapshot {
-    root: PathBuf,
-    base: String,
-    untracked: HashSet<String>,
+    pub(crate) root: PathBuf,
+    pub(crate) base: String,
+    pub(crate) untracked: HashSet<String>,
 }
 
 fn git_stdout(mut cmd: std::process::Command, ok_codes: &[i32]) -> Option<Vec<u8>> {

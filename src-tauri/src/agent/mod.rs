@@ -29,6 +29,7 @@ pub mod session;
 pub mod statusline;
 pub mod subagents;
 pub mod suggest;
+pub mod turn;
 pub mod usage;
 
 #[cfg(test)]

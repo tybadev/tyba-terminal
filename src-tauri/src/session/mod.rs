@@ -234,6 +234,11 @@ pub struct Session {
     /// front com a sessão e morre com o processo, como `observed`.
     #[serde(default, skip_deserializing)]
     pub agent_usage: Option<crate::agent::usage::AgentUsage>,
+    /// Resumo do último turno que terminou (ver [`crate::agent::turn`]).
+    /// Continua aqui enquanto o turno seguinte roda e é trocado quando ele
+    /// acaba. **Nunca persistido**, como `agent_usage`.
+    #[serde(default, skip_deserializing)]
+    pub last_turn: Option<crate::agent::turn::TurnDigest>,
     /// O restart trouxe de volta um shell em que rodava uma conversa do Claude
     /// que continua no disco, e o pane oferece retomá-la. **In-memory**: nasce
     /// só no `resume_startup` e some quando o dono aceita, dispensa ou roda um
@@ -1002,6 +1007,7 @@ impl SessionManager {
             status_note: None,
             subagents_working: false,
             agent_usage: None,
+            last_turn: None,
             shell_resume_offer: false,
             agent_conversation_cwd: previous.and_then(|s| s.agent_conversation_cwd),
             owner,
@@ -1153,6 +1159,30 @@ impl SessionManager {
             return None;
         }
         s.agent_usage = usage;
+        Some(s.clone())
+    }
+
+    /// Grava o resumo do turno que acabou e avisa o front. Só memória.
+    pub fn set_last_turn(
+        &self,
+        app: &AppHandle,
+        id: SessionId,
+        digest: crate::agent::turn::TurnDigest,
+    ) {
+        if let Some(session) = self.apply_last_turn(id, digest) {
+            emit_status(app, &session);
+        }
+    }
+
+    /// A mutação, sem IPC (mesmo corte de [`Self::apply_agent_usage`]).
+    pub(crate) fn apply_last_turn(
+        &self,
+        id: SessionId,
+        digest: crate::agent::turn::TurnDigest,
+    ) -> Option<Session> {
+        let mut sessions = self.sessions.write();
+        let s = sessions.get_mut(&id)?;
+        s.last_turn = Some(digest);
         Some(s.clone())
     }
 
@@ -2397,6 +2427,7 @@ mod tests {
             status_note: None,
             subagents_working: false,
             agent_usage: None,
+            last_turn: None,
             shell_resume_offer: false,
             agent_conversation_cwd: None,
             owner: Default::default(),
@@ -3845,6 +3876,30 @@ echo beta
         let renascido = SessionManager::new(Arc::clone(&store));
         renascido.restore().unwrap();
         assert_eq!(renascido.get(id).unwrap().agent_usage, None);
+    }
+
+    /// O resumo do turno segue a mesma regra: memória, nunca SQLite.
+    #[test]
+    fn resumo_do_turno_fica_em_memoria() {
+        let (store, manager, id) = restored_agent();
+        let start = crate::agent::turn::TurnStart {
+            started_at_ms: 1_000,
+            prompt: Some("rode os testes".into()),
+            usage: None,
+            repo: None,
+        };
+        let digest = crate::agent::turn::digest(
+            &start,
+            crate::agent::turn::TurnOutcome::Completed,
+            3_000,
+            None,
+        );
+        assert!(manager.apply_last_turn(id, digest.clone()).is_some());
+        assert_eq!(manager.get(id).unwrap().last_turn, Some(digest));
+
+        let renascido = SessionManager::new(Arc::clone(&store));
+        renascido.restore().unwrap();
+        assert_eq!(renascido.get(id).unwrap().last_turn, None);
     }
 
     /// A prova que dá sentido ao campo separado: o palpite não alcança o fato.

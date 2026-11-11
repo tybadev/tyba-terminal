@@ -4273,6 +4273,7 @@ impl RawSession {
             // morta veio do gate nem se chegou a trabalhar — afirmar
             // qualquer um dos dois aqui seria palpite, não fato.
             agent_usage: None,
+            last_turn: None,
             shell_resume_offer: false,
             agent_conversation_cwd: conversation_cwd,
             owner: Default::default(),
@@ -4381,6 +4382,7 @@ mod tests {
             status_note: None,
             subagents_working: false,
             agent_usage: None,
+            last_turn: None,
             shell_resume_offer: false,
             agent_conversation_cwd: None,
             owner: Default::default(),
