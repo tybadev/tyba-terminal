@@ -53,7 +53,7 @@ Nada disso sai da sua máquina. É processo local falando com processo local.
 | `SessionStart` | A sessão está de pé |
 | `Stop` | O turno acabou |
 | `SessionEnd` | A sessão morreu |
-| `Notification` (`idle_prompt`) | O agente está esperando você |
+| `Notification` (`idle_prompt`, `agent_needs_input`) | O agente está esperando você |
 
 No Codex há também `PermissionRequest`, que é como ele pede permissão.
 
@@ -81,7 +81,7 @@ Do mesmo canal. Os eventos de hook viram status direto:
 | --- | --- |
 | `PreToolUse` | `Running` |
 | `Stop` | `Idle` |
-| `Notification` (`idle_prompt`) | `AwaitingInput` |
+| `Notification` (`agent_needs_input`) | `AwaitingInput` |
 
 Isso é **dado estruturado**, não texto raspado da tela. Nenhuma heurística olha o que o agente desenhou no terminal para adivinhar se ele terminou.
 
