@@ -2277,7 +2277,7 @@ export const openSubagentViewer = (sessionId: SessionId) =>
   invoke<void>("open_subagent_viewer", { sessionId });
 
 /** Aba da gaveta Fila/Agentes escolhida pelo dono (quadro 4C). */
-export type DrawerTab = "queue" | "agents";
+export type DrawerTab = "queue" | "agents" | "turn";
 
 /** A gaveta Fila/Agentes de uma sessão, como o core a decide (4A′–4E). */
 export interface DrawerState {
@@ -2297,8 +2297,8 @@ export const onAgentsDrawerChanged = (
 ): Promise<UnlistenFn> =>
   listen<DrawerState>("agents-drawer://changed", (e) => handler(e.payload));
 
-export const agentsDrawerOpen = (sessionId: SessionId) =>
-  invoke<void>("agents_drawer_open", { sessionId });
+export const agentsDrawerOpen = (sessionId: SessionId, tab: DrawerTab | null = null) =>
+  invoke<void>("agents_drawer_open", { sessionId, tab });
 
 export const agentsDrawerCollapse = (sessionId: SessionId) =>
   invoke<void>("agents_drawer_collapse", { sessionId });

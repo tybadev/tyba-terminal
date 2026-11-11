@@ -1,4 +1,13 @@
-import type { ApprovalRequest, DrawerTab, Session, SessionId, SubagentRun } from "./ipc";
+import type {
+  ApprovalRequest,
+  DrawerTab,
+  FileDiff,
+  Session,
+  SessionId,
+  SubagentRun,
+  TurnDigest,
+} from "./ipc";
+import { formatElapsed } from "./agentTree";
 import type { PauseReason } from "./promptQueue";
 
 /**
@@ -148,19 +157,123 @@ export function pillTurnLabel(turn: PillTurn, t: Translate): string {
 
 /**
  * Qual aba a gaveta mostra (quadro 4C): a do dono, se ele escolheu (o core a
- * zera quando a gaveta recolhe); senão a que pede você (aprovação pendente →
- * Agentes), Agentes enquanto a rodada roda e Fila fora dela. Sem subagentes
- * não há aba: é a fila.
+ * zera quando a gaveta recolhe) e ela existe; senão a que pede você
+ * (aprovação pendente → Agentes), Agentes enquanto a rodada roda e Fila fora
+ * dela. A aba Agentes só existe com subagentes; a Turno, depois do primeiro
+ * fim de turno — e só entra por escolha: a gaveta aberta nunca troca para
+ * ela sozinha (o dono pode estar escrevendo na Fila).
  */
 export function drawerTab(input: {
   owner: DrawerTab | null;
   hasSubagents: boolean;
   pending: number;
   running: boolean;
+  /** `Session.last_turn` da sessão da gaveta. */
+  turn?: Pick<Session, "last_turn"> | null;
 }): DrawerTab {
-  if (!input.hasSubagents) return "queue";
-  if (input.owner) return input.owner;
-  return input.pending > 0 || input.running ? "agents" : "queue";
+  const { owner } = input;
+  if (
+    owner === "queue" ||
+    (owner === "agents" && input.hasSubagents) ||
+    (owner === "turn" && Boolean(input.turn?.last_turn))
+  ) {
+    return owner;
+  }
+  return input.hasSubagents && (input.pending > 0 || input.running) ? "agents" : "queue";
+}
+
+/**
+ * A aba em que o clique na pílula abre a gaveta (quadro T1 de ResumoDoTurno):
+ * Turno depois de um turno terminado, a não ser que algo peça você — pedido
+ * de subagente, rodada rodando ou fila pausada. `null`: a da regra.
+ */
+export function pillOpensTab(input: {
+  hasSubagents: boolean;
+  pending: number;
+  running: boolean;
+  queuePaused: boolean;
+  turn: Pick<Session, "last_turn" | "turn_open"> | null | undefined;
+}): DrawerTab | null {
+  if (input.hasSubagents && (input.pending > 0 || input.running)) return null;
+  if (input.queuePaused) return null;
+  return input.turn?.last_turn && !input.turn.turn_open ? "turn" : null;
+}
+
+/** Linhas de arquivo da aba Turno; o resto vira "mais N arquivos". */
+export const TURN_ROWS = 8;
+
+export type TurnBand =
+  | "failed"
+  | "interrupted"
+  | "changed"
+  | "none"
+  | "no_repo"
+  | "unavailable";
+
+/**
+ * A faixa de estado da aba Turno (quadros T2 e T3): falha e interrupção
+ * vencem; turno concluído diz o que o diff mediu.
+ */
+export function turnBand(turn: TurnDigest): TurnBand {
+  if (turn.outcome === "failed") return "failed";
+  if (turn.outcome === "interrupted") return "interrupted";
+  if (turn.diff !== "ok") return turn.diff;
+  return turn.files_total > 0 ? "changed" : "none";
+}
+
+/** As linhas da lista e quantos arquivos ficam fora dela. O total é o do
+ *  resumo (`files_total`), não o tamanho de `files` (cortada pelo core). */
+export function turnRows(turn: TurnDigest): { rows: FileDiff[]; more: number } {
+  const rows = turn.files.slice(0, TURN_ROWS);
+  return { rows, more: Math.max(0, turn.files_total - rows.length) };
+}
+
+/** A contagem da aba: arquivos do turno, ou `null` (traço) sem nenhum. */
+export function turnTabCount(turn: TurnDigest): number | null {
+  return turn.files_total > 0 ? turn.files_total : null;
+}
+
+/**
+ * A segunda linha da aba: duração · tokens · custo · commits. Só o que o core
+ * mandou: o Codex não reporta uso e fica só com a duração.
+ */
+export function turnMeta(turn: TurnDigest, locale: string, t: Translate): string {
+  const parts = [formatElapsed(turn.duration_ms)];
+  if (turn.tokens != null) {
+    parts.push(
+      t("agentsUsageTokens", {
+        count: turn.tokens,
+        tokens: new Intl.NumberFormat(locale, {
+          notation: "compact",
+          maximumFractionDigits: 1,
+        }).format(turn.tokens),
+      }),
+    );
+  }
+  if (turn.cost_usd != null) {
+    parts.push(
+      new Intl.NumberFormat(locale, { style: "currency", currency: "USD" }).format(
+        turn.cost_usd,
+      ),
+    );
+  }
+  if (turn.commits > 0) parts.push(t("turnCommits", { count: turn.commits }));
+  return parts.join(" · ");
+}
+
+/** Há quanto tempo o turno terminou: segundos, depois minutos, depois horas. */
+export function turnAgo(turn: TurnDigest, now: number, t: Translate): string {
+  const seconds = Math.max(0, Math.floor((now - turn.ended_at_ms) / 1000));
+  if (seconds < 60) return t("agentsAgo", { time: `${seconds}s` });
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return t("agentsRoundMinutes", { count: minutes });
+  return t("agentsRoundHours", { count: Math.floor(minutes / 60) });
+}
+
+/** Caminho em pasta (com a barra) e nome, para apagar uma e destacar o outro. */
+export function splitPath(path: string): { dir: string; name: string } {
+  const cut = path.lastIndexOf("/") + 1;
+  return { dir: path.slice(0, cut), name: path.slice(cut) };
 }
 
 /** A fila pausada por aprovação de subagente diz "ver em Agentes". */

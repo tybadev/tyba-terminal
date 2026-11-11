@@ -389,6 +389,7 @@ import {
   drawerTab,
   hasAgentDrawer,
   pendingSubagentApprovals,
+  pillOpensTab,
   pillTurn,
   roundProgress,
 } from "./lib/agentsDrawer";
@@ -2194,6 +2195,7 @@ export default function App() {
         hasSubagents: subagents.length > 0,
         pending: pendingSubagentApprovals(sessionId, subagents, approvals),
         running: roundProgress(subagents)?.running ?? false,
+        turn: sessionById.get(sessionId),
       });
       if (tab !== "agents") continue;
       for (const id of agentsPanelActionableIds(
@@ -2203,7 +2205,7 @@ export default function App() {
       }
     }
     return ids;
-  }, [paneLayout, drawers, subagentsBySession, approvals]);
+  }, [paneLayout, drawers, subagentsBySession, approvals, sessionById]);
   // Cápsulas dos nós do grafo na tela (Permitir/Negar no próprio nó): o que
   // elas mostram sai do toast. A tela do grafo avisa e zera ao fechar.
   const [nodeCardIds, setNodeCardIds] = useState<ReadonlySet<number>>(
@@ -2753,7 +2755,20 @@ export default function App() {
       turn: pillTurn(activeSession),
       open,
       onToggle: () =>
-        void (open ? agentsDrawerCollapse : agentsDrawerOpen)(pillSessionId).catch(() => {}),
+        void (
+          open
+            ? agentsDrawerCollapse(pillSessionId)
+            : agentsDrawerOpen(
+                pillSessionId,
+                pillOpensTab({
+                  hasSubagents: subagents.length > 0,
+                  pending: pendingSubagentApprovals(pillSessionId, subagents, approvals),
+                  running: roundProgress(subagents)?.running ?? false,
+                  queuePaused: Boolean(pillQueue?.paused),
+                  turn: activeSession,
+                }),
+              )
+        ).catch(() => {}),
     };
   }, [pillSessionId, pillQueue, drawers, subagentsBySession, approvals, activeSession]);
 

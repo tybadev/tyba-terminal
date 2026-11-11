@@ -1,17 +1,25 @@
 import { describe, expect, test } from "bun:test";
 
-import type { ApprovalRequest, SubagentRun, TurnDigest } from "./ipc";
+import type { ApprovalRequest, FileDiff, SubagentRun, TurnDigest } from "./ipc";
 import {
   drawerPill,
   drawerTab,
   hasAgentDrawer,
   pendingSubagentApprovals,
+  pillOpensTab,
   pillTurn,
   pillTurnCount,
   pillTurnHead,
   pillTurnLabel,
   queueGoesToAgents,
   roundProgress,
+  splitPath,
+  TURN_ROWS,
+  turnAgo,
+  turnBand,
+  turnMeta,
+  turnRows,
+  turnTabCount,
 } from "./agentsDrawer";
 
 const run = (
@@ -177,6 +185,45 @@ describe("drawerTab", () => {
   });
 });
 
+describe("aba Turno: quem escolhe (T1 e T2 de ResumoDoTurno)", () => {
+  const base = { owner: null, hasSubagents: false, pending: 0, running: false };
+  const done = { last_turn: { seq: 1 } as TurnDigest, turn_open: false };
+  const open = { ...done, turn_open: true };
+  const click = { hasSubagents: false, pending: 0, running: false, queuePaused: false };
+
+  test("a gaveta aberta nunca troca para Turno sozinha", () => {
+    // O turno terminou com o dono escrevendo na Fila: continua na Fila.
+    expect(drawerTab({ ...base, turn: done })).toBe("queue");
+    expect(drawerTab({ ...base, hasSubagents: true, turn: done })).toBe("queue");
+  });
+
+  test("a aba Turno é escolha do dono e só existe com turno terminado", () => {
+    expect(drawerTab({ ...base, turn: done, owner: "turn" })).toBe("turn");
+    // Turno novo aberto: a aba continua, mostrando o anterior.
+    expect(drawerTab({ ...base, turn: open, owner: "turn" })).toBe("turn");
+    expect(drawerTab({ ...base, owner: "turn" })).toBe("queue");
+    expect(drawerTab({ ...base, owner: "turn", turn: { last_turn: null } })).toBe("queue");
+  });
+
+  test("clicar na pílula depois de um turno terminado abre em Turno", () => {
+    expect(pillOpensTab({ ...click, turn: done })).toBe("turn");
+    expect(pillOpensTab({ ...click, hasSubagents: true, turn: done })).toBe("turn");
+  });
+
+  test("o que pede você vence o turno: abre pela regra", () => {
+    const agents = { ...click, hasSubagents: true, turn: done };
+    expect(pillOpensTab({ ...agents, pending: 1 })).toBeNull();
+    expect(pillOpensTab({ ...agents, running: true })).toBeNull();
+    expect(pillOpensTab({ ...click, queuePaused: true, turn: done })).toBeNull();
+  });
+
+  test("sem turno terminado, ou com turno novo aberto, abre pela regra", () => {
+    expect(pillOpensTab({ ...click, turn: open })).toBeNull();
+    expect(pillOpensTab({ ...click, turn: { last_turn: null, turn_open: false } })).toBeNull();
+    expect(pillOpensTab({ ...click, turn: null })).toBeNull();
+  });
+});
+
 describe("queueGoesToAgents", () => {
   test("fila pausada por aprovação de subagente aponta para Agentes", () => {
     expect(queueGoesToAgents("approval", 1)).toBe(true);
@@ -321,5 +368,107 @@ describe("pillTurn (trecho do turno na pílula, quadro Pílulas de ResumoDoTurno
     expect(seg(over).body).toEqual({ kind: "unavailable" });
     expect(shown(over)).toEqual(["Turno", "Turno", null]);
     expect(shown({ ...over, outcome: "failed" })).toEqual(["Turno falhou", "Turno falhou", null]);
+  });
+});
+
+describe("aba Turno (quadros T2 e T3 de ResumoDoTurno)", () => {
+  const PT: Record<string, string> = {
+    agentsAgo: "há {{time}}",
+    agentsRoundMinutes: "há {{count}} min",
+    agentsRoundHours: "há {{count}} h",
+    agentsUsageTokens_one: "{{tokens}} token",
+    agentsUsageTokens_other: "{{tokens}} tokens",
+    turnCommits_one: "{{count}} commit",
+    turnCommits_other: "{{count}} commits",
+  };
+  const t = (key: string, options: Record<string, unknown> = {}) =>
+    (PT[key] ?? PT[`${key}_${options.count === 1 ? "one" : "other"}`] ?? key).replace(
+      /\{\{(\w+)\}\}/g,
+      (_, k) => String(options[k]),
+    );
+  const digest = (over: Partial<TurnDigest> = {}): TurnDigest => ({
+    seq: 1,
+    outcome: "completed",
+    failure: null,
+    started_at_ms: 0,
+    ended_at_ms: 1,
+    duration_ms: 1,
+    prompt: null,
+    diff: "ok",
+    files: [],
+    files_total: 0,
+    insertions: 0,
+    deletions: 0,
+    commits: 0,
+    cost_usd: null,
+    tokens: null,
+    ...over,
+  });
+  const file = (path: string): FileDiff => ({
+    path,
+    old_path: null,
+    status: "modified",
+    insertions: 1,
+    deletions: 0,
+  });
+
+  test("faixa: falha e interrupção vencem o que o diff mediu", () => {
+    expect(turnBand(digest({ files_total: 2 }))).toBe("changed");
+    expect(turnBand(digest())).toBe("none");
+    expect(turnBand(digest({ diff: "no_repo" }))).toBe("no_repo");
+    expect(turnBand(digest({ diff: "unavailable" }))).toBe("unavailable");
+    expect(turnBand(digest({ outcome: "failed", files_total: 2 }))).toBe("failed");
+    expect(turnBand(digest({ outcome: "interrupted", diff: "no_repo" }))).toBe(
+      "interrupted",
+    );
+  });
+
+  test("lista: 8 linhas e o resto pelo total do resumo, não pelo tamanho da lista", () => {
+    const files = Array.from({ length: 200 }, (_, i) => file(`src/f${i}.rs`));
+    const { rows, more } = turnRows(digest({ files, files_total: 230 }));
+    expect(rows).toHaveLength(TURN_ROWS);
+    expect(more).toBe(222);
+    expect(turnRows(digest({ files: files.slice(0, 3), files_total: 3 }))).toEqual({
+      rows: files.slice(0, 3),
+      more: 0,
+    });
+  });
+
+  test("contagem da aba: arquivos, ou traço sem nenhum", () => {
+    expect(turnTabCount(digest({ files_total: 6 }))).toBe(6);
+    expect(turnTabCount(digest())).toBeNull();
+    expect(turnTabCount(digest({ diff: "no_repo" }))).toBeNull();
+  });
+
+  test("segunda linha: só o que o core mandou", () => {
+    expect(
+      turnMeta(
+        digest({ duration_ms: 291_000, tokens: 65_400, cost_usd: 0.41, commits: 1 }),
+        "en",
+        t,
+      ),
+    ).toBe("4m 51s · 65.4K tokens · $0.41 · 1 commit");
+    // Codex: sem custo nem tokens.
+    expect(turnMeta(digest({ duration_ms: 108_000 }), "en", t)).toBe("1m 48s");
+    expect(turnMeta(digest({ duration_ms: 48_000, commits: 3 }), "en", t)).toBe(
+      "48s · 3 commits",
+    );
+  });
+
+  test("há quanto tempo terminou: segundos, minutos, horas", () => {
+    const turn = digest({ ended_at_ms: 1_000_000 });
+    expect(turnAgo(turn, 1_008_000, t)).toBe("há 8s");
+    expect(turnAgo(turn, 1_000_000 + 3 * 60_000, t)).toBe("há 3 min");
+    expect(turnAgo(turn, 1_000_000 + 2 * 3_600_000, t)).toBe("há 2 h");
+    // Relógio do webview atrás do core: nunca negativo.
+    expect(turnAgo(turn, 999_000, t)).toBe("há 0s");
+  });
+
+  test("caminho: pasta com a barra e o nome", () => {
+    expect(splitPath("src-tauri/src/status/osc133.rs")).toEqual({
+      dir: "src-tauri/src/status/",
+      name: "osc133.rs",
+    });
+    expect(splitPath("README.md")).toEqual({ dir: "", name: "README.md" });
   });
 });

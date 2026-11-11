@@ -248,6 +248,8 @@ pub struct Coordination {
 pub enum DrawerTab {
     Queue,
     Agents,
+    /// Resumo do último turno (quadro T2 de ResumoDoTurno).
+    Turn,
 }
 
 /// O que o front desenha da gaveta de uma sessão: aberta ou pílula, a aba
@@ -1106,11 +1108,16 @@ impl SubagentTracker {
     }
 
     /// O dono abriu a gaveta (clicou na pílula): fica até ele recolher. Abrir
-    /// com a rodada assentada é ver como ela terminou.
-    pub fn open_drawer(&self, session: SessionId) -> DrawerState {
+    /// com a rodada assentada é ver como ela terminou. `tab` é a aba em que
+    /// o clique abre (Turno, depois de um turno terminado): vale como
+    /// escolha do dono, para a gaveta aberta não trocar de aba sozinha.
+    pub fn open_drawer(&self, session: SessionId, tab: Option<DrawerTab>) -> DrawerState {
         let mut sessions = self.sessions.lock().expect("subagents lock");
         let entry = sessions.entry(session).or_default();
         entry.drawer_open = true;
+        if tab.is_some() {
+            entry.drawer_tab = tab;
+        }
         entry.keep_panel();
         if entry.current_round_settled() {
             entry.outcome_seen = true;
@@ -2553,7 +2560,7 @@ mod tests {
         let session = SessionId::new_v4();
         tracker.register_session(session);
         // O dono abriu antes da rodada: a coordenação não a marca automática.
-        tracker.open_drawer(session);
+        tracker.open_drawer(session, None);
         tracker.on_subagent_started(handle, session, "a1".into(), "explorer".into(), None, None);
         tracker.mark_coordinated(session);
         assert!(!tracker.auto_open_drawer(session));
@@ -2567,7 +2574,7 @@ mod tests {
         // Aberta sozinha e depois reaberta pela pílula: passa a ser do dono.
         let (tracker, session) = settled_auto_panel(handle);
         tracker.collapse_drawer(session);
-        tracker.open_drawer(session);
+        tracker.open_drawer(session, None);
         assert!(tracker.due_drawer_collapses(0).is_empty());
         assert!(tracker
             .due_drawer_collapses(10 * PANEL_AUTO_CLOSE_MS)
@@ -2630,14 +2637,14 @@ mod tests {
         tracker.register_session(session);
         tracker.on_subagent_started(handle, session, "a1".into(), "explorer".into(), None, None);
         // Aberta com a rodada rodando: ainda não viu como terminou.
-        assert!(!tracker.open_drawer(session).outcome_seen);
+        assert!(!tracker.open_drawer(session, None).outcome_seen);
         tracker.collapse_drawer(session);
         tracker.on_subagent_stopped(handle, session, "a1".into(), None, None);
         assert!(
             !tracker.drawer_state(session).outcome_seen,
             "pílula mantém o ✓"
         );
-        assert!(tracker.open_drawer(session).outcome_seen);
+        assert!(tracker.open_drawer(session, None).outcome_seen);
 
         tracker.on_subagent_started(handle, session, "b2".into(), "reviewer".into(), None, None);
         assert!(
@@ -2656,7 +2663,7 @@ mod tests {
             None,
             "pílula não guarda aba"
         );
-        tracker.open_drawer(session);
+        tracker.open_drawer(session, None);
         assert_eq!(
             tracker.set_drawer_tab(session, DrawerTab::Agents).tab,
             Some(DrawerTab::Agents)
@@ -2664,8 +2671,16 @@ mod tests {
         assert_eq!(tracker.collapse_drawer(session).tab, None);
         // Presença com a gaveta recolhida não segura nada.
         tracker.set_drawer_presence(session, true);
-        tracker.open_drawer(session);
+        tracker.open_drawer(session, None);
         assert_eq!(tracker.drawer_state(session).tab, None);
+        // Clique na pílula depois de um turno terminado: abre já na aba
+        // Turno, como escolha do dono, e ela some quando a gaveta recolhe.
+        tracker.collapse_drawer(session);
+        assert_eq!(
+            tracker.open_drawer(session, Some(DrawerTab::Turn)).tab,
+            Some(DrawerTab::Turn)
+        );
+        assert_eq!(tracker.collapse_drawer(session).tab, None);
     }
 
     #[test]

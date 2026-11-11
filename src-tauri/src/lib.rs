@@ -7725,10 +7725,16 @@ fn emit_drawer(app: &AppHandle, drawer: agent::subagents::DrawerState) {
     let _ = app.emit(agent::subagents::EVENT_DRAWER_CHANGED, drawer);
 }
 
-/// O dono clicou na pílula: a gaveta abre e fica até ele recolher.
+/// O dono clicou na pílula: a gaveta abre e fica até ele recolher. `tab` é a
+/// aba em que o clique abre, quando não é a da regra.
 #[tauri::command]
-fn agents_drawer_open(app: AppHandle, state: State<'_, AppState>, session_id: SessionId) {
-    emit_drawer(&app, state.subagents.open_drawer(session_id));
+fn agents_drawer_open(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    session_id: SessionId,
+    tab: Option<agent::subagents::DrawerTab>,
+) {
+    emit_drawer(&app, state.subagents.open_drawer(session_id, tab));
 }
 
 /// O dono recolheu a gaveta (⌄ ou Esc).
