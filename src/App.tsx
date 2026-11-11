@@ -126,11 +126,11 @@ import {
   SESSION_DOT_LABEL_KEY,
   sessionDot,
 } from "./lib/sessionCard";
-import { matchSshHost } from "./lib/sshCommand";
 import {
   hostFormFromDetected,
   hostInputFromDetected,
   liveSshNote,
+  runningCommands,
   targetLabel,
 } from "./lib/typedSsh";
 import type { SshNoteAction } from "./components/SshTypedNote";
@@ -353,6 +353,7 @@ import {
   togglePromptMode,
   renderSnippet,
   snippetPlaceholders,
+  sshTypedHost,
   type Block,
   type Snippet,
   type SnippetPlaceholder,
@@ -2453,6 +2454,33 @@ export default function App() {
   useEffect(() => {
     sessionCommandsRef.current = sessionCommands;
   }, [sessionCommands]);
+  // Shell que rodou `ssh` à mão ESTÁ num Host: qual, quem decide é o core
+  // (`ssh_typed_host`). Aqui só se guarda a resposta por comando vivo, e se
+  // pergunta de novo quando os comandos ou o cadastro mudam.
+  const runningKey = useMemo(
+    () => JSON.stringify(runningCommands(sessionCommands)),
+    [sessionCommands],
+  );
+  const [typedSshHostIds, setTypedSshHostIds] = useState<
+    Record<string, string | null>
+  >({});
+  useEffect(() => {
+    let stale = false;
+    const commands: string[] = JSON.parse(runningKey);
+    void Promise.all(
+      commands.map((c) =>
+        sshTypedHost(c).then(
+          (id) => [c, id] as const,
+          () => [c, null] as const,
+        ),
+      ),
+    ).then((entries) => {
+      if (!stale) setTypedSshHostIds(Object.fromEntries(entries));
+    });
+    return () => {
+      stale = true;
+    };
+  }, [runningKey, sshHosts]);
   const [sessionCwds, setSessionCwds] = useState<Record<string, SessionCwd>>(
     {},
   );
@@ -3140,15 +3168,15 @@ export default function App() {
           // Derivar do comando vivo dá o mesmo contexto e se desfaz sozinho no
           // exit, em vez de deixar a sessão mentindo que é remota.
           const cmd = sessionCommands[sid];
-          if (cmd?.running) {
-            const host = matchSshHost(cmd.command, sshHosts);
-            if (host) return host.id;
+          if (cmd?.running && cmd.command) {
+            const hostId = typedSshHostIds[cmd.command];
+            if (hostId) return hostId;
           }
         }
       }
       return null;
     },
-    [sessionById, sessionCommands, sshHosts],
+    [sessionById, sessionCommands, typedSshHostIds],
   );
 
   const workspaceSshHost = useCallback(

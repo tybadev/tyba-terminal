@@ -1224,6 +1224,9 @@ export interface TypedSshPrefs {
   mode: TypedSshMode;
   denied: TypedSshDenied[];
 }
+/** O Host cadastrado em que o shell está enquanto roda este `ssh` digitado; o core decide. */
+export const sshTypedHost = (command: string) =>
+  invoke<string | null>("ssh_typed_host", { command });
 export const sshTypedPrefs = () => invoke<TypedSshPrefs>("ssh_typed_prefs");
 export const sshTypedSet = (change: { detect?: boolean; mode?: TypedSshMode }) =>
   invoke<TypedSshPrefs>("ssh_typed_set", change);
