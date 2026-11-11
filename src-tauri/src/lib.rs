@@ -875,6 +875,15 @@ fn session_exited(app: &AppHandle, id: SessionId) {
     let Some(session) = state.sessions.get(id) else {
         return;
     };
+    // O processo morreu sem `SessionEnd` (crash, SIGKILL): o turno que
+    // estava aberto acaba aqui.
+    agent::session::close_turn(
+        app,
+        &state.sessions,
+        id,
+        agent::turn::TurnOutcome::Interrupted,
+        None,
+    );
     teardown_agent_session(app, &state, id);
     if matches!(session.kind, SessionKind::Shell) {
         state.sessions.dispose(&state.pty_pool, id);
@@ -10333,6 +10342,8 @@ pub fn run() {
             }
 
             let pty_pool: SharedPtyPool = Arc::new(pty::PtyPool::new());
+            // Sobra de um processo que morreu: nenhum turno atravessa o boot.
+            agent::turn::sweep(&agent::turn::private_root());
             let sessions: SharedSessionManager =
                 Arc::new(session::SessionManager::new(Arc::clone(&store)));
             let host_queries: crate::ssh::query::SharedHostQueries =
@@ -10561,12 +10572,10 @@ pub fn run() {
                                 session,
                                 agent::prompt_queue::Signal::TurnEnded,
                             );
-                            agent::session::close_turn(
+                            agent::session::close_stopped_turn(
                                 &coord_app,
                                 &coord_sessions,
                                 session,
-                                agent::turn::TurnOutcome::Completed,
-                                None,
                             );
                             agent::session::notify_native(
                                 &coord_app,

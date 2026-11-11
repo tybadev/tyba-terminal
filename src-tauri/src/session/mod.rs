@@ -997,6 +997,8 @@ impl SessionManager {
         // agora aqui faria a sessão pular para o fim da lista até o próximo boot
         // devolvê-la ao lugar.
         let previous = self.sessions.read().get(&id).cloned();
+        // O processo é outro: turno aberto e árvores do anterior não valem.
+        self.turns.forget(id);
         let session = Session {
             id,
             kind,
@@ -3927,13 +3929,15 @@ echo beta
             prompt: Some(prompt.into()),
             usage: None,
             repo: Snapshot::NoRepo,
+            scratch: PathBuf::new(),
         };
         let ending = TurnEnding {
             outcome: TurnOutcome::Completed,
             failure: None,
             ended_at_ms: 3_000,
         };
-        digest(&start, &Snapshot::NoRepo, &ending, None)
+        let bound = std::time::Duration::from_secs(120);
+        digest(&start, &Snapshot::NoRepo, &ending, None, bound)
     }
 
     /// O resumo do turno segue a mesma regra: memória, nunca SQLite.
@@ -3969,13 +3973,14 @@ echo beta
     /// está rodando.
     #[test]
     fn turno_aberto_acompanha_o_registro_de_turnos() {
-        let (_store, manager, id) = restored_agent();
+        let (_store, mut manager, id) = restored_agent();
         let dir = tempfile::tempdir().unwrap();
+        manager.turns = crate::agent::turn::Turns::at(dir.path().join("privado"));
+        let dir = dir.path().join("pasta");
+        std::fs::create_dir(&dir).unwrap();
         let begin = |at| {
             let bound = std::time::Duration::from_secs(120);
-            manager
-                .turns
-                .begin(id, dir.path().to_path_buf(), bound, at, None, None)
+            manager.turns.begin(id, dir.clone(), bound, at, None, None)
         };
         assert!(begin(10).is_none());
         assert!(manager.apply_turn_open(id).is_some());

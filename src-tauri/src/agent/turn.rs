@@ -10,17 +10,23 @@
 //! conteúdo de arquivo, e não vai para o SQLite.
 //!
 //! Um snapshot é uma ÁRVORE do git com a pasta inteira (rastreados e não
-//! rastreados, sem os ignorados), escrita por um índice TEMPORÁRIO: o índice
-//! de verdade do repositório não é escrito nem travado, então o snapshot não
-//! disputa `index.lock` com o agente e funciona no meio de um merge. Há um no
-//! prompt e outro no fim do turno, e o diff é de árvore contra árvore — não
-//! roda filtro de conteúdo nem lê a pasta de novo.
+//! rastreados, sem os ignorados). Há um no prompt e outro no fim do turno, e
+//! o diff é de árvore contra árvore — não roda filtro de conteúdo nem lê a
+//! pasta de novo.
 //!
-//! O que fica no repositório do usuário: objetos soltos (os blobs do que
-//! estava modificado ou não rastreado e as árvores), sem ref nenhuma; o
-//! `git gc` leva.
+//! Nada é escrito no repositório do usuário. O índice é uma cópia
+//! temporária e os objetos (os blobs do que estava modificado ou não
+//! rastreado, e as árvores) vão para um diretório privado do TYBA, um por
+//! turno, com o banco de objetos do repositório só como alternativa de
+//! leitura. O diretório é `0700` e some com o turno: fica o do turno aberto
+//! e o do último que fechou (é dele que sai o "ver diff do turno"); o resto
+//! é apagado quando um turno fecha, quando a sessão acaba e no boot.
+//!
+//! Limite: num repositório em que o conteúdo não rastreado não cabe de ser
+//! lido dentro do teto do snapshot, nenhum turno tem diff.
 
 use std::collections::HashMap;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{mpsc, Mutex};
@@ -30,8 +36,8 @@ use serde::Serialize;
 
 use crate::agent::usage::AgentUsage;
 use crate::session::SessionId;
-use crate::worktree::diff::{diff_files, FileDiff};
-use crate::worktree::{git_in, git_in_rw, run_git};
+use crate::worktree::diff::{parse_name_status_z, parse_numstat_z, FileDiff};
+use crate::worktree::{git_in, git_in_scratch};
 
 /// Teto de um snapshot, do primeiro ao último `git` dele. Passou, o filho é
 /// morto e o turno fica sem diff.
@@ -44,10 +50,15 @@ use crate::worktree::{git_in, git_in_rw, run_git};
 /// medindo o turno seguinte.
 pub const SNAPSHOT_MAX: Duration = Duration::from_millis(2000);
 
+/// Teto do diff de árvore contra árvore e da contagem de commits no fim do
+/// turno. Mais folgado que o do snapshot: aqui a pasta já está congelada nas
+/// duas árvores, e demorar só atrasa o resumo.
+pub const DIFF_MAX: Duration = Duration::from_millis(5000);
+
 /// Teto da lista que vai ao webview: ela viaja em todo `session://status`.
 pub const FILES_MAX: usize = 200;
 
-const TEMP_INDEX_PREFIX: &str = "tyba-turn-index-";
+const TEMP_INDEX_PREFIX: &str = "index-";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -63,7 +74,8 @@ pub enum TurnDiff {
     Ok,
     /// A pasta não é um repositório git: só duração e custo.
     NoRepo,
-    /// É um repositório, mas um dos snapshots falhou ou estourou o teto.
+    /// É um repositório, mas um dos snapshots (ou o diff) falhou ou estourou
+    /// o teto.
     Unavailable,
 }
 
@@ -116,6 +128,8 @@ pub struct RepoTree {
     pub tree: String,
     /// `None` em repositório sem commit.
     pub head: Option<String>,
+    /// O banco de objetos de verdade do repositório, lido como alternativa.
+    pub objects: PathBuf,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -123,6 +137,35 @@ pub enum Snapshot {
     NoRepo,
     Unavailable,
     Tree(RepoTree),
+}
+
+/// `~/.tyba/turns` (`~/.tyba-dev/turns` no build de dev): um diretório por
+/// sessão e, dentro dele, um por turno.
+pub fn private_root() -> PathBuf {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join(crate::profile::HOME_DIR)
+        .join("turns")
+}
+
+/// Apaga tudo: no boot não há turno aberto nem resumo que sobreviva, e o
+/// que estiver lá é sobra de um processo que morreu.
+pub fn sweep(root: &Path) {
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// Cria `dir` e os pais que faltarem, todos `0700` (os que já existem ficam
+/// como estão — `~/.tyba` é do dono).
+fn create_private(dir: &Path) -> std::io::Result<()> {
+    if dir.is_dir() {
+        return Ok(());
+    }
+    if let Some(parent) = dir.parent() {
+        create_private(parent)?;
+    }
+    crate::session::create_private_dir(dir)
 }
 
 enum Ran {
@@ -141,10 +184,9 @@ fn kill_group(child: &std::process::Child) {
 fn kill_group(_child: &std::process::Child) {}
 
 /// Roda o comando até o prazo; passou, mata o grupo inteiro (princípio 9) e
-/// só volta com o filho recolhido. A saída esperada é curta (um sha, dois
-/// caminhos): cabe no pipe e é lida depois que o filho sai. `capture` fica
-/// de fora no `add`, o único que roda filtro: um filtro que ficasse para
-/// trás seguraria o pipe e a leitura junto.
+/// só volta com o filho recolhido. `capture` fica de fora no `add`, o único
+/// que roda filtro: um filtro que ficasse para trás seguraria o pipe e a
+/// leitura junto.
 fn run_within(mut cmd: Command, deadline: Instant, capture: bool) -> Ran {
     if Instant::now() >= deadline {
         return Ran::TimedOut;
@@ -160,6 +202,14 @@ fn run_within(mut cmd: Command, deadline: Instant, capture: bool) -> Ran {
     let Ok(mut child) = cmd.spawn() else {
         return Ran::Failed(None);
     };
+    // Lê enquanto o filho roda: a lista de um diff não cabe no pipe.
+    let reader = child.stdout.take().map(|mut stdout| {
+        std::thread::spawn(move || {
+            let mut out = Vec::new();
+            let _ = std::io::Read::read_to_end(&mut stdout, &mut out);
+            out
+        })
+    });
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break Some(status),
@@ -170,7 +220,8 @@ fn run_within(mut cmd: Command, deadline: Instant, capture: bool) -> Ran {
         }
     };
     let Some(status) = status else {
-        // Antes do `wait`: com o líder ainda por recolher o pgid é dele.
+        // Antes do `wait`: com o líder ainda por recolher o pgid é dele. O
+        // leitor termina sozinho quando o grupo morre e o pipe fecha.
         kill_group(&child);
         let _ = child.kill();
         let _ = child.wait();
@@ -179,11 +230,7 @@ fn run_within(mut cmd: Command, deadline: Instant, capture: bool) -> Ran {
     if !status.success() {
         return Ran::Failed(status.code());
     }
-    let mut out = Vec::new();
-    if let Some(mut stdout) = child.stdout.take() {
-        let _ = std::io::Read::read_to_end(&mut stdout, &mut out);
-    }
-    Ran::Out(out)
+    Ran::Out(reader.and_then(|r| r.join().ok()).unwrap_or_default())
 }
 
 /// O índice temporário, apagado em qualquer saída (com o `.lock` que o git
@@ -216,19 +263,69 @@ fn copy_index(real: &Path, temp: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// A pasta de `dir` como árvore do git. Quatro comandos, todos dentro do
-/// mesmo prazo:
+/// O valor de `GIT_ALTERNATE_OBJECT_DIRECTORIES` para um caminho só. A
+/// variável é uma lista separada por `:`; caminho com `:` vai entre aspas,
+/// no estilo C que o git aceita.
+fn alternates(objects: &Path) -> OsString {
+    let raw = objects.as_os_str();
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::{OsStrExt, OsStringExt};
+        let bytes = raw.as_bytes();
+        if bytes.contains(&b':') || bytes.first() == Some(&b'"') {
+            let mut quoted = vec![b'"'];
+            for b in bytes {
+                if matches!(b, b'"' | b'\\') {
+                    quoted.push(b'\\');
+                }
+                quoted.push(*b);
+            }
+            quoted.push(b'"');
+            return OsString::from_vec(quoted);
+        }
+    }
+    raw.to_os_string()
+}
+
+/// `git` que lê o repositório e as árvores do turno: os objetos novos moram
+/// em `scratch/objects`, os do repositório entram como alternativa. As duas
+/// variáveis vão depois do builder, que as limpa.
+fn with_objects(mut cmd: Command, scratch: &Path, objects: &Path) -> Command {
+    cmd.env("GIT_OBJECT_DIRECTORY", scratch.join("objects"))
+        .env("GIT_ALTERNATE_OBJECT_DIRECTORIES", alternates(objects));
+    cmd
+}
+
+/// Exit 128 do `rev-parse` não é só "não é um repositório": pasta que sumiu,
+/// `.git` quebrado e dono suspeito saem igual. Só é pasta sem git a que
+/// existe e não tem `.git` nenhum daqui até a raiz.
+fn outside_any_repo(dir: &Path) -> bool {
+    dir.is_dir()
+        && dir
+            .ancestors()
+            .all(|a| std::fs::symlink_metadata(a.join(".git")).is_err())
+}
+
+/// A pasta de `dir` como árvore do git, sem escrever no repositório. Quatro
+/// comandos, todos dentro do mesmo prazo:
 ///
-/// 1. `rev-parse --show-toplevel --git-dir` (jaula só-leitura);
-/// 2. `add -A` com `GIT_INDEX_FILE` no índice temporário (jaula de escrita:
-///    roda filtro `clean`, sem rede);
-/// 3. `write-tree` com o mesmo índice (jaula de escrita);
+/// 1. `rev-parse --show-toplevel --git-dir --git-path objects` (jaula
+///    só-leitura);
+/// 2. `add -A --ignore-errors` — jaula [`git_in_scratch`]: roda filtro
+///    `clean`, sem rede, e só escreve em `scratch`;
+/// 3. `write-tree` (mesma jaula);
 /// 4. `rev-parse --verify HEAD` (jaula só-leitura).
 ///
-/// O índice temporário mora no gitdir do worktree: a jaula de escrita já
-/// libera esse diretório, e é lá que um índice dividido acha a metade
-/// compartilhada (`core.splitIndex=false` para a cópia nunca gravar outra).
-pub fn snapshot(dir: &Path, bound: Duration) -> Snapshot {
+/// O 2 e o 3 rodam com `GIT_INDEX_FILE` numa cópia do índice dentro de
+/// `scratch`, `GIT_OBJECT_DIRECTORY` em `scratch/objects` e o banco de
+/// verdade em `GIT_ALTERNATE_OBJECT_DIRECTORIES`, e com
+/// `core.splitIndex=false` (um índice dividido gravaria outra metade
+/// compartilhada no gitdir).
+///
+/// Um arquivo que o `add` não consegue indexar (ilegível, repositório
+/// aninhado sem commit, fora do cone do sparse-checkout) faz o `add` sair
+/// com erro, mas o `--ignore-errors` indexa o resto: a árvore sai sem ele.
+pub fn snapshot(dir: &Path, scratch: &Path, bound: Duration) -> Snapshot {
     let deadline = Instant::now() + bound;
     let mut place = git_in(dir);
     place.args([
@@ -236,34 +333,41 @@ pub fn snapshot(dir: &Path, bound: Duration) -> Snapshot {
         "--path-format=absolute",
         "--show-toplevel",
         "--git-dir",
+        "--git-path",
+        "objects",
     ]);
     let place = match run_within(place, deadline, true) {
         Ran::Out(out) => String::from_utf8_lossy(&out).into_owned(),
-        // 128: "not a git repository" (ou repositório bare, sem pasta).
-        Ran::Failed(Some(128)) => return Snapshot::NoRepo,
+        Ran::Failed(Some(128)) if outside_any_repo(dir) => return Snapshot::NoRepo,
         Ran::Failed(_) | Ran::TimedOut => return Snapshot::Unavailable,
     };
     let mut lines = place.lines();
-    let (Some(root), Some(git_dir), None) = (lines.next(), lines.next(), lines.next()) else {
+    let (Some(root), Some(git_dir), Some(objects), None) =
+        (lines.next(), lines.next(), lines.next(), lines.next())
+    else {
         return Snapshot::Unavailable;
     };
     let root = crate::repo::canonicalize_or(Path::new(root));
-    let git_dir = PathBuf::from(git_dir);
+    let objects = PathBuf::from(objects);
 
-    let index = TempIndex(git_dir.join(format!("{TEMP_INDEX_PREFIX}{}", uuid::Uuid::new_v4())));
-    if copy_index(&git_dir.join("index"), &index.0).is_err() {
+    if create_private(&scratch.join("objects")).is_err() {
         return Snapshot::Unavailable;
     }
-    let mut add = git_in_rw(&root);
-    add.args(["-c", "core.splitIndex=false", "add", "-A"]);
-    add.env("GIT_INDEX_FILE", &index.0);
-    if !matches!(run_within(add, deadline, false), Ran::Out(_)) {
+    let index = TempIndex(scratch.join(format!("{TEMP_INDEX_PREFIX}{}", uuid::Uuid::new_v4())));
+    if copy_index(&Path::new(git_dir).join("index"), &index.0).is_err() {
         return Snapshot::Unavailable;
     }
-    let mut write = git_in_rw(&root);
-    write.arg("write-tree");
-    write.env("GIT_INDEX_FILE", &index.0);
-    let Ran::Out(tree) = run_within(write, deadline, true) else {
+    let indexed = |args: &[&str]| {
+        let mut cmd = with_objects(git_in_scratch(&root, scratch), scratch, &objects);
+        cmd.args(["-c", "core.splitIndex=false"]).args(args);
+        cmd.env("GIT_INDEX_FILE", &index.0);
+        cmd
+    };
+    let add = indexed(&["add", "-A", "--ignore-errors"]);
+    if matches!(run_within(add, deadline, false), Ran::TimedOut) {
+        return Snapshot::Unavailable;
+    }
+    let Ran::Out(tree) = run_within(indexed(&["write-tree"]), deadline, true) else {
         return Snapshot::Unavailable;
     };
     let tree = String::from_utf8_lossy(&tree).trim().to_string();
@@ -277,35 +381,76 @@ pub fn snapshot(dir: &Path, bound: Duration) -> Snapshot {
         Ran::Failed(_) => None,
         Ran::TimedOut => return Snapshot::Unavailable,
     };
-    Snapshot::Tree(RepoTree { root, tree, head })
+    Snapshot::Tree(RepoTree {
+        root,
+        tree,
+        head,
+        objects,
+    })
 }
 
-/// Commits feitos desde o prompt. `--ancestry-path` zera quando o `HEAD`
-/// voltou ou foi para uma história que não descende do `HEAD` do prompt;
-/// sem `HEAD` no prompt não há de onde contar.
-fn commits_since(start: &RepoTree) -> u32 {
-    let Some(head) = &start.head else {
+/// Commits entre o `HEAD` do prompt e o `HEAD` do snapshot do fim.
+/// `--ancestry-path` zera quando o `HEAD` voltou ou foi para uma história
+/// que não descende do `HEAD` do prompt; sem `HEAD` no prompt não há de onde
+/// contar.
+fn commits_between(from: &RepoTree, to: &RepoTree, deadline: Instant) -> u32 {
+    let (Some(old), Some(new)) = (&from.head, &to.head) else {
         return 0;
     };
-    let mut cmd = git_in(&start.root);
+    if old == new {
+        return 0;
+    }
+    let mut cmd = git_in(&to.root);
     cmd.args(["rev-list", "--count", "--ancestry-path"]);
-    cmd.arg(format!("{head}..HEAD"));
-    run_git(cmd, "git rev-list")
-        .ok()
-        .and_then(|out| String::from_utf8_lossy(&out).trim().parse().ok())
-        .unwrap_or(0)
+    cmd.arg(format!("{old}..{new}"));
+    match run_within(cmd, deadline, true) {
+        Ran::Out(out) => String::from_utf8_lossy(&out).trim().parse().unwrap_or(0),
+        _ => 0,
+    }
 }
 
 /// Árvore do prompt contra árvore do fim, com `-M`: um `mv` puro é um
-/// arquivo renomeado, não um apagado e um novo.
-fn changed_files(start: &RepoTree, end: &RepoTree) -> Option<Vec<FileDiff>> {
-    if start.root != end.root {
+/// arquivo renomeado, não um apagado e um novo. Mesma dupla
+/// numstat + name-status de [`crate::worktree::diff`], aqui com prazo e com
+/// os objetos do turno.
+fn changed_files(
+    from: &RepoTree,
+    to: &RepoTree,
+    scratch: &Path,
+    deadline: Instant,
+) -> Option<Vec<FileDiff>> {
+    if from.root != to.root {
         return None;
     }
-    if start.tree == end.tree {
+    if from.tree == to.tree {
         return Some(Vec::new());
     }
-    let mut files = diff_files(&end.root, &[&start.tree, &end.tree]).ok()?;
+    let run = |format: &str| {
+        let mut cmd = with_objects(git_in(&to.root), scratch, &to.objects);
+        cmd.args(["diff", "--no-ext-diff", "--no-color", format, "-z", "-M"]);
+        cmd.args([&from.tree, &to.tree]);
+        match run_within(cmd, deadline, true) {
+            Ran::Out(out) => Some(out),
+            _ => None,
+        }
+    };
+    let counts: HashMap<String, (Option<u32>, Option<u32>)> = parse_numstat_z(&run("--numstat")?)
+        .into_iter()
+        .map(|e| (e.path, (e.insertions, e.deletions)))
+        .collect();
+    let mut files: Vec<FileDiff> = parse_name_status_z(&run("--name-status")?)
+        .into_iter()
+        .map(|(status, old_path, path)| {
+            let (insertions, deletions) = counts.get(&path).copied().unwrap_or((Some(0), Some(0)));
+            FileDiff {
+                path,
+                old_path,
+                status,
+                insertions,
+                deletions,
+            }
+        })
+        .collect();
     files.sort_by(|a, b| a.path.cmp(&b.path));
     Some(files)
 }
@@ -337,6 +482,8 @@ pub struct TurnStart {
     /// Uso acumulado da sessão até o prompt.
     pub usage: Option<AgentUsage>,
     pub repo: Snapshot,
+    /// O diretório privado do turno, onde estão os objetos das duas árvores.
+    pub scratch: PathBuf,
 }
 
 /// Como o turno acabou, visto de fora.
@@ -347,18 +494,23 @@ pub struct TurnEnding {
     pub ended_at_ms: u64,
 }
 
+/// `bound` é o teto do diff e da contagem de commits ([`DIFF_MAX`]).
 pub fn digest(
     start: &TurnStart,
     end: &Snapshot,
     ending: &TurnEnding,
     usage_end: Option<&AgentUsage>,
+    bound: Duration,
 ) -> TurnDigest {
+    let deadline = Instant::now() + bound;
     let (diff, files, commits) = match (&start.repo, end) {
         (Snapshot::NoRepo, _) | (_, Snapshot::NoRepo) => (TurnDiff::NoRepo, Vec::new(), 0),
-        (Snapshot::Tree(from), Snapshot::Tree(to)) => match changed_files(from, to) {
-            Some(files) => (TurnDiff::Ok, files, commits_since(from)),
-            None => (TurnDiff::Unavailable, Vec::new(), 0),
-        },
+        (Snapshot::Tree(from), Snapshot::Tree(to)) => {
+            match changed_files(from, to, &start.scratch, deadline) {
+                Some(files) => (TurnDiff::Ok, files, commits_between(from, to, deadline)),
+                None => (TurnDiff::Unavailable, Vec::new(), 0),
+            }
+        }
         _ => (TurnDiff::Unavailable, Vec::new(), 0),
     };
     let sum = |pick: fn(&FileDiff) -> Option<u32>| files.iter().filter_map(pick).sum();
@@ -386,13 +538,17 @@ pub fn digest(
     .with_usage(start.usage.as_ref(), usage_end)
 }
 
-/// As duas árvores de um turno que fechou com diff: é delas que sai o "ver
-/// diff do turno". Ficam no core, só em memória.
+/// As duas árvores de um turno que fechou com diff, e onde lê-las: é delas
+/// que sai o "ver diff do turno". Ficam no core, só em memória.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TurnTrees {
     pub root: PathBuf,
     pub start: String,
     pub end: String,
+    /// Diretório privado do turno (`GIT_OBJECT_DIRECTORY` é `scratch/objects`).
+    pub scratch: PathBuf,
+    /// Banco de objetos do repositório (`GIT_ALTERNATE_OBJECT_DIRECTORIES`).
+    pub objects: PathBuf,
 }
 
 pub fn trees(start: &TurnStart, end: &Snapshot) -> Option<TurnTrees> {
@@ -401,6 +557,8 @@ pub fn trees(start: &TurnStart, end: &Snapshot) -> Option<TurnTrees> {
             root: to.root.clone(),
             start: from.tree.clone(),
             end: to.tree.clone(),
+            scratch: start.scratch.clone(),
+            objects: to.objects.clone(),
         }),
         _ => None,
     }
@@ -411,7 +569,12 @@ pub struct OpenTurn {
     pub seq: u64,
     /// Onde tirar o snapshot do fim (a mesma pasta do prompt).
     pub dir: PathBuf,
+    /// O diretório privado do turno.
+    pub scratch: PathBuf,
     pub bound: Duration,
+    /// Quando o `Stop` do orquestrador chegou e ficou segurado (subagente
+    /// vivo, pendência em background). `None` enquanto ele trabalha.
+    pub stop_seen_at_ms: Option<u64>,
     started_at_ms: u64,
     prompt: Option<String>,
     usage: Option<AgentUsage>,
@@ -428,6 +591,7 @@ impl OpenTurn {
             prompt: self.prompt,
             usage: self.usage,
             repo: self.repo.recv().unwrap_or(Snapshot::Unavailable),
+            scratch: self.scratch,
         }
     }
 }
@@ -442,13 +606,34 @@ struct Slot {
 }
 
 /// Os turnos de cada sessão, por id — alcançável de qualquer lugar em que um
-/// turno acaba (o handler de hooks e o coordenador que desce a `Idle` a
-/// sessão segurada por subagente). Sem começo registrado (o TYBA entrou no
-/// meio do turno, ou a CLI não manda `UserPromptSubmit`) não há o que fechar.
-#[derive(Default)]
-pub struct Turns(Mutex<HashMap<SessionId, Slot>>);
+/// turno acaba (o handler de hooks, o coordenador que desce a `Idle` a
+/// sessão segurada por subagente, a saída do processo). Sem começo
+/// registrado (o TYBA entrou no meio do turno, ou a CLI não manda
+/// `UserPromptSubmit`) não há o que fechar.
+pub struct Turns {
+    /// Raiz dos diretórios privados: `root/<sessão>/<seq>`.
+    root: PathBuf,
+    slots: Mutex<HashMap<SessionId, Slot>>,
+}
+
+impl Default for Turns {
+    fn default() -> Self {
+        Self::at(private_root())
+    }
+}
 
 impl Turns {
+    pub fn at(root: PathBuf) -> Self {
+        Self {
+            root,
+            slots: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn session_dir(&self, id: SessionId) -> PathBuf {
+        self.root.join(id.to_string())
+    }
+
     /// Abre um turno e dispara o snapshot do prompt numa thread à parte.
     /// Devolve o turno que ainda estava aberto, para quem chamou fechá-lo.
     pub fn begin(
@@ -460,18 +645,21 @@ impl Turns {
         prompt: Option<String>,
         usage: Option<AgentUsage>,
     ) -> Option<OpenTurn> {
-        let (tx, rx) = mpsc::channel();
-        let at = dir.clone();
-        std::thread::spawn(move || {
-            let _ = tx.send(snapshot(&at, bound));
-        });
-        let mut slots = self.0.lock().expect("turns lock");
+        let mut slots = self.slots.lock().expect("turns lock");
         let slot = slots.entry(id).or_default();
         slot.seq += 1;
+        let scratch = self.session_dir(id).join(slot.seq.to_string());
+        let (tx, rx) = mpsc::channel();
+        let (at, into) = (dir.clone(), scratch.clone());
+        std::thread::spawn(move || {
+            let _ = tx.send(snapshot(&at, &into, bound));
+        });
         slot.open.replace(OpenTurn {
             seq: slot.seq,
             dir,
+            scratch,
             bound,
+            stop_seen_at_ms: None,
             started_at_ms,
             prompt,
             usage,
@@ -482,21 +670,56 @@ impl Turns {
     /// Fecha o turno aberto, se houver. Quem chega depois não acha nada: um
     /// turno fecha uma vez só.
     pub fn end(&self, id: SessionId) -> Option<OpenTurn> {
-        self.0.lock().expect("turns lock").get_mut(&id)?.open.take()
+        self.slots
+            .lock()
+            .expect("turns lock")
+            .get_mut(&id)?
+            .open
+            .take()
+    }
+
+    /// Fecha o turno só se o `Stop` do orquestrador já foi visto. É o que
+    /// usa quem desce a sessão a `Idle` quando o último subagente termina:
+    /// um turno que acabou de abrir não é dele para fechar.
+    pub fn end_if_stopped(&self, id: SessionId) -> Option<OpenTurn> {
+        let mut slots = self.slots.lock().expect("turns lock");
+        let slot = slots.get_mut(&id)?;
+        slot.open.as_ref()?.stop_seen_at_ms?;
+        slot.open.take()
+    }
+
+    /// O `Stop` do orquestrador chegou e ficou segurado.
+    pub fn note_stop(&self, id: SessionId, at_ms: u64) {
+        self.note(id, Some(at_ms));
+    }
+
+    /// O orquestrador voltou a trabalhar (acordou de uma pendência): o `Stop`
+    /// anterior não é mais o fim do turno.
+    pub fn note_working(&self, id: SessionId) {
+        self.note(id, None);
+    }
+
+    fn note(&self, id: SessionId, stop_seen_at_ms: Option<u64>) {
+        let mut slots = self.slots.lock().expect("turns lock");
+        if let Some(open) = slots.get_mut(&id).and_then(|slot| slot.open.as_mut()) {
+            open.stop_seen_at_ms = stop_seen_at_ms;
+        }
     }
 
     pub fn is_open(&self, id: SessionId) -> bool {
-        self.0
+        self.slots
             .lock()
             .expect("turns lock")
             .get(&id)
             .is_some_and(|slot| slot.open.is_some())
     }
 
-    /// Guarda as árvores do turno `seq` (ou a falta delas). Um turno mais
-    /// antigo que termina de calcular depois não troca as de um mais novo.
+    /// Guarda as árvores do turno `seq` (ou a falta delas) e apaga o
+    /// diretório privado dos turnos anteriores ao último que fechou. Um
+    /// turno mais antigo que termina de calcular depois não troca as de um
+    /// mais novo.
     pub fn keep_trees(&self, id: SessionId, seq: u64, trees: Option<TurnTrees>) {
-        let mut slots = self.0.lock().expect("turns lock");
+        let mut slots = self.slots.lock().expect("turns lock");
         let Some(slot) = slots.get_mut(&id) else {
             return;
         };
@@ -504,19 +727,35 @@ impl Turns {
             slot.closed_seq = seq;
             slot.trees = trees;
         }
+        let Ok(entries) = std::fs::read_dir(self.session_dir(id)) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let older = entry
+                .file_name()
+                .to_str()
+                .and_then(|name| name.parse::<u64>().ok())
+                .is_some_and(|n| n < slot.closed_seq);
+            if older {
+                let _ = std::fs::remove_dir_all(entry.path());
+            }
+        }
     }
 
     /// As árvores do último turno que fechou com diff.
     pub fn last_trees(&self, id: SessionId) -> Option<TurnTrees> {
-        self.0
+        self.slots
             .lock()
             .expect("turns lock")
             .get(&id)
             .and_then(|slot| slot.trees.clone())
     }
 
+    /// A sessão acabou (ou vai subir de novo): some o turno aberto, as
+    /// árvores e o diretório privado dela.
     pub fn forget(&self, id: SessionId) {
-        self.0.lock().expect("turns lock").remove(&id);
+        self.slots.lock().expect("turns lock").remove(&id);
+        let _ = std::fs::remove_dir_all(self.session_dir(id));
     }
 }
 
@@ -524,8 +763,9 @@ impl Turns {
 mod tests {
     use super::*;
     use crate::worktree::diff::FileStatus;
+    use std::collections::BTreeSet;
 
-    /// Folgado: nenhum teste depende do teto de produção.
+    /// Folgado: nenhum teste depende dos tetos de produção.
     const BOUND: Duration = Duration::from_secs(120);
 
     fn git(dir: &Path, args: &[&str]) {
@@ -533,15 +773,48 @@ mod tests {
     }
 
     fn try_git(dir: &Path, args: &[&str]) -> bool {
-        std::process::Command::new("git")
+        git_out(dir, args).is_some()
+    }
+
+    fn git_out(dir: &Path, args: &[&str]) -> Option<String> {
+        let out = std::process::Command::new("git")
             .arg("-C")
             .arg(dir)
             .args(args)
             .stdin(Stdio::null())
             .output()
-            .expect("git")
-            .status
+            .expect("git");
+        out.status
             .success()
+            .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+    }
+
+    /// Uma pasta de trabalho e, ao lado dela (fora da pasta), a raiz dos
+    /// diretórios privados do teste.
+    struct Fx {
+        tmp: tempfile::TempDir,
+        name: &'static str,
+    }
+
+    impl Fx {
+        fn path(&self) -> &Path {
+            Box::leak(self.tmp.path().join(self.name).into_boxed_path())
+        }
+
+        fn private(&self) -> PathBuf {
+            self.tmp.path().join("privado")
+        }
+    }
+
+    fn plain_named(name: &'static str) -> Fx {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join(name)).unwrap();
+        Fx { tmp, name }
+    }
+
+    /// Pasta sem git.
+    fn plain() -> Fx {
+        plain_named("pasta")
     }
 
     fn init(dir: &Path) {
@@ -550,12 +823,7 @@ mod tests {
         git(dir, &["config", "user.name", "t"]);
     }
 
-    /// Repositório com um commit: `a.txt`, `b.txt`, `some.txt` e um
-    /// `.gitignore` que ignora `*.log`. A config global do dono não entra
-    /// (`hermetic_git_config` em `lib.rs`).
-    fn repo() -> tempfile::TempDir {
-        let dir = tempfile::tempdir().unwrap();
-        let p = dir.path();
+    fn seed(p: &Path) {
         init(p);
         write(p, "a.txt", "um\ndois\ntres\n");
         write(p, "b.txt", "conteudo estavel do b\noutra linha\n");
@@ -563,20 +831,35 @@ mod tests {
         write(p, ".gitignore", "*.log\n");
         git(p, &["add", "-A"]);
         git(p, &["commit", "-qm", "base"]);
-        dir
+    }
+
+    /// Repositório com um commit: `a.txt`, `b.txt`, `some.txt` e um
+    /// `.gitignore` que ignora `*.log`. A config global do dono não entra
+    /// (`hermetic_git_config` em `lib.rs`).
+    fn repo() -> Fx {
+        let fx = plain();
+        seed(fx.path());
+        fx
     }
 
     fn write(dir: &Path, name: &str, content: &str) {
         std::fs::write(dir.join(name), content).unwrap();
     }
 
+    /// O diretório privado do turno de teste: ao lado da pasta.
+    fn scratch_of(dir: &Path) -> PathBuf {
+        dir.parent().unwrap().join("privado").join("turno")
+    }
+
     fn start(dir: &Path) -> TurnStart {
+        let scratch = scratch_of(dir);
         TurnStart {
             seq: 1,
             started_at_ms: 1_000,
             prompt: Some("arruma o a.txt".into()),
             usage: None,
-            repo: snapshot(dir, BOUND),
+            repo: snapshot(dir, &scratch, BOUND),
+            scratch,
         }
     }
 
@@ -589,12 +872,8 @@ mod tests {
     }
 
     fn end(start: &TurnStart, dir: &Path) -> TurnDigest {
-        digest(
-            start,
-            &snapshot(dir, BOUND),
-            &ending(TurnOutcome::Completed),
-            None,
-        )
+        let end = snapshot(dir, &start.scratch, BOUND);
+        digest(start, &end, &ending(TurnOutcome::Completed), None, BOUND)
     }
 
     /// (caminho, status, +, -) de cada arquivo.
@@ -605,18 +884,34 @@ mod tests {
             .collect()
     }
 
-    fn temp_indexes(git_dir: &Path) -> Vec<String> {
-        std::fs::read_dir(git_dir)
-            .unwrap()
-            .filter_map(|e| e.ok()?.file_name().into_string().ok())
-            .filter(|name| name.starts_with(TEMP_INDEX_PREFIX))
-            .collect()
+    /// Todo caminho debaixo de `dir`, relativo a ele.
+    fn listing(dir: &Path) -> BTreeSet<String> {
+        fn walk(base: &Path, dir: &Path, out: &mut BTreeSet<String>) {
+            for entry in std::fs::read_dir(dir).unwrap().flatten() {
+                let path = entry.path();
+                out.insert(path.strip_prefix(base).unwrap().display().to_string());
+                if entry.file_type().unwrap().is_dir() {
+                    walk(base, &path, out);
+                }
+            }
+        }
+        let mut out = BTreeSet::new();
+        if dir.is_dir() {
+            walk(dir, dir, &mut out);
+        }
+        out
+    }
+
+    /// Onde o blob de `file` moraria num banco de objetos.
+    fn loose(objects: &Path, repo: &Path, file: &str) -> PathBuf {
+        let sha = git_out(repo, &["hash-object", file]).unwrap();
+        objects.join(&sha[..2]).join(&sha[2..])
     }
 
     #[test]
     fn nothing_changed_gives_an_empty_list() {
-        let dir = repo();
-        let d = end(&start(dir.path()), dir.path());
+        let fx = repo();
+        let d = end(&start(fx.path()), fx.path());
         assert_eq!(d.diff, TurnDiff::Ok);
         assert!(d.files.is_empty());
         assert_eq!(
@@ -629,8 +924,8 @@ mod tests {
 
     #[test]
     fn what_was_dirty_before_the_prompt_stays_out() {
-        let dir = repo();
-        let p = dir.path();
+        let fx = repo();
+        let p = fx.path();
         write(p, "a.txt", "um\ndois\ntres\nantes\n");
         write(p, "velho.txt", "ja estava aqui\n");
         git(p, &["add", "a.txt"]);
@@ -647,8 +942,8 @@ mod tests {
 
     #[test]
     fn modified_file_counts_its_lines() {
-        let dir = repo();
-        let p = dir.path();
+        let fx = repo();
+        let p = fx.path();
         let s = start(p);
         write(p, "a.txt", "um\nDOIS\ntres\nquatro\n");
         let d = end(&s, p);
@@ -661,8 +956,8 @@ mod tests {
 
     #[test]
     fn new_untracked_file_counts_and_ignored_does_not() {
-        let dir = repo();
-        let p = dir.path();
+        let fx = repo();
+        let p = fx.path();
         let s = start(p);
         write(p, "novo.txt", "linha 1\nlinha 2\n");
         write(p, "saida.log", "ignorado\n");
@@ -675,8 +970,8 @@ mod tests {
 
     #[test]
     fn untracked_file_from_before_the_prompt_shows_what_changed_in_it() {
-        let dir = repo();
-        let p = dir.path();
+        let fx = repo();
+        let p = fx.path();
         write(p, "velho.txt", "ja estava aqui\n");
         let s = start(p);
         assert!(end(&s, p).files.is_empty());
@@ -694,8 +989,8 @@ mod tests {
 
     #[test]
     fn deleted_file_counts() {
-        let dir = repo();
-        let p = dir.path();
+        let fx = repo();
+        let p = fx.path();
         let s = start(p);
         std::fs::remove_file(p.join("some.txt")).unwrap();
         let d = end(&s, p);
@@ -707,8 +1002,8 @@ mod tests {
 
     #[test]
     fn rename_is_one_file_with_or_without_git_mv() {
-        let dir = repo();
-        let p = dir.path();
+        let fx = repo();
+        let p = fx.path();
         let s = start(p);
         std::fs::rename(p.join("b.txt"), p.join("c.txt")).unwrap();
         let d = end(&s, p);
@@ -728,8 +1023,8 @@ mod tests {
 
     #[test]
     fn commit_made_during_the_turn_still_counts_its_files() {
-        let dir = repo();
-        let p = dir.path();
+        let fx = repo();
+        let p = fx.path();
         write(
             p,
             "b.txt",
@@ -751,10 +1046,30 @@ mod tests {
         );
     }
 
+    /// Os commits contam até o `HEAD` do snapshot do fim, não até o `HEAD`
+    /// de quando o resumo é calculado.
+    #[test]
+    fn commits_count_up_to_the_end_snapshot() {
+        let fx = repo();
+        let p = fx.path();
+        let s = start(p);
+        write(p, "a.txt", "um\ndois\ntres\nquatro\n");
+        git(p, &["commit", "-qam", "do turno"]);
+        let end = snapshot(p, &s.scratch, BOUND);
+        write(p, "a.txt", "um\ndois\ntres\nquatro\ncinco\n");
+        git(p, &["commit", "-qam", "depois do turno"]);
+        let d = digest(&s, &end, &ending(TurnOutcome::Completed), None, BOUND);
+        assert_eq!(d.commits, 1);
+        assert_eq!(
+            rows(&d),
+            [("a.txt", FileStatus::Modified, Some(1), Some(0))]
+        );
+    }
+
     #[test]
     fn head_that_went_back_counts_no_commit() {
-        let dir = repo();
-        let p = dir.path();
+        let fx = repo();
+        let p = fx.path();
         write(p, "a.txt", "um\ndois\ntres\nquatro\n");
         git(p, &["commit", "-qam", "segundo"]);
         let s = start(p);
@@ -769,20 +1084,47 @@ mod tests {
 
     #[test]
     fn folder_without_git_has_no_diff() {
-        let dir = tempfile::tempdir().unwrap();
-        let s = start(dir.path());
+        let fx = plain();
+        let p = fx.path();
+        let s = start(p);
         assert_eq!(s.repo, Snapshot::NoRepo);
-        write(dir.path(), "novo.txt", "oi\n");
-        let d = end(&s, dir.path());
+        write(p, "novo.txt", "oi\n");
+        let d = end(&s, p);
         assert_eq!(d.diff, TurnDiff::NoRepo);
         assert!(d.files.is_empty());
         assert_eq!(d.duration_ms, 3_500);
+        // Nem o diretório privado nasce.
+        assert!(listing(&fx.private()).is_empty());
+    }
+
+    /// Exit 128 que não é "pasta sem git": a pasta sumiu, ou o `.git` aponta
+    /// para lugar nenhum. É `unavailable`, não `no_repo`.
+    #[test]
+    fn broken_repo_and_missing_folder_are_unavailable() {
+        let fx = plain();
+        let p = fx.path();
+        let gone = p.join("nao-existe");
+        assert_eq!(
+            snapshot(&gone, &scratch_of(p), BOUND),
+            Snapshot::Unavailable
+        );
+
+        write(p, ".git", "gitdir: /caminho/que/nao/existe\n");
+        let s = start(p);
+        assert_eq!(s.repo, Snapshot::Unavailable);
+        assert_eq!(end(&s, p).diff, TurnDiff::Unavailable);
+        // Um subdiretório dele também não vira "pasta sem git".
+        std::fs::create_dir(p.join("sub")).unwrap();
+        assert_eq!(
+            snapshot(&p.join("sub"), &scratch_of(p), BOUND),
+            Snapshot::Unavailable
+        );
     }
 
     #[test]
     fn repo_without_a_commit_is_a_normal_diff() {
-        let dir = tempfile::tempdir().unwrap();
-        let p = dir.path();
+        let fx = plain();
+        let p = fx.path();
         init(p);
         write(p, "antes.txt", "ja estava\n");
         let s = start(p);
@@ -800,34 +1142,127 @@ mod tests {
         assert_eq!(d.commits, 0);
     }
 
-    /// O snapshot não escreve nem trava o índice de verdade, e não deixa o
-    /// temporário para trás.
+    /// O snapshot não escreve nada no gitdir do usuário: nem índice, nem
+    /// trava, nem objeto. O conteúdo do arquivo não rastreado só existe no
+    /// diretório privado.
     #[test]
-    fn snapshot_leaves_the_real_index_untouched() {
-        let dir = repo();
-        let p = dir.path();
+    fn snapshot_writes_nothing_under_the_users_gitdir() {
+        let fx = repo();
+        let p = fx.path();
         write(p, "a.txt", "um\ndois\ntres\nsujo\n");
         write(p, "staged.txt", "no indice\n");
         git(p, &["add", "staged.txt"]);
-        write(p, "solto.txt", "nao rastreado\n");
-        let index = p.join(".git/index");
-        let before = std::fs::read(&index).unwrap();
+        write(p, ".env", "TOKEN=valor-de-mentira-do-teste\n");
+        let git_dir = p.join(".git");
+        let index = git_dir.join("index");
+        let before = (listing(&git_dir), std::fs::read(&index).unwrap());
         let mtime = std::fs::metadata(&index).unwrap().modified().unwrap();
 
-        assert!(matches!(snapshot(p, BOUND), Snapshot::Tree(_)));
+        let s = start(p);
+        assert!(matches!(s.repo, Snapshot::Tree(_)));
+        write(p, ".env", "TOKEN=outro-valor-de-mentira\n");
+        assert_eq!(
+            rows(&end(&s, p)),
+            [(".env", FileStatus::Modified, Some(1), Some(1))]
+        );
 
-        assert_eq!(std::fs::read(&index).unwrap(), before);
+        assert_eq!(listing(&git_dir), before.0);
+        assert_eq!(std::fs::read(&index).unwrap(), before.1);
         assert_eq!(
             std::fs::metadata(&index).unwrap().modified().unwrap(),
             mtime
         );
-        assert!(temp_indexes(&p.join(".git")).is_empty());
+        assert!(!loose(&git_dir.join("objects"), p, ".env").exists());
+        assert!(loose(&s.scratch.join("objects"), p, ".env").exists());
+        // O índice temporário não fica nem no diretório privado.
+        assert!(listing(&s.scratch)
+            .iter()
+            .all(|f| !f.starts_with(TEMP_INDEX_PREFIX)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn private_dirs_are_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let fx = repo();
+        let s = start(fx.path());
+        for dir in [fx.private(), s.scratch.clone(), s.scratch.join("objects")] {
+            let mode = std::fs::metadata(&dir).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o700, "{}", dir.display());
+        }
+    }
+
+    /// Índice dividido: sem `core.splitIndex=false` em todo comando que usa
+    /// a cópia, cada snapshot gravava um `sharedindex.*` novo no gitdir.
+    #[test]
+    fn snapshot_with_split_index_adds_no_shared_index() {
+        let fx = repo();
+        let p = fx.path();
+        git(p, &["config", "core.splitIndex", "true"]);
+        git(p, &["update-index", "--split-index"]);
+        write(p, "novo.txt", "nao rastreado\n");
+        let git_dir = p.join(".git");
+        let before = listing(&git_dir);
+        assert!(before.iter().any(|f| f.starts_with("sharedindex.")));
+
+        let s = start(p);
+        write(p, "a.txt", "um\ndois\ntres\nquatro\n");
+        for _ in 0..3 {
+            assert_eq!(
+                rows(&end(&s, p)),
+                [("a.txt", FileStatus::Modified, Some(1), Some(0))]
+            );
+        }
+        assert_eq!(listing(&git_dir), before);
+    }
+
+    /// Worktree vinculado: os objetos de verdade moram no `.git` do
+    /// repositório principal, e é de lá que a alternativa tem de sair.
+    #[test]
+    fn snapshot_works_in_a_linked_worktree() {
+        let fx = repo();
+        let p = fx.path();
+        let wt = p.parent().unwrap().join("vinculado");
+        git(p, &["worktree", "add", "-q", wt.to_str().unwrap()]);
+        let before = listing(&p.join(".git"));
+        let scratch = scratch_of(p);
+        let s = TurnStart {
+            repo: snapshot(&wt, &scratch, BOUND),
+            ..start(p)
+        };
+        write(&wt, "a.txt", "um\ndois\ntres\nquatro\n");
+        write(&wt, "novo.txt", "oi\n");
+        let d = end(&s, &wt);
+        assert_eq!(
+            rows(&d),
+            [
+                ("a.txt", FileStatus::Modified, Some(1), Some(0)),
+                ("novo.txt", FileStatus::Added, Some(1), Some(0)),
+            ]
+        );
+        assert_eq!(listing(&p.join(".git")), before);
+    }
+
+    /// Caminho com `:` quebraria a lista de `GIT_ALTERNATE_OBJECT_DIRECTORIES`
+    /// sem as aspas.
+    #[cfg(unix)]
+    #[test]
+    fn repo_path_with_a_colon_still_reads_its_objects() {
+        let fx = plain_named("re:po");
+        let p = fx.path();
+        seed(p);
+        let s = start(p);
+        write(p, "a.txt", "um\ndois\ntres\nquatro\n");
+        assert_eq!(
+            rows(&end(&s, p)),
+            [("a.txt", FileStatus::Modified, Some(1), Some(0))]
+        );
     }
 
     #[test]
     fn snapshot_works_with_the_index_locked_by_someone_else() {
-        let dir = repo();
-        let p = dir.path();
+        let fx = repo();
+        let p = fx.path();
         let s = start(p);
         write(p, ".git/index.lock", "");
         write(p, "a.txt", "um\ndois\ntres\nquatro\n");
@@ -845,8 +1280,8 @@ mod tests {
     /// prompt não conta.
     #[test]
     fn snapshot_works_in_the_middle_of_a_conflicted_merge() {
-        let dir = repo();
-        let p = dir.path();
+        let fx = repo();
+        let p = fx.path();
         git(p, &["checkout", "-qb", "feature"]);
         write(p, "a.txt", "um\nfeature\ntres\n");
         git(p, &["commit", "-qam", "feature"]);
@@ -857,7 +1292,10 @@ mod tests {
             !try_git(p, &["merge", "feature"]),
             "merge deveria conflitar"
         );
-        let index = std::fs::read(p.join(".git/index")).unwrap();
+        let before = (
+            listing(&p.join(".git")),
+            std::fs::read(p.join(".git/index")).unwrap(),
+        );
 
         let s = start(p);
         assert!(matches!(s.repo, Snapshot::Tree(_)));
@@ -869,20 +1307,97 @@ mod tests {
             rows(&d),
             [("b.txt", FileStatus::Modified, Some(1), Some(0))]
         );
-        assert_eq!(std::fs::read(p.join(".git/index")).unwrap(), index);
+        assert_eq!(listing(&p.join(".git")), before.0);
+        assert_eq!(std::fs::read(p.join(".git/index")).unwrap(), before.1);
     }
 
-    /// Repositório com filtro de conteúdo: o git roda enjaulado, e a jaula de
-    /// escrita tem de deixar o índice temporário nascer no gitdir. Só macOS:
-    /// no Linux a jaula depende de user namespace, que a CI não tem.
+    /// Um arquivo que o `add` não lê não derruba o diff do turno: a árvore
+    /// sai sem ele.
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_file_does_not_cost_the_turn_its_diff() {
+        use std::os::unix::fs::PermissionsExt;
+        let fx = repo();
+        let p = fx.path();
+        write(p, "fechado.txt", "ninguem le\n");
+        let closed = std::fs::Permissions::from_mode(0o000);
+        std::fs::set_permissions(p.join("fechado.txt"), closed).unwrap();
+        if std::fs::read(p.join("fechado.txt")).is_ok() {
+            return; // root lê tudo: não há o que provar aqui.
+        }
+        let s = start(p);
+        write(p, "a.txt", "um\ndois\ntres\nquatro\n");
+        write(p, "zeta.txt", "depois do fechado na ordem\n");
+        let d = end(&s, p);
+        assert_eq!(d.diff, TurnDiff::Ok);
+        assert_eq!(
+            rows(&d),
+            [
+                ("a.txt", FileStatus::Modified, Some(1), Some(0)),
+                ("zeta.txt", FileStatus::Added, Some(1), Some(0)),
+            ]
+        );
+    }
+
+    /// `git init` aninhado sem commit: o `add -A` morre com 128.
+    #[test]
+    fn nested_repo_without_a_commit_does_not_cost_the_turn_its_diff() {
+        let fx = repo();
+        let p = fx.path();
+        std::fs::create_dir(p.join("meio")).unwrap();
+        init(&p.join("meio"));
+        write(&p.join("meio"), "dentro.txt", "do outro repo\n");
+        let s = start(p);
+        assert!(matches!(s.repo, Snapshot::Tree(_)));
+        write(p, "a.txt", "um\ndois\ntres\nquatro\n");
+        write(p, "zeta.txt", "depois do aninhado na ordem\n");
+        let d = end(&s, p);
+        assert_eq!(d.diff, TurnDiff::Ok);
+        assert_eq!(
+            rows(&d),
+            [
+                ("a.txt", FileStatus::Modified, Some(1), Some(0)),
+                ("zeta.txt", FileStatus::Added, Some(1), Some(0)),
+            ]
+        );
+    }
+
+    /// Arquivo novo fora do cone do sparse-checkout: o `add -A` sai com 1.
+    #[test]
+    fn file_outside_the_sparse_cone_does_not_cost_the_turn_its_diff() {
+        let fx = repo();
+        let p = fx.path();
+        std::fs::create_dir(p.join("dentro")).unwrap();
+        write(p, "dentro/x.txt", "no cone\n");
+        git(p, &["add", "-A"]);
+        git(p, &["commit", "-qm", "dentro"]);
+        git(p, &["sparse-checkout", "set", "--cone", "dentro"]);
+        std::fs::create_dir(p.join("fora")).unwrap();
+        write(p, "fora/y.txt", "fora do cone\n");
+        let s = start(p);
+        assert!(matches!(s.repo, Snapshot::Tree(_)));
+        write(p, "dentro/x.txt", "no cone\nmudou\n");
+        let d = end(&s, p);
+        assert_eq!(d.diff, TurnDiff::Ok);
+        assert!(rows(&d).contains(&("dentro/x.txt", FileStatus::Modified, Some(1), Some(0))));
+    }
+
+    /// Repositório com filtro de conteúdo: o git roda enjaulado. A jaula do
+    /// snapshot deixa escrever no diretório privado e em mais lugar nenhum —
+    /// um filtro `clean` do repositório não consegue criar arquivo na pasta.
+    /// Só macOS: no Linux a jaula depende de user namespace, que a CI não tem.
     #[cfg(target_os = "macos")]
     #[test]
-    fn snapshot_works_inside_the_git_cage() {
-        let dir = repo();
-        let p = dir.path();
-        git(p, &["config", "filter.passa.clean", "cat"]);
-        write(p, ".gitattributes", "*.txt filter=passa\n");
+    fn clean_filter_cannot_write_into_the_repo_during_a_snapshot() {
+        let fx = repo();
+        let p = fx.path();
+        let planted = p.join("plantado-pelo-filtro");
+        let filter = format!("touch '{}'; cat", planted.display());
+        git(p, &["config", "filter.espiao.clean", &filter]);
+        write(p, ".gitattributes", "*.txt filter=espiao\n");
         assert!(crate::sandbox::git::repo_uses_content_filter(p));
+        let before = listing(&p.join(".git"));
+
         let s = start(p);
         write(p, "a.txt", "um\ndois\ntres\nquatro\n");
         let d = end(&s, p);
@@ -891,43 +1406,120 @@ mod tests {
             rows(&d),
             [("a.txt", FileStatus::Modified, Some(1), Some(0))]
         );
-        assert!(temp_indexes(&p.join(".git")).is_empty());
+        assert!(!planted.exists(), "o filtro escreveu na pasta do usuário");
+        assert_eq!(listing(&p.join(".git")), before);
     }
 
     #[test]
     fn snapshot_past_the_bound_is_unavailable() {
-        let dir = repo();
-        let p = dir.path();
-        assert_eq!(snapshot(p, Duration::ZERO), Snapshot::Unavailable);
-        assert!(temp_indexes(&p.join(".git")).is_empty());
+        let fx = repo();
+        let p = fx.path();
+        let scratch = scratch_of(p);
+        assert_eq!(snapshot(p, &scratch, Duration::ZERO), Snapshot::Unavailable);
 
         let s = start(p);
+        let gone = Snapshot::Unavailable;
+        let d = digest(&s, &gone, &ending(TurnOutcome::Completed), None, BOUND);
+        assert_eq!(d.diff, TurnDiff::Unavailable);
+        assert!(trees(&s, &gone).is_none());
+        // Diff que estoura o teto dele: sem diff, sem travar.
+        write(p, "a.txt", "um\ndois\ntres\nquatro\n");
+        let end = snapshot(p, &s.scratch, BOUND);
         let d = digest(
             &s,
-            &Snapshot::Unavailable,
+            &end,
             &ending(TurnOutcome::Completed),
             None,
+            Duration::ZERO,
         );
         assert_eq!(d.diff, TurnDiff::Unavailable);
-        assert!(trees(&s, &Snapshot::Unavailable).is_none());
     }
 
     #[cfg(unix)]
+    fn alive(pid: i32) -> bool {
+        unsafe { libc::kill(pid, 0) == 0 }
+    }
+
+    #[cfg(unix)]
+    fn wait_gone(pid: i32) -> bool {
+        let clock = Instant::now();
+        while alive(pid) {
+            if clock.elapsed() > Duration::from_secs(10) {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        true
+    }
+
+    /// O prazo mata o GRUPO: o neto (o `sleep` que o `sh` deixou em segundo
+    /// plano) morre junto, não só o filho direto.
+    #[cfg(unix)]
     #[test]
-    fn child_past_the_deadline_is_killed() {
+    fn child_past_the_deadline_is_killed_with_its_group() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pidfile = tmp.path().join("neto.pid");
         let mut cmd = Command::new("sh");
-        cmd.args(["-c", "sleep 60 & wait"]);
+        cmd.arg("-c")
+            .arg("sleep 600 & echo $! > \"$0\"; wait")
+            .arg(&pidfile);
         cmd.stdin(Stdio::null());
         let clock = Instant::now();
-        let ran = run_within(cmd, Instant::now() + Duration::from_millis(100), true);
+        let ran = run_within(cmd, Instant::now() + Duration::from_millis(1500), true);
         assert!(matches!(ran, Ran::TimedOut));
         assert!(clock.elapsed() < Duration::from_secs(30));
+        let grandchild: i32 = std::fs::read_to_string(&pidfile)
+            .expect("o sh não chegou a gravar o pid do neto")
+            .trim()
+            .parse()
+            .unwrap();
+        assert!(wait_gone(grandchild), "o neto sobreviveu ao prazo");
+    }
+
+    /// Snapshot morto no meio do `add` (um filtro `clean` que não volta): o
+    /// filtro morre com o grupo, o gitdir do usuário fica como estava, o
+    /// índice temporário some e o que sobrou no diretório privado vai embora
+    /// com a sessão.
+    #[cfg(unix)]
+    #[test]
+    fn snapshot_killed_mid_add_leaves_nothing_behind() {
+        let fx = repo();
+        let p = fx.path();
+        let id = SessionId::new_v4();
+        // Dentro do diretório privado do turno: é o único lugar em que a
+        // jaula do snapshot deixa o filtro escrever.
+        let pidfile = fx.private().join(id.to_string()).join("1/filtro.pid");
+        let filter = format!("echo $$ > '{}'; exec sleep 600", pidfile.display());
+        git(p, &["config", "filter.lento.clean", &filter]);
+        write(p, ".gitattributes", "*.txt filter=lento\n");
+        write(p, "a.txt", "um\ndois\ntres\nquatro\n");
+        let before = listing(&p.join(".git"));
+
+        let turns = Turns::at(fx.private());
+        let bound = Duration::from_secs(4);
+        turns.begin(id, p.to_path_buf(), bound, 1, None, None);
+        let s = turns.end(id).unwrap().into_start();
+        assert_eq!(s.repo, Snapshot::Unavailable);
+        assert_eq!(listing(&p.join(".git")), before);
+        assert!(listing(&s.scratch)
+            .iter()
+            .all(|f| !f.starts_with(TEMP_INDEX_PREFIX)));
+        // No Linux sem user namespace a jaula recusa o git antes do filtro
+        // rodar: aí não há filtro para conferir, e o resto vale igual.
+        if let Ok(pid) = std::fs::read_to_string(&pidfile) {
+            assert!(
+                wait_gone(pid.trim().parse().unwrap()),
+                "o filtro sobreviveu ao prazo"
+            );
+        }
+        turns.forget(id);
+        assert!(listing(&fx.private()).is_empty());
     }
 
     #[test]
     fn list_is_capped_and_totals_are_not() {
-        let dir = repo();
-        let p = dir.path();
+        let fx = repo();
+        let p = fx.path();
         let s = start(p);
         for n in 0..FILES_MAX + 5 {
             write(p, &format!("novo-{n:03}.txt"), &format!("arquivo {n}\n"));
@@ -955,13 +1547,14 @@ mod tests {
             prompt: None,
             usage: at_start,
             repo: Snapshot::NoRepo,
+            scratch: PathBuf::new(),
         };
         let ending = TurnEnding {
             outcome: TurnOutcome::Failed,
             failure: Some("limite de uso atingido".into()),
             ended_at_ms: 10,
         };
-        digest(&s, &Snapshot::NoRepo, &ending, at_end.as_ref())
+        digest(&s, &Snapshot::NoRepo, &ending, at_end.as_ref(), BOUND)
     }
 
     #[test]
@@ -1000,20 +1593,22 @@ mod tests {
 
     #[test]
     fn turn_end_without_a_start_gives_nothing() {
-        let turns = Turns::default();
+        let fx = plain();
+        let turns = Turns::at(fx.private());
         let id = SessionId::new_v4();
         assert!(turns.end(id).is_none());
+        assert!(turns.end_if_stopped(id).is_none());
         assert!(!turns.is_open(id));
     }
 
-    /// O turno fecha uma vez só, venha o fim de onde vier (hook ou
-    /// coordenador), e uma sessão não enxerga o turno da outra.
+    /// O turno fecha uma vez só, venha o fim de onde vier (hook, coordenador
+    /// ou saída do processo), e uma sessão não enxerga o turno da outra.
     #[test]
     fn a_turn_closes_once_whoever_gets_there_first() {
-        let dir = repo();
-        let turns = Turns::default();
+        let fx = repo();
+        let turns = Turns::at(fx.private());
         let (id, other) = (SessionId::new_v4(), SessionId::new_v4());
-        assert!(begin(&turns, id, dir.path(), 7).is_none());
+        assert!(begin(&turns, id, fx.path(), 7).is_none());
         assert!(turns.is_open(id));
         assert!(turns.end(other).is_none());
 
@@ -1024,61 +1619,149 @@ mod tests {
         assert_eq!((s.seq, s.started_at_ms), (1, 7));
         assert_eq!(s.prompt.as_deref(), Some("oi"));
         assert!(matches!(s.repo, Snapshot::Tree(_)));
+        assert_eq!(s.scratch, fx.private().join(id.to_string()).join("1"));
     }
 
     /// Prompt novo com turno ainda aberto (Esc e negação no prompt nativo
     /// não mandam hook): o aberto volta para ser fechado, e o novo segue.
     #[test]
     fn a_new_prompt_hands_back_the_turn_still_open() {
-        let dir = repo();
-        let turns = Turns::default();
+        let fx = repo();
+        let turns = Turns::at(fx.private());
         let id = SessionId::new_v4();
-        assert!(begin(&turns, id, dir.path(), 10).is_none());
-        let displaced = begin(&turns, id, dir.path(), 20).expect("turno anterior");
-        assert_eq!(displaced.seq, 1);
+        assert!(begin(&turns, id, fx.path(), 10).is_none());
+        let displaced = begin(&turns, id, fx.path(), 20).expect("turno anterior");
+        assert_eq!((displaced.seq, displaced.stop_seen_at_ms), (1, None));
         assert!(turns.is_open(id));
         assert_eq!(turns.end(id).expect("turno novo").seq, 2);
-        assert!(begin(&turns, id, dir.path(), 30).is_none());
+        assert!(begin(&turns, id, fx.path(), 30).is_none());
         assert_eq!(turns.end(id).unwrap().seq, 3);
+    }
+
+    /// `Stop` segurado (subagente vivo, pendência): o turno segue aberto,
+    /// mas quem o fechar depois sabe que o orquestrador terminou, e quando.
+    /// Quem só fecha turno com `Stop` visto não leva um turno recém-aberto.
+    #[test]
+    fn held_stop_is_remembered_until_the_orchestrator_works_again() {
+        let fx = repo();
+        let turns = Turns::at(fx.private());
+        let id = SessionId::new_v4();
+        begin(&turns, id, fx.path(), 10);
+        assert!(turns.end_if_stopped(id).is_none());
+        assert!(turns.is_open(id));
+
+        turns.note_stop(id, 50);
+        let displaced = begin(&turns, id, fx.path(), 90).expect("turno anterior");
+        assert_eq!(displaced.stop_seen_at_ms, Some(50));
+        // O turno novo não herda o `Stop` do anterior.
+        assert!(turns.end_if_stopped(id).is_none());
+
+        turns.note_stop(id, 120);
+        turns.note_working(id);
+        assert!(turns.end_if_stopped(id).is_none());
+        turns.note_stop(id, 150);
+        let open = turns.end_if_stopped(id).expect("Stop visto");
+        assert_eq!((open.seq, open.stop_seen_at_ms), (2, Some(150)));
+        assert!(!turns.is_open(id));
+    }
+
+    fn pair(start: &str) -> TurnTrees {
+        TurnTrees {
+            root: PathBuf::from("/repo"),
+            start: start.into(),
+            end: "fim".into(),
+            scratch: PathBuf::from("/privado"),
+            objects: PathBuf::from("/repo/.git/objects"),
+        }
     }
 
     #[test]
     fn trees_of_an_older_turn_never_replace_a_newer_one() {
-        let dir = repo();
-        let turns = Turns::default();
+        let fx = repo();
+        let turns = Turns::at(fx.private());
         let id = SessionId::new_v4();
-        begin(&turns, id, dir.path(), 10);
-        let pair = |start: &str| TurnTrees {
-            root: dir.path().to_path_buf(),
-            start: start.into(),
-            end: "fim".into(),
-        };
+        begin(&turns, id, fx.path(), 10);
         turns.keep_trees(id, 2, Some(pair("dois")));
         turns.keep_trees(id, 1, Some(pair("um")));
         assert_eq!(turns.last_trees(id), Some(pair("dois")));
         // Turno mais novo sem diff: as do anterior não servem mais.
         turns.keep_trees(id, 3, None);
         assert_eq!(turns.last_trees(id), None);
+    }
+
+    /// Só o diretório do turno aberto e o do último que fechou ficam; o da
+    /// sessão inteira some com ela, sem tocar no das outras.
+    #[test]
+    fn private_dirs_go_away_as_turns_finish_and_with_the_session() {
+        let fx = repo();
+        let turns = Turns::at(fx.private());
+        let (id, other) = (SessionId::new_v4(), SessionId::new_v4());
+        let session = fx.private().join(id.to_string());
+        let dirs = || {
+            let mut names: Vec<String> = std::fs::read_dir(&session)
+                .map(|d| {
+                    d.flatten()
+                        .map(|e| e.file_name().to_string_lossy().into_owned())
+                        .collect()
+                })
+                .unwrap_or_default();
+            names.sort();
+            names
+        };
+        let finish = |seq: u64| {
+            let s = turns.end(id).unwrap().into_start();
+            assert_eq!(s.seq, seq);
+            turns.keep_trees(id, seq, Some(pair("x")));
+        };
+        begin(&turns, other, fx.path(), 1);
+        turns.end(other).unwrap().into_start();
+
+        begin(&turns, id, fx.path(), 10);
+        finish(1);
+        assert_eq!(dirs(), ["1"]);
+        begin(&turns, id, fx.path(), 20);
+        let open = turns.end(id).unwrap().into_start();
+        begin(&turns, id, fx.path(), 30);
+        // O 2 fechou e o 3 está aberto: o 1 vai embora.
+        turns.keep_trees(id, open.seq, None);
+        turns.end(id).unwrap().into_start();
+        assert_eq!(dirs(), ["2", "3"]);
+        // Resumo atrasado de um turno antigo não ressuscita nem apaga o novo.
+        turns.keep_trees(id, 1, None);
+        assert_eq!(dirs(), ["2", "3"]);
+        turns.keep_trees(id, 3, None);
+        assert_eq!(dirs(), ["3"]);
+
         turns.forget(id);
+        assert!(!session.exists());
         assert!(!turns.is_open(id));
+        assert!(fx.private().join(other.to_string()).is_dir());
+
+        sweep(&fx.private());
+        assert!(!fx.private().exists());
     }
 
     #[test]
     fn trees_come_from_the_two_snapshots() {
-        let dir = repo();
-        let p = dir.path();
+        let fx = repo();
+        let p = fx.path();
         let s = start(p);
         write(p, "a.txt", "um\ndois\ntres\nquatro\n");
-        let end = snapshot(p, BOUND);
+        let end = snapshot(p, &s.scratch, BOUND);
         let pair = trees(&s, &end).expect("duas árvores");
         assert_ne!(pair.start, pair.end);
         assert!(matches!(&s.repo, Snapshot::Tree(t) if t.tree == pair.start));
+        assert_eq!(pair.scratch, s.scratch);
+        assert_eq!(
+            crate::repo::canonicalize_or(&pair.objects),
+            crate::repo::canonicalize_or(&p.join(".git/objects"))
+        );
     }
 
     #[test]
     fn digest_serializes_paths_and_counts_only() {
-        let dir = repo();
-        let p = dir.path();
+        let fx = repo();
+        let p = fx.path();
         let s = start(p);
         write(p, "a.txt", "um\ndois\ntres\nsegredo do arquivo\n");
         let json = serde_json::to_value(end(&s, p)).unwrap();
@@ -1092,6 +1775,7 @@ mod tests {
         let text = json.to_string();
         assert!(!text.contains("segredo do arquivo"));
         assert!(!text.contains("tree"));
+        assert!(!text.contains("privado"));
         assert_eq!(
             serde_json::to_value(TurnDiff::NoRepo).unwrap(),
             serde_json::json!("no_repo")

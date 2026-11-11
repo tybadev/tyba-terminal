@@ -85,6 +85,17 @@ pub fn git_in_rw(path: &Path) -> Command {
     caged(path, crate::sandbox::git::GitProfile::Write, &[])
 }
 
+/// Só-leitura no repo, com escrita liberada só em `scratch` (fora do repo).
+/// Para quem grava índice e objetos num diretório próprio: um filtro `clean`
+/// roda, mas não escreve no repo nem nos worktrees geridos.
+pub fn git_in_scratch(path: &Path, scratch: &Path) -> Command {
+    caged(
+        path,
+        crate::sandbox::git::GitProfile::Scratch,
+        &[scratch.to_path_buf()],
+    )
+}
+
 /// Como `git_in_rw`, mas libera escrita também em `extra` — usado pelo
 /// `worktree add`/`remove`, que escrevem no diretório gerido, fora do repo.
 pub fn git_in_rw_within(path: &Path, extra: &[PathBuf]) -> Command {

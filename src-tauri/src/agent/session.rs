@@ -622,30 +622,37 @@ fn begin_turn(ctx: &HandlerCtx, event: &HookEvent) {
         .get("prompt")
         .and_then(|p| p.as_str())
         .and_then(|p| crate::status::transcript::clean_summary(p, TURN_PROMPT_MAX_CHARS));
+    let now = now_ms();
     let displaced = ctx.sessions.turns.begin(
         ctx.session_id,
         ctx.worktree_root.clone(),
         crate::agent::turn::SNAPSHOT_MAX,
-        now_ms(),
+        now,
         prompt,
         session.agent_usage,
     );
     if let Some(open) = displaced {
-        finish_turn(
-            &ctx.app,
-            &ctx.sessions,
-            ctx.session_id,
-            open,
-            TurnOutcome::Interrupted,
-            None,
-        );
+        // `Stop` visto e segurado (subagente, pendência): o orquestrador
+        // terminou, e terminou naquela hora. Sem `Stop`, foi interrompido.
+        let ending = match open.stop_seen_at_ms {
+            Some(at) => turn_ending(TurnOutcome::Completed, None, at),
+            None => turn_ending(TurnOutcome::Interrupted, None, now),
+        };
+        finish_turn(&ctx.app, &ctx.sessions, ctx.session_id, open, ending);
     }
     ctx.sessions.set_turn_open(&ctx.app, ctx.session_id);
 }
 
+fn turn_ending(outcome: TurnOutcome, failure: Option<String>, ended_at_ms: u64) -> TurnEnding {
+    TurnEnding {
+        outcome,
+        failure,
+        ended_at_ms,
+    }
+}
+
 /// O turno da sessão acabou. Fecha o que estiver aberto — uma vez só, venha
-/// o fim do hook ou do coordenador que desce a `Idle` a sessão segurada por
-/// subagente. Sem turno aberto não há resumo.
+/// o fim de onde vier. Sem turno aberto não há resumo.
 pub(crate) fn close_turn(
     app: &AppHandle,
     sessions: &SharedSessionManager,
@@ -654,7 +661,18 @@ pub(crate) fn close_turn(
     failure: Option<String>,
 ) {
     if let Some(open) = sessions.turns.end(id) {
-        finish_turn(app, sessions, id, open, outcome, failure);
+        let ending = turn_ending(outcome, failure, now_ms());
+        finish_turn(app, sessions, id, open, ending);
+    }
+}
+
+/// O último subagente terminou e a sessão desceu a `Idle`: fecha o turno
+/// cujo `Stop` tinha ficado segurado. Só esse — um turno que acabou de abrir
+/// (o prompt novo chegou antes) não é daqui para fechar.
+pub(crate) fn close_stopped_turn(app: &AppHandle, sessions: &SharedSessionManager, id: SessionId) {
+    if let Some(open) = sessions.turns.end_if_stopped(id) {
+        let ending = turn_ending(TurnOutcome::Completed, None, now_ms());
+        finish_turn(app, sessions, id, open, ending);
     }
 }
 
@@ -667,24 +685,26 @@ fn finish_turn(
     sessions: &SharedSessionManager,
     id: SessionId,
     open: OpenTurn,
-    outcome: TurnOutcome,
-    failure: Option<String>,
+    ending: TurnEnding,
 ) {
-    let ending = TurnEnding {
-        outcome,
-        failure,
-        ended_at_ms: now_ms(),
-    };
+    use crate::agent::turn;
+
     let app = app.clone();
     let sessions = sessions.clone();
     std::thread::spawn(move || {
-        let end = crate::agent::turn::snapshot(&open.dir, open.bound);
+        let end = turn::snapshot(&open.dir, &open.scratch, open.bound);
         let start = open.into_start();
         let usage = |sessions: &SharedSessionManager| sessions.get(id).and_then(|s| s.agent_usage);
-        let digest = crate::agent::turn::digest(&start, &end, &ending, usage(&sessions).as_ref());
+        let digest = turn::digest(
+            &start,
+            &end,
+            &ending,
+            usage(&sessions).as_ref(),
+            turn::DIFF_MAX,
+        );
         sessions
             .turns
-            .keep_trees(id, start.seq, crate::agent::turn::trees(&start, &end));
+            .keep_trees(id, start.seq, turn::trees(&start, &end));
         sessions.set_last_turn(&app, id, digest.clone());
         std::thread::sleep(std::time::Duration::from_millis(TURN_USAGE_SETTLE_MS));
         let settled = digest
@@ -1478,13 +1498,7 @@ fn handle_event(ctx: &HandlerCtx, event: HookEvent) -> HookAction {
                     );
                     prompt_queue::on_signal(&ctx.app, ctx.session_id, QueueSignal::TurnEnded);
                     // O `Stop` que ficou segurado por subagente fecha aqui.
-                    close_turn(
-                        &ctx.app,
-                        &ctx.sessions,
-                        ctx.session_id,
-                        TurnOutcome::Completed,
-                        None,
-                    );
+                    close_stopped_turn(&ctx.app, &ctx.sessions, ctx.session_id);
                 }
             }
         }
@@ -1579,6 +1593,7 @@ fn handle_event(ctx: &HandlerCtx, event: HookEvent) -> HookAction {
                     let from_subagent = event.agent_id.is_some();
                     if !from_subagent {
                         ctx.subagents.note_orchestrator_working(ctx.session_id);
+                        ctx.sessions.turns.note_working(ctx.session_id);
                         ctx.sessions
                             .set_subagents_working(&ctx.app, ctx.session_id, false);
                         ctx.turn_settle.fetch_add(1, Ordering::SeqCst);
@@ -1614,6 +1629,7 @@ fn handle_event(ctx: &HandlerCtx, event: HookEvent) -> HookAction {
                     // `Idle`, sem fila, sem "terminou" — mesmo segurar do
                     // `Stop` com subagente vivo.
                     ctx.turn_settle.fetch_add(1, Ordering::SeqCst);
+                    ctx.sessions.turns.note_stop(ctx.session_id, now_ms());
                     if let Some(next) = ctx
                         .sessions
                         .get(ctx.session_id)
@@ -1636,6 +1652,7 @@ fn handle_event(ctx: &HandlerCtx, event: HookEvent) -> HookAction {
                         .on_orchestrator_stop(&ctx.app, ctx.session_id, summary.clone())
                     {
                         ctx.turn_settle.fetch_add(1, Ordering::SeqCst);
+                        ctx.sessions.turns.note_stop(ctx.session_id, now_ms());
                         if let Some(next) = ctx
                             .sessions
                             .get(ctx.session_id)
