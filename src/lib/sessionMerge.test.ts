@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import { mergeSessionUpdate, sameObserved } from "./sessionStatus";
-import type { Session } from "./ipc";
+import type { Session, TurnDigest } from "./ipc";
 
 const shell = (over: Partial<Session> = {}): Session =>
   ({
@@ -118,5 +118,55 @@ describe("convite de retomar a conversa no shell restaurado", () => {
   test("convite igual dos dois lados não é novidade", () => {
     const antes = shell({ shell_resume_offer: true });
     expect(mergeSessionUpdate(antes, shell({ shell_resume_offer: true }))).toBeNull();
+  });
+});
+
+describe("resumo do turno chega à pílula", () => {
+  const digest = (over: Partial<TurnDigest> = {}): TurnDigest => ({
+    seq: 1,
+    outcome: "completed",
+    failure: null,
+    started_at_ms: 0,
+    ended_at_ms: 1,
+    duration_ms: 1,
+    prompt: null,
+    diff: "ok",
+    files: [],
+    files_total: 2,
+    insertions: 14,
+    deletions: 3,
+    commits: 0,
+    cost_usd: null,
+    tokens: null,
+    ...over,
+  });
+
+  test("fim do turno é novidade, mesmo com status e atenção iguais", () => {
+    const merged = mergeSessionUpdate(
+      shell({ turn_open: true }),
+      shell({ last_turn: digest(), turn_open: false }),
+    );
+    expect(merged?.last_turn?.files_total).toBe(2);
+    expect(merged?.turn_open).toBe(false);
+  });
+
+  test("turno novo abrindo é novidade", () => {
+    const last_turn = digest();
+    const merged = mergeSessionUpdate(
+      shell({ last_turn, turn_open: false }),
+      shell({ last_turn, turn_open: true }),
+    );
+    expect(merged?.turn_open).toBe(true);
+    expect(merged?.last_turn).toEqual(last_turn);
+  });
+
+  test("o custo que chega depois troca o resumo; o mesmo resumo não é novidade", () => {
+    const antes = shell({ last_turn: digest(), turn_open: false });
+    expect(mergeSessionUpdate(antes, shell({ last_turn: digest(), turn_open: false }))).toBeNull();
+    const merged = mergeSessionUpdate(
+      antes,
+      shell({ last_turn: digest({ cost_usd: 0.42, tokens: 1200 }), turn_open: false }),
+    );
+    expect(merged?.last_turn?.cost_usd).toBe(0.42);
   });
 });

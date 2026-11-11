@@ -80,6 +80,72 @@ export function drawerPill(
   return { done, total, state: { kind: "ok" } };
 }
 
+export type PillTurn = {
+  outcome: "completed" | "failed" | "interrupted";
+  /** `counts`: mexeu em arquivo. `none`: terminou sem mudar nada. `no_repo`:
+   *  a pasta não é um repositório. `unavailable`: o core não conseguiu medir. */
+  body:
+    | { kind: "counts"; files: number; insertions: number; deletions: number }
+    | { kind: "none" }
+    | { kind: "no_repo" }
+    | { kind: "unavailable" };
+};
+
+/**
+ * O trecho "Turno" da pílula (quadro Pílulas de ResumoDoTurno): só com um
+ * turno terminado e nenhum aberto. Os números são os totais do resumo, não o
+ * tamanho de `files` (cortada pelo core).
+ */
+export function pillTurn(
+  session: Pick<Session, "last_turn" | "turn_open"> | null | undefined,
+): PillTurn | null {
+  const turn = session?.last_turn;
+  if (!turn || session?.turn_open) return null;
+  const body: PillTurn["body"] =
+    turn.diff !== "ok"
+      ? { kind: turn.diff }
+      : turn.files_total > 0
+        ? {
+            kind: "counts",
+            files: turn.files_total,
+            insertions: turn.insertions,
+            deletions: turn.deletions,
+          }
+        : { kind: "none" };
+  return { outcome: turn.outcome, body };
+}
+
+type Translate = (key: string, options?: Record<string, unknown>) => string;
+
+/** Título do trecho: "Turno", "Turno falhou", "Turno interrompido". */
+export function pillTurnHead(turn: PillTurn, t: Translate): string {
+  if (turn.outcome === "failed") return t("pillTurnFailed");
+  if (turn.outcome === "interrupted") return t("pillTurnInterrupted");
+  return t("pillTurn");
+}
+
+/**
+ * O número da pílula compacta (ícone ± e arquivos): 0 sem mudança e sem git,
+ * como no quadro; `null` quando o core não mediu, para não afirmar zero.
+ */
+export function pillTurnCount(turn: PillTurn): number | null {
+  if (turn.body.kind === "unavailable") return null;
+  return turn.body.kind === "counts" ? turn.body.files : 0;
+}
+
+/** O trecho por extenso, para o tooltip e o `aria-label` da pílula. */
+export function pillTurnLabel(turn: PillTurn, t: Translate): string {
+  const head = pillTurnHead(turn, t);
+  const { body } = turn;
+  if (body.kind === "counts") {
+    const files = t("diffFilesSummary", { count: body.files });
+    return `${head} · ${files} +${body.insertions} −${body.deletions}`;
+  }
+  if (body.kind === "none") return `${head} · ${t("pillTurnNoChanges")}`;
+  if (body.kind === "no_repo") return `${head} · ${t("pillTurnNoGit")}`;
+  return head;
+}
+
 /**
  * Qual aba a gaveta mostra (quadro 4C): a do dono, se ele escolheu (o core a
  * zera quando a gaveta recolhe); senão a que pede você (aprovação pendente →
