@@ -404,8 +404,10 @@ mod tests {
 
     #[test]
     fn a_denied_host_stays_quiet() {
-        let mut prefs = TypedPrefs::default();
-        prefs.mode = TypedMode::Open;
+        let mut prefs = TypedPrefs {
+            mode: TypedMode::Open,
+            ..Default::default()
+        };
         assert_eq!(
             prefs.deny(target(Some("root"), "203.0.113.10", 22), 1),
             Ok(true)

@@ -404,7 +404,7 @@ mod tests {
     #[test]
     fn file_inside_root_with_html_resolves_to_orbit_file() {
         let (_tmp, root, _other) = tree();
-        let roots = canonical_roots(&[root.clone()]);
+        let roots = canonical_roots(std::slice::from_ref(&root));
         assert_eq!(
             resolve_file(&file_url(&root.join("site/index.html")), &roots),
             Ok("orbit-file://r0/site/index.html".into())
@@ -420,7 +420,7 @@ mod tests {
     #[test]
     fn file_outside_dotdot_symlink_and_txt_are_refused() {
         let (_tmp, root, other) = tree();
-        let roots = canonical_roots(&[root.clone()]);
+        let roots = canonical_roots(std::slice::from_ref(&root));
         assert_eq!(
             resolve_file(&file_url(&root.join("notes.txt")), &roots),
             Err(FileRefusal::NotHtml)
@@ -468,7 +468,7 @@ mod tests {
     #[test]
     fn serve_path_stays_inside_the_root() {
         let (_tmp, root, other) = tree();
-        let roots = canonical_roots(&[root.clone()]);
+        let roots = canonical_roots(std::slice::from_ref(&root));
         let canon_root = &roots[0];
         assert_eq!(
             serve_path("r0", "/site/css/app.css", &roots),
@@ -502,7 +502,7 @@ mod tests {
     #[test]
     fn serve_path_serves_only_static_web_files() {
         let (_tmp, root, _other) = tree();
-        let roots = canonical_roots(&[root.clone()]);
+        let roots = canonical_roots(std::slice::from_ref(&root));
         let canon_root = &roots[0];
         std::fs::write(root.join(".env"), "SEGREDO=1").unwrap();
         std::fs::create_dir_all(root.join(".git")).unwrap();

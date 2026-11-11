@@ -1920,7 +1920,7 @@ mod tests {
             parsed["tool_timeout_sec"].as_integer(),
             Some(CODEX_TOOL_TIMEOUT_S as i64)
         );
-        assert!(CODEX_TOOL_TIMEOUT_S > crate::orbit::orchestrator::WAIT_MAX_S);
+        const { assert!(CODEX_TOOL_TIMEOUT_S > crate::orbit::orchestrator::WAIT_MAX_S) };
         let tools = parsed["tools"].as_table().unwrap();
         assert_eq!(tools.len(), SAFE_TOOLS.len());
         for tool in SAFE_TOOLS {
