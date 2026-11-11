@@ -8,6 +8,18 @@ export function targetLabel(t: TypedSshTarget): string {
   return `${t.user ? `${t.user}@` : ""}${host}:${t.port}`;
 }
 
+/**
+ * Os comandos distintos que rodam agora, em ordem: o que se pergunta ao core
+ * (`ssh_typed_host`) para saber se algum shell está num Host cadastrado.
+ */
+export function runningCommands(commands: Record<string, SessionCommand>): string[] {
+  const set = new Set<string>();
+  for (const c of Object.values(commands)) {
+    if (c.running && c.command) set.add(c.command);
+  }
+  return [...set].sort();
+}
+
 /** "09/11": o "desde" dos hosts negados. */
 export function dayMonth(ms: number): string {
   const d = new Date(ms);

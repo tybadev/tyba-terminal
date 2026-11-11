@@ -569,6 +569,19 @@ pub enum TypedMatch {
 /// Só o cadastro do TYBA: o `~/.ssh/config` do dono não é lido. Um alias que
 /// só existe lá cai em `Unregistered`, que é o caso do "Cadastrar".
 pub fn resolve(destination: TypedDestination, hosts: &[super::Host]) -> Option<TypedMatch> {
+    match matching_host(&destination, hosts) {
+        Some(host) if !host.integration_enabled => None,
+        Some(host) => Some(TypedMatch::Registered(host.id.clone())),
+        None => Some(TypedMatch::Unregistered(destination)),
+    }
+}
+
+/// O Host cadastrado para onde o destino vai, sem olhar a integração: só a
+/// regra de casamento de [`resolve`].
+pub fn matching_host<'a>(
+    destination: &TypedDestination,
+    hosts: &'a [super::Host],
+) -> Option<&'a super::Host> {
     let user_ok = |h: &super::Host| match (&destination.user, &h.username) {
         (Some(typed), Some(registered)) => typed == registered,
         _ => true,
@@ -585,15 +598,21 @@ pub fn resolve(destination: TypedDestination, hosts: &[super::Host]) -> Option<T
             && user_ok(h)
             && destination.port.unwrap_or(22) == h.port.unwrap_or(22)
     };
-    let found = hosts
+    hosts
         .iter()
         .find(by_alias)
-        .or_else(|| hosts.iter().find(by_hostname));
-    match found {
-        Some(host) if !host.integration_enabled => None,
-        Some(host) => Some(TypedMatch::Registered(host.id.clone())),
-        None => Some(TypedMatch::Unregistered(destination)),
-    }
+        .or_else(|| hosts.iter().find(by_hostname))
+}
+
+/// O Host em que um shell ESTÁ enquanto roda este `ssh` digitado — o que o
+/// split, a aba e o "+" do grupo herdam. `None` quando a linha não é um `ssh`
+/// interativo ou o destino não é um Host cadastrado.
+///
+/// A integração desligada não tira o contexto: ela cala o aviso, mas o dono
+/// segue conectado àquele Host, e o split abre uma sessão para ele.
+pub fn live_host_id(command: &str, hosts: &[super::Host]) -> Option<String> {
+    let destination = parse(command)?;
+    matching_host(&destination, hosts).map(|h| h.id.clone())
 }
 
 #[cfg(test)]
@@ -1119,6 +1138,40 @@ mod tests {
         off.integration_enabled = false;
         assert_eq!(resolved("ssh off", &[off.clone()]), None);
         assert_eq!(resolved("ssh off.example.test", &[off]), None);
+    }
+
+    #[test]
+    fn the_live_host_follows_the_core_rule() {
+        let mut prod = host("h-prod", "prod", "web.example.test");
+        prod.username = Some("deploy".into());
+        prod.port = Some(2222);
+        let mut off = host("h-off", "off", "off.example.test");
+        off.integration_enabled = false;
+        let hosts = vec![prod, off];
+        let live = |line: &str| live_host_id(line, &hosts);
+
+        assert_eq!(live("ssh prod").as_deref(), Some("h-prod"));
+        assert_eq!(
+            live("ssh -p 2222 WEB.example.test").as_deref(),
+            Some("h-prod")
+        );
+        assert_eq!(live("TERM=xterm ssh prod").as_deref(), Some("h-prod"));
+        assert_eq!(live("ssh -o User=deploy prod").as_deref(), Some("h-prod"));
+        // Integração desligada cala o aviso, não o contexto do split.
+        assert_eq!(live("ssh off").as_deref(), Some("h-off"));
+
+        for line in [
+            "ssh other@prod",
+            "ssh web.example.test",
+            "ssh -N -L 8080:localhost:80 prod",
+            "ssh prod uptime",
+            "ssh prod | tee log",
+            "ssh db.example.test",
+            "vim",
+            "",
+        ] {
+            assert_eq!(live(line), None, "linha: {line:?}");
+        }
     }
 
     #[test]

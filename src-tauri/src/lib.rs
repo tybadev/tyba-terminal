@@ -1627,6 +1627,17 @@ async fn list_hosts(
     state.store.load_hosts().map_err(store_err)
 }
 
+/// O Host cadastrado em que um shell está enquanto roda este `ssh` digitado:
+/// o que o split herda. A regra é a de [`crate::ssh::typed::live_host_id`].
+#[tauri::command]
+async fn ssh_typed_host(
+    state: State<'_, AppState>,
+    command: String,
+) -> Result<Option<String>, crate::error::AppError> {
+    let hosts = state.store.load_hosts().map_err(store_err)?;
+    Ok(crate::ssh::typed::live_host_id(&command, &hosts))
+}
+
 /// Configurações › SSH › Integração: detectar, "Quando detectar" e os hosts
 /// negados. Ver [`crate::ssh::typed_prefs`].
 #[tauri::command]
@@ -10672,6 +10683,7 @@ pub fn run() {
             list_agent_keys,
             test_host_connection,
             list_hosts,
+            ssh_typed_host,
             ssh_typed_prefs,
             ssh_typed_set,
             ssh_typed_deny,

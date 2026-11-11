@@ -7,8 +7,32 @@ import {
   hostFormFromDetected,
   hostInputFromDetected,
   liveSshNote,
+  runningCommands,
   targetLabel,
 } from "./typedSsh";
+
+describe("runningCommands", () => {
+  const cmd = (command: string | null, running: boolean): SessionCommand => ({
+    command,
+    running,
+    agent_match: false,
+    continuation: false,
+  });
+  test("só os que rodam, sem repetir, em ordem", () => {
+    expect(
+      runningCommands({
+        a: cmd("ssh prod", true),
+        b: cmd("ssh prod", true),
+        c: cmd("htop", true),
+        d: cmd("ssh old", false),
+        e: cmd(null, true),
+      }),
+    ).toEqual(["htop", "ssh prod"]);
+  });
+  test("nada rodando", () => {
+    expect(runningCommands({})).toEqual([]);
+  });
+});
 
 describe("targetLabel", () => {
   test("user@host:porta, como o core", () => {
