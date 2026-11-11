@@ -3964,11 +3964,7 @@ async fn session_branch_hunks(
 
 /// As árvores do turno `seq` da sessão, só enquanto ele for o último que
 /// fechou com diff.
-fn turn_trees(
-    state: &AppState,
-    id: SessionId,
-    seq: u64,
-) -> Result<agent::turn::TurnTrees, String> {
+fn turn_trees(state: &AppState, id: SessionId, seq: u64) -> Result<agent::turn::TurnTrees, String> {
     state
         .sessions
         .turns
