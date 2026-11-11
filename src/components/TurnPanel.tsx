@@ -1,5 +1,5 @@
 import { useTranslation } from "react-i18next";
-import { Check, Folder, Pause } from "@phosphor-icons/react";
+import { Check, Folder, Minus, Pause } from "@phosphor-icons/react";
 
 import {
   splitPath,
@@ -88,6 +88,8 @@ export function TurnPanel({ turn }: { turn: TurnDigest }) {
           <Pause size={13} className="shrink-0" />
         ) : band === "no_repo" ? (
           <Folder size={13} className="shrink-0" />
+        ) : band === "unavailable" ? (
+          <Minus size={13} className="shrink-0" />
         ) : (
           <Check size={13} className="shrink-0" />
         )}
@@ -154,9 +156,18 @@ export function TurnPanel({ turn }: { turn: TurnDigest }) {
           )}
         </div>
       )}
-      {(band === "none" || turn.diff === "no_repo") && (
+      {/* Turno falho ou interrompido sem medição não pode parecer "nada mudou". */}
+      {(band === "none" ||
+        turn.diff === "no_repo" ||
+        (turn.diff === "unavailable" && band !== "unavailable")) && (
         <p className="mx-3 px-0.5 pb-1 pt-2.5 text-[12px] leading-[18px] text-tyba-text-faint">
-          {t(turn.diff === "no_repo" ? "turnNoRepoHint" : "turnNoneHint")}
+          {t(
+            turn.diff === "no_repo"
+              ? "turnNoRepoHint"
+              : turn.diff === "unavailable"
+                ? "turnUnavailable"
+                : "turnNoneHint",
+          )}
         </p>
       )}
       <div

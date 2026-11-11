@@ -6,6 +6,7 @@ import {
   drawerTab,
   hasAgentDrawer,
   pendingSubagentApprovals,
+  pillOpensTab,
   pillTurn,
   pillTurnCount,
   pillTurnHead,
@@ -184,36 +185,42 @@ describe("drawerTab", () => {
   });
 });
 
-describe("drawerTab com a aba Turno (T1 e T2 de ResumoDoTurno)", () => {
+describe("aba Turno: quem escolhe (T1 e T2 de ResumoDoTurno)", () => {
   const base = { owner: null, hasSubagents: false, pending: 0, running: false };
   const done = { last_turn: { seq: 1 } as TurnDigest, turn_open: false };
   const open = { ...done, turn_open: true };
+  const click = { hasSubagents: false, pending: 0, running: false, queuePaused: false };
 
-  test("turno terminado abre em Turno, com ou sem subagentes", () => {
-    expect(drawerTab({ ...base, turn: done })).toBe("turn");
-    expect(drawerTab({ ...base, hasSubagents: true, turn: done })).toBe("turn");
+  test("a gaveta aberta nunca troca para Turno sozinha", () => {
+    // O turno terminou com o dono escrevendo na Fila: continua na Fila.
+    expect(drawerTab({ ...base, turn: done })).toBe("queue");
+    expect(drawerTab({ ...base, hasSubagents: true, turn: done })).toBe("queue");
   });
 
-  test("quem pede você e a rodada rodando vencem o turno", () => {
-    const withAgents = { ...base, hasSubagents: true, turn: done };
-    expect(drawerTab({ ...withAgents, pending: 1 })).toBe("agents");
-    expect(drawerTab({ ...withAgents, running: true })).toBe("agents");
-  });
-
-  test("turno novo aberto: volta para a Fila, a aba continua escolhível", () => {
-    expect(drawerTab({ ...base, turn: open })).toBe("queue");
+  test("a aba Turno é escolha do dono e só existe com turno terminado", () => {
+    expect(drawerTab({ ...base, turn: done, owner: "turn" })).toBe("turn");
+    // Turno novo aberto: a aba continua, mostrando o anterior.
     expect(drawerTab({ ...base, turn: open, owner: "turn" })).toBe("turn");
-  });
-
-  test("sem turno terminado não há aba Turno", () => {
     expect(drawerTab({ ...base, owner: "turn" })).toBe("queue");
-    expect(
-      drawerTab({ ...base, owner: "turn", turn: { last_turn: null, turn_open: true } }),
-    ).toBe("queue");
+    expect(drawerTab({ ...base, owner: "turn", turn: { last_turn: null } })).toBe("queue");
   });
 
-  test("a escolha do dono vence o turno terminado", () => {
-    expect(drawerTab({ ...base, turn: done, owner: "queue" })).toBe("queue");
+  test("clicar na pílula depois de um turno terminado abre em Turno", () => {
+    expect(pillOpensTab({ ...click, turn: done })).toBe("turn");
+    expect(pillOpensTab({ ...click, hasSubagents: true, turn: done })).toBe("turn");
+  });
+
+  test("o que pede você vence o turno: abre pela regra", () => {
+    const agents = { ...click, hasSubagents: true, turn: done };
+    expect(pillOpensTab({ ...agents, pending: 1 })).toBeNull();
+    expect(pillOpensTab({ ...agents, running: true })).toBeNull();
+    expect(pillOpensTab({ ...click, queuePaused: true, turn: done })).toBeNull();
+  });
+
+  test("sem turno terminado, ou com turno novo aberto, abre pela regra", () => {
+    expect(pillOpensTab({ ...click, turn: open })).toBeNull();
+    expect(pillOpensTab({ ...click, turn: { last_turn: null, turn_open: false } })).toBeNull();
+    expect(pillOpensTab({ ...click, turn: null })).toBeNull();
   });
 });
 

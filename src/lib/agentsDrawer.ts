@@ -156,31 +156,47 @@ export function pillTurnLabel(turn: PillTurn, t: Translate): string {
 }
 
 /**
- * Qual aba a gaveta mostra (quadro 4C; T1 de ResumoDoTurno): a do dono, se
- * ele escolheu (o core a zera quando a gaveta recolhe) e ela existe; senão a
- * que pede você (aprovação pendente → Agentes), Agentes enquanto a rodada
- * roda, Turno depois de um turno terminado e Fila fora disso. A aba Agentes
- * só existe com subagentes; a Turno, depois do primeiro fim de turno.
+ * Qual aba a gaveta mostra (quadro 4C): a do dono, se ele escolheu (o core a
+ * zera quando a gaveta recolhe) e ela existe; senão a que pede você
+ * (aprovação pendente → Agentes), Agentes enquanto a rodada roda e Fila fora
+ * dela. A aba Agentes só existe com subagentes; a Turno, depois do primeiro
+ * fim de turno — e só entra por escolha: a gaveta aberta nunca troca para
+ * ela sozinha (o dono pode estar escrevendo na Fila).
  */
 export function drawerTab(input: {
   owner: DrawerTab | null;
   hasSubagents: boolean;
   pending: number;
   running: boolean;
-  /** `Session.last_turn` e `Session.turn_open` da sessão da gaveta. */
-  turn?: Pick<Session, "last_turn" | "turn_open"> | null;
+  /** `Session.last_turn` da sessão da gaveta. */
+  turn?: Pick<Session, "last_turn"> | null;
 }): DrawerTab {
-  const hasTurn = Boolean(input.turn?.last_turn);
   const { owner } = input;
   if (
     owner === "queue" ||
     (owner === "agents" && input.hasSubagents) ||
-    (owner === "turn" && hasTurn)
+    (owner === "turn" && Boolean(input.turn?.last_turn))
   ) {
     return owner;
   }
-  if (input.hasSubagents && (input.pending > 0 || input.running)) return "agents";
-  return hasTurn && !input.turn?.turn_open ? "turn" : "queue";
+  return input.hasSubagents && (input.pending > 0 || input.running) ? "agents" : "queue";
+}
+
+/**
+ * A aba em que o clique na pílula abre a gaveta (quadro T1 de ResumoDoTurno):
+ * Turno depois de um turno terminado, a não ser que algo peça você — pedido
+ * de subagente, rodada rodando ou fila pausada. `null`: a da regra.
+ */
+export function pillOpensTab(input: {
+  hasSubagents: boolean;
+  pending: number;
+  running: boolean;
+  queuePaused: boolean;
+  turn: Pick<Session, "last_turn" | "turn_open"> | null | undefined;
+}): DrawerTab | null {
+  if (input.hasSubagents && (input.pending > 0 || input.running)) return null;
+  if (input.queuePaused) return null;
+  return input.turn?.last_turn && !input.turn.turn_open ? "turn" : null;
 }
 
 /** Linhas de arquivo da aba Turno; o resto vira "mais N arquivos". */

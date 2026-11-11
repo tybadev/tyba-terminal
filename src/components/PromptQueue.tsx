@@ -223,7 +223,9 @@ export function PromptQueue({
     // Fora do pane: ela pode crescer para a esquerda por cima da lateral do app.
     <div
       role="region"
-      aria-label={t(hasSubagents ? "agentsDrawerLabel" : "promptQueueTitle")}
+      aria-label={t(
+        hasSubagents ? "agentsDrawerLabel" : turn ? "turnDrawerLabel" : "promptQueueTitle",
+      )}
       className={`fixed z-30 overflow-hidden ${PLATE} ${PLATE_LINE} ${PLATE_FLOAT}`}
       style={{ left: box.box.left, width: box.box.width, bottom: box.box.bottom }}
       onPointerEnter={() => setHover(true)}

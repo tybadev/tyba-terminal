@@ -389,6 +389,7 @@ import {
   drawerTab,
   hasAgentDrawer,
   pendingSubagentApprovals,
+  pillOpensTab,
   pillTurn,
   roundProgress,
 } from "./lib/agentsDrawer";
@@ -2754,7 +2755,20 @@ export default function App() {
       turn: pillTurn(activeSession),
       open,
       onToggle: () =>
-        void (open ? agentsDrawerCollapse : agentsDrawerOpen)(pillSessionId).catch(() => {}),
+        void (
+          open
+            ? agentsDrawerCollapse(pillSessionId)
+            : agentsDrawerOpen(
+                pillSessionId,
+                pillOpensTab({
+                  hasSubagents: subagents.length > 0,
+                  pending: pendingSubagentApprovals(pillSessionId, subagents, approvals),
+                  running: roundProgress(subagents)?.running ?? false,
+                  queuePaused: Boolean(pillQueue?.paused),
+                  turn: activeSession,
+                }),
+              )
+        ).catch(() => {}),
     };
   }, [pillSessionId, pillQueue, drawers, subagentsBySession, approvals, activeSession]);
 

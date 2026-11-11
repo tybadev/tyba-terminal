@@ -2297,8 +2297,8 @@ export const onAgentsDrawerChanged = (
 ): Promise<UnlistenFn> =>
   listen<DrawerState>("agents-drawer://changed", (e) => handler(e.payload));
 
-export const agentsDrawerOpen = (sessionId: SessionId) =>
-  invoke<void>("agents_drawer_open", { sessionId });
+export const agentsDrawerOpen = (sessionId: SessionId, tab: DrawerTab | null = null) =>
+  invoke<void>("agents_drawer_open", { sessionId, tab });
 
 export const agentsDrawerCollapse = (sessionId: SessionId) =>
   invoke<void>("agents_drawer_collapse", { sessionId });
