@@ -545,7 +545,9 @@ pub(crate) fn turn_end(
 
 /// Folga entre o fim do turno (carimbado em `close_turn`) e o `Stop` visto
 /// pelo aviso: os dois saem do mesmo handler, com milissegundos de distância.
-const NOTICE_TURN_SLACK_MS: u64 = 1000;
+/// Curta de propósito: o resumo do turno anterior terminou pelo menos um
+/// turno inteiro antes deste `Stop`, e nenhum turno de agente dura menos.
+const NOTICE_TURN_SLACK_MS: u64 = 250;
 
 /// O corpo do aviso de fim de turno com a linha de números embaixo (quadro
 /// T4 de ResumoDoTurno). Só entra o resumo DESTE turno: um que terminou antes

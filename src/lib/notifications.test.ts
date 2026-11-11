@@ -330,30 +330,50 @@ describe("entryDiffTarget (Ver diff da linha, quadro T4 de ResumoDoTurno)", () =
     duration_ms: 291_000,
     cost_usd: 0.41,
   });
+  // O último turno da sessão: de 1000 a 5000.
   const last = (seq: number, over: Partial<TurnDigest> = {}) => ({
-    last_turn: { seq, diff: "ok", files_total: 6, ...over } as TurnDigest,
+    last_turn: {
+      seq,
+      diff: "ok",
+      files_total: 6,
+      started_at_ms: 1_000,
+      ended_at_ms: 5_000,
+      ...over,
+    } as TurnDigest,
+  });
+  const line = (kind: NotificationEntry["kind"], turn: TurnCounts | null, at_ms = 5_000) => ({
+    kind,
+    turn,
+    at_ms,
   });
 
   test("linha do último turno com diff abre o diff do turno", () => {
-    expect(entryDiffTarget({ kind: "agent_finished", turn: counts(3) }, last(3))).toBe("turn");
-    expect(entryDiffTarget({ kind: "agent_failed", turn: counts(3) }, last(3))).toBe("turn");
+    expect(entryDiffTarget(line("agent_finished", counts(3)), last(3))).toBe("turn");
+    // A linha "falhou" nasce um instante depois do fim do turno.
+    expect(entryDiffTarget(line("agent_failed", counts(3), 5_040), last(3))).toBe("turn");
   });
 
   test("turno antigo, sem mudanças ou sem sessão: só os números", () => {
-    expect(entryDiffTarget({ kind: "agent_finished", turn: counts(2) }, last(3))).toBeNull();
+    expect(entryDiffTarget(line("agent_finished", counts(2)), last(3))).toBeNull();
     expect(
-      entryDiffTarget({ kind: "agent_finished", turn: counts(3) }, last(3, { files_total: 0 })),
+      entryDiffTarget(line("agent_finished", counts(3)), last(3, { files_total: 0 })),
     ).toBeNull();
     expect(
-      entryDiffTarget({ kind: "agent_finished", turn: counts(3) }, last(3, { diff: "unavailable" })),
+      entryDiffTarget(line("agent_finished", counts(3)), last(3, { diff: "unavailable" })),
     ).toBeNull();
-    expect(entryDiffTarget({ kind: "agent_finished", turn: counts(3) }, null)).toBeNull();
+    expect(entryDiffTarget(line("agent_finished", counts(3)), null)).toBeNull();
+  });
+
+  test("sessão retomada: o número do turno se repete, a linha antiga não ganha botão", () => {
+    // Linha de ontem com seq 1; o primeiro turno do processo novo também é 1.
+    expect(entryDiffTarget(line("agent_finished", counts(1), 500), last(1))).toBeNull();
+    expect(entryDiffTarget(line("agent_finished", counts(1), 9_000), last(1))).toBeNull();
   });
 
   test("linha sem contagens segue como era: terminou abre o diff da sessão", () => {
-    expect(entryDiffTarget({ kind: "agent_finished", turn: null }, last(3))).toBe("review");
-    expect(entryDiffTarget({ kind: "agent_finished" }, null)).toBe("review");
-    expect(entryDiffTarget({ kind: "agent_failed", turn: null }, last(3))).toBeNull();
-    expect(entryDiffTarget({ kind: "usage_limit", turn: null }, last(3))).toBeNull();
+    expect(entryDiffTarget(line("agent_finished", null), last(3))).toBe("review");
+    expect(entryDiffTarget(line("agent_finished", null), null)).toBe("review");
+    expect(entryDiffTarget(line("agent_failed", null), last(3))).toBeNull();
+    expect(entryDiffTarget(line("usage_limit", null), last(3))).toBeNull();
   });
 });

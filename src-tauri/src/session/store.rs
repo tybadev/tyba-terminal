@@ -3986,24 +3986,31 @@ impl Store {
         Ok(id)
     }
 
-    /// Grava as contagens do turno na linha "terminou"/"falhou" mais nova da
-    /// sessão, se ela nasceu de `since_ms` (o começo do turno) para cá. Chamar
-    /// de novo troca os números (o custo chega depois).
+    /// Grava as contagens do turno na linha "terminou"/"falhou" que ele
+    /// gravou: a mais nova da sessão nascida entre `since_ms` (o começo do
+    /// turno) e `until_ms` (o fim dele, com folga). Linha mais nova que isso é
+    /// do turno seguinte e não é tocada; linha que já tem as contagens de um
+    /// turno de `seq` maior também não. Chamar de novo troca os números (o
+    /// custo chega depois).
     pub fn set_last_turn_counts(
         &self,
         session_id: SessionId,
         counts: &crate::agent::turn::TurnCounts,
         since_ms: i64,
+        until_ms: i64,
     ) -> Result<usize, StoreError> {
         let conn = self.conn.lock();
         Ok(conn.execute(
             "INSERT OR REPLACE INTO notification_turn
                  (notification_id, seq, files, insertions, deletions, duration_ms, cost_usd)
              SELECT id, ?3, ?4, ?5, ?6, ?7, ?8 FROM (
-                 SELECT id, at_ms FROM notification
+                 SELECT id FROM notification
                  WHERE session_id = ?1 AND kind IN ('agent_finished', 'agent_failed')
+                   AND at_ms >= ?2 AND at_ms <= ?9
                  ORDER BY at_ms DESC, id DESC LIMIT 1)
-             WHERE at_ms >= ?2",
+             WHERE NOT EXISTS (
+                 SELECT 1 FROM notification_turn
+                 WHERE notification_id = id AND seq > ?3)",
             params![
                 session_id.to_string(),
                 since_ms,
@@ -4013,6 +4020,7 @@ impl Store {
                 counts.deletions,
                 counts.duration_ms as i64,
                 counts.cost_usd,
+                until_ms,
             ],
         )?)
     }

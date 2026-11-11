@@ -2008,6 +2008,7 @@ mod tests {
         // Resumo do turno anterior (o deste ainda não ficou pronto) e sessão
         // sem resumo: o aviso sai como antes.
         assert_eq!(notice_body("Pronto.", Some(&d), 60_000), "Pronto.");
+        assert_eq!(notice_body("Pronto.", Some(&d), 5_000), "Pronto.");
         assert_eq!(notice_body("Pronto.", None, 4_600), "Pronto.");
     }
 

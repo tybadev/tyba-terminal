@@ -246,10 +246,21 @@ export function unreadCount(entries: NotificationEntry[]): number {
  * turno sem começo registrado): o diff da sessão, como sempre foi.
  */
 export function entryDiffTarget(
-  entry: Pick<NotificationEntry, "kind" | "turn">,
+  entry: Pick<NotificationEntry, "kind" | "turn" | "at_ms">,
   session: Pick<Session, "last_turn"> | null | undefined,
 ): "turn" | "review" | null {
   if (entry.kind !== "agent_finished" && entry.kind !== "agent_failed") return null;
   if (!entry.turn) return entry.kind === "agent_finished" ? "review" : null;
-  return session?.last_turn?.seq === entry.turn.seq && hasTurnDiff(session) ? "turn" : null;
+  const last = session?.last_turn;
+  // O número do turno recomeça quando a sessão sobe de novo (retomar a
+  // conversa): além dele, a linha tem de ter nascido dentro do último turno.
+  const sameTurn =
+    last != null &&
+    last.seq === entry.turn.seq &&
+    entry.at_ms >= last.started_at_ms &&
+    entry.at_ms <= last.ended_at_ms + TURN_LINE_SLACK_MS;
+  return sameTurn && hasTurnDiff(session) ? "turn" : null;
 }
+
+/** A mesma folga do core entre o fim do turno e a linha dele no histórico. */
+const TURN_LINE_SLACK_MS = 1000;
