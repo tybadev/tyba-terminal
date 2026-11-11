@@ -8,6 +8,7 @@ import {
   DotsSixVertical,
   Pause,
   Play,
+  PlusMinus,
   Queue,
   Trash,
   X,
@@ -34,9 +35,13 @@ import {
 import {
   drawerTab,
   pendingSubagentApprovals,
+  pillTurnCount,
+  pillTurnHead,
+  pillTurnLabel,
   queueGoesToAgents,
   roundProgress,
   type PillAgents,
+  type PillTurn,
 } from "../lib/agentsDrawer";
 import { drawerBox, type DrawerBox } from "../lib/appFooter";
 import { queueIndicator, reorderIds, slotAt, type QueueTone } from "../lib/promptQueue";
@@ -557,16 +562,22 @@ const DOT = "size-[6px] shrink-0 rounded-full";
  * gaveta vai; aberta, a pílula fica marcada. Compacta (degrau 6 da escada):
  * só ícones e números, o texto inteiro no tooltip e no `aria-label` — o estado
  * (cor, contorno, número) nunca sai.
+ *
+ * Turno terminado (quadro Pílulas de ResumoDoTurno): terceiro trecho,
+ * "Turno · N arquivos +a −d", e o estado dos agentes encolhe para o ícone.
+ * Falha: trecho vermelho, sem contorno.
  */
 export function DrawerPill({
   queueCount,
   agents,
+  turn,
   open,
   compact,
   onToggle,
 }: {
   queueCount: number;
   agents: PillAgents | null;
+  turn: PillTurn | null;
   open: boolean;
   compact: boolean;
   onToggle: () => void;
@@ -588,9 +599,13 @@ export function DrawerPill({
     t("promptQueueButton", { count: queueCount }),
     agents && `${t("agentsTitle")} ${agents.done}/${agents.total}`,
     stateText,
+    turn && pillTurnLabel(turn, t),
   ]
     .filter(Boolean)
     .join(" · ");
+  // Com o trecho do turno, o estado dos agentes fica só no ícone.
+  const stateCompact = compact || turn !== null;
+  const turnFailed = turn?.outcome === "failed";
   const ring = "inset 0 0 0 1px color-mix(in srgb, var(--tyba-amber-fill) 80%, transparent)";
   const shadow = open
     ? attn
@@ -636,26 +651,65 @@ export function DrawerPill({
           {state?.kind === "run" && (
             <span className="inline-flex items-center gap-[5px] text-tyba-green">
               <span className={`${DOT} bg-tyba-green-fill [box-shadow:var(--tyba-glow-green)]`} />
-              {!compact && stateText}
+              {!stateCompact && stateText}
             </span>
           )}
           {state?.kind === "ok" && (
             <span className="inline-flex items-center gap-[5px] text-tyba-green">
               <Check size={11} />
-              {!compact && stateText}
+              {!stateCompact && stateText}
             </span>
           )}
           {state?.kind === "attn" && (
             <span className="inline-flex items-center gap-[5px] text-tyba-amber">
               <span className={`${DOT} bg-tyba-amber-fill`} />
-              {compact ? <span className="font-mono">{state.count}</span> : stateText}
+              {stateCompact ? <span className="font-mono">{state.count}</span> : stateText}
             </span>
           )}
           {state?.kind === "fail" && (
             <span className="inline-flex items-center gap-[5px] text-tyba-red">
               <span className={`${DOT} bg-tyba-red-fill`} />
-              {compact ? <span className="font-mono">{state.count}</span> : stateText}
+              {stateCompact ? <span className="font-mono">{state.count}</span> : stateText}
             </span>
+          )}
+        </>
+      )}
+      {turn && (
+        <>
+          <span className="h-2.5 w-px shrink-0 bg-tyba-border-strong" />
+          <PlusMinus
+            size={12}
+            className={`shrink-0 ${turnFailed ? "text-tyba-red" : "text-tyba-cyan"}`}
+          />
+          {compact ? (
+            pillTurnCount(turn) !== null && (
+              <span className={`font-mono ${turnFailed ? "text-tyba-red" : ""}`}>
+                {pillTurnCount(turn)}
+              </span>
+            )
+          ) : (
+            <>
+              <span className={turnFailed ? "text-tyba-red" : "text-tyba-text"}>
+                {pillTurnHead(turn, t)}
+              </span>
+              {turn.body.kind === "counts" && (
+                <>
+                  <span className="font-mono text-tyba-text-muted">
+                    {t("diffFilesSummary", { count: turn.body.files })}
+                  </span>
+                  <span className="inline-flex gap-1 whitespace-nowrap font-mono tabular-nums">
+                    <span className="text-tyba-green">+{turn.body.insertions}</span>
+                    <span className="text-tyba-red">−{turn.body.deletions}</span>
+                  </span>
+                </>
+              )}
+              {turn.body.kind === "none" && (
+                <span className="text-tyba-text-faint">{t("pillTurnNoChanges")}</span>
+              )}
+              {turn.body.kind === "no_repo" && (
+                <span className="text-tyba-text-faint">{t("pillTurnNoGit")}</span>
+              )}
+            </>
           )}
         </>
       )}

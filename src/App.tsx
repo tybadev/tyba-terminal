@@ -389,6 +389,7 @@ import {
   drawerTab,
   hasAgentDrawer,
   pendingSubagentApprovals,
+  pillTurn,
   roundProgress,
 } from "./lib/agentsDrawer";
 import { usePresence } from "./lib/usePresence";
@@ -2749,11 +2750,12 @@ export default function App() {
         pendingSubagentApprovals(pillSessionId, subagents, approvals),
         drawer?.outcome_seen ?? false,
       ),
+      turn: pillTurn(activeSession),
       open,
       onToggle: () =>
         void (open ? agentsDrawerCollapse : agentsDrawerOpen)(pillSessionId).catch(() => {}),
     };
-  }, [pillSessionId, pillQueue, drawers, subagentsBySession, approvals]);
+  }, [pillSessionId, pillQueue, drawers, subagentsBySession, approvals, activeSession]);
 
   // Abas de conteúdo. Editores moram na tela de Arquivos e ficam montados em
   // TODOS os workspaces enquanto a aba interna existe: o buffer não salvo é do

@@ -23,7 +23,7 @@ import { installClaudePlugin, type RepoSnapshot } from "../lib/ipc";
 import { translateError } from "../lib/errors";
 import { toastError } from "../lib/toast";
 import type { BranchChip, ChipId, ToolbarPref } from "../lib/repoSnapshots";
-import type { PillAgents } from "../lib/agentsDrawer";
+import type { PillAgents, PillTurn } from "../lib/agentsDrawer";
 import {
   FOOTER_STEP,
   FOOTER_TOP_STEP,
@@ -92,6 +92,7 @@ interface Props {
   pill: {
     queueCount: number;
     agents: PillAgents | null;
+    turn: PillTurn | null;
     open: boolean;
     onToggle: () => void;
   } | null;
@@ -420,6 +421,7 @@ export function Toolbar({
           <DrawerPill
             queueCount={pill.queueCount}
             agents={pill.agents}
+            turn={pill.turn}
             open={pill.open}
             compact={!keeps(FOOTER_STEP.pillCompact)}
             onToggle={pill.onToggle}

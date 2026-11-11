@@ -4,6 +4,7 @@ import type {
   ObservedAgent,
   Session,
   SessionStatus,
+  TurnDigest,
 } from "./ipc";
 import { sameAgentUsage } from "./agentUsage";
 
@@ -183,6 +184,16 @@ export const sameCanoFailure = (
   return a.reason === b.reason && a.detail === b.detail;
 };
 
+/** O mesmo resumo: o core só o reemite com `seq` novo ou quando o custo do
+ *  fim do turno chega. */
+export const sameTurnDigest = (
+  a: TurnDigest | null | undefined,
+  b: TurnDigest | null | undefined,
+): boolean => {
+  if (!a || !b) return !a && !b;
+  return a.seq === b.seq && a.cost_usd === b.cost_usd && a.tokens === b.tokens;
+};
+
 /**
  * A sessão atualizada, ou `null` quando o evento não traz novidade.
  *
@@ -210,6 +221,8 @@ export const mergeSessionUpdate = (
     current.connection === incoming.connection &&
     sameCanoFailure(current.connection_failure, incoming.connection_failure) &&
     sameAgentUsage(current.agent_usage, incoming.agent_usage) &&
+    sameTurnDigest(current.last_turn, incoming.last_turn) &&
+    Boolean(current.turn_open) === Boolean(incoming.turn_open) &&
     Boolean(current.shell_resume_offer) === Boolean(incoming.shell_resume_offer)
   ) {
     return null;
@@ -220,6 +233,8 @@ export const mergeSessionUpdate = (
     attention: incoming.attention,
     observed: incoming.observed ?? null,
     agent_usage: incoming.agent_usage ?? null,
+    last_turn: incoming.last_turn ?? null,
+    turn_open: incoming.turn_open ?? false,
     shell_resume_offer: incoming.shell_resume_offer ?? false,
     connection: incoming.connection,
     connection_failure: incoming.connection_failure ?? null,
