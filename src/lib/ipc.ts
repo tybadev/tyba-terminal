@@ -106,6 +106,12 @@ export interface Session {
   subagents_working?: boolean;
   /** O que o `statusLine` do Claude reportou. Só memória no core. */
   agent_usage?: AgentUsage | null;
+  /** Resumo do último turno que terminou. Continua enquanto o turno seguinte
+   * roda; o core troca quando ele acaba. Só memória no core. */
+  last_turn?: TurnDigest | null;
+  /** Há um turno aberto: o prompt chegou e o resumo dele ainda não. Só
+   * memória no core. */
+  turn_open?: boolean;
   /** Shell restaurado com uma conversa do Claude que ainda dá para retomar.
    * Decidido pelo core no boot; só em memória. */
   shell_resume_offer?: boolean;
@@ -205,6 +211,37 @@ export interface FileDiff {
   status: FileStatus;
   insertions: number | null;
   deletions: number | null;
+}
+
+/** Espelha `agent::turn::TurnDigest`: o que mudou na pasta entre o prompt e o
+ * fim do turno. Só caminhos e contagens, nunca conteúdo. */
+export interface TurnDigest {
+  /** Ordem dos turnos da sessão; o core nunca troca um resumo por outro de
+   * `seq` menor. */
+  seq: number;
+  outcome: "completed" | "failed" | "interrupted";
+  /** Motivo da falha, só com `outcome === "failed"`. */
+  failure: string | null;
+  started_at_ms: number;
+  ended_at_ms: number;
+  duration_ms: number;
+  /** Redigido e cortado pelo core. */
+  prompt: string | null;
+  /** `no_repo`: a pasta não é um repositório git. `unavailable`: é, mas o
+   * snapshot falhou ou estourou o teto. Nos dois só há duração e custo. */
+  diff: "ok" | "no_repo" | "unavailable";
+  /** Ordenada por caminho e cortada pelo core (200); `files_total` é o
+   * número real. */
+  files: FileDiff[];
+  files_total: number;
+  /** Totais de todos os arquivos, não só dos listados. */
+  insertions: number;
+  deletions: number;
+  commits: number;
+  /** Custo e tokens do turno; `null` quando o agente não reporta uso. O core
+   * reemite o resumo quando o custo do fim do turno chega. */
+  cost_usd: number | null;
+  tokens: number | null;
 }
 
 export interface CommitInfo {

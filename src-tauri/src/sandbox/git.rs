@@ -5,6 +5,10 @@ use std::process::Command;
 pub enum GitProfile {
     ReadOnly,
     Write,
+    /// Só-leitura no repo; escrita só nos diretórios extras, nunca no repo
+    /// nem nos worktrees geridos. É o do snapshot do turno, que grava índice
+    /// e objetos num diretório privado do TYBA.
+    Scratch,
     Network,
 }
 
@@ -125,6 +129,20 @@ fn writable_roots(repo: &Path, extra: &[PathBuf]) -> Vec<PathBuf> {
     roots
 }
 
+#[cfg_attr(
+    not(any(target_os = "macos", target_os = "linux")),
+    allow(dead_code, reason = "só o imp de macOS/Linux monta política de jaula")
+)]
+fn profile_roots(profile: GitProfile, repo: &Path, extra: &[PathBuf]) -> Vec<PathBuf> {
+    match profile {
+        GitProfile::Scratch => extra
+            .iter()
+            .map(|e| crate::repo::canonicalize_or(e))
+            .collect(),
+        _ => writable_roots(repo, extra),
+    }
+}
+
 #[cfg(target_os = "macos")]
 mod imp {
     use super::*;
@@ -155,7 +173,7 @@ mod imp {
     pub fn policy(profile: GitProfile, repo: &Path, extra: &[PathBuf]) -> String {
         let mut policy = base_policy();
         if profile != GitProfile::ReadOnly {
-            let roots = writable_roots(repo, extra)
+            let roots = profile_roots(profile, repo, extra)
                 .iter()
                 .map(|r| render_rule(&Rule::Subpath(r.clone())))
                 .collect::<Vec<_>>()
@@ -222,7 +240,7 @@ mod imp {
             cmd.arg("--unshare-net");
         }
         if profile != GitProfile::ReadOnly {
-            for root in writable_roots(repo, extra) {
+            for root in profile_roots(profile, repo, extra) {
                 if root.exists() {
                     let s = root.to_string_lossy().into_owned();
                     cmd.args(["--bind", &s, &s]);
@@ -334,6 +352,37 @@ mod tests {
         assert!(!p.contains("(allow network-outbound)"));
         assert!(!p.contains("(allow file-write* (subpath"));
         assert!(p.contains(r#"(allow file-write* (literal "/dev/null")"#));
+    }
+
+    /// O perfil do snapshot do turno: nem o repo nem os worktrees geridos
+    /// entram, só o diretório extra.
+    #[test]
+    fn scratch_roots_are_only_the_extra_dirs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("r");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        let scratch = tmp.path().join("privado");
+        std::fs::create_dir_all(&scratch).unwrap();
+        let roots = profile_roots(GitProfile::Scratch, &repo, std::slice::from_ref(&scratch));
+        assert_eq!(roots, [crate::repo::canonicalize_or(&scratch)]);
+        assert!(profile_roots(GitProfile::Write, &repo, &[])
+            .contains(&crate::repo::canonicalize_or(&repo)));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn scratch_policy_writes_only_to_the_extra_dir() {
+        let repo = PathBuf::from("/private/tmp/x");
+        std::fs::create_dir_all(repo.join(".git")).ok();
+        let scratch = PathBuf::from("/private/tmp/tyba-privado");
+        let p = imp::policy(GitProfile::Scratch, &repo, std::slice::from_ref(&scratch));
+        assert!(p.contains("(allow file-write* (subpath"));
+        assert!(p.contains("/private/tmp/tyba-privado"));
+        assert!(!p.contains("/private/tmp/x"));
+        if let Ok(managed) = crate::worktree::managed_root() {
+            assert!(!p.contains(&*managed.to_string_lossy()));
+        }
+        assert!(!p.contains("(allow network-outbound)"));
     }
 
     #[cfg(target_os = "macos")]

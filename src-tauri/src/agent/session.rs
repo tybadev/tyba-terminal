@@ -12,6 +12,7 @@ use crate::agent::claude_settings::claude_settings_are_broad;
 use crate::agent::hooks_settings::{claude_session_settings, hook_command};
 use crate::agent::hooks_settings::{observer_hook_command, observer_session_settings};
 use crate::agent::subagents::SharedSubagents;
+use crate::agent::turn::{OpenTurn, TurnEnding, TurnOutcome};
 use crate::agent::usage::{AgentAlert, AgentUsage, EVENT_AGENT_ALERT, STATUSLINE_HOOK_EVENT};
 use crate::agent::{AgentRunner, ClaudeCodeRunner, CodexRunner, HookSetup};
 use crate::approvals::hybrid::{plan_pre_tool_use, HybridDecision, PreToolUsePlan};
@@ -593,6 +594,125 @@ fn notify_turn_ended(ctx: &HandlerCtx, transcript_path: Option<String>, needs_se
             end.prompt.as_deref(),
             &body,
         );
+    });
+}
+
+/// Folga para o último `statusLine` do turno chegar: o Claude o dispara
+/// depois da mensagem final, junto com o `Stop`. O resumo sai antes, sem
+/// esperar, e custo e tokens são acertados depois dela.
+const TURN_USAGE_SETTLE_MS: u64 = 1000;
+
+/// `UserPromptSubmit` do fio principal: o turno começou. Só registra e
+/// dispara o snapshot em outra thread — nada aqui segura o hook. Nó do Orbit
+/// fica de fora: ele já tem o resumo dele.
+///
+/// Um turno ainda aberto fecha aqui como interrompido: Esc e negar o prompt
+/// nativo do Claude não mandam hook nenhum, então o fim desse turno só
+/// aparece agora — e é medido agora, no prompt seguinte, não na hora em que
+/// o usuário interrompeu.
+fn begin_turn(ctx: &HandlerCtx, event: &HookEvent) {
+    let Some(session) = ctx.sessions.get(ctx.session_id) else {
+        return;
+    };
+    if session.owner == crate::session::SessionOwner::Orbit {
+        return;
+    }
+    let prompt = event
+        .raw
+        .get("prompt")
+        .and_then(|p| p.as_str())
+        .and_then(|p| crate::status::transcript::clean_summary(p, TURN_PROMPT_MAX_CHARS));
+    let now = now_ms();
+    let displaced = ctx.sessions.turns.begin(
+        ctx.session_id,
+        ctx.worktree_root.clone(),
+        crate::agent::turn::SNAPSHOT_MAX,
+        now,
+        prompt,
+        session.agent_usage,
+    );
+    if let Some(open) = displaced {
+        // `Stop` visto e segurado (subagente, pendência): o orquestrador
+        // terminou, e terminou naquela hora. Sem `Stop`, foi interrompido.
+        let ending = match open.stop_seen_at_ms {
+            Some(at) => turn_ending(TurnOutcome::Completed, None, at),
+            None => turn_ending(TurnOutcome::Interrupted, None, now),
+        };
+        finish_turn(&ctx.app, &ctx.sessions, ctx.session_id, open, ending);
+    }
+    ctx.sessions.set_turn_open(&ctx.app, ctx.session_id);
+}
+
+fn turn_ending(outcome: TurnOutcome, failure: Option<String>, ended_at_ms: u64) -> TurnEnding {
+    TurnEnding {
+        outcome,
+        failure,
+        ended_at_ms,
+    }
+}
+
+/// O turno da sessão acabou. Fecha o que estiver aberto — uma vez só, venha
+/// o fim de onde vier. Sem turno aberto não há resumo.
+pub(crate) fn close_turn(
+    app: &AppHandle,
+    sessions: &SharedSessionManager,
+    id: SessionId,
+    outcome: TurnOutcome,
+    failure: Option<String>,
+) {
+    if let Some(open) = sessions.turns.end(id) {
+        let ending = turn_ending(outcome, failure, now_ms());
+        finish_turn(app, sessions, id, open, ending);
+    }
+}
+
+/// O último subagente terminou e a sessão desceu a `Idle`: fecha o turno
+/// cujo `Stop` tinha ficado segurado. Só esse — um turno que acabou de abrir
+/// (o prompt novo chegou antes) não é daqui para fechar.
+pub(crate) fn close_stopped_turn(app: &AppHandle, sessions: &SharedSessionManager, id: SessionId) {
+    if let Some(open) = sessions.turns.end_if_stopped(id) {
+        let ending = turn_ending(TurnOutcome::Completed, None, now_ms());
+        finish_turn(app, sessions, id, open, ending);
+    }
+}
+
+/// Fora da thread do hook: tira o snapshot do fim ANTES de qualquer espera
+/// (o fim do turno é agora; a fila de prompts já pode ter mandado o próximo),
+/// compara com o do prompt e grava o resumo na sessão. Depois da folga do
+/// `statusLine`, acerta custo e tokens com um segundo aviso.
+fn finish_turn(
+    app: &AppHandle,
+    sessions: &SharedSessionManager,
+    id: SessionId,
+    open: OpenTurn,
+    ending: TurnEnding,
+) {
+    use crate::agent::turn;
+
+    let app = app.clone();
+    let sessions = sessions.clone();
+    std::thread::spawn(move || {
+        let end = turn::snapshot(&open.dir, &open.scratch, open.bound);
+        let start = open.into_start();
+        let usage = |sessions: &SharedSessionManager| sessions.get(id).and_then(|s| s.agent_usage);
+        let digest = turn::digest(
+            &start,
+            &end,
+            &ending,
+            usage(&sessions).as_ref(),
+            turn::DIFF_MAX,
+        );
+        sessions
+            .turns
+            .keep_trees(id, start.seq, turn::trees(&start, &end));
+        sessions.set_last_turn(&app, id, digest.clone());
+        std::thread::sleep(std::time::Duration::from_millis(TURN_USAGE_SETTLE_MS));
+        let settled = digest
+            .clone()
+            .with_usage(start.usage.as_ref(), usage(&sessions).as_ref());
+        if settled != digest {
+            sessions.set_last_turn(&app, id, settled);
+        }
     });
 }
 
@@ -1304,6 +1424,9 @@ fn handle_event(ctx: &HandlerCtx, event: HookEvent) -> HookAction {
     });
     let signal = signal_for(&event.hook_event_name, event.notification_type.as_deref());
     capture_model(ctx, &event);
+    if event.hook_event_name == "UserPromptSubmit" && event.agent_id.is_none() {
+        begin_turn(ctx, &event);
+    }
     if let Some(note) = note_for_event(signal.as_ref(), event.agent_id.is_some()) {
         ctx.sessions.set_status_note(&ctx.app, ctx.session_id, note);
     }
@@ -1374,6 +1497,8 @@ fn handle_event(ctx: &HandlerCtx, event: HookEvent) -> HookAction {
                         SessionStatus::Idle { summary },
                     );
                     prompt_queue::on_signal(&ctx.app, ctx.session_id, QueueSignal::TurnEnded);
+                    // O `Stop` que ficou segurado por subagente fecha aqui.
+                    close_stopped_turn(&ctx.app, &ctx.sessions, ctx.session_id);
                 }
             }
         }
@@ -1382,6 +1507,15 @@ fn handle_event(ctx: &HandlerCtx, event: HookEvent) -> HookAction {
             // Antes do status: o `Idle` que o `SessionEnd` causa não é o
             // agente esperando o próximo prompt.
             prompt_queue::on_signal(&ctx.app, ctx.session_id, QueueSignal::AgentEnded);
+            // Turno que ficou aberto (Esc não manda hook) e o agente saiu:
+            // sem isto `turn_open` ficaria ligado num pane sem agente.
+            close_turn(
+                &ctx.app,
+                &ctx.sessions,
+                ctx.session_id,
+                TurnOutcome::Interrupted,
+                None,
+            );
             if session_end_ends_subagents(&event.raw) {
                 ctx.subagents.on_session_ended(&ctx.app, ctx.session_id);
             }
@@ -1439,6 +1573,14 @@ fn handle_event(ctx: &HandlerCtx, event: HookEvent) -> HookAction {
                     ctx.sessions.set_status(&ctx.app, ctx.session_id, status);
                 }
             }
+            // Fecha já, mesmo com subagente vivo: o sinal é só do Codex.
+            close_turn(
+                &ctx.app,
+                &ctx.sessions,
+                ctx.session_id,
+                TurnOutcome::Interrupted,
+                None,
+            );
         }
         Some(signal) => {
             use std::sync::atomic::Ordering;
@@ -1451,6 +1593,7 @@ fn handle_event(ctx: &HandlerCtx, event: HookEvent) -> HookAction {
                     let from_subagent = event.agent_id.is_some();
                     if !from_subagent {
                         ctx.subagents.note_orchestrator_working(ctx.session_id);
+                        ctx.sessions.turns.note_working(ctx.session_id);
                         ctx.sessions
                             .set_subagents_working(&ctx.app, ctx.session_id, false);
                         ctx.turn_settle.fetch_add(1, Ordering::SeqCst);
@@ -1486,6 +1629,7 @@ fn handle_event(ctx: &HandlerCtx, event: HookEvent) -> HookAction {
                     // `Idle`, sem fila, sem "terminou" — mesmo segurar do
                     // `Stop` com subagente vivo.
                     ctx.turn_settle.fetch_add(1, Ordering::SeqCst);
+                    ctx.sessions.turns.note_stop(ctx.session_id, now_ms());
                     if let Some(next) = ctx
                         .sessions
                         .get(ctx.session_id)
@@ -1508,6 +1652,7 @@ fn handle_event(ctx: &HandlerCtx, event: HookEvent) -> HookAction {
                         .on_orchestrator_stop(&ctx.app, ctx.session_id, summary.clone())
                     {
                         ctx.turn_settle.fetch_add(1, Ordering::SeqCst);
+                        ctx.sessions.turns.note_stop(ctx.session_id, now_ms());
                         if let Some(next) = ctx
                             .sessions
                             .get(ctx.session_id)
@@ -1523,6 +1668,13 @@ fn handle_event(ctx: &HandlerCtx, event: HookEvent) -> HookAction {
                             SessionStatus::Idle { summary },
                         );
                         prompt_queue::on_signal(&ctx.app, ctx.session_id, QueueSignal::TurnEnded);
+                        close_turn(
+                            &ctx.app,
+                            &ctx.sessions,
+                            ctx.session_id,
+                            TurnOutcome::Completed,
+                            None,
+                        );
                         let transcript_path = event
                             .raw
                             .get("transcript_path")
@@ -1559,6 +1711,13 @@ fn on_stop_failure(ctx: &HandlerCtx, event: &HookEvent) {
 
     let error = crate::agent::usage::stop_failure_error(&event.raw);
     let reason = crate::agent::usage::stop_failure_reason(error.as_deref());
+    close_turn(
+        &ctx.app,
+        &ctx.sessions,
+        ctx.session_id,
+        TurnOutcome::Failed,
+        Some(reason.to_string()),
+    );
     let status = status_on_stop_failure(reason);
     let SessionStatus::Idle { summary } = &status else {
         return;
