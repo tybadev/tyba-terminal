@@ -543,8 +543,31 @@ pub(crate) fn turn_end(
     }
 }
 
+/// Folga entre o fim do turno (carimbado em `close_turn`) e o `Stop` visto
+/// pelo aviso: os dois saem do mesmo handler, com milissegundos de distância.
+/// Curta de propósito: o resumo do turno anterior terminou pelo menos um
+/// turno inteiro antes deste `Stop`, e nenhum turno de agente dura menos.
+const NOTICE_TURN_SLACK_MS: u64 = 250;
+
+/// O corpo do aviso de fim de turno com a linha de números embaixo (quadro
+/// T4 de ResumoDoTurno). Só entra o resumo DESTE turno: um que terminou antes
+/// do `Stop` é do turno anterior, e o deste ainda não ficou pronto — o aviso
+/// sai sem números em vez de esperar.
+pub(crate) fn notice_body(
+    body: &str,
+    last_turn: Option<&crate::agent::turn::TurnDigest>,
+    stop_at_ms: u64,
+) -> String {
+    match last_turn.filter(|d| d.ended_at_ms + NOTICE_TURN_SLACK_MS >= stop_at_ms) {
+        Some(digest) => format!("{body}\n{}", digest.notice_line()),
+        None => body.to_string(),
+    }
+}
+
 fn notify_turn_ended(ctx: &HandlerCtx, transcript_path: Option<String>, needs_settle: bool) {
     use std::sync::atomic::Ordering;
+
+    let stop_at_ms = now_ms();
 
     let generation = ctx.turn_settle.fetch_add(1, Ordering::SeqCst) + 1;
     let app = ctx.app.clone();
@@ -585,6 +608,8 @@ fn notify_turn_ended(ctx: &HandlerCtx, transcript_path: Option<String>, needs_se
         let body = end
             .summary
             .unwrap_or_else(|| "Terminou o que tinha pra rodar".into());
+        let last_turn = sessions.get(id).and_then(|s| s.last_turn);
+        let body = notice_body(&body, last_turn.as_ref(), stop_at_ms);
         notify_native_shown(
             &app,
             &sessions,
@@ -706,11 +731,13 @@ fn finish_turn(
             .turns
             .keep_trees(id, start.seq, turn::trees(&start, &end));
         sessions.set_last_turn(&app, id, digest.clone());
+        crate::notifications::record(&app, |n| n.turn_ended(id, &digest));
         std::thread::sleep(std::time::Duration::from_millis(TURN_USAGE_SETTLE_MS));
         let settled = digest
             .clone()
             .with_usage(start.usage.as_ref(), usage(&sessions).as_ref());
         if settled != digest {
+            crate::notifications::record(&app, |n| n.turn_ended(id, &settled));
             sessions.set_last_turn(&app, id, settled);
         }
     });

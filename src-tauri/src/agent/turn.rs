@@ -32,7 +32,7 @@ use std::process::{Command, Stdio};
 use std::sync::{mpsc, Mutex};
 use std::time::{Duration, Instant};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::agent::usage::AgentUsage;
 use crate::session::SessionId;
@@ -107,7 +107,57 @@ pub struct TurnDigest {
     pub tokens: Option<u64>,
 }
 
+/// O que do resumo entra no histórico de notificações, que é gravado no
+/// SQLite: só números. Caminho, prompt e motivo da falha não cabem aqui.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TurnCounts {
+    pub seq: u64,
+    /// `None` quando o turno não foi medido (sem git, ou o snapshot falhou).
+    pub files: Option<u32>,
+    pub insertions: u32,
+    pub deletions: u32,
+    pub duration_ms: u64,
+    pub cost_usd: Option<f64>,
+}
+
+/// "4m 51s", "36s": a duração do turno na linha de números.
+fn elapsed(ms: u64) -> String {
+    let total = ms / 1000;
+    match total / 60 {
+        0 => format!("{total}s"),
+        minutes => format!("{minutes}m {:02}s", total % 60),
+    }
+}
+
 impl TurnDigest {
+    pub fn counts(&self) -> TurnCounts {
+        TurnCounts {
+            seq: self.seq,
+            files: (self.diff == TurnDiff::Ok).then_some(self.files_total),
+            insertions: self.insertions,
+            deletions: self.deletions,
+            duration_ms: self.duration_ms,
+            cost_usd: self.cost_usd,
+        }
+    }
+
+    /// A linha de números do aviso do sistema (quadro T4 de ResumoDoTurno):
+    /// "6 arquivos · +115 −55 · 4m 51s", "sem mudanças · 36s"; só a duração
+    /// quando o turno não foi medido.
+    pub fn notice_line(&self) -> String {
+        let took = elapsed(self.duration_ms);
+        match self.counts().files {
+            None => took,
+            Some(0) => format!("sem mudanças · {took}"),
+            Some(n) => format!(
+                "{n} {} · +{} −{} · {took}",
+                if n == 1 { "arquivo" } else { "arquivos" },
+                self.insertions,
+                self.deletions
+            ),
+        }
+    }
+
     /// Troca custo e tokens pelo que o uso diz agora (o `statusLine` do fim
     /// do turno chega depois do `Stop`).
     pub fn with_usage(
@@ -1908,6 +1958,58 @@ mod tests {
             crate::repo::canonicalize_or(&pair.objects),
             crate::repo::canonicalize_or(&p.join(".git/objects"))
         );
+    }
+
+    #[test]
+    fn counts_and_notice_line_carry_numbers_only() {
+        let fx = repo();
+        let p = fx.path();
+        let s = start(p);
+        write(p, "a.txt", "um\nDOIS\ntres\nquatro\n");
+        write(p, "segredo.env", "TOKEN=abc\n");
+        let mut d = end(&s, p);
+        d.duration_ms = 291_000;
+        d.cost_usd = Some(0.41);
+        assert_eq!(d.notice_line(), "2 arquivos · +3 −1 · 4m 51s");
+        let counts = d.counts();
+        assert_eq!(
+            (counts.files, counts.insertions, counts.deletions),
+            (Some(2), 3, 1)
+        );
+        let json = serde_json::to_string(&counts).unwrap();
+        for leak in ["a.txt", "segredo", "arruma"] {
+            assert!(!json.contains(leak), "{leak} nas contagens: {json}");
+        }
+
+        d.files_total = 1;
+        assert!(d.notice_line().starts_with("1 arquivo · "));
+        d.files_total = 0;
+        d.duration_ms = 36_000;
+        assert_eq!(d.notice_line(), "sem mudanças · 36s");
+        d.diff = TurnDiff::Unavailable;
+        assert_eq!(d.notice_line(), "36s");
+        assert_eq!(d.counts().files, None);
+    }
+
+    /// O aviso do sistema só leva os números do turno que acabou de fechar.
+    #[test]
+    fn notice_body_only_carries_this_turns_numbers() {
+        use crate::agent::session::notice_body;
+        let fx = repo();
+        let p = fx.path();
+        let s = start(p);
+        write(p, "a.txt", "um\ndois\ntres\nquatro\n");
+        let d = end(&s, p);
+        assert_eq!(d.ended_at_ms, 4_500);
+        assert_eq!(
+            notice_body("Pronto.", Some(&d), 4_600),
+            "Pronto.\n1 arquivo · +1 −0 · 3s"
+        );
+        // Resumo do turno anterior (o deste ainda não ficou pronto) e sessão
+        // sem resumo: o aviso sai como antes.
+        assert_eq!(notice_body("Pronto.", Some(&d), 60_000), "Pronto.");
+        assert_eq!(notice_body("Pronto.", Some(&d), 5_000), "Pronto.");
+        assert_eq!(notice_body("Pronto.", None, 4_600), "Pronto.");
     }
 
     #[test]

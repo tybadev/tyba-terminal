@@ -252,6 +252,18 @@ CREATE TABLE IF NOT EXISTS notification (
     read INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS notification_by_time ON notification (at_ms);
+-- Contagens do turno de uma linha terminou ou falhou. Tabela à parte, e não
+-- coluna em `notification`: nasce aqui, em toda abertura, sem degrau de
+-- migração. Só números: caminho e prompt do turno nunca vêm para o disco.
+CREATE TABLE IF NOT EXISTS notification_turn (
+    notification_id INTEGER PRIMARY KEY,
+    seq INTEGER NOT NULL,
+    files INTEGER,
+    insertions INTEGER NOT NULL,
+    deletions INTEGER NOT NULL,
+    duration_ms INTEGER NOT NULL,
+    cost_usd REAL
+);
 CREATE TABLE IF NOT EXISTS orbit_graph (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -3965,7 +3977,52 @@ impl Store {
                  SELECT id FROM notification ORDER BY at_ms DESC, id DESC LIMIT ?1)",
             params![MAX_ENTRIES],
         )?;
+        // Linha podada (ou apagada com a sessão) leva as contagens junto.
+        conn.execute(
+            "DELETE FROM notification_turn
+             WHERE notification_id NOT IN (SELECT id FROM notification)",
+            [],
+        )?;
         Ok(id)
+    }
+
+    /// Grava as contagens do turno na linha "terminou"/"falhou" que ele
+    /// gravou: a mais nova da sessão nascida entre `since_ms` (o começo do
+    /// turno) e `until_ms` (o fim dele, com folga). Linha mais nova que isso é
+    /// do turno seguinte e não é tocada; linha que já tem as contagens de um
+    /// turno de `seq` maior também não. Chamar de novo troca os números (o
+    /// custo chega depois).
+    pub fn set_last_turn_counts(
+        &self,
+        session_id: SessionId,
+        counts: &crate::agent::turn::TurnCounts,
+        since_ms: i64,
+        until_ms: i64,
+    ) -> Result<usize, StoreError> {
+        let conn = self.conn.lock();
+        Ok(conn.execute(
+            "INSERT OR REPLACE INTO notification_turn
+                 (notification_id, seq, files, insertions, deletions, duration_ms, cost_usd)
+             SELECT id, ?3, ?4, ?5, ?6, ?7, ?8 FROM (
+                 SELECT id FROM notification
+                 WHERE session_id = ?1 AND kind IN ('agent_finished', 'agent_failed')
+                   AND at_ms >= ?2 AND at_ms <= ?9
+                 ORDER BY at_ms DESC, id DESC LIMIT 1)
+             WHERE NOT EXISTS (
+                 SELECT 1 FROM notification_turn
+                 WHERE notification_id = id AND seq > ?3)",
+            params![
+                session_id.to_string(),
+                since_ms,
+                counts.seq as i64,
+                counts.files,
+                counts.insertions,
+                counts.deletions,
+                counts.duration_ms as i64,
+                counts.cost_usd,
+                until_ms,
+            ],
+        )?)
     }
 
     /// Mais nova primeiro; até 500, dos últimos 7 dias. Linha que não se lê
@@ -4028,6 +4085,25 @@ impl Store {
                 ))
             })?
             .collect::<Result<Vec<_>, _>>()?;
+        let mut turns: std::collections::HashMap<i64, crate::agent::turn::TurnCounts> = conn
+            .prepare(
+                "SELECT notification_id, seq, files, insertions, deletions, duration_ms, cost_usd
+                 FROM notification_turn",
+            )?
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    crate::agent::turn::TurnCounts {
+                        seq: r.get::<_, i64>(1)? as u64,
+                        files: r.get(2)?,
+                        insertions: r.get(3)?,
+                        deletions: r.get(4)?,
+                        duration_ms: r.get::<_, i64>(5)? as u64,
+                        cost_usd: r.get(6)?,
+                    },
+                ))
+            })?
+            .collect::<Result<_, _>>()?;
         let out = rows
             .into_iter()
             .filter_map(|row| {
@@ -4073,6 +4149,7 @@ impl Store {
                     command,
                     detail,
                     usage,
+                    turn: turns.remove(&id),
                     read,
                 })
             })
@@ -4189,6 +4266,12 @@ impl Store {
              WHERE pending = 1",
             [],
         )?)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn count_notification_turns(&self) -> Result<i64, StoreError> {
+        let conn = self.conn.lock();
+        Ok(conn.query_row("SELECT COUNT(*) FROM notification_turn", [], |r| r.get(0))?)
     }
 
     #[cfg(test)]

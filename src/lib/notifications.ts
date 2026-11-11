@@ -3,8 +3,10 @@ import type {
   ApprovalRequest,
   NotificationEntry,
   RiskLevel,
+  Session,
   SessionId,
 } from "./ipc";
+import { hasTurnDiff } from "./gitScreen";
 
 export type NotificationKind = "approval";
 
@@ -235,3 +237,30 @@ export function attentionCount(pendingApprovals: number, entries: NotificationEn
 export function unreadCount(entries: NotificationEntry[]): number {
   return entries.filter((e) => !e.read).length;
 }
+
+/**
+ * Para onde vai o "Ver diff" de uma linha do histórico (quadro T4 de
+ * ResumoDoTurno). Linha com contagens de turno: o diff do turno, só enquanto
+ * ele for o último da sessão e tiver diff; turno antigo fica só com os
+ * números. Linha "terminou" sem contagens (de antes do resumo do turno, ou de
+ * turno sem começo registrado): o diff da sessão, como sempre foi.
+ */
+export function entryDiffTarget(
+  entry: Pick<NotificationEntry, "kind" | "turn" | "at_ms">,
+  session: Pick<Session, "last_turn"> | null | undefined,
+): "turn" | "review" | null {
+  if (entry.kind !== "agent_finished" && entry.kind !== "agent_failed") return null;
+  if (!entry.turn) return entry.kind === "agent_finished" ? "review" : null;
+  const last = session?.last_turn;
+  // O número do turno recomeça quando a sessão sobe de novo (retomar a
+  // conversa): além dele, a linha tem de ter nascido dentro do último turno.
+  const sameTurn =
+    last != null &&
+    last.seq === entry.turn.seq &&
+    entry.at_ms >= last.started_at_ms &&
+    entry.at_ms <= last.ended_at_ms + TURN_LINE_SLACK_MS;
+  return sameTurn && hasTurnDiff(session) ? "turn" : null;
+}
+
+/** A mesma folga do core entre o fim do turno e a linha dele no histórico. */
+const TURN_LINE_SLACK_MS = 1000;

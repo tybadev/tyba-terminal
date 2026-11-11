@@ -20,7 +20,9 @@ import {
   unreadCount,
   type DayBucket,
   type NotificationFilter,
+  entryDiffTarget,
 } from "@/lib/notifications";
+import { formatElapsed } from "@/lib/agentTree";
 import { openGitScreen } from "@/lib/gitScreen";
 import {
   notificationsList,
@@ -100,7 +102,7 @@ export function NotificationsInbox({
    *  tem botão próprio, quem abre é a lateral. */
   onBadgeChange: (count: number) => void;
 }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const [feedbackFor, setFeedbackFor] = useState<number | null>(null);
   const [feedback, setFeedback] = useState("");
   const [entries, setEntries] = useState<NotificationEntry[]>([]);
@@ -385,6 +387,11 @@ export function NotificationsInbox({
   const entryRow = (e: NotificationEntry, doneGroup: boolean) => {
     const reset = e.usage?.resets_at ? resetParts(e.usage.resets_at, Date.now()) : null;
     const resets = reset && (reset.date ? t("notifResetsOn", reset) : t("notifResetsAt", reset));
+    // O diff do turno enquanto ele for o último; turno antigo fica só com os números.
+    const diffTarget = entryDiffTarget(
+      e,
+      sessions.find((s) => s.id === e.session_id),
+    );
     return (
       <div
         key={e.id}
@@ -410,6 +417,41 @@ export function NotificationsInbox({
             {resets && ` · ${resets}`}
             {e.detail && ` · ${e.detail}`}
           </div>
+          {e.turn && (
+            <div className={`${META} flex items-center gap-1.5 whitespace-nowrap font-mono tabular-nums`}>
+              {e.turn.files !== null && (
+                <>
+                  <span>
+                    {e.turn.files > 0
+                      ? t("diffFilesSummary", { count: e.turn.files })
+                      : t("pillTurnNoChanges")}
+                  </span>
+                  <span>·</span>
+                </>
+              )}
+              {e.turn.files !== null && e.turn.files > 0 && (
+                <>
+                  <span className="inline-flex gap-[5px]">
+                    <span className="text-tyba-green">+{e.turn.insertions}</span>
+                    <span className="text-tyba-red">−{e.turn.deletions}</span>
+                  </span>
+                  <span>·</span>
+                </>
+              )}
+              <span>{formatElapsed(e.turn.duration_ms)}</span>
+              {e.turn.cost_usd !== null && (
+                <>
+                  <span>·</span>
+                  <span>
+                    {new Intl.NumberFormat(i18n.language, {
+                      style: "currency",
+                      currency: "USD",
+                    }).format(e.turn.cost_usd)}
+                  </span>
+                </>
+              )}
+            </div>
+          )}
           {e.command && (
             <code className={CMD} title={e.command}>
               {e.command}
@@ -419,14 +461,14 @@ export function NotificationsInbox({
           {e.kind === "native_approval" && e.pending && <div className={ACTS}>{openInSessionBtn(e.session_id)}</div>}
           {(e.kind === "agent_finished" || e.kind === "agent_failed" || e.kind === "usage_limit") && (
             <div className={ACTS}>
-              {e.kind === "agent_finished" && (
+              {diffTarget && (
                 <button
                   type="button"
                   className={TEXT_BTN}
                   onClick={(ev) => {
                     ev.stopPropagation();
                     markRead(e);
-                    void openGitScreen(e.session_id, "review").catch(() => {});
+                    void openGitScreen(e.session_id, diffTarget).catch(() => {});
                     onOpenChange(false);
                   }}
                 >
