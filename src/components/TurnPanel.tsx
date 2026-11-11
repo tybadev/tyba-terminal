@@ -1,5 +1,5 @@
 import { useTranslation } from "react-i18next";
-import { Check, Folder, Minus, Pause } from "@phosphor-icons/react";
+import { Check, Folder, GitBranch, Minus, Pause } from "@phosphor-icons/react";
 
 import {
   splitPath,
@@ -9,7 +9,8 @@ import {
   turnRows,
   type TurnBand,
 } from "../lib/agentsDrawer";
-import type { FileStatus, TurnDigest } from "../lib/ipc";
+import { hasTurnDiff, openGitScreen } from "../lib/gitScreen";
+import { agentsDrawerCollapse, type FileStatus, type SessionId, type TurnDigest } from "../lib/ipc";
 import { useNow } from "./ui/loading";
 
 const BAND: Record<TurnBand, string> = {
@@ -21,7 +22,7 @@ const BAND: Record<TurnBand, string> = {
   unavailable: "text-tyba-text-muted bg-tyba-neutral-tint",
 };
 
-const LETTER: Record<FileStatus, string> = {
+export const TURN_LETTER: Record<FileStatus, string> = {
   added: "A",
   modified: "M",
   deleted: "D",
@@ -32,7 +33,7 @@ const LETTER: Record<FileStatus, string> = {
   other: "?",
 };
 
-const LETTER_COLOR: Record<FileStatus, string> = {
+export const TURN_LETTER_COLOR: Record<FileStatus, string> = {
   added: "text-tyba-green",
   modified: "text-tyba-amber",
   deleted: "text-tyba-red",
@@ -46,14 +47,22 @@ const LETTER_COLOR: Record<FileStatus, string> = {
 /**
  * A aba Turno da gaveta (quadros T2 e T3 de ResumoDoTurno): o que mudou na
  * pasta entre o prompt e o fim do último turno. Só nomes e contagens, como
- * chegam do core em `Session.last_turn`.
+ * chegam do core em `Session.last_turn`. O conteúdo fica na tela de Git:
+ * "Ver diff do turno" e o clique numa linha abrem a seção Turno dela.
  */
-export function TurnPanel({ turn }: { turn: TurnDigest }) {
+export function TurnPanel({ sessionId, turn }: { sessionId: SessionId; turn: TurnDigest }) {
   const { t, i18n } = useTranslation();
   const now = useNow(true);
   const band = turnBand(turn);
   const { rows, more } = turnRows(turn);
   const hasFiles = turn.files_total > 0;
+  const canDiff = hasTurnDiff({ last_turn: turn });
+  // A tela de Git cobre o pane: a gaveta recolhe para não ficar por cima.
+  const seeDiff = (path: string | null) => {
+    void openGitScreen(sessionId, "turn", null, path)
+      .then(() => agentsDrawerCollapse(sessionId))
+      .catch(() => {});
+  };
   const since = new Date(turn.started_at_ms).toLocaleTimeString(i18n.language, {
     hour: "2-digit",
     minute: "2-digit",
@@ -119,14 +128,17 @@ export function TurnPanel({ turn }: { turn: TurnDigest }) {
           {rows.map((file) => {
             const { dir, name } = splitPath(file.path);
             return (
-              <div
+              <button
                 key={file.path}
-                className="grid h-[26px] grid-cols-[14px_minmax(0,1fr)_44px_40px] items-center gap-2 rounded-[6px] px-2 text-[12px]"
+                type="button"
+                disabled={!canDiff}
+                onClick={() => seeDiff(file.path)}
+                className="grid h-[26px] grid-cols-[14px_minmax(0,1fr)_44px_40px] items-center gap-2 rounded-[6px] px-2 text-[12px] enabled:hover:bg-tyba-text/[.06]"
               >
                 <span
-                  className={`text-center font-mono text-[11px] font-medium ${LETTER_COLOR[file.status]}`}
+                  className={`text-center font-mono text-[11px] font-medium ${TURN_LETTER_COLOR[file.status]}`}
                 >
-                  {LETTER[file.status]}
+                  {TURN_LETTER[file.status]}
                 </span>
                 {/* Corta pela esquerda: o nome do arquivo nunca some. */}
                 <span
@@ -146,7 +158,7 @@ export function TurnPanel({ turn }: { turn: TurnDigest }) {
                 <span className="text-right font-mono text-[11.5px] tabular-nums text-tyba-red">
                   {file.deletions ? `−${file.deletions}` : ""}
                 </span>
-              </div>
+              </button>
             );
           })}
           {more > 0 && (
@@ -175,6 +187,16 @@ export function TurnPanel({ turn }: { turn: TurnDigest }) {
           hasFiles ? "mt-1.5" : "mt-0.5"
         }`}
       >
+        {canDiff && (
+          <button
+            type="button"
+            onClick={() => seeDiff(null)}
+            className="inline-flex h-6 items-center gap-1.5 whitespace-nowrap rounded-[6px] px-[9px] text-[11.5px] text-tyba-text shadow-[inset_0_0_0_1px_var(--tyba-border-field)]"
+          >
+            <GitBranch size={12} />
+            {t("turnSeeDiff")}
+          </button>
+        )}
         <span className="flex-1" />
         <span className="text-[11px] text-tyba-text-faint">
           {t(hasFiles ? "turnSince" : "turnStartedAt", { time: since })}

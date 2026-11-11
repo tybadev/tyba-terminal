@@ -36,7 +36,9 @@ use serde::Serialize;
 
 use crate::agent::usage::AgentUsage;
 use crate::session::SessionId;
-use crate::worktree::diff::{parse_name_status_z, parse_numstat_z, FileDiff};
+use crate::worktree::diff::{
+    parse_name_status_z, parse_numstat_z, parse_unified_hunks, FileDiff, FileHunks,
+};
 use crate::worktree::{git_in, git_in_scratch};
 
 /// Teto de um snapshot, do primeiro ao último `git` dele. Passou, o filho é
@@ -564,6 +566,51 @@ pub fn trees(start: &TurnStart, end: &Snapshot) -> Option<TurnTrees> {
     }
 }
 
+impl TurnTrees {
+    fn side(&self, tree: &str) -> RepoTree {
+        RepoTree {
+            root: self.root.clone(),
+            tree: tree.to_string(),
+            head: None,
+            objects: self.objects.clone(),
+        }
+    }
+
+    /// Todos os arquivos do turno, sem o teto de [`FILES_MAX`]: a lista do
+    /// "ver diff do turno". `None` quando o git falha ou estoura `bound` (o
+    /// diretório privado some quando o turno seguinte fecha).
+    pub fn files(&self, bound: Duration) -> Option<Vec<FileDiff>> {
+        changed_files(
+            &self.side(&self.start),
+            &self.side(&self.end),
+            &self.scratch,
+            Instant::now() + bound,
+        )
+    }
+
+    /// Os trechos de um arquivo entre as duas árvores. Árvore contra árvore:
+    /// não lê a pasta nem roda filtro; `--no-textconv` e `--no-ext-diff`
+    /// para nenhum comando definido pelo repositório rodar aqui.
+    pub fn file_hunks(
+        &self,
+        path: &str,
+        old_path: Option<&str>,
+        bound: Duration,
+    ) -> Option<FileHunks> {
+        let mut cmd = with_objects(git_in(&self.root), &self.scratch, &self.objects);
+        cmd.args(["diff", "--no-ext-diff", "--no-textconv", "--no-color", "-M"]);
+        cmd.args([&self.start, &self.end]);
+        cmd.arg("--").arg(format!(":(literal){path}"));
+        if let Some(old) = old_path {
+            cmd.arg(format!(":(literal){old}"));
+        }
+        match run_within(cmd, Instant::now() + bound, true) {
+            Ran::Out(out) => Some(parse_unified_hunks(&String::from_utf8_lossy(&out))),
+            _ => None,
+        }
+    }
+}
+
 /// Um turno aberto: o prompt chegou, o fim ainda não.
 pub struct OpenTurn {
     pub seq: u64,
@@ -748,6 +795,17 @@ impl Turns {
             .lock()
             .expect("turns lock")
             .get(&id)
+            .and_then(|slot| slot.trees.clone())
+    }
+
+    /// As árvores do turno `seq`, só enquanto ele for o último que fechou:
+    /// turno antigo guarda só os números.
+    pub fn trees_of(&self, id: SessionId, seq: u64) -> Option<TurnTrees> {
+        self.slots
+            .lock()
+            .expect("turns lock")
+            .get(&id)
+            .filter(|slot| slot.closed_seq == seq)
             .and_then(|slot| slot.trees.clone())
     }
 
@@ -1684,9 +1742,103 @@ mod tests {
         turns.keep_trees(id, 2, Some(pair("dois")));
         turns.keep_trees(id, 1, Some(pair("um")));
         assert_eq!(turns.last_trees(id), Some(pair("dois")));
+        assert_eq!(turns.trees_of(id, 2), Some(pair("dois")));
+        // Só o último turno tem diff: o anterior guarda só os números.
+        assert_eq!(turns.trees_of(id, 1), None);
         // Turno mais novo sem diff: as do anterior não servem mais.
         turns.keep_trees(id, 3, None);
         assert_eq!(turns.last_trees(id), None);
+        assert_eq!(turns.trees_of(id, 2), None);
+        assert_eq!(turns.trees_of(id, 3), None);
+    }
+
+    /// As árvores de um turno de verdade: o que já estava sujo fica de fora
+    /// da lista e dos trechos, e arquivo sem rastreio entra.
+    #[test]
+    fn turn_diff_lists_files_and_reads_hunks_from_the_two_trees() {
+        let fx = repo();
+        let p = fx.path();
+        write(p, "b.txt", "sujo antes do prompt\n");
+        let s = start(p);
+        write(p, "a.txt", "um\nDOIS\ntres\n");
+        write(p, "novo.txt", "sem rastreio\n");
+        git(p, &["mv", "some.txt", "foi.txt"]);
+        let end = snapshot(p, &s.scratch, BOUND);
+        let pair = trees(&s, &end).expect("duas árvores");
+
+        let files = pair.files(BOUND).expect("lista");
+        let got: Vec<_> = files
+            .iter()
+            .map(|f| (f.path.as_str(), f.status, f.old_path.as_deref()))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("a.txt", FileStatus::Modified, None),
+                ("foi.txt", FileStatus::Renamed, Some("some.txt")),
+                ("novo.txt", FileStatus::Added, None),
+            ]
+        );
+
+        let lines = |h: &FileHunks| -> Vec<String> {
+            h.hunks
+                .iter()
+                .flat_map(|hunk| hunk.lines.iter().map(|l| l.text.clone()))
+                .collect()
+        };
+        // A pasta muda depois do fim do turno: os trechos são os do turno.
+        write(p, "a.txt", "mexido depois do turno\n");
+        let a = pair.file_hunks("a.txt", None, BOUND).expect("trechos");
+        assert!(lines(&a).contains(&"DOIS".to_string()), "{a:?}");
+        assert!(!lines(&a).iter().any(|l| l.contains("depois do turno")));
+        let novo = pair.file_hunks("novo.txt", None, BOUND).expect("trechos");
+        assert_eq!(lines(&novo), ["sem rastreio"]);
+        // Sujo antes do prompt e igual no fim: nada a mostrar.
+        let b = pair.file_hunks("b.txt", None, BOUND).expect("trechos");
+        assert!(b.hunks.is_empty());
+    }
+
+    /// `textconv` é comando definido pelo repositório: não roda no diff do
+    /// turno. Sem o `--no-textconv`, onde há jaula o git falha ao criar o
+    /// temporário do textconv e os trechos não vêm (quem acusa é o
+    /// `expect("trechos")`); onde não há, o comando roda e deixa o marcador.
+    #[test]
+    fn turn_diff_does_not_run_textconv() {
+        let fx = repo();
+        let p = fx.path();
+        let marker = fx.tmp.path().join("rodou");
+        write(p, ".gitattributes", "*.txt diff=espia\n");
+        git(
+            p,
+            &[
+                "config",
+                "diff.espia.textconv",
+                &format!("sh -c 'touch {}; cat \"$1\"' --", marker.display()),
+            ],
+        );
+        let s = start(p);
+        write(p, "a.txt", "um\ndois\ntres\nquatro\n");
+        let end = snapshot(p, &s.scratch, BOUND);
+        let pair = trees(&s, &end).expect("duas árvores");
+        assert_eq!(pair.files(BOUND).expect("lista").len(), 1);
+        let hunks = pair.file_hunks("a.txt", None, BOUND).expect("trechos");
+        assert!(!hunks.hunks.is_empty());
+        assert!(!marker.exists(), "textconv rodou");
+    }
+
+    /// Diretório privado apagado (o turno seguinte fechou): sem diff, sem
+    /// pânico.
+    #[test]
+    fn turn_diff_without_its_private_dir_is_none() {
+        let fx = repo();
+        let p = fx.path();
+        let s = start(p);
+        write(p, "novo.txt", "sem rastreio\n");
+        let end = snapshot(p, &s.scratch, BOUND);
+        let pair = trees(&s, &end).expect("duas árvores");
+        std::fs::remove_dir_all(&pair.scratch).unwrap();
+        assert_eq!(pair.files(BOUND), None);
+        assert_eq!(pair.file_hunks("novo.txt", None, BOUND), None);
     }
 
     /// Só o diretório do turno aberto e o do último que fechou ficam; o da
