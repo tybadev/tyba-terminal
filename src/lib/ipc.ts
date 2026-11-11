@@ -213,6 +213,18 @@ export interface FileDiff {
   deletions: number | null;
 }
 
+/** Espelha `agent::turn::TurnCounts`: o que do resumo do turno vai para o
+ * histórico de notificações. Só números. */
+export interface TurnCounts {
+  seq: number;
+  /** `null`: o turno não foi medido (sem git, ou o snapshot falhou). */
+  files: number | null;
+  insertions: number;
+  deletions: number;
+  duration_ms: number;
+  cost_usd: number | null;
+}
+
 /** Espelha `agent::turn::TurnDigest`: o que mudou na pasta entre o prompt e o
  * fim do turno. Só caminhos e contagens, nunca conteúdo. */
 export interface TurnDigest {
@@ -1666,6 +1678,9 @@ export interface NotificationEntry {
   /** agent_finished: resumo do status idle; agent_failed: motivo (mascarado). */
   detail: string | null;
   usage: { window: "five_hour" | "seven_day"; pct: number; resets_at: number | null } | null;
+  /** agent_finished/agent_failed: contagens do turno que a linha fechou.
+   *  `null` em linha sem resumo de turno. */
+  turn?: TurnCounts | null;
   /** Resolver um pedido grava `read=true` (quem decidiu já viu). */
   read: boolean;
 }

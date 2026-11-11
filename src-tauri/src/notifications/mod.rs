@@ -18,6 +18,7 @@ use parking_lot::Mutex;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, UserAttentionType};
 
+use crate::agent::turn::{TurnDigest, TurnOutcome};
 use crate::agent::usage::{AgentUsage, LimitWindow, USAGE_WARN_PCT};
 use crate::approvals::{ApprovalRequest, Decision, RiskLevel};
 use crate::session::store::{Store, StoreError};
@@ -94,6 +95,9 @@ pub struct NotificationEntry {
     pub command: Option<String>,
     pub detail: Option<String>,
     pub usage: Option<UsageInfo>,
+    /// Contagens do turno que esta linha "terminou"/"falhou" fechou. Só
+    /// números; `None` em linha sem resumo de turno.
+    pub turn: Option<crate::agent::turn::TurnCounts>,
     pub read: bool,
 }
 
@@ -448,6 +452,7 @@ impl Notifications {
             command: None,
             detail: None,
             usage: None,
+            turn: None,
             read: false,
         }
     }
@@ -667,6 +672,27 @@ impl Notifications {
             Ok(n) => n > 0,
             Err(e) => {
                 eprintln!("[tyba] notificações: falha ao corrigir resumo: {e}");
+                false
+            }
+        }
+    }
+
+    /// O resumo do turno ficou pronto (ou o custo dele chegou): põe as
+    /// contagens na linha "terminou"/"falhou" que esse turno gravou. A linha
+    /// nasce no fim do turno, depois do começo dele: uma linha mais velha é
+    /// de outro turno e fica como está. Interrupção não grava linha.
+    pub fn turn_ended(&self, session_id: SessionId, digest: &TurnDigest) -> bool {
+        if digest.outcome == TurnOutcome::Interrupted {
+            return false;
+        }
+        match self.store.set_last_turn_counts(
+            session_id,
+            &digest.counts(),
+            digest.started_at_ms as i64,
+        ) {
+            Ok(n) => n > 0,
+            Err(e) => {
+                eprintln!("[tyba] notificações: falha ao gravar contagens do turno: {e}");
                 false
             }
         }
@@ -1029,6 +1055,100 @@ mod tests {
             !gravado.contains("Zebra"),
             "prompt foi para o SQLite: {gravado}"
         );
+    }
+
+    fn digest(seq: u64, started_at_ms: u64) -> TurnDigest {
+        TurnDigest {
+            seq,
+            outcome: TurnOutcome::Completed,
+            failure: None,
+            started_at_ms,
+            ended_at_ms: started_at_ms + 291_000,
+            duration_ms: 291_000,
+            prompt: Some("deixa o checkout do Zebra mais rapido".into()),
+            diff: crate::agent::turn::TurnDiff::Ok,
+            files: vec![crate::worktree::diff::FileDiff {
+                path: "src/zebra_checkout.rs".into(),
+                old_path: None,
+                status: crate::worktree::diff::FileStatus::Modified,
+                insertions: Some(115),
+                deletions: Some(55),
+            }],
+            files_total: 6,
+            insertions: 115,
+            deletions: 55,
+            commits: 1,
+            cost_usd: None,
+            tokens: None,
+        }
+    }
+
+    /// O resumo fica pronto depois da linha "terminou": as contagens entram
+    /// nela, o custo que chega depois troca os números, e nada além de
+    /// número vai para o SQLite.
+    #[test]
+    fn contagens_do_turno_entram_na_linha_terminou_sem_caminho_nem_prompt() {
+        let (n, store, mut s) = center();
+        let started = (now_ms() - 5_000) as u64;
+        s.status = SessionStatus::Idle {
+            summary: Some("pronto".into()),
+        };
+        assert!(n.status_changed(Some(&SessionStatus::Running), &s));
+        assert_eq!(store.list_notifications(now_ms()).unwrap()[0].turn, None);
+
+        let mut d = digest(3, started);
+        assert!(n.turn_ended(s.id, &d));
+        d.cost_usd = Some(0.41);
+        assert!(n.turn_ended(s.id, &d));
+
+        let list = store.list_notifications(now_ms()).unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].turn, Some(d.counts()));
+        assert_eq!(list[0].turn.as_ref().unwrap().cost_usd, Some(0.41));
+        let gravado = format!("{list:?}");
+        for leak in ["zebra", "Zebra"] {
+            assert!(
+                !gravado.contains(leak),
+                "{leak} foi para o SQLite: {gravado}"
+            );
+        }
+    }
+
+    /// Turno sem linha própria (interrompido, ou sem "terminou") não põe os
+    /// números dele na linha do turno anterior.
+    #[test]
+    fn contagens_nao_caem_na_linha_de_outro_turno() {
+        let (n, store, mut s) = center();
+        s.status = SessionStatus::Idle { summary: None };
+        assert!(n.status_changed(Some(&SessionStatus::Running), &s));
+        // Turno que começou DEPOIS da linha gravada.
+        let later = digest(4, (now_ms() + 60_000) as u64);
+        assert!(!n.turn_ended(s.id, &later));
+        // Interrompido: não tem linha.
+        let mut interrupted = digest(4, (now_ms() - 5_000) as u64);
+        interrupted.outcome = TurnOutcome::Interrupted;
+        assert!(!n.turn_ended(s.id, &interrupted));
+        // Outra sessão.
+        assert!(!n.turn_ended(SessionId::new_v4(), &digest(1, 0)));
+        assert_eq!(store.list_notifications(now_ms()).unwrap()[0].turn, None);
+    }
+
+    /// As contagens somem com a linha delas.
+    #[test]
+    fn contagens_sao_podadas_com_a_linha() {
+        let (n, store, mut s) = center();
+        s.status = SessionStatus::Idle { summary: None };
+        assert!(n.status_changed(Some(&SessionStatus::Running), &s));
+        assert!(n.turn_ended(s.id, &digest(1, (now_ms() - 5_000) as u64)));
+        store.remove_session(s.id).unwrap();
+        // A próxima inserção faz a faxina.
+        store
+            .insert_notification(&entry(SessionId::new_v4(), now_ms()), now_ms())
+            .unwrap();
+        let list = store.list_notifications(now_ms()).unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].turn, None);
+        assert_eq!(store.count_notification_turns().unwrap(), 0);
     }
 
     #[test]

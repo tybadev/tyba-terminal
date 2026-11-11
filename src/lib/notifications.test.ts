@@ -9,6 +9,7 @@ import {
   toNotificationItems,
   attentionCount,
   dayBucket,
+  entryDiffTarget,
   filterEntries,
   groupBySession,
   historyEntries,
@@ -16,7 +17,7 @@ import {
   resetParts,
   unreadCount,
 } from "./notifications";
-import type { ApprovalRequest, NotificationEntry } from "./ipc";
+import type { ApprovalRequest, NotificationEntry, TurnCounts, TurnDigest } from "./ipc";
 
 const makeApproval = (
   overrides: Partial<ApprovalRequest> = {},
@@ -317,5 +318,42 @@ describe("histórico de notificações", () => {
     // pode ficar pendurado depois de negado no terminal.
     const withNative = [...list, entry({ id: 4, kind: "native_approval", pending: true, category: "request" })];
     expect(attentionCount(2, withNative)).toBe(3);
+  });
+});
+
+describe("entryDiffTarget (Ver diff da linha, quadro T4 de ResumoDoTurno)", () => {
+  const counts = (seq: number): TurnCounts => ({
+    seq,
+    files: 6,
+    insertions: 115,
+    deletions: 55,
+    duration_ms: 291_000,
+    cost_usd: 0.41,
+  });
+  const last = (seq: number, over: Partial<TurnDigest> = {}) => ({
+    last_turn: { seq, diff: "ok", files_total: 6, ...over } as TurnDigest,
+  });
+
+  test("linha do último turno com diff abre o diff do turno", () => {
+    expect(entryDiffTarget({ kind: "agent_finished", turn: counts(3) }, last(3))).toBe("turn");
+    expect(entryDiffTarget({ kind: "agent_failed", turn: counts(3) }, last(3))).toBe("turn");
+  });
+
+  test("turno antigo, sem mudanças ou sem sessão: só os números", () => {
+    expect(entryDiffTarget({ kind: "agent_finished", turn: counts(2) }, last(3))).toBeNull();
+    expect(
+      entryDiffTarget({ kind: "agent_finished", turn: counts(3) }, last(3, { files_total: 0 })),
+    ).toBeNull();
+    expect(
+      entryDiffTarget({ kind: "agent_finished", turn: counts(3) }, last(3, { diff: "unavailable" })),
+    ).toBeNull();
+    expect(entryDiffTarget({ kind: "agent_finished", turn: counts(3) }, null)).toBeNull();
+  });
+
+  test("linha sem contagens segue como era: terminou abre o diff da sessão", () => {
+    expect(entryDiffTarget({ kind: "agent_finished", turn: null }, last(3))).toBe("review");
+    expect(entryDiffTarget({ kind: "agent_finished" }, null)).toBe("review");
+    expect(entryDiffTarget({ kind: "agent_failed", turn: null }, last(3))).toBeNull();
+    expect(entryDiffTarget({ kind: "usage_limit", turn: null }, last(3))).toBeNull();
   });
 });

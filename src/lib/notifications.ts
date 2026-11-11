@@ -3,8 +3,10 @@ import type {
   ApprovalRequest,
   NotificationEntry,
   RiskLevel,
+  Session,
   SessionId,
 } from "./ipc";
+import { hasTurnDiff } from "./gitScreen";
 
 export type NotificationKind = "approval";
 
@@ -234,4 +236,20 @@ export function attentionCount(pendingApprovals: number, entries: NotificationEn
 
 export function unreadCount(entries: NotificationEntry[]): number {
   return entries.filter((e) => !e.read).length;
+}
+
+/**
+ * Para onde vai o "Ver diff" de uma linha do histórico (quadro T4 de
+ * ResumoDoTurno). Linha com contagens de turno: o diff do turno, só enquanto
+ * ele for o último da sessão e tiver diff; turno antigo fica só com os
+ * números. Linha "terminou" sem contagens (de antes do resumo do turno, ou de
+ * turno sem começo registrado): o diff da sessão, como sempre foi.
+ */
+export function entryDiffTarget(
+  entry: Pick<NotificationEntry, "kind" | "turn">,
+  session: Pick<Session, "last_turn"> | null | undefined,
+): "turn" | "review" | null {
+  if (entry.kind !== "agent_finished" && entry.kind !== "agent_failed") return null;
+  if (!entry.turn) return entry.kind === "agent_finished" ? "review" : null;
+  return session?.last_turn?.seq === entry.turn.seq && hasTurnDiff(session) ? "turn" : null;
 }
