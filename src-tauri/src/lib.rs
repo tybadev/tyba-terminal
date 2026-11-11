@@ -10561,6 +10561,13 @@ pub fn run() {
                                 session,
                                 agent::prompt_queue::Signal::TurnEnded,
                             );
+                            agent::session::close_turn(
+                                &coord_app,
+                                &coord_sessions,
+                                session,
+                                agent::turn::TurnOutcome::Completed,
+                                None,
+                            );
                             agent::session::notify_native(
                                 &coord_app,
                                 &coord_sessions,
@@ -11844,6 +11851,7 @@ mod tests {
             subagents_working: false,
             agent_usage: None,
             last_turn: None,
+            turn_open: false,
             shell_resume_offer: false,
             agent_conversation_cwd: None,
             owner: Default::default(),

@@ -239,6 +239,11 @@ pub struct Session {
     /// acaba. **Nunca persistido**, como `agent_usage`.
     #[serde(default, skip_deserializing)]
     pub last_turn: Option<crate::agent::turn::TurnDigest>,
+    /// Há um turno aberto (o prompt chegou e o resumo dele ainda não): a UI
+    /// esconde o resumo do turno anterior sem adivinhar pelo `status`. Só
+    /// memória.
+    #[serde(default, skip_deserializing)]
+    pub turn_open: bool,
     /// O restart trouxe de volta um shell em que rodava uma conversa do Claude
     /// que continua no disco, e o pane oferece retomá-la. **In-memory**: nasce
     /// só no `resume_startup` e some quando o dono aceita, dispensa ou roda um
@@ -311,6 +316,10 @@ pub struct SessionManager {
     /// M6-B: o token de cada pane (`TYBA_PANE_TOKEN`). O plugin do Claude
     /// Code o manda em todo evento; sem um token válido o core ignora.
     pane_tokens: parking_lot::Mutex<HashMap<SessionId, String>>,
+    /// O turno aberto e as árvores do último turno de cada sessão (ver
+    /// [`crate::agent::turn`]). Aqui porque um turno fecha em mais de um
+    /// lugar, e todos eles têm o `SessionManager` na mão.
+    pub(crate) turns: crate::agent::turn::Turns,
 }
 
 impl SessionManager {
@@ -390,6 +399,7 @@ impl SessionManager {
             canos: parking_lot::Mutex::new(HashMap::new()),
             host_queries: OnceLock::new(),
             pane_tokens: parking_lot::Mutex::new(HashMap::new()),
+            turns: Default::default(),
         }
     }
 
@@ -1008,6 +1018,7 @@ impl SessionManager {
             subagents_working: false,
             agent_usage: None,
             last_turn: None,
+            turn_open: false,
             shell_resume_offer: false,
             agent_conversation_cwd: previous.and_then(|s| s.agent_conversation_cwd),
             owner,
@@ -1174,7 +1185,10 @@ impl SessionManager {
         }
     }
 
-    /// A mutação, sem IPC (mesmo corte de [`Self::apply_agent_usage`]).
+    /// A mutação, sem IPC (mesmo corte de [`Self::apply_agent_usage`]). O
+    /// resumo de um turno mais antigo, que terminou de calcular depois, não
+    /// troca o de um mais novo. `turn_open` sai daqui junto com o resumo, e
+    /// continua ligado se o turno seguinte já começou.
     pub(crate) fn apply_last_turn(
         &self,
         id: SessionId,
@@ -1182,7 +1196,31 @@ impl SessionManager {
     ) -> Option<Session> {
         let mut sessions = self.sessions.write();
         let s = sessions.get_mut(&id)?;
+        if s.last_turn
+            .as_ref()
+            .is_some_and(|last| last.seq > digest.seq)
+        {
+            return None;
+        }
         s.last_turn = Some(digest);
+        s.turn_open = self.turns.is_open(id);
+        Some(s.clone())
+    }
+
+    /// Um turno abriu: avisa o front.
+    pub fn set_turn_open(&self, app: &AppHandle, id: SessionId) {
+        if let Some(session) = self.apply_turn_open(id) {
+            emit_status(app, &session);
+        }
+    }
+
+    pub(crate) fn apply_turn_open(&self, id: SessionId) -> Option<Session> {
+        let mut sessions = self.sessions.write();
+        let s = sessions.get_mut(&id)?;
+        if s.turn_open {
+            return None;
+        }
+        s.turn_open = true;
         Some(s.clone())
     }
 
@@ -1492,6 +1530,7 @@ impl SessionManager {
         crate::agent::prompt_queue::book().forget(id);
         self.canos.lock().remove(&id);
         self.pane_tokens.lock().remove(&id);
+        self.turns.forget(id);
         crate::history::forget_session_host(&id.to_string());
         // O canal por Host sobrevive à sessão (ele é do Host), então o que é
         // por sessão sai daqui — senão cada SSH Session que já existiu deixa um
@@ -1548,6 +1587,7 @@ impl SessionManager {
         self.sessions.write().remove(&id);
         self.canos.lock().remove(&id);
         self.pane_tokens.lock().remove(&id);
+        self.turns.forget(id);
         let _ = self.store.remove_session(id);
     }
 }
@@ -2428,6 +2468,7 @@ mod tests {
             subagents_working: false,
             agent_usage: None,
             last_turn: None,
+            turn_open: false,
             shell_resume_offer: false,
             agent_conversation_cwd: None,
             owner: Default::default(),
@@ -3878,28 +3919,78 @@ echo beta
         assert_eq!(renascido.get(id).unwrap().agent_usage, None);
     }
 
+    fn turn_digest(seq: u64, prompt: &str) -> crate::agent::turn::TurnDigest {
+        use crate::agent::turn::{digest, Snapshot, TurnEnding, TurnOutcome, TurnStart};
+        let start = TurnStart {
+            seq,
+            started_at_ms: 1_000,
+            prompt: Some(prompt.into()),
+            usage: None,
+            repo: Snapshot::NoRepo,
+        };
+        let ending = TurnEnding {
+            outcome: TurnOutcome::Completed,
+            failure: None,
+            ended_at_ms: 3_000,
+        };
+        digest(&start, &Snapshot::NoRepo, &ending, None)
+    }
+
     /// O resumo do turno segue a mesma regra: memória, nunca SQLite.
     #[test]
     fn resumo_do_turno_fica_em_memoria() {
         let (store, manager, id) = restored_agent();
-        let start = crate::agent::turn::TurnStart {
-            started_at_ms: 1_000,
-            prompt: Some("rode os testes".into()),
-            usage: None,
-            repo: None,
-        };
-        let digest = crate::agent::turn::digest(
-            &start,
-            crate::agent::turn::TurnOutcome::Completed,
-            3_000,
-            None,
-        );
+        let digest = turn_digest(1, "rode os testes");
         assert!(manager.apply_last_turn(id, digest.clone()).is_some());
         assert_eq!(manager.get(id).unwrap().last_turn, Some(digest));
 
         let renascido = SessionManager::new(Arc::clone(&store));
         renascido.restore().unwrap();
-        assert_eq!(renascido.get(id).unwrap().last_turn, None);
+        let s = renascido.get(id).unwrap();
+        assert_eq!((s.last_turn, s.turn_open), (None, false));
+    }
+
+    /// Resumo atrasado de um turno antigo não troca o do turno mais novo; o
+    /// mesmo turno pode se atualizar (custo que chega depois do `Stop`).
+    #[test]
+    fn resumo_de_turno_antigo_nao_troca_o_mais_novo() {
+        let (_store, manager, id) = restored_agent();
+        let (velho, novo) = (turn_digest(1, "primeiro"), turn_digest(2, "segundo"));
+        assert!(manager.apply_last_turn(id, novo.clone()).is_some());
+        assert!(manager.apply_last_turn(id, velho).is_none());
+        assert_eq!(manager.get(id).unwrap().last_turn, Some(novo));
+        let acertado = turn_digest(2, "segundo, com custo");
+        assert!(manager.apply_last_turn(id, acertado.clone()).is_some());
+        assert_eq!(manager.get(id).unwrap().last_turn, Some(acertado));
+    }
+
+    /// `turn_open` liga no prompt e só desliga com o resumo do turno — e
+    /// fica ligado se o resumo que chegou é do turno anterior ao que já
+    /// está rodando.
+    #[test]
+    fn turno_aberto_acompanha_o_registro_de_turnos() {
+        let (_store, manager, id) = restored_agent();
+        let dir = tempfile::tempdir().unwrap();
+        let begin = |at| {
+            let bound = std::time::Duration::from_secs(120);
+            manager
+                .turns
+                .begin(id, dir.path().to_path_buf(), bound, at, None, None)
+        };
+        assert!(begin(10).is_none());
+        assert!(manager.apply_turn_open(id).is_some());
+        assert!(manager.apply_turn_open(id).is_none());
+        assert!(manager.get(id).unwrap().turn_open);
+
+        // Prompt novo com o turno ainda aberto: o anterior fecha, o novo roda.
+        let anterior = begin(20).expect("turno anterior");
+        assert_eq!(anterior.seq, 1);
+        manager.apply_last_turn(id, turn_digest(1, "primeiro"));
+        assert!(manager.get(id).unwrap().turn_open);
+
+        assert_eq!(manager.turns.end(id).expect("turno novo").seq, 2);
+        manager.apply_last_turn(id, turn_digest(2, "segundo"));
+        assert!(!manager.get(id).unwrap().turn_open);
     }
 
     /// A prova que dá sentido ao campo separado: o palpite não alcança o fato.

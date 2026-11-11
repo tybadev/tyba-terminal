@@ -4274,6 +4274,7 @@ impl RawSession {
             // qualquer um dos dois aqui seria palpite, não fato.
             agent_usage: None,
             last_turn: None,
+            turn_open: false,
             shell_resume_offer: false,
             agent_conversation_cwd: conversation_cwd,
             owner: Default::default(),
@@ -4383,6 +4384,7 @@ mod tests {
             subagents_working: false,
             agent_usage: None,
             last_turn: None,
+            turn_open: false,
             shell_resume_offer: false,
             agent_conversation_cwd: None,
             owner: Default::default(),

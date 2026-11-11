@@ -206,6 +206,7 @@ mod tests {
             subagents_working: false,
             agent_usage: None,
             last_turn: None,
+            turn_open: false,
             shell_resume_offer: false,
             agent_conversation_cwd: None,
             owner: Default::default(),

@@ -586,7 +586,7 @@ fn untracked_hunks(worktree: &Path, path: &str) -> Result<FileHunks, String> {
 
 const UNTRACKED_COUNT_MAX_BYTES: u64 = 1024 * 1024;
 
-pub(crate) fn untracked_files(worktree: &Path) -> Result<Vec<FileDiff>, String> {
+fn untracked_files(worktree: &Path) -> Result<Vec<FileDiff>, String> {
     let raw = run_git(
         {
             let mut c = git_in(worktree);
