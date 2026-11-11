@@ -248,6 +248,8 @@ pub struct Coordination {
 pub enum DrawerTab {
     Queue,
     Agents,
+    /// Resumo do último turno (quadro T2 de ResumoDoTurno).
+    Turn,
 }
 
 /// O que o front desenha da gaveta de uma sessão: aberta ou pílula, a aba

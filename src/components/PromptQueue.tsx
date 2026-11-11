@@ -40,6 +40,7 @@ import {
   pillTurnLabel,
   queueGoesToAgents,
   roundProgress,
+  turnTabCount,
   type PillAgents,
   type PillTurn,
 } from "../lib/agentsDrawer";
@@ -49,6 +50,7 @@ import { toastError } from "../lib/toast";
 import { AgentsPanel } from "./AgentsPanel";
 import { AgentIcon } from "./icons/AgentIcon";
 import { PLATE, PLATE_FLOAT, PLATE_LINE } from "./plate";
+import { TurnPanel } from "./TurnPanel";
 import { usePromptQueue } from "./usePromptQueue";
 
 interface Props {
@@ -140,11 +142,13 @@ export function PromptQueue({
   const hasSubagents = subagents.length > 0;
   const pending = pendingSubagentApprovals(sessionId, subagents, approvals);
   const progress = roundProgress(subagents);
+  const turn = session.last_turn ?? null;
   const tab = drawerTab({
     owner: drawer?.tab ?? null,
     hasSubagents,
     pending,
     running: progress?.running ?? false,
+    turn: session,
   });
   const goToAgents = hasSubagents && queueGoesToAgents(paused, pending);
 
@@ -238,13 +242,13 @@ export function PromptQueue({
       }}
     >
       <div className="flex items-center gap-2 px-3 pb-2 pt-2.5">
-        {hasSubagents ? (
+        {hasSubagents || turn ? (
           <>
             <DrawerTabs
               tab={tab}
               queueCount={prompts.length}
-              done={progress?.done ?? 0}
-              total={progress?.total ?? 0}
+              agents={progress}
+              turnCount={turn ? turnTabCount(turn) : undefined}
               pending={pending}
               compact={box.box.compact}
               onTab={setTab}
@@ -300,6 +304,8 @@ export function PromptQueue({
           selectedId={selectedSubagent}
           onSelect={onSelectSubagent}
         />
+      ) : tab === "turn" && turn ? (
+        <TurnPanel turn={turn} />
       ) : (
         <>
           <div
@@ -480,23 +486,26 @@ function usePopoverBox(open: boolean, footer: RefObject<HTMLElement | null>) {
 }
 
 /**
- * As abas do topo da gaveta (4C): o mesmo segmento das abas da janela.
- * Compactas (gaveta abaixo de 430, quadro R4): ícone + contagem, o nome no
+ * As abas do topo da gaveta (4C; T2 de ResumoDoTurno): o mesmo segmento das
+ * abas da janela. Agentes só com subagentes; Turno depois do primeiro fim de
+ * turno, com o número de arquivos (traço sem nenhum). Compactas (gaveta abaixo de 430, quadro R4): ícone + contagem, o nome no
  * tooltip e no `aria-label`.
  */
 function DrawerTabs({
   tab,
   queueCount,
-  done,
-  total,
+  agents,
+  turnCount,
   pending,
   compact,
   onTab,
 }: {
   tab: DrawerTab;
   queueCount: number;
-  done: number;
-  total: number;
+  /** `null` sem subagentes: não há aba Agentes. */
+  agents: { done: number; total: number } | null;
+  /** `undefined` sem turno terminado: não há aba Turno. */
+  turnCount: number | null | undefined;
   pending: number;
   compact: boolean;
   onTab: (tab: DrawerTab) => void;
@@ -507,7 +516,8 @@ function DrawerTabs({
       compact ? "gap-[5px] px-2" : "gap-1.5 px-2.5"
     } ${on ? "tyba-pill-on text-tyba-text" : "text-tyba-text-faint hover:text-tyba-text-muted"}`;
   const queueName = `${t("agentsDrawerQueue")} · ${queueCount}`;
-  const agentsName = `${t("agentsTitle")} · ${done}/${total}`;
+  const agentsName = agents && `${t("agentsTitle")} · ${agents.done}/${agents.total}`;
+  const turnName = `${t("pillTurn")} · ${turnCount ?? "–"}`;
   return (
     <div
       role="tablist"
@@ -526,29 +536,48 @@ function DrawerTabs({
         {!compact && t("agentsDrawerQueue")}
         <span className="text-[11px] text-tyba-text-faint">{queueCount}</span>
       </button>
-      <button
-        type="button"
-        role="tab"
-        aria-selected={tab === "agents"}
-        aria-label={compact ? agentsName : undefined}
-        title={compact ? agentsName : undefined}
-        className={item(tab === "agents")}
-        onClick={() => onTab("agents")}
-      >
-        <AgentIcon size={13} className="shrink-0 text-tyba-amber" />
-        {!compact && t("agentsTitle")}
-        <span className="font-mono text-[11px] text-tyba-text-faint">
-          {done}/{total}
-        </span>
-        {pending > 0 && (
-          <span
-            className="rounded-full bg-tyba-amber-tint px-1.5 font-mono text-[10px] leading-4 text-tyba-amber"
-            title={t("agentsPendingApprovals", { count: pending })}
-          >
-            {pending}
+      {agents && (
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === "agents"}
+          aria-label={compact ? (agentsName ?? undefined) : undefined}
+          title={compact ? (agentsName ?? undefined) : undefined}
+          className={item(tab === "agents")}
+          onClick={() => onTab("agents")}
+        >
+          <AgentIcon size={13} className="shrink-0 text-tyba-amber" />
+          {!compact && t("agentsTitle")}
+          <span className="font-mono text-[11px] text-tyba-text-faint">
+            {agents.done}/{agents.total}
           </span>
-        )}
-      </button>
+          {pending > 0 && (
+            <span
+              className="rounded-full bg-tyba-amber-tint px-1.5 font-mono text-[10px] leading-4 text-tyba-amber"
+              title={t("agentsPendingApprovals", { count: pending })}
+            >
+              {pending}
+            </span>
+          )}
+        </button>
+      )}
+      {turnCount !== undefined && (
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === "turn"}
+          aria-label={compact ? turnName : undefined}
+          title={compact ? turnName : undefined}
+          className={item(tab === "turn")}
+          onClick={() => onTab("turn")}
+        >
+          <PlusMinus size={13} className="shrink-0 text-tyba-cyan" />
+          {!compact && t("pillTurn")}
+          <span className="font-mono text-[11px] text-tyba-text-faint">
+            {turnCount ?? "–"}
+          </span>
+        </button>
+      )}
     </div>
   );
 }
