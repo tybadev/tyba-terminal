@@ -307,7 +307,7 @@ export function PromptQueue({
           onSelect={onSelectSubagent}
         />
       ) : tab === "turn" && turn ? (
-        <TurnPanel turn={turn} />
+        <TurnPanel sessionId={sessionId} turn={turn} />
       ) : (
         <>
           <div

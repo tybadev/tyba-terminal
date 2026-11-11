@@ -5,20 +5,46 @@
 
 import { useSyncExternalStore } from "react";
 
-import { openGitPanel, type SessionId } from "./ipc";
+import { openGitPanel, type Session, type SessionId } from "./ipc";
 
-export type GitSection = "changes" | "review" | "history" | "prs" | "ci";
+export type GitSection = "changes" | "turn" | "review" | "history" | "prs" | "ci";
 
 /** Ordem do trilho, de cima para baixo. */
-export const GIT_SECTIONS: readonly GitSection[] = ["changes", "review", "history", "prs", "ci"];
+export const GIT_SECTIONS: readonly GitSection[] = [
+  "changes",
+  "turn",
+  "review",
+  "history",
+  "prs",
+  "ci",
+];
 
-export type GitPlace = { section: GitSection; pr: number | null };
+export type GitPlace = {
+  section: GitSection;
+  pr: number | null;
+  /** Arquivo a abrir na seção Turno (clique na linha da aba Turno). */
+  path?: string | null;
+};
 
 const DEFAULT: GitPlace = { section: "changes", pr: null };
 
-/** Seções do trilho para a sessão: Revisar (diff contra a base congelada) só existe em worktree. */
-export function railSections(hasWorktree: boolean): GitSection[] {
-  return GIT_SECTIONS.filter((s) => s !== "review" || hasWorktree);
+/**
+ * O último turno da sessão tem diff para ver: fechou medido e mexeu em
+ * arquivo. É quando existem a seção Turno e o "Ver diff do turno".
+ */
+export function hasTurnDiff(session: Pick<Session, "last_turn"> | null | undefined): boolean {
+  const turn = session?.last_turn;
+  return Boolean(turn && turn.diff === "ok" && turn.files_total > 0);
+}
+
+/**
+ * Seções do trilho para a sessão: Revisar (diff contra a base congelada) só
+ * existe em worktree; Turno, enquanto o último turno tiver diff.
+ */
+export function railSections(hasWorktree: boolean, hasTurn = false): GitSection[] {
+  return GIT_SECTIONS.filter(
+    (s) => (s !== "review" || hasWorktree) && (s !== "turn" || hasTurn),
+  );
 }
 
 /** Para onde o conteúdo novo desliza: descer no trilho entra de baixo. */
@@ -35,8 +61,8 @@ export function slideOf(
 }
 
 /** Seção pedida que a sessão não tem cai em Alterações. */
-export function resolvePlace(place: GitPlace, hasWorktree: boolean): GitPlace {
-  return railSections(hasWorktree).includes(place.section) ? place : DEFAULT;
+export function resolvePlace(place: GitPlace, hasWorktree: boolean, hasTurn = false): GitPlace {
+  return railSections(hasWorktree, hasTurn).includes(place.section) ? place : DEFAULT;
 }
 
 // --- onde cada sessão estava, com assinatura -------------------------------
@@ -72,7 +98,8 @@ export function openGitScreen(
   session: SessionId,
   section: GitSection,
   pr: number | null = null,
+  path: string | null = null,
 ): Promise<void> {
-  setGitPlace(session, { section, pr });
+  setGitPlace(session, { section, pr, path });
   return openGitPanel(session);
 }

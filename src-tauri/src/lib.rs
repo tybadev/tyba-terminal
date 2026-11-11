@@ -3962,6 +3962,47 @@ async fn session_branch_hunks(
     )
 }
 
+/// As árvores do turno `seq` da sessão, só enquanto ele for o último que
+/// fechou com diff.
+fn turn_trees(
+    state: &AppState,
+    id: SessionId,
+    seq: u64,
+) -> Result<agent::turn::TurnTrees, String> {
+    state
+        .sessions
+        .turns
+        .trees_of(id, seq)
+        .ok_or_else(|| "o diff deste turno não está mais disponível".to_string())
+}
+
+/// "Ver diff do turno": todos os arquivos que mudaram entre o prompt e o fim
+/// do último turno. Só lê as duas árvores guardadas; nada da pasta de agora.
+#[tauri::command]
+async fn session_turn_diff(
+    state: State<'_, AppState>,
+    id: SessionId,
+    seq: u64,
+) -> Result<Vec<worktree::diff::FileDiff>, String> {
+    turn_trees(&state, id, seq)?
+        .files(agent::turn::DIFF_MAX)
+        .ok_or_else(|| "não deu para ler o diff deste turno".to_string())
+}
+
+/// Os trechos de um arquivo do diff do último turno.
+#[tauri::command]
+async fn session_turn_hunks(
+    state: State<'_, AppState>,
+    id: SessionId,
+    seq: u64,
+    path: String,
+    old_path: Option<String>,
+) -> Result<worktree::diff::FileHunks, String> {
+    turn_trees(&state, id, seq)?
+        .file_hunks(&path, old_path.as_deref(), agent::turn::DIFF_MAX)
+        .ok_or_else(|| "não deu para ler o diff deste turno".to_string())
+}
+
 /// Uma página do histórico do repo da sessão (aba "git · histórico"). Tudo
 /// fora da main thread e do runtime (`off_main`): resolver o repo da sessão e
 /// o `log` esperam processo, e num repo grande são dezenas de ms.
@@ -10748,6 +10789,8 @@ pub fn run() {
             suggest_commit_message,
             session_branch_diff,
             session_branch_hunks,
+            session_turn_diff,
+            session_turn_hunks,
             repo_log,
             repo_commit_detail,
             repo_commit_hunks,

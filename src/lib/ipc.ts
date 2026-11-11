@@ -449,6 +449,19 @@ export const sessionFetch = (id: SessionId) =>
 export const sessionBranchDiff = (id: SessionId, branch: string) =>
   invoke<SessionDiff>("session_branch_diff", { id, branch });
 
+/** "Ver diff do turno": todos os arquivos do turno `seq`, só enquanto ele for
+ * o último que fechou. */
+export const sessionTurnDiff = (id: SessionId, seq: number) =>
+  invoke<FileDiff[]>("session_turn_diff", { id, seq });
+
+export const sessionTurnHunks = (
+  id: SessionId,
+  seq: number,
+  path: string,
+  oldPath?: string | null,
+) =>
+  invoke<FileHunks>("session_turn_hunks", { id, seq, path, oldPath: oldPath ?? null });
+
 export const sessionBranchHunks = (
   id: SessionId,
   branch: string,

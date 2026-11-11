@@ -6,6 +6,7 @@ import {
   GitDiff,
   GitPullRequest,
   Lightning,
+  PlusMinus,
   X,
   type Icon,
 } from "@phosphor-icons/react";
@@ -15,11 +16,13 @@ import { CiView } from "./CiView";
 import { DiffView } from "./DiffView";
 import { GitChangesView } from "./GitChangesView";
 import { GitHistoryView } from "./GitHistoryView";
+import { GitTurnView } from "./GitTurnView";
 import { PrDetailView } from "./PrDetailView";
 import { PrListView } from "./PrListView";
 import { requestConfirm } from "../lib/confirm";
 import { translateError } from "../lib/errors";
 import {
+  hasTurnDiff,
   railSections,
   resolvePlace,
   setGitPlace,
@@ -42,6 +45,7 @@ import { snapshotForDir } from "../lib/repoSnapshots";
 
 const RAIL: Record<GitSection, { icon: Icon; label: string }> = {
   changes: { icon: Files, label: "gitScreenChanges" },
+  turn: { icon: PlusMinus, label: "gitScreenTurn" },
   review: { icon: GitDiff, label: "gitScreenReview" },
   history: { icon: ClockCounterClockwise, label: "gitScreenHistory" },
   prs: { icon: GitPullRequest, label: "gitScreenPrs" },
@@ -86,7 +90,8 @@ export function GitScreen({
 }) {
   const { t } = useTranslation();
   const hasWorktree = Boolean(session.worktree);
-  const place = resolvePlace(useGitPlace(session.id), hasWorktree);
+  const hasTurn = hasTurnDiff(session);
+  const place = resolvePlace(useGitPlace(session.id), hasWorktree, hasTurn);
   const prev = useRef<GitPlace>(place);
   const [slide, setSlide] = useState<"up" | "down" | "left" | "right">("up");
   const [busy, setBusy] = useState<null | "fetch" | "pull" | "push">(null);
@@ -112,7 +117,7 @@ export function GitScreen({
   }, [place]);
 
   const snapshot = repoRoot ? snapshotForDir(snapshots, repoRoot) : undefined;
-  const sections = railSections(hasWorktree);
+  const sections = railSections(hasWorktree, hasTurn);
 
   useEffect(() => {
     let alive = true;
@@ -288,6 +293,13 @@ export function GitScreen({
         <div key={sectionKey} className={`relative flex min-h-0 flex-1 ${animClass}`}>
           {place.section === "changes" && (
             <GitChangesView session={session} suggestAgent={suggestAgent} />
+          )}
+          {place.section === "turn" && session.last_turn && (
+            <GitTurnView
+              sessionId={session.id}
+              turn={session.last_turn}
+              initialPath={place.path ?? null}
+            />
           )}
           {place.section === "review" && (
             <DiffView
