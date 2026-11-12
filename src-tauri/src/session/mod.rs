@@ -623,7 +623,6 @@ impl SessionManager {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
     pub fn create_command_session(
         &self,
         app: AppHandle,
