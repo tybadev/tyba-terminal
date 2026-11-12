@@ -29,6 +29,9 @@ import {
 } from "../lib/ipc";
 import { toastError } from "../lib/toast";
 
+/** O core manda o caminho inteiro; a folha mostra só o nome da pasta. */
+const folderName = (p: string) => p.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || p;
+
 /** Espera curta antes de pedir o texto de novo ao core enquanto o dono escreve. */
 const PREVIEW_DEBOUNCE_MS = 250;
 
@@ -99,7 +102,7 @@ export function HandoffSheetBody({
       <DialogDescription asChild>
         <div className="px-4 pb-2.5 text-[11px] text-tyba-text-faint">
           {t("handoffFrom")} <span className="text-tyba-amber">{from}</span>
-          {preview && ` · ${preview.folder}`} · {t("handoffTurnAt", { time })}
+          {preview && ` · ${folderName(preview.folder)}`} · {t("handoffTurnAt", { time })}
           {turn.diff === "ok" && turn.files_total > 0 && (
             <>
               {" · "}
@@ -223,7 +226,7 @@ export function HandoffSheetBody({
           {preview && (
             <span className="flex items-center gap-1.5 whitespace-nowrap text-tyba-text-faint">
               <Folder size={12} />
-              {t("handoffSameFolder", { folder: preview.folder })}
+              {t("handoffSameFolder", { folder: folderName(preview.folder) })}
             </span>
           )}
         </div>
