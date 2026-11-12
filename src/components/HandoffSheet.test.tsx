@@ -30,15 +30,17 @@ const TARGETS: HandoffTarget[] = [
 
 const noop = () => {};
 
-function panel(turnOpen: boolean) {
+function panel(turnOpen: boolean, handoff = true) {
   return renderToStaticMarkup(
     <TooltipProvider>
-      <TurnPanel sessionId="s1" turn={turn} turnOpen={turnOpen} onHandoff={noop} />
+      <TurnPanel sessionId="s1" turn={turn} turnOpen={turnOpen} onHandoff={handoff ? noop : undefined} />
     </TooltipProvider>,
   );
 }
 
-function sheet(preview: Parameters<typeof HandoffSheetBody>[0]["preview"]) {
+type SheetProps = Parameters<typeof HandoffSheetBody>[0];
+
+function sheet(preview: SheetProps["preview"], extra: Partial<SheetProps> = {}) {
   // O corpo usa DialogTitle/DialogDescription: precisam do Root em volta.
   return renderToStaticMarkup(
     <DialogPrimitive.Root>
@@ -49,11 +51,14 @@ function sheet(preview: Parameters<typeof HandoffSheetBody>[0]["preview"]) {
         target="codex"
         onTarget={noop}
         preview={preview}
+        previewNote="tira o TODO"
+        error={null}
         note="tira o TODO"
         onNote={noop}
         opening={false}
         onCancel={noop}
         onOpen={noop}
+        {...extra}
       />
     </DialogPrimitive.Root>,
   );
@@ -74,6 +79,12 @@ describe("TurnPanel: Passar para… (H1)", () => {
     expect(html).toMatch(/<button[^>]*disabled=""[^>]*>(?:(?!<\/button>).)*handoffPassTo/);
   });
 
+  test("runner custom (sem onHandoff): o botão não aparece", () => {
+    const html = panel(false, false);
+    expect(html).toContain("turnSeeDiff");
+    expect(html).not.toContain("handoffPassTo");
+  });
+
   test("o rodapé desde HH:MM fica inteiro e a linha quebra", () => {
     const html = panel(false);
     expect(html).toContain("flex-wrap");
@@ -83,7 +94,9 @@ describe("TurnPanel: Passar para… (H1)", () => {
 
 describe("HandoffSheetBody (H2)", () => {
   const preview = {
-    text: "Handoff de Claude · tyba-terminal\n\nPedido:\nfecha o bug\nGH_TOKEN=[REDACTED]\n\nNota do dono (o que fazer agora):\ntira o TODO\n",
+    text: "Handoff de Claude · tyba-terminal\n\nPedido:\nfecha o bug\nGH_TOKEN=[REDACTED]\n\nO que o Claude disse por último:\n> Feito:\n\nNota do dono (o que fazer agora):\ntira o TODO\n",
+    body: "Handoff de Claude · tyba-terminal\n\nPedido:\nfecha o bug\nGH_TOKEN=[REDACTED]\n\nO que o Claude disse por último:\n> Feito:\n",
+    note: "tira o TODO",
     redacted: 1,
     folder: "tyba-terminal",
     target_label: "Codex",
@@ -101,11 +114,54 @@ describe("HandoffSheetBody (H2)", () => {
     expect(html).toContain("[REDACTED]");
     expect(html).toContain("handoffNoteLabel");
     expect(html).toContain("tira o TODO</textarea>");
-    // A nota não aparece duas vezes: o bloco dela sai do texto.
+    // A folha desenha o body: a nota não aparece duas vezes.
     expect(html).not.toContain("Nota do dono");
     expect(html).toContain("handoffNoApprovals");
     expect(html).toContain("handoffSameFolder");
     expect(html).toContain("handoffOpenIn");
+  });
+
+  test("desenha o body do core; a linha citada fica apagada, sem destaque", () => {
+    const html = sheet(preview);
+    expect(html).toContain("fecha o bug");
+    expect(html).toContain('<span class="text-tyba-text-faint">&gt; Feito:');
+    expect(html).not.toMatch(/font-medium text-tyba-text">&gt; Feito:/);
+    expect(html).toContain('font-medium text-tyba-text">O que o Claude disse por último:');
+  });
+
+  test("a nota tem teto de 2000 no campo", () => {
+    expect(sheet(preview)).toMatch(/<textarea[^>]*maxLength="2000"/);
+  });
+
+  test("nota igual à digitada: sem Vai assim", () => {
+    expect(sheet(preview)).not.toContain("handoffNoteAsSent");
+  });
+
+  test("o core mudou a nota: Vai assim com a nota como vai e o chip de redação", () => {
+    const html = sheet(
+      { ...preview, note: "usa [REDACTED] no teste" },
+      { note: "usa sk-abc no teste", previewNote: "usa sk-abc no teste" },
+    );
+    expect(html).toMatch(
+      /data-testid="handoff-note-as-sent"[^>]*>handoffNoteAsSent usa <span title="handoffRedactedMark"[^>]*>.*?\[REDACTED\]<\/span> no teste/,
+    );
+  });
+
+  test("erro do core: fica dentro da folha no lugar do texto, Abrir desligado", () => {
+    const html = sheet(null, { error: "A pasta não é um repositório git; o handoff precisa de um." });
+    expect(html).toContain('role="alert"');
+    expect(html).toContain("A pasta não é um repositório git");
+    expect(html).not.toContain('data-testid="handoff-preview"');
+    expect(html).toMatch(/<button[^>]*disabled=""[^>]*>[^<]*(<svg.*?<\/svg>)?handoffOpenIn/);
+  });
+
+  test("sem destino disponível: Nenhum agente disponível, desligado", () => {
+    const html = sheet(null, {
+      targets: [{ agent: "gemini", label: "Gemini", available: false, reason: "sem suporte ainda" }],
+      target: null,
+    });
+    expect(html).toMatch(/<button[^>]*disabled=""[^>]*>handoffNoAgent<\/button>/);
+    expect(html).not.toContain("handoffOpenIn");
   });
 
   test("sem texto do core ainda: Abrir desligado", () => {

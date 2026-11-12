@@ -10,11 +10,13 @@ import { translateError } from "../lib/errors";
 import {
   closeHandoff,
   defaultTarget,
-  previewBody,
+  noteAsSent,
   previewLines,
   REDACTION_MARK,
   subscribeHandoff,
+  withMarks,
   type HandoffRequest,
+  type PreviewPart,
 } from "../lib/handoff";
 import {
   handoffTargets,
@@ -32,6 +34,9 @@ import { toastError } from "../lib/toast";
 /** O core manda o caminho inteiro; a folha mostra só o nome da pasta. */
 const folderName = (p: string) => p.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || p;
 
+/** O core corta a nota nesse tamanho; o campo também não passa disso. */
+const NOTE_MAX = 2000;
+
 /** Espera curta antes de pedir o texto de novo ao core enquanto o dono escreve. */
 const PREVIEW_DEBOUNCE_MS = 250;
 
@@ -43,13 +48,44 @@ export function HandoffAgentIcon({ agent, size }: { agent: HandoffAgent; size: n
   return <Sparkle size={size} className="shrink-0" />;
 }
 
+function Parts({ parts }: { parts: PreviewPart[] }) {
+  const { t } = useTranslation();
+  return parts.map((p, j) =>
+    p.kind === "mark" ? (
+      <span
+        key={j}
+        title={t("handoffRedactedMark")}
+        className="inline-flex items-center gap-[3px] rounded-[3px] bg-tyba-text/[.06] px-1 leading-[17px] text-tyba-text-faint"
+      >
+        <Lock size={10} />
+        {REDACTION_MARK}
+      </span>
+    ) : p.kind === "add" ? (
+      <span key={j} className="text-tyba-green">
+        {p.text}
+      </span>
+    ) : p.kind === "del" ? (
+      <span key={j} className="text-tyba-red">
+        {p.text}
+      </span>
+    ) : (
+      p.text
+    ),
+  );
+}
+
 interface BodyProps {
   from: string;
   turn: TurnDigest;
-  targets: HandoffTarget[];
+  /** `null` enquanto o core não respondeu. */
+  targets: HandoffTarget[] | null;
   target: HandoffAgent | null;
   onTarget: (agent: HandoffAgent) => void;
   preview: HandoffPreview | null;
+  /** A nota com que o core montou `preview`. */
+  previewNote: string | null;
+  /** Erro do core (ex.: pasta sem git): fica no lugar do texto. */
+  error: string | null;
   note: string;
   onNote: (note: string) => void;
   opening: boolean;
@@ -68,6 +104,8 @@ export function HandoffSheetBody({
   target,
   onTarget,
   preview,
+  previewNote,
+  error,
   note,
   onNote,
   opening,
@@ -79,8 +117,10 @@ export function HandoffSheetBody({
     hour: "2-digit",
     minute: "2-digit",
   });
-  const chosen = targets.find((x) => x.agent === target && x.available) ?? null;
-  const lines = preview ? previewLines(previewBody(preview.text, note)) : [];
+  const chosen = targets?.find((x) => x.agent === target && x.available) ?? null;
+  const noAgent = targets !== null && !targets.some((x) => x.available);
+  const lines = preview && !error ? previewLines(preview.body) : [];
+  const sent = error ? null : noteAsSent(preview?.note, previewNote, note);
 
   return (
     <>
@@ -121,7 +161,7 @@ export function HandoffSheetBody({
           {t("handoffPickAgent")}
         </div>
         <div role="radiogroup" className="flex gap-1.5">
-          {targets.map((x) => {
+          {(targets ?? []).map((x) => {
             const on = x.available && x.agent === target;
             return (
               <button
@@ -167,38 +207,37 @@ export function HandoffSheetBody({
           </span>
         </div>
         <div className="flex min-h-0 flex-col rounded-[6px] bg-tyba-text/[.02] font-mono text-[12px] leading-[19px] shadow-[inset_0_0_0_1px_var(--tyba-border)]">
-          <pre
-            data-testid="handoff-preview"
-            className="max-h-[40vh] min-h-0 overflow-auto px-3 py-2.5 text-tyba-text-muted"
-          >
-            {lines.map((line, i) => (
-              <span key={i} className={line.head ? "font-medium text-tyba-text" : undefined}>
-                {line.parts.map((p, j) =>
-                  p.kind === "mark" ? (
-                    <span
-                      key={j}
-                      title={t("handoffRedactedMark")}
-                      className="inline-flex items-center gap-[3px] rounded-[3px] bg-tyba-text/[.06] px-1 leading-[17px] text-tyba-text-faint"
-                    >
-                      <Lock size={10} />
-                      {REDACTION_MARK}
-                    </span>
-                  ) : p.kind === "add" ? (
-                    <span key={j} className="text-tyba-green">
-                      {p.text}
-                    </span>
-                  ) : p.kind === "del" ? (
-                    <span key={j} className="text-tyba-red">
-                      {p.text}
-                    </span>
-                  ) : (
-                    p.text
-                  ),
-                )}
-                {i < lines.length - 1 && "\n"}
-              </span>
-            ))}
-          </pre>
+          {error ? (
+            <div
+              role="alert"
+              data-testid="handoff-error"
+              className="flex items-start gap-2 px-3 py-2.5 font-sans text-tyba-red"
+            >
+              <Warning size={13} className="mt-[3px] shrink-0" />
+              {error}
+            </div>
+          ) : (
+            <pre
+              data-testid="handoff-preview"
+              className="max-h-[40vh] min-h-0 overflow-auto px-3 py-2.5 text-tyba-text-muted"
+            >
+              {lines.map((line, i) => (
+                <span
+                  key={i}
+                  className={
+                    line.head
+                      ? "font-medium text-tyba-text"
+                      : line.quote
+                        ? "text-tyba-text-faint"
+                        : undefined
+                  }
+                >
+                  <Parts parts={line.parts} />
+                  {i < lines.length - 1 && "\n"}
+                </span>
+              ))}
+            </pre>
+          )}
           <div className="px-3 pb-3 pt-2.5 shadow-[inset_0_1px_0_var(--tyba-border-soft)]">
             <label htmlFor="handoff-note" className="mb-1.5 block font-medium text-tyba-text">
               {t("handoffNoteLabel")}
@@ -209,10 +248,19 @@ export function HandoffSheetBody({
               autoCorrect="off"
               autoCapitalize="off"
               spellCheck={false}
+              maxLength={NOTE_MAX}
               value={note}
               onChange={(e) => onNote(e.target.value)}
               className="block min-h-[46px] w-full resize-none rounded-[5px] bg-tyba-surface px-[9px] py-1.5 text-tyba-text outline-none shadow-[inset_0_0_0_1px_var(--tyba-border-field)] focus:shadow-[inset_0_0_0_1px_var(--tyba-green)]"
             />
+            {sent !== null && (
+              <div
+                data-testid="handoff-note-as-sent"
+                className="mt-1.5 whitespace-pre-wrap break-words text-[11.5px] text-tyba-text-faint"
+              >
+                {t("handoffNoteAsSent")} <Parts parts={withMarks(sent)} />
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -240,12 +288,12 @@ export function HandoffSheetBody({
         </button>
         <button
           type="button"
-          disabled={!chosen || !preview || opening}
+          disabled={!chosen || !preview || Boolean(error) || opening}
           onClick={onOpen}
           className="inline-flex h-7 items-center gap-1.5 whitespace-nowrap rounded-[6px] bg-tyba-primary px-3 text-[12px] font-medium text-tyba-text-inverse disabled:opacity-50"
         >
           {chosen && <HandoffAgentIcon agent={chosen.agent} size={13} />}
-          {t("handoffOpenIn", { agent: chosen?.label ?? "" })}
+          {noAgent ? t("handoffNoAgent") : t("handoffOpenIn", { agent: chosen?.label ?? "" })}
         </button>
       </div>
     </>
@@ -264,10 +312,12 @@ export function HandoffSheet({
 }) {
   const { t } = useTranslation();
   const [request, setRequest] = useState<HandoffRequest | null>(null);
-  const [targets, setTargets] = useState<HandoffTarget[]>([]);
+  const [targets, setTargets] = useState<HandoffTarget[] | null>(null);
   const [target, setTarget] = useState<HandoffAgent | null>(null);
   const [note, setNote] = useState("");
   const [preview, setPreview] = useState<HandoffPreview | null>(null);
+  const [previewNote, setPreviewNote] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const [opening, setOpening] = useState(false);
   const asked = useRef(0);
 
@@ -275,10 +325,12 @@ export function HandoffSheet({
 
   const sessionId = request?.sessionId ?? null;
   useEffect(() => {
-    setTargets([]);
+    setTargets(null);
     setTarget(null);
     setNote("");
     setPreview(null);
+    setPreviewNote(null);
+    setError(null);
     setOpening(false);
     if (!sessionId) return;
     let live = true;
@@ -289,7 +341,7 @@ export function HandoffSheet({
         setTarget(defaultTarget(list));
       })
       .catch((e) => {
-        if (live) toastError(t("handoffFailed"), translateError(e, t));
+        if (live) setError(translateError(e, t));
       });
     return () => {
       live = false;
@@ -302,10 +354,16 @@ export function HandoffSheet({
     const timer = window.setTimeout(() => {
       sessionHandoffPreview(sessionId, target, note)
         .then((p) => {
-          if (ticket === asked.current) setPreview(p);
+          if (ticket !== asked.current) return;
+          setPreview(p);
+          setPreviewNote(note);
+          setError(null);
         })
         .catch((e) => {
-          if (ticket === asked.current) toastError(t("handoffFailed"), translateError(e, t));
+          if (ticket !== asked.current) return;
+          setPreview(null);
+          setPreviewNote(null);
+          setError(translateError(e, t));
         });
     }, PREVIEW_DEBOUNCE_MS);
     return () => window.clearTimeout(timer);
@@ -338,6 +396,8 @@ export function HandoffSheet({
           target={target}
           onTarget={setTarget}
           preview={preview}
+          previewNote={previewNote}
+          error={error}
           note={note}
           onNote={setNote}
           opening={opening}

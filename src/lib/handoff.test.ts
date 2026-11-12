@@ -10,7 +10,9 @@ mock.module("@tauri-apps/api/core", () => ({
 }));
 
 const { handoffTargets, sessionHandoffOpen, sessionHandoffPreview } = await import("./ipc");
-const { defaultTarget, handoffReady, previewBody, previewLines } = await import("./handoff");
+const { defaultTarget, handoffReady, handoffSource, noteAsSent, previewLines } = await import(
+  "./handoff"
+);
 
 const turn = {
   seq: 1,
@@ -73,49 +75,70 @@ describe("defaultTarget", () => {
   });
 });
 
-const TEXT = [
+// O `body` do core: o texto sem o bloco da nota, com a fala citada em "> ".
+const BODY = [
   "Handoff de Claude · tyba-terminal",
   "",
   "Pedido:",
   "fecha o bug",
   "",
   "O que o Claude disse por último:",
-  "Rodei com GH_TOKEN=[REDACTED] do .env.test.",
+  "> Rodei com GH_TOKEN=[REDACTED] do .env.test.",
+  "> Resumo:",
   "",
   "O que mudou (1 arquivos, +12 −3):",
   "- src/osc133.rs +12 −3",
   "",
-  "Nota do dono (o que fazer agora):",
-  "tira o TODO",
-  "",
 ].join("\n");
 
-describe("previewBody", () => {
-  test("com nota: o bloco da nota sai do texto (vira o campo)", () => {
-    const body = previewBody(TEXT, "tira o TODO");
-    expect(body).not.toContain("Nota do dono");
-    expect(body.endsWith("- src/osc133.rs +12 −3")).toBe(true);
-  });
-  test("sem nota: o texto fica inteiro", () => {
-    expect(previewBody("a\nb\n", "")).toBe("a\nb");
-  });
-});
-
 describe("previewLines", () => {
-  const lines = previewLines(previewBody(TEXT, "tira o TODO"));
+  const lines = previewLines(BODY);
+  test("desenha o body inteiro, sem a linha vazia do fim", () => {
+    expect(lines).toHaveLength(11);
+  });
   test("cabeçalho e títulos de seção em destaque", () => {
     expect(lines[0].head).toBe(true);
     expect(lines[2].head).toBe(true);
     expect(lines[3].head).toBe(false);
+    expect(lines[5].head).toBe(true);
+  });
+  test("linha citada nunca vira título, mesmo terminando em ':'", () => {
+    expect(lines[6]).toMatchObject({ head: false, quote: true });
+    expect(lines[7]).toMatchObject({ head: false, quote: true });
+    expect(previewLines("> Pedido:")[0]).toMatchObject({ head: false, quote: true });
   });
   test("a marca de redação vira peça própria", () => {
     expect(lines[6].parts.map((p) => p.kind)).toEqual(["text", "mark", "text"]);
   });
   test("+/− da linha de arquivo", () => {
-    expect(lines[9].parts.slice(-3)).toEqual([
+    expect(lines[10].parts.slice(-3)).toEqual([
       { kind: "add", text: "+12" },
       { kind: "text", text: " " },
       { kind: "del", text: "−3" },
     ]);
+  });
+});
+
+describe("noteAsSent", () => {
+  test("igual ao digitado (trim): nada a mostrar", () => {
+    expect(noteAsSent("tira o TODO", "  tira o TODO ", "  tira o TODO ")).toBeNull();
+  });
+  test("o core mudou a nota (redação): mostra como vai", () => {
+    expect(noteAsSent("usa [REDACTED]", "usa sk-abc", "usa sk-abc")).toBe("usa [REDACTED]");
+  });
+  test("texto ainda de uma nota anterior: não compara", () => {
+    expect(noteAsSent("usa [REDACTED]", "usa sk-abc", "usa sk-abc!")).toBeNull();
+  });
+  test("sem texto do core: nada", () => {
+    expect(noteAsSent(undefined, null, "x")).toBeNull();
+  });
+});
+
+describe("handoffSource", () => {
+  test("claude e codex passam; runner custom e sem agente, não", () => {
+    expect(handoffSource("claude_code")).toBe("claude");
+    expect(handoffSource("codex")).toBe("codex");
+    expect(handoffSource({ custom: "aider" })).toBeNull();
+    expect(handoffSource(null)).toBeNull();
   });
 });

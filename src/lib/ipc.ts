@@ -1151,7 +1151,12 @@ export interface HandoffTarget {
 
 /** O texto exato que vai como primeiro prompt, montado e redigido no core. */
 export interface HandoffPreview {
+  /** Tudo, exatamente como vai. */
   text: string;
+  /** O texto sem o bloco da nota: o que a folha desenha. */
+  body: string;
+  /** A nota exatamente como vai (redigida, cortada, sem invisíveis); "" se vazia. */
+  note: string;
   /** Quantos trechos o core redigiu. */
   redacted: number;
   folder: string;

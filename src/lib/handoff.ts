@@ -2,13 +2,27 @@
 // precisa para desenhar. O texto vem pronto e redigido do core; daqui nunca
 // sai texto, só o agente escolhido e a nota (ver `handoff-agentes/security`).
 
-import type { HandoffAgent, HandoffTarget, Session, SessionId, TurnDigest } from "./ipc";
+import type {
+  AgentRunner,
+  HandoffAgent,
+  HandoffTarget,
+  Session,
+  SessionId,
+  TurnDigest,
+} from "./ipc";
 
 /** A marca que `session::redact` põe no lugar do segredo. */
 export const REDACTION_MARK = "[REDACTED]";
 
-/** Como o core abre o bloco da nota no fim do texto. */
-const NOTE_HEAD = "\nNota do dono (o que fazer agora):\n";
+/**
+ * O agente de origem como o dono vê, se dá para passar o trabalho dele:
+ * só claude e codex. Runner custom (ou sessão sem agente) fica de fora.
+ */
+export function handoffSource(runner: AgentRunner | null | undefined): string | null {
+  if (runner === "claude_code") return "claude";
+  if (runner === "codex") return "codex";
+  return null;
+}
 
 /**
  * O handoff só sai de turno fechado: há resumo e nenhum turno aberto. Com o
@@ -26,13 +40,18 @@ export function defaultTarget(targets: HandoffTarget[]): HandoffAgent | null {
 }
 
 /**
- * O texto sem o bloco da nota: na folha a nota é o campo editável logo
- * abaixo (quadro H2), não uma segunda cópia dentro do texto.
+ * A nota como vai, quando difere do que o dono digitou (redação, corte em
+ * 2000, invisíveis): a folha mostra "Vai assim:" com ela. `asked` é a nota
+ * com que o core montou esse texto; enquanto o dono digita e o texto novo não
+ * chegou, não há o que comparar.
  */
-export function previewBody(text: string, note: string): string {
-  if (!note.trim()) return text.replace(/\n+$/, "");
-  const at = text.lastIndexOf(NOTE_HEAD);
-  return (at >= 0 ? text.slice(0, at) : text).replace(/\n+$/, "");
+export function noteAsSent(
+  previewNote: string | null | undefined,
+  asked: string | null,
+  note: string,
+): string | null {
+  if (previewNote == null || asked !== note) return null;
+  return previewNote === note.trim() ? null : previewNote;
 }
 
 export type PreviewPart =
@@ -44,12 +63,15 @@ export type PreviewPart =
 export interface PreviewLine {
   /** Cabeçalho do texto ou título de seção ("Pedido:"): em destaque. */
   head: boolean;
+  /** Fala citada do agente ("> …"): apagada, nunca título. */
+  quote: boolean;
   parts: PreviewPart[];
 }
 
 const COUNTS = /^(- .* )(\+\d+) (−\d+)$/;
 
-function withMarks(text: string): PreviewPart[] {
+/** O texto em peças, com a marca de redação como peça própria. */
+export function withMarks(text: string): PreviewPart[] {
   const parts: PreviewPart[] = [];
   text.split(REDACTION_MARK).forEach((piece, i) => {
     if (i > 0) parts.push({ kind: "mark" });
@@ -58,15 +80,20 @@ function withMarks(text: string): PreviewPart[] {
   return parts;
 }
 
-/** Linhas do texto para desenhar: títulos, marcas de redação e o +/− dos arquivos. */
+/**
+ * Linhas do corpo (`preview.body`, sem a nota) para desenhar: títulos, fala
+ * citada, marcas de redação e o +/− dos arquivos.
+ */
 export function previewLines(body: string): PreviewLine[] {
-  const lines = body.split("\n");
+  const lines = body.replace(/\n+$/, "").split("\n");
   return lines.map((line, i) => {
-    const head = i === 0 || (lines[i - 1] === "" && line.endsWith(":"));
-    const counts = COUNTS.exec(line);
+    const quote = line.startsWith(">");
+    const head = !quote && (i === 0 || (lines[i - 1] === "" && line.endsWith(":")));
+    const counts = quote ? null : COUNTS.exec(line);
     if (counts) {
       return {
         head: false,
+        quote: false,
         parts: [
           ...withMarks(counts[1]),
           { kind: "add", text: counts[2] },
@@ -75,7 +102,7 @@ export function previewLines(body: string): PreviewLine[] {
         ],
       };
     }
-    return { head, parts: withMarks(line) };
+    return { head, quote, parts: withMarks(line) };
   });
 }
 

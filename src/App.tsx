@@ -73,7 +73,7 @@ import { OpenAIIcon } from "./components/icons/OpenAIIcon";
 import { CommandPalette } from "./components/CommandPalette";
 import { ConfirmHost } from "./components/ConfirmHost";
 import { HandoffSheet } from "./components/HandoffSheet";
-import { handoffReady, requestHandoff } from "./lib/handoff";
+import { handoffReady, handoffSource, requestHandoff } from "./lib/handoff";
 import { ToastHost } from "./components/ToastHost";
 import { requestConfirm } from "./lib/confirm";
 import { translateError } from "./lib/errors";
@@ -2735,19 +2735,23 @@ export default function App() {
 
   const activeSession = activeId ? sessionById.get(activeId) : undefined;
 
-  // "Passar para outro agente" na paleta (H4): só na sessão ativa de agente
-  // (inclusive o claude cru que o probe achou no shell).
+  // "Passar para outro agente" na paleta (H4): só na sessão ativa de claude
+  // ou codex (inclusive o agente livre que o probe achou no shell); runner
+  // custom fica de fora.
   const activeDetected = activeId ? (detectedBySession.get(activeId) ?? null) : null;
+  const activeHandoffFrom = !activeSession
+    ? null
+    : activeSession.kind.type === "agent"
+      ? handoffSource(activeSession.kind.runner)
+      : activeSession.kind.type === "shell"
+        ? handoffSource(activeDetected?.kind)
+        : null;
   const paletteHandoff =
-    activeSession && hasAgentDrawer(activeSession.kind.type, activeDetected !== null)
+    activeSession && activeHandoffFrom
       ? (() => {
           const ready = handoffReady(activeSession);
           const turn = activeSession.last_turn;
-          const from = agentBinaryName(
-            activeSession.kind.type === "agent"
-              ? activeSession.kind.runner
-              : (activeDetected?.kind ?? "claude_code"),
-          );
+          const from = activeHandoffFrom;
           const time = turn
             ? new Date(turn.started_at_ms).toLocaleTimeString(i18n.language, {
                 hour: "2-digit",

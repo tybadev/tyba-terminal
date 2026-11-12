@@ -45,7 +45,7 @@ import {
   type PillTurn,
 } from "../lib/agentsDrawer";
 import { drawerBox, type DrawerBox } from "../lib/appFooter";
-import { requestHandoff } from "../lib/handoff";
+import { handoffSource, requestHandoff } from "../lib/handoff";
 import { queueIndicator, reorderIds, slotAt, type QueueTone } from "../lib/promptQueue";
 import { toastError } from "../lib/toast";
 import { AgentsPanel } from "./AgentsPanel";
@@ -312,7 +312,11 @@ export function PromptQueue({
           sessionId={sessionId}
           turn={turn}
           turnOpen={Boolean(session.turn_open)}
-          onHandoff={() => requestHandoff({ sessionId, from: agentName, turn })}
+          onHandoff={
+            handoffSource(runner)
+              ? () => requestHandoff({ sessionId, from: agentName, turn })
+              : undefined
+          }
         />
       ) : (
         <>

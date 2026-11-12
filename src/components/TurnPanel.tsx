@@ -65,8 +65,9 @@ export function TurnPanel({
   turn: TurnDigest;
   /** Turno aberto: o agente trabalha e "Passar para…" fica desligado (H1). */
   turnOpen: boolean;
-  /** Abre a folha "Passar para outro agente" (HandoffAgentes H2). */
-  onHandoff: () => void;
+  /** Abre a folha "Passar para outro agente" (HandoffAgentes H2). Sem ela
+   * (runner custom), o botão não aparece. */
+  onHandoff?: () => void;
 }) {
   const { t, i18n } = useTranslation();
   const now = useNow(true);
@@ -215,7 +216,7 @@ export function TurnPanel({
             {t("turnSeeDiff")}
           </button>
         )}
-        {turnOpen ? (
+        {!onHandoff ? null : turnOpen ? (
           <Tooltip>
             <TooltipTrigger asChild>
               {/* Botão desligado não recebe hover: a dica mora no invólucro. */}
