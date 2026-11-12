@@ -642,6 +642,13 @@ fn begin_turn(ctx: &HandlerCtx, event: &HookEvent) {
     if session.owner == crate::session::SessionOwner::Orbit {
         return;
     }
+    let words = crate::agent::handoff::LastWords::on_prompt(
+        ctx.runner_kind.clone(),
+        ctx.worktree_root.clone(),
+        &event.raw,
+    );
+    ctx.sessions
+        .update_last_words(ctx.session_id, |w| *w = Some(words));
     let prompt = event
         .raw
         .get("prompt")
@@ -1666,6 +1673,15 @@ fn handle_event(ctx: &HandlerCtx, event: HookEvent) -> HookAction {
                     }
                 }
                 Some(SessionStatus::Idle { .. }) => {
+                    // A fala final fica para o handoff, só em memória.
+                    ctx.sessions.update_last_words(ctx.session_id, |w| {
+                        crate::agent::handoff::LastWords::on_stop(
+                            w,
+                            ctx.runner_kind.clone(),
+                            ctx.worktree_root.clone(),
+                            &event.raw,
+                        )
+                    });
                     let turn = turn_summary(&event);
                     let summary = turn.text;
                     let needs_settle = !turn.settled;
