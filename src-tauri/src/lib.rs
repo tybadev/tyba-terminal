@@ -7893,7 +7893,9 @@ async fn prepare_handoff(
 ) -> Result<agent::handoff::Prepared, String> {
     let session = state.sessions.get(id).ok_or("sessão não encontrada")?;
     tauri::async_runtime::spawn_blocking(move || {
-        agent::handoff::prepare(&session, &target, &note, agent::binary_available)
+        agent::handoff::prepare(&session, &target, &note, agent::binary_available, |p| {
+            repo::toplevel(p).is_some()
+        })
     })
     .await
     .map_err(|e| e.to_string())?
@@ -7941,7 +7943,7 @@ async fn session_handoff_open(
             attach_existing: true,
             shell: None,
             inherit_cwd_from: None,
-            initial_prompt: Some(preview.text.clone()),
+            initial_prompt: None,
             agent_model: None,
             prepared_worktree: None,
         },

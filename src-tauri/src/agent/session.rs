@@ -1679,7 +1679,7 @@ fn handle_event(ctx: &HandlerCtx, event: HookEvent) -> HookAction {
                             w,
                             ctx.runner_kind.clone(),
                             ctx.worktree_root.clone(),
-                            &event.raw,
+                            &event,
                         )
                     });
                     let turn = turn_summary(&event);
