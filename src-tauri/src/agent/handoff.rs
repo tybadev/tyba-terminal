@@ -534,7 +534,9 @@ pub fn prepare(
         .or_else(|| s.cwd.clone())
         .ok_or("a sessão não tem pasta")?;
     if !is_repo(&folder) {
-        return Err(AppError::new("handoff.not_a_repo").to_string());
+        // JSON, para o `translateError` do webview traduzir a chave.
+        let e = AppError::new("handoff.not_a_repo");
+        return Err(serde_json::to_string(&e).unwrap_or_else(|_| e.to_string()));
     }
     let said = s.last_words.as_ref().and_then(LastWords::said);
     // Sem `LastWords` (o core reiniciou), o pedido curto do resumo serve.
@@ -1055,7 +1057,7 @@ mod tests {
     fn preview_refuses_a_folder_outside_git() {
         let s = claude_done("pronto");
         let err = prepare(&s, "codex", "", all_installed, |_: &Path| false).unwrap_err();
-        assert_eq!(err, "handoff.not_a_repo");
+        assert_eq!(err, r#"{"code":"handoff.not_a_repo","params":{}}"#);
 
         // Com o `git` de verdade: uma pasta temporária solta não é repositório.
         let dir = tempfile::tempdir().unwrap();
@@ -1065,7 +1067,7 @@ mod tests {
             crate::repo::toplevel(p).is_some()
         })
         .unwrap_err();
-        assert_eq!(err, "handoff.not_a_repo");
+        assert_eq!(err, r#"{"code":"handoff.not_a_repo","params":{}}"#);
     }
 
     /// O `Stop` de um subagente não troca a fala do orquestrador.
