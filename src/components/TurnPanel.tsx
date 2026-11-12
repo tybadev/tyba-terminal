@@ -1,5 +1,7 @@
 import { useTranslation } from "react-i18next";
-import { Check, Folder, GitBranch, Minus, Pause } from "@phosphor-icons/react";
+import { ArrowLineRight, Check, Folder, GitBranch, Minus, Pause } from "@phosphor-icons/react";
+
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 import {
   splitPath,
@@ -44,13 +46,28 @@ export const TURN_LETTER_COLOR: Record<FileStatus, string> = {
   other: "text-tyba-text-faint",
 };
 
+const HANDOFF_BTN =
+  "inline-flex h-6 items-center gap-1.5 whitespace-nowrap rounded-[6px] px-[9px] text-[11.5px] text-tyba-text shadow-[inset_0_0_0_1px_var(--tyba-border-field)]";
+
 /**
  * A aba Turno da gaveta (quadros T2 e T3 de ResumoDoTurno): o que mudou na
  * pasta entre o prompt e o fim do último turno. Só nomes e contagens, como
  * chegam do core em `Session.last_turn`. O conteúdo fica na tela de Git:
  * "Ver diff do turno" e o clique numa linha abrem a seção Turno dela.
  */
-export function TurnPanel({ sessionId, turn }: { sessionId: SessionId; turn: TurnDigest }) {
+export function TurnPanel({
+  sessionId,
+  turn,
+  turnOpen,
+  onHandoff,
+}: {
+  sessionId: SessionId;
+  turn: TurnDigest;
+  /** Turno aberto: o agente trabalha e "Passar para…" fica desligado (H1). */
+  turnOpen: boolean;
+  /** Abre a folha "Passar para outro agente" (HandoffAgentes H2). */
+  onHandoff: () => void;
+}) {
   const { t, i18n } = useTranslation();
   const now = useNow(true);
   const band = turnBand(turn);
@@ -182,8 +199,9 @@ export function TurnPanel({ sessionId, turn }: { sessionId: SessionId; turn: Tur
           )}
         </p>
       )}
+      {/* O rodapé "desde HH:MM" fica inteiro: sem espaço, desce de linha. */}
       <div
-        className={`flex items-center gap-2 px-3 pb-3 pt-2.5 shadow-[inset_0_1px_0_var(--tyba-border-soft)] ${
+        className={`flex flex-wrap items-center gap-x-2 gap-y-1.5 px-3 pb-3 pt-2.5 shadow-[inset_0_1px_0_var(--tyba-border-soft)] ${
           hasFiles ? "mt-1.5" : "mt-0.5"
         }`}
       >
@@ -197,8 +215,27 @@ export function TurnPanel({ sessionId, turn }: { sessionId: SessionId; turn: Tur
             {t("turnSeeDiff")}
           </button>
         )}
+        {turnOpen ? (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              {/* Botão desligado não recebe hover: a dica mora no invólucro. */}
+              <span tabIndex={0} className="inline-flex">
+                <button type="button" disabled className={`${HANDOFF_BTN} opacity-[.42]`}>
+                  <ArrowLineRight size={12} />
+                  {t("handoffPassTo")}
+                </button>
+              </span>
+            </TooltipTrigger>
+            <TooltipContent side="top">{t("handoffWaitTurn")}</TooltipContent>
+          </Tooltip>
+        ) : (
+          <button type="button" onClick={onHandoff} className={HANDOFF_BTN}>
+            <ArrowLineRight size={12} />
+            {t("handoffPassTo")}
+          </button>
+        )}
         <span className="flex-1" />
-        <span className="text-[11px] text-tyba-text-faint">
+        <span className="whitespace-nowrap text-[11px] text-tyba-text-faint">
           {t(hasFiles ? "turnSince" : "turnStartedAt", { time: since })}
         </span>
       </div>

@@ -1138,6 +1138,37 @@ export const userConfigPath = () => invoke<string | null>("user_config_path");
 export const createSession = (opts: CreateSessionOpts) =>
   invoke<Session>("create_session", { opts });
 
+/** Handoff entre agentes: para quem a sessão pode passar o trabalho. */
+export type HandoffAgent = "claude" | "codex" | "gemini";
+
+export interface HandoffTarget {
+  agent: HandoffAgent;
+  label: string;
+  available: boolean;
+  /** Por que não dá (ex.: "sem suporte ainda"); `null` quando dá. */
+  reason: string | null;
+}
+
+/** O texto exato que vai como primeiro prompt, montado e redigido no core. */
+export interface HandoffPreview {
+  text: string;
+  /** Quantos trechos o core redigiu. */
+  redacted: number;
+  folder: string;
+  target_label: string;
+}
+
+export const handoffTargets = (id: SessionId) =>
+  invoke<HandoffTarget[]>("handoff_targets", { id });
+
+/** Só o agente e a nota saem daqui; o texto é sempre do core. */
+export const sessionHandoffPreview = (id: SessionId, target: HandoffAgent, note: string) =>
+  invoke<HandoffPreview>("session_handoff_preview", { id, target, note });
+
+/** O core remonta e redige o texto de novo e abre a sessão nova. */
+export const sessionHandoffOpen = (id: SessionId, target: HandoffAgent, note: string) =>
+  invoke<Session>("session_handoff_open", { id, target, note });
+
 export const writeToSession = (id: SessionId, data: string) =>
   invoke<void>("write_to_session", { id, data: encodeBase64(data) });
 

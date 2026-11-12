@@ -3,6 +3,7 @@ import { PLATE, PLATE_FLOAT, PLATE_LINE } from "./plate";
 import { useTranslation } from "react-i18next";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import {
+  ArrowLineRight,
   BracketsCurly,
   ChartBar,
   ClockCounterClockwise,
@@ -158,6 +159,9 @@ interface Props {
   };
   onPickHistory: (command: string) => void;
   onPickSnippet: (snippet: Snippet) => void;
+  /** "Passar para outro agente" (HandoffAgentes H4): só em sessão de agente.
+   *  `detail` é o texto da direita; desligado enquanto o turno está aberto. */
+  handoff?: { detail: string; disabled: boolean; onRun: () => void };
 }
 
 const HISTORY_SCOPES: Array<{ id: HistoryScope; label: string }> = [
@@ -286,6 +290,7 @@ export function CommandPalette({
   historyScope,
   onPickHistory,
   onPickSnippet,
+  handoff,
 }: Props) {
   const { t, i18n } = useTranslation();
   const [selectableThemes, setSelectableThemes] = useState<Theme[]>([]);
@@ -622,6 +627,18 @@ export function CommandPalette({
             <GearSix size={15} />
             {t("settings")}
           </CommandItem>
+          {handoff && (
+            <CommandItem disabled={handoff.disabled} onSelect={run(handoff.onRun)}>
+              <ArrowLineRight
+                size={15}
+                className={handoff.disabled ? "text-tyba-text-ghost" : "text-tyba-blue"}
+              />
+              {t("handoffTitle")}
+              <span className="ml-auto font-mono text-[10px] text-tyba-text-faint">
+                {handoff.detail}
+              </span>
+            </CommandItem>
+          )}
         </CommandGroup>
         )}
 
