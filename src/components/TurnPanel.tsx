@@ -1,5 +1,13 @@
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Check, Folder, GitBranch, Minus, Pause } from "@phosphor-icons/react";
+import { ArrowBendUpRight, Check, Folder, GitBranch, Minus, Pause } from "@phosphor-icons/react";
+
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 
 import {
   splitPath,
@@ -10,7 +18,14 @@ import {
   type TurnBand,
 } from "../lib/agentsDrawer";
 import { hasTurnDiff, openGitScreen } from "../lib/gitScreen";
-import { agentsDrawerCollapse, type FileStatus, type SessionId, type TurnDigest } from "../lib/ipc";
+import { handOff } from "../lib/handoff";
+import {
+  agentsDrawerCollapse,
+  type AgentRunner,
+  type FileStatus,
+  type SessionId,
+  type TurnDigest,
+} from "../lib/ipc";
 import { useNow } from "./ui/loading";
 
 const BAND: Record<TurnBand, string> = {
@@ -62,6 +77,13 @@ export function TurnPanel({ sessionId, turn }: { sessionId: SessionId; turn: Tur
     void openGitScreen(sessionId, "turn", null, path)
       .then(() => agentsDrawerCollapse(sessionId))
       .catch(() => {});
+  };
+  const [handOffError, setHandOffError] = useState<string | null>(null);
+  const passTo = (runner: AgentRunner) => {
+    setHandOffError(null);
+    void handOff(sessionId, runner).catch((e: unknown) =>
+      setHandOffError(e instanceof Error ? e.message : String(e)),
+    );
   };
   const since = new Date(turn.started_at_ms).toLocaleTimeString(i18n.language, {
     hour: "2-digit",
@@ -197,11 +219,31 @@ export function TurnPanel({ sessionId, turn }: { sessionId: SessionId; turn: Tur
             {t("turnSeeDiff")}
           </button>
         )}
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button
+              type="button"
+              className="inline-flex h-6 items-center gap-1.5 whitespace-nowrap rounded-[6px] px-[9px] text-[11.5px] text-tyba-text shadow-[inset_0_0_0_1px_var(--tyba-border-field)]"
+            >
+              <ArrowBendUpRight size={12} />
+              {t("turnHandOff")}
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start">
+            <DropdownMenuItem onSelect={() => passTo("claude_code")}>Claude Code</DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => passTo("codex")}>Codex</DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
         <span className="flex-1" />
         <span className="text-[11px] text-tyba-text-faint">
           {t(hasFiles ? "turnSince" : "turnStartedAt", { time: since })}
         </span>
       </div>
+      {handOffError && (
+        <p className="mx-3 px-0.5 pb-2 text-[11.5px] text-tyba-red">
+          {t("turnHandOffFailed", { error: handOffError })}
+        </p>
+      )}
     </>
   );
 }

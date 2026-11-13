@@ -568,6 +568,11 @@ fn notify_turn_ended(ctx: &HandlerCtx, transcript_path: Option<String>, needs_se
     use std::sync::atomic::Ordering;
 
     let stop_at_ms = now_ms();
+    if let Some(path) = &transcript_path {
+        ctx.sessions
+            .turns
+            .note_transcript(ctx.session_id, std::path::PathBuf::from(path));
+    }
 
     let generation = ctx.turn_settle.fetch_add(1, Ordering::SeqCst) + 1;
     let app = ctx.app.clone();

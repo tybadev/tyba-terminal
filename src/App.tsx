@@ -361,7 +361,9 @@ import {
   writeToSession,
   type UpdateStatus,
   type BootFailure,
+  sessionHandoff,
 } from "./lib/ipc";
+import { setHandOff } from "./lib/handoff";
 import { bootFailureTitleKey } from "./lib/bootFailure";
 import { hiddenApprovalIds as computeHiddenApprovalIds } from "./lib/notifications";
 import {
@@ -2315,6 +2317,20 @@ export default function App() {
     },
     [sessions, goToSession, spawnAgentSession, typeIntoSession],
   );
+
+  // Proposta 11: "Passar para…" na aba Turno abre o outro agente na mesma
+  // pasta com o handoff digitado no composer, sem enviar — o dono lê antes.
+  useEffect(() => {
+    setHandOff(async (from, runner) => {
+      const { prompt, cwd } = await sessionHandoff(from);
+      if (!cwd) throw new Error("sessão sem pasta");
+      const source = sessions.find((s) => s.id === from);
+      const sid = await spawnAgentSession(source?.title ?? "handoff", cwd, runner);
+      await typeIntoSession(sid, prompt, false);
+      goToSession(sid);
+    });
+    return () => setHandOff(null);
+  }, [sessions, goToSession, spawnAgentSession, typeIntoSession]);
 
   // Entrega C, F3: a outra metade do "some" -- dispensa manual. A metade de
   // recovery (sessão volta a `running`) mora no `useEffect` que observa
