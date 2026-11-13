@@ -700,6 +700,9 @@ struct Slot {
     /// `seq` do turno a que `trees` se refere.
     closed_seq: u64,
     trees: Option<TurnTrees>,
+    /// Transcript do último `Stop` do fio principal: de onde o handoff lê o
+    /// pedido e a fala final inteiros. Só memória.
+    transcript: Option<PathBuf>,
 }
 
 /// Os turnos de cada sessão, por id — alcançável de qualquer lugar em que um
@@ -801,6 +804,21 @@ impl Turns {
         if let Some(open) = slots.get_mut(&id).and_then(|slot| slot.open.as_mut()) {
             open.stop_seen_at_ms = stop_seen_at_ms;
         }
+    }
+
+    /// Guarda o transcript visto no `Stop` do fio principal.
+    pub fn note_transcript(&self, id: SessionId, path: PathBuf) {
+        let mut slots = self.slots.lock().expect("turns lock");
+        slots.entry(id).or_default().transcript = Some(path);
+    }
+
+    pub fn transcript(&self, id: SessionId) -> Option<PathBuf> {
+        self.slots
+            .lock()
+            .expect("turns lock")
+            .get(&id)?
+            .transcript
+            .clone()
     }
 
     pub fn is_open(&self, id: SessionId) -> bool {

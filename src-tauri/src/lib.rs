@@ -3985,6 +3985,44 @@ async fn session_turn_diff(
         .ok_or_else(|| "não deu para ler o diff deste turno".to_string())
 }
 
+/// O handoff da sessão (proposta 11): o texto que abre o agente seguinte e a
+/// pasta onde ele abre. Pedido e fala final vêm do transcript do último
+/// `Stop`; sem ele, do resumo do turno. Tudo redigido no core.
+#[derive(serde::Serialize)]
+struct Handoff {
+    prompt: String,
+    cwd: Option<String>,
+}
+
+#[tauri::command]
+async fn session_handoff(state: State<'_, AppState>, id: SessionId) -> Result<Handoff, String> {
+    let session = state
+        .sessions
+        .get(id)
+        .ok_or_else(|| "sessão não encontrada".to_string())?;
+    let transcript = state.sessions.turns.transcript(id);
+    let read = |f: fn(&std::path::Path, usize) -> Option<String>| {
+        transcript
+            .as_deref()
+            .and_then(|p| f(p, agent::handoff::TEXT_MAX_CHARS))
+    };
+    let task = read(status::transcript::last_user_prompt);
+    let summary = match &session.status {
+        session::SessionStatus::Idle { summary } => summary.clone(),
+        _ => None,
+    };
+    let reply = read(status::transcript::last_assistant_text).or(summary);
+    let digest = session.last_turn.as_ref();
+    let prompt = agent::handoff::prompt(digest, task.as_deref(), reply.as_deref())
+        .ok_or_else(|| "ainda não há turno para passar".to_string())?;
+    let cwd = digest
+        .and_then(|d| state.sessions.turns.trees_of(id, d.seq))
+        .map(|t| t.root)
+        .or(session.cwd)
+        .map(|p| p.to_string_lossy().into_owned());
+    Ok(Handoff { prompt, cwd })
+}
+
 /// Os trechos de um arquivo do diff do último turno.
 #[tauri::command]
 async fn session_turn_hunks(
@@ -10786,6 +10824,7 @@ pub fn run() {
             session_branch_diff,
             session_branch_hunks,
             session_turn_diff,
+            session_handoff,
             session_turn_hunks,
             repo_log,
             repo_commit_detail,

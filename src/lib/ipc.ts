@@ -461,6 +461,15 @@ export const sessionFetch = (id: SessionId) =>
 export const sessionBranchDiff = (id: SessionId, branch: string) =>
   invoke<SessionDiff>("session_branch_diff", { id, branch });
 
+/** Handoff da sessão (proposta 11): o texto redigido que abre o agente
+ * seguinte e a pasta onde ele abre. Recusa sem turno para passar. */
+export interface Handoff {
+  prompt: string;
+  cwd: string | null;
+}
+
+export const sessionHandoff = (id: SessionId) => invoke<Handoff>("session_handoff", { id });
+
 /** "Ver diff do turno": todos os arquivos do turno `seq`, só enquanto ele for
  * o último que fechou. */
 export const sessionTurnDiff = (id: SessionId, seq: number) =>
