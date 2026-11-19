@@ -13,6 +13,7 @@ import {
   X,
 } from "@phosphor-icons/react";
 
+import { Button } from "@/components/ui/button";
 import { translateError } from "../lib/errors";
 import {
   agentsDrawerCollapse,
@@ -51,7 +52,7 @@ import { formatElapsed } from "../lib/agentTree";
 import { useNow } from "./ui/loading";
 import { AgentsPanel, RobotIcon } from "./AgentsPanel";
 import { PLATE, PLATE_FLOAT, PLATE_LINE } from "./plate";
-import { GLASS_BTN, TurnPanel } from "./TurnPanel";
+import { TurnPanel } from "./TurnPanel";
 import { usePromptQueue } from "./usePromptQueue";
 
 interface Props {
@@ -80,10 +81,6 @@ const TONE: Record<QueueTone, string> = {
   failed: "text-tyba-red bg-tyba-red-tint",
   stopped: "text-tyba-text-muted bg-tyba-neutral-tint",
 };
-
-/** Botão fantasma só de ícone do quadro (limpar, recolher). */
-const VBTN =
-  "inline-flex size-[34px] shrink-0 items-center justify-center rounded-[10px] text-tyba-text-muted outline-none hover:bg-tyba-hover hover:text-tyba-text focus-visible:[box-shadow:var(--tyba-focus-ring)] disabled:pointer-events-none disabled:opacity-45";
 
 /**
  * A gaveta Fila/Agentes do pane ativo (conteúdo de GavetaFilaAgentes 4A′–4E;
@@ -183,36 +180,36 @@ export function PromptQueue({
     ) : null;
 
   const collapseButton = (
-    <button
-      type="button"
+    <Button
       onClick={collapse}
       aria-label={t("agentsDrawerCollapse")}
       title={t("agentsDrawerCollapse")}
-      className={VBTN}
+      variant="ghost"
+      size="icon-sm"
     >
       <CaretDown size={16} />
-    </button>
+    </Button>
   );
 
   const pauseButton = paused ? (
-    <button
-      type="button"
-      className={GLASS_BTN}
+    <Button
+      variant="outline"
+      size="sm"
       onClick={() => void promptQueueResume(sessionId).catch(fail)}
     >
       <Play size={16} className="shrink-0" />
       {t("promptQueueResume")}
-    </button>
+    </Button>
   ) : (
-    <button
-      type="button"
+    <Button
       disabled={prompts.length === 0}
-      className={GLASS_BTN}
+      variant="outline"
+      size="sm"
       onClick={() => void promptQueuePause(sessionId).catch(fail)}
     >
       <Pause size={16} className="shrink-0" />
       {t("promptQueuePause")}
-    </button>
+    </Button>
   );
   const clearDisabled = prompts.length === 0 && !paused;
   const clear = () => void promptQueueClear(sessionId).catch(fail);
@@ -264,16 +261,16 @@ export function PromptQueue({
         {tab === "queue" ? (
           <span className="flex shrink-0 gap-1">
             {pauseButton}
-            <button
-              type="button"
+            <Button
               disabled={clearDisabled}
               aria-label={t("promptQueueClear")}
               title={t("promptQueueClear")}
-              className={VBTN}
+              variant="ghost"
+              size="icon-sm"
               onClick={clear}
             >
               <Trash size={16} />
-            </button>
+            </Button>
           </span>
         ) : (
           collapseButton

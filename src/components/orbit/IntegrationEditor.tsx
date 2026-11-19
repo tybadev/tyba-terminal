@@ -2,7 +2,6 @@ import { useRef } from "react";
 import { useTranslation } from "react-i18next";
 import {
   ArrowsLeftRight,
-  CaretDown,
   FolderSimple,
   ShieldCheck,
   Stop,
@@ -11,6 +10,7 @@ import {
 } from "@phosphor-icons/react";
 
 import { Button } from "@/components/ui/button";
+import { Select } from "@/components/ui/select";
 import {
   DATA_KINDS,
   OUTPUT_KINDS,
@@ -94,25 +94,19 @@ export function IntegrationEditor({
         <label className={label} htmlFor="orbit-int-trigger">
           {t("orbitIntTrigger")}
         </label>
-        <div className="relative">
-          <select
-            id="orbit-int-trigger"
-            value={triggerValue(draft.trigger)}
-            onChange={(e) => onChange({ ...draft, trigger: parseTrigger(e.target.value) })}
-            className={`${field} appearance-none pr-8`}
-          >
-            {DATA_KINDS.map((kind) => (
-              <option key={kind} value={`onInput:${kind}`}>
-                {t("orbitIntOnInput", { kind: t(`orbitEdge_${kind}`) })}
-              </option>
-            ))}
-            <option value="manual">{t("orbitIntManual")}</option>
-          </select>
-          <CaretDown
-            size={12}
-            className="pointer-events-none absolute top-1/2 right-2.5 -translate-y-1/2 text-tyba-text-faint"
-          />
-        </div>
+        <Select
+          id="orbit-int-trigger"
+          value={triggerValue(draft.trigger)}
+          onChange={(v) => onChange({ ...draft, trigger: parseTrigger(v) })}
+          options={[
+            ...DATA_KINDS.map((kind) => ({
+              value: `onInput:${kind}`,
+              label: t("orbitIntOnInput", { kind: t(`orbitEdge_${kind}`) }),
+            })),
+            { value: "manual", label: t("orbitIntManual") },
+          ]}
+          className="w-full"
+        />
       </div>
 
       <div className="flex flex-col gap-1.5">

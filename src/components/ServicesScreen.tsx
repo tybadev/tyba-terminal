@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { useTranslation } from "react-i18next";
 import { ArrowsLeftRight, ListBullets, Plug, X, type Icon } from "@phosphor-icons/react";
 
+import { Button } from "@/components/ui/button";
 import "./gitScreen.css";
 import { TunnelsView } from "./TunnelsView";
 import { requestConfirm } from "../lib/confirm";
@@ -64,10 +65,6 @@ const SLOW_REMOTE_MS = 10000;
 
 const GRID = "grid grid-cols-[90px_170px_minmax(0,1fr)_150px_90px_120px_250px] items-center gap-3";
 
-const CHIP =
-  "shrink-0 whitespace-nowrap rounded-[5px] border border-tyba-border-strong px-[9px] py-[3px] text-[11px] text-tyba-text-muted hover:text-tyba-text disabled:opacity-50";
-const CHIP_DANGER = `${CHIP} text-tyba-red hover:text-tyba-red`;
-
 const DOT: Record<ReturnType<typeof portTone>, string> = {
   green: "text-tyba-green",
   amber: "text-tyba-amber",
@@ -94,9 +91,9 @@ function Loading({ step, slowSeconds, onRetry }: { step: string; slowSeconds: nu
       {slowSeconds !== null && (
         <p className="flex items-center gap-2 px-[18px] pb-1 text-[11px] text-tyba-amber">
           {t("servicesSlow", { seconds: slowSeconds })}
-          <button type="button" className={CHIP} onClick={onRetry}>
+          <Button variant="outline" size="xs" onClick={onRetry}>
             {t("servicesRetry")}
-          </button>
+          </Button>
         </p>
       )}
       {[0, 1, 2, 3, 4].map((i) => (
@@ -121,9 +118,9 @@ function ForceButton({ offer, onForce }: { offer: ForceOffer; onForce: () => voi
     return () => window.clearInterval(timer);
   }, [wait]);
   return (
-    <button type="button" className={CHIP_DANGER} disabled={wait > 0} onClick={onForce}>
+    <Button variant="destructive" size="xs" disabled={wait > 0} onClick={onForce}>
       {wait > 0 ? t("servicesForceIn", { seconds: wait }) : t("servicesForce")}
-    </button>
+    </Button>
   );
 }
 
@@ -393,9 +390,9 @@ export function ServicesScreen({
     return offer ? (
       <ForceButton offer={offer} onForce={() => void forceKill({ ...item, port })} />
     ) : (
-      <button type="button" className={CHIP_DANGER} disabled={busy} onClick={() => void kill({ ...item, port })}>
+      <Button variant="destructive" size="xs" disabled={busy} onClick={() => void kill({ ...item, port })}>
         {t("servicesKill")}
-      </button>
+      </Button>
     );
   };
 
@@ -443,12 +440,12 @@ export function ServicesScreen({
         <span className="flex justify-end gap-1.5" onClick={(e) => e.stopPropagation()}>
           {readOnly(p.refusal) ? null : (
             <>
-              <button type="button" className={CHIP} onClick={() => void openExternalUrl(portUrl(p.port))}>
+              <Button variant="outline" size="xs" onClick={() => void openExternalUrl(portUrl(p.port))}>
                 {t("servicesOpen")}
-              </button>
-              <button type="button" className={CHIP} onClick={() => copyUrl(p.port)}>
+              </Button>
+              <Button variant="outline" size="xs" onClick={() => copyUrl(p.port)}>
                 {t("servicesCopyUrl")}
-              </button>
+              </Button>
             </>
           )}
           {killControls(p, p.port)}
@@ -518,14 +515,14 @@ export function ServicesScreen({
             <span className="flex gap-2">
               {!p.refusal && detail?.target && killControls(p, p.port)}
               {p.refusal === "docker" && !remote && session && (
-                <button type="button" className={CHIP} onClick={() => void openInDocker(p.port)}>
+                <Button variant="outline" size="xs" onClick={() => void openInDocker(p.port)}>
                   {t("servicesOpenInDocker")}
-                </button>
+                </Button>
               )}
               {sessionId && (
-                <button type="button" className={CHIP} onClick={() => goToTerminal(sessionId)}>
+                <Button variant="outline" size="xs" onClick={() => goToTerminal(sessionId)}>
                   {t("servicesGoToTerminal")}
-                </button>
+                </Button>
               )}
             </span>
             <span className="text-[11px] text-tyba-text-faint">{t("servicesKillRule")}</span>
@@ -594,14 +591,14 @@ export function ServicesScreen({
               <span className="self-center text-[11px] text-tyba-text-faint">
                 {t("servicesBroughtAt", { port: tn.listen_port })}
               </span>
-              <button type="button" className={CHIP} onClick={() => void openExternalUrl(portUrl(tn.listen_port))}>
+              <Button variant="outline" size="xs" onClick={() => void openExternalUrl(portUrl(tn.listen_port))}>
                 {t("servicesOpen")}
-              </button>
+              </Button>
             </>
           ) : (
-            <button type="button" className={CHIP} disabled={busy} onClick={() => void bring(p.port)}>
+            <Button variant="outline" size="xs" disabled={busy} onClick={() => void bring(p.port)}>
               {t("servicesBringHere")}
-            </button>
+            </Button>
           )}
         </span>
       </div>
@@ -651,9 +648,9 @@ export function ServicesScreen({
           )
         )}
         {extra}
-        <button type="button" className={CHIP} onClick={() => void refresh()}>
+        <Button variant="outline" size="xs" onClick={() => void refresh()}>
           {t("servicesRefresh")}
-        </button>
+        </Button>
       </div>
     );
   };
@@ -720,9 +717,9 @@ export function ServicesScreen({
               <span className="text-[12px] text-tyba-text">{labelOf(group.session_id) ?? t("servicesOriginSession")}</span>
               <span>{t("servicesProcessCount", { count: group.nodes.length })}</span>
               <span className="flex-1" />
-              <button type="button" className={CHIP} onClick={() => goToTerminal(group.session_id)}>
+              <Button variant="outline" size="xs" onClick={() => goToTerminal(group.session_id)}>
                 {t("servicesGoToTerminal")}
-              </button>
+              </Button>
             </div>
             {group.nodes.map(processRow)}
           </div>

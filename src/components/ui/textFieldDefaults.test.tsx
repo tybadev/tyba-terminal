@@ -14,6 +14,14 @@ describe("campos base não corrigem o que se digita", () => {
     expect(html).toContain('spellcheck="false"');
   });
 
+  test("Input com ícone e tecla embutidos também sai sem correção", () => {
+    const html = renderToStaticMarkup(<Input icon={<svg />} kbd="⌘E" />).toLowerCase();
+    expect(html).toContain('autocapitalize="off"');
+    expect(html).toContain('autocorrect="off"');
+    expect(html).toContain('spellcheck="false"');
+    expect(html).toContain("<kbd");
+  });
+
   test("Textarea sai sem capitalização, correção e verificação ortográfica", () => {
     const html = renderToStaticMarkup(<Textarea />).toLowerCase();
     expect(html).toContain('autocapitalize="off"');

@@ -445,23 +445,24 @@ export function HostFormDialog({
             <div id="host-tunnels" className="flex flex-col gap-1.5">
               {values.tunnels.map((tn, i) => (
                 <div key={i} className="flex items-center gap-1.5">
-                  <select
+                  <Select
                     aria-label={t("tunnelsKind")}
                     value={tn.kind}
-                    onChange={(e) => {
-                      const kind = e.target.value as TunnelKind;
+                    onChange={(v) => {
+                      const kind = v as TunnelKind;
                       patchTunnel(i, {
                         kind,
                         target_host: kind === "dynamic" ? null : (tn.target_host ?? "localhost"),
                         target_port: kind === "dynamic" ? null : tn.target_port,
                       });
                     }}
-                    className="h-7 rounded-[4px] border border-tyba-border bg-tyba-bg px-1.5 text-[11px] text-tyba-text"
-                  >
-                    <option value="local">-L</option>
-                    <option value="remote">-R</option>
-                    <option value="dynamic">-D</option>
-                  </select>
+                    options={[
+                      { value: "local", label: "-L" },
+                      { value: "remote", label: "-R" },
+                      { value: "dynamic", label: "-D" },
+                    ]}
+                    className="h-7 shrink-0 rounded-[8px] pr-2 pl-2.5 text-[11px]"
+                  />
                   <input
                     aria-label={t("tunnelsListenPort")}
                     type="number"

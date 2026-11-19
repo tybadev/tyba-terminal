@@ -57,13 +57,6 @@ const LINE: Record<string, string> = {
   context: "text-tyba-text-muted",
 };
 
-const SMALL_BTN =
-  "shrink-0 whitespace-nowrap rounded-[6px] border border-tyba-border-strong px-2 py-0.5 text-[11px] text-tyba-text-muted hover:text-tyba-text disabled:opacity-50";
-
-// Descartar perde trabalho: âmbar com contorno, como as ações destrutivas da main.
-const DANGER_BTN =
-  "shrink-0 whitespace-nowrap rounded-[6px] border border-tyba-amber/45 px-2 py-0.5 text-[11px] text-tyba-amber hover:bg-tyba-amber/[.08] disabled:opacity-50";
-
 type Pick = { path: string; scope: DiffScope; oldPath: string | null; untracked: boolean };
 
 function split(path: string): { name: string; dir: string } {
@@ -301,9 +294,9 @@ export function GitChangesView({
     <div className="flex items-center justify-between px-2 pb-1.5 pt-3.5 first:pt-1.5">
       <span className="tyba-label">{label}</span>
       {action && (
-        <button type="button" className={SMALL_BTN} onClick={action.run}>
+        <Button variant="outline" size="xs" onClick={action.run}>
           {action.label}
-        </button>
+        </Button>
       )}
     </div>
   );
@@ -445,9 +438,9 @@ export function GitChangesView({
                 <span className="text-tyba-text">{split(pick.path).name}</span>
                 <span className="pl-1.5 text-[11px] text-tyba-text-faint">{split(pick.path).dir}</span>
               </span>
-              <button
-                type="button"
-                className={SMALL_BTN}
+              <Button
+                variant="outline"
+                size="xs"
                 onClick={() =>
                   void openEditorTab(pick.path, undefined, { session: session.id }).catch((e) =>
                     setActionError(String(e)),
@@ -455,16 +448,16 @@ export function GitChangesView({
                 }
               >
                 {t("gitChangesEditor")}
-              </button>
+              </Button>
               {pick.scope === "unstaged" && !pick.untracked && (
-                <button type="button" className={DANGER_BTN} onClick={() => void discardFile(pick.path)}>
+                <Button variant="destructive" size="xs" onClick={() => void discardFile(pick.path)}>
                   {t("gitChangesDiscard")}
-                </button>
+                </Button>
               )}
               {!pick.untracked && (
-                <button
-                  type="button"
-                  className={`${SMALL_BTN} text-tyba-text`}
+                <Button
+                  variant="outline"
+                  size="xs"
                   onClick={() =>
                     void act(() =>
                       pick.scope === "staged"
@@ -474,7 +467,7 @@ export function GitChangesView({
                   }
                 >
                   {t(pick.scope === "staged" ? "gitChangesUnstageFile" : "gitChangesStageFile")}
-                </button>
+                </Button>
               )}
             </div>
             <div className="min-h-0 flex-1 overflow-auto py-1.5 font-mono text-[12.5px] leading-[21px]">
@@ -485,30 +478,30 @@ export function GitChangesView({
                     <span className="min-w-0 flex-1 truncate">{hunk.header}</span>
                     {!pick.untracked && pick.scope === "unstaged" && (
                       <>
-                        <button
-                          type="button"
-                          className={SMALL_BTN}
+                        <Button
+                          variant="outline"
+                          size="xs"
                           onClick={() => void hunkAction(index, hunk.header, "stage")}
                         >
                           {t("gitChangesStageHunk")}
-                        </button>
-                        <button
-                          type="button"
-                          className={DANGER_BTN}
+                        </Button>
+                        <Button
+                          variant="destructive"
+                          size="xs"
                           onClick={() => void hunkAction(index, hunk.header, "discard")}
                         >
                           {t("gitChangesDiscardHunk")}
-                        </button>
+                        </Button>
                       </>
                     )}
                     {pick.scope === "staged" && (
-                      <button
-                        type="button"
-                        className={SMALL_BTN}
+                      <Button
+                        variant="outline"
+                        size="xs"
                         onClick={() => void hunkAction(index, hunk.header, "unstage")}
                       >
                         {t("gitChangesUnstageHunk")}
-                      </button>
+                      </Button>
                     )}
                   </div>
                   {numberHunk(hunk).map((l) => (

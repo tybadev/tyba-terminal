@@ -1,6 +1,8 @@
 import { useEffect, useLayoutEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
+import { ArrowClockwise, Play, Stop } from "@phosphor-icons/react";
 
+import { Button } from "@/components/ui/button";
 import { requestConfirm } from "../lib/confirm";
 import {
   compactSpan,
@@ -55,9 +57,6 @@ const UNREACHABLE: Record<Exclude<PathStatus, "ok">, string> = {
   denied: "containersPathDenied",
   unsupported: "containersPathUnsupported",
 };
-
-const CHIP =
-  "shrink-0 whitespace-nowrap rounded-[6px] border border-tyba-border-strong px-[9px] py-[3px] text-[11px] text-tyba-text-muted hover:text-tyba-text disabled:opacity-40 disabled:hover:text-tyba-text-muted";
 
 const GRID = "grid grid-cols-[150px_180px_minmax(0,1fr)_190px_150px_120px] gap-3";
 
@@ -302,16 +301,19 @@ export function DockerComposeSection({
     const file = p.composeFile ?? "compose.yml";
     const running = runs[p.name]?.op ?? null;
     const lastError = runs[p.name]?.error ?? null;
-    const opChip = (op: ComposeOp, label: string, tone = "") => (
-      <button
-        type="button"
-        className={`${CHIP} ${tone}`}
+    // Quadro Docker: Subir em vidro com play, Reiniciar em vidro com a seta,
+    // Parar fantasma com o quadrado.
+    const opChip = (op: ComposeOp, label: string) => (
+      <Button
+        variant={op === "down" ? "ghost" : "outline"}
+        size="sm"
         disabled={blocked !== null || running !== null}
         title={blocked ?? undefined}
         onClick={() => void compose(p, op)}
       >
+        {op === "up" ? <Play /> : op === "restart" ? <ArrowClockwise /> : <Stop />}
         {running === op ? `${label}…` : label}
-      </button>
+      </Button>
     );
     return (
       <>
@@ -324,28 +326,28 @@ export function DockerComposeSection({
             {t("dockerScreenProjectRunningLong", { running: p.running, total: p.services.length })}
           </span>
           <span className="flex-1" />
-          <button
-            type="button"
-            className={CHIP}
+          <Button
+            variant="outline"
+            size="sm"
             disabled={fileBlocked !== null}
             title={fileBlocked ?? undefined}
             onClick={() => void dockerOpenComposeFile(session, p.name).catch(fail)}
           >
             {t("dockerScreenViewCompose", { file })}
-          </button>
-          <button
-            type="button"
-            className={CHIP}
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
             disabled={blocked !== null}
             title={blocked ?? undefined}
             onClick={() => void dockerOpenProject(p.name).catch(fail)}
           >
             {t("openProject")}
-          </button>
+          </Button>
           <span aria-hidden className="h-[18px] w-px shrink-0 bg-[var(--tyba-line)]" />
-          {opChip("up", t("composeUp"), "text-tyba-green")}
+          {opChip("up", t("composeUp"))}
           {opChip("restart", t("composeRestart"))}
-          {opChip("down", t("composeDown"), "text-tyba-red")}
+          {opChip("down", t("composeDown"))}
         </div>
         {lastError && (
           <p className="shrink-0 border-b border-[var(--tyba-line)] px-[18px] py-2 text-[11px] text-tyba-red">
