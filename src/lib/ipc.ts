@@ -1308,6 +1308,16 @@ export interface HostGroupInput {
 }
 
 export const listHosts = () => invoke<Host[]>("list_hosts");
+
+/** Uma pasta aberta numa sessão local, a mais recente primeiro (core). */
+export interface RecentFolder {
+  path: string;
+  last_opened_at_ms: number;
+}
+
+export function listRecentFolders(): Promise<RecentFolder[]> {
+  return invoke<RecentFolder[]>("list_recent_folders");
+}
 export const listHostGroups = () => invoke<HostGroup[]>("list_host_groups");
 
 /** Configurações › SSH › Integração — espelho de `ssh::typed_prefs` no core. */
