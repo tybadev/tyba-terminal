@@ -433,7 +433,9 @@ export function PrListView({
       </div>
 
       <footer className="flex min-h-9 shrink-0 items-center justify-between gap-4 shadow-[inset_0_1px_0_var(--tyba-line)] px-[18px] py-2 text-[11.5px] text-tyba-text-faint">
-        <span className="min-w-0">{t("prListNote")}</span>
+        <span className="min-w-0 truncate" title={t("prListNote")}>
+          {t("prListNote")}
+        </span>
         <span className="shrink-0 whitespace-nowrap">{t("prListNotePush")}</span>
       </footer>
 

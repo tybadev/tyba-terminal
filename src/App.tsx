@@ -1868,6 +1868,11 @@ export default function App() {
   if (servicesTarget) lastServicesSessionRef.current = servicesTarget;
   const servicesScreenSession =
     servicesTarget ?? (servicesMotion.mounted ? lastServicesSessionRef.current : null);
+  // Tela cheia por cima do terminal: a gaveta Fila/Agentes é do terminal e
+  // some enquanto ela está aberta (sobrava por cima do Docker e dos PRs).
+  const screenOverTerminal = Boolean(
+    gitScreenSession || filesScreenSession || dockerScreenSession || servicesScreenSession,
+  );
   const agentsSideActive = Boolean(sideView?.startsWith("agents:"));
   const agentsMotion = usePresence(agentsSideActive, reducedMotion ? 0 : 150);
   const lastAgentsSessionRef = useRef<SessionId | null>(null);
@@ -6223,6 +6228,7 @@ export default function App() {
               rodapé da janela, onde mora a pílula (GavetaPaneEstreito).
               Recolhida, não desenha nada sobre o pane. */}
           {!bare &&
+            !screenOverTerminal &&
             paneRect &&
             s.id === activeId &&
             hasAgentDrawer(s.kind.type, detected !== null) && (
