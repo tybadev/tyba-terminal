@@ -636,21 +636,21 @@ export function DrawerPill({
       aria-expanded={open}
       aria-label={label}
       title={label}
-      className={`inline-flex h-5 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full px-2.5 font-semibold transition-colors ${
+      className={`inline-flex h-[26px] shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full px-2.5 font-semibold transition-colors ${
         open
           ? "tyba-pill-on text-tyba-text"
           : "bg-[color-mix(in_srgb,var(--tyba-text)_5%,transparent)] text-tyba-text-muted hover:text-tyba-text"
       }`}
       style={shadow ? { boxShadow: shadow } : undefined}
     >
-      <Rows size={12} className="shrink-0" />
+      <Rows size={13} className="shrink-0" />
       <span className={compact ? "font-mono" : ""}>
         {compact ? queueCount : t("promptQueueButton", { count: queueCount })}
       </span>
       {agents && (
         <>
           {sep}
-          {compact ? <RobotIcon size={12} /> : <span>{t("agentsTitle")}</span>}
+          {compact ? <RobotIcon size={13} /> : <span>{t("agentsTitle")}</span>}
           <span className={em}>
             {agents.done}/{agents.total}
           </span>
@@ -701,7 +701,8 @@ export function DrawerPill({
         </>
       )}
       <span className="flex text-tyba-text-faint">
-        {open ? <CaretDown size={11} /> : <CaretUp size={11} />}
+        {/* Quadro: recolhida mostra o caret para baixo. */}
+        {open ? <CaretUp size={11} /> : <CaretDown size={11} />}
       </span>
     </button>
   );
