@@ -6,6 +6,8 @@ import { changelogUrl } from "@/lib/changelog";
 import {
   ArrowClockwise,
   Bell,
+  CaretDoubleLeft,
+  CaretDoubleRight,
   CircleHalf,
   Code,
   Copy,
@@ -140,6 +142,7 @@ const SECTIONS: { id: Section; label: string; sub: string; icon: React.ReactNode
   { id: "about", label: "settingsAbout", sub: "cfgSubAbout", icon: <Globe size={16} /> },
 ];
 
+const RAIL_PREF_KEY = "pref.settings_rail";
 
 /** As regras que o core impõe e que nenhuma configuração desliga. */
 const SECURITY_RULES = ["cfgRuleMain", "cfgRuleSecrets", "cfgRuleKill"];
@@ -228,18 +231,20 @@ function homeShort(path: string): string {
 /**
  * A lista de seções, à direita: ícone e nome; o escolhido ganha a mancha azul
  * atrás do ícone e o nome em negrito, sem pílula. Fechar fica embaixo, com o
- * Esc. Sempre aberta, com os nomes (o quadro não tem recolher).
+ * Esc. Recolhida fica só o ícone, com o nome no tooltip.
  */
 function SettingsRail({
   section,
   onSection,
   collapsed,
+  onToggle,
   onClose,
   search,
 }: {
   section: Section;
   onSection: (section: Section) => void;
   collapsed: boolean;
+  onToggle: () => void;
   onClose: () => void;
   search: React.ReactNode;
 }) {
@@ -289,6 +294,12 @@ function SettingsRail({
       {!collapsed && <div className="pb-2">{search}</div>}
       {SECTIONS.map((s) => item(s.id, s.icon, t(s.label), () => onSection(s.id), s.id === section))}
       <span className="flex-1" />
+      {item(
+        "toggle",
+        collapsed ? <CaretDoubleLeft size={14} /> : <CaretDoubleRight size={14} />,
+        collapsed ? t("settingsRailExpand") : t("settingsRailCollapse"),
+        onToggle,
+      )}
       <div className="mx-1.5 my-2 h-px self-stretch bg-[var(--tyba-line)]" />
       {item(
         "close",
@@ -772,6 +783,7 @@ export function SettingsView({
   useEffect(() => {
     if (initialSection) setSection(toSection(initialSection));
   }, [initialSection]);
+  const [railCollapsed, setRailCollapsed] = useState(false);
   const [configPath, setConfigPath] = useState<string | null>(null);
   const [dockerUp, setDockerUp] = useState<boolean | null>(null);
   const [filesInTyba, setFilesInTyba] = useState(fileLinksEnabled);
@@ -821,6 +833,17 @@ export function SettingsView({
       .then(setConfigPath)
       .catch(() => {});
   }, []);
+  useEffect(() => {
+    void getPref(RAIL_PREF_KEY)
+      .then((v) => setRailCollapsed(v === "collapsed"))
+      .catch(() => {});
+  }, []);
+  const toggleRail = () => {
+    setRailCollapsed((was) => {
+      void setPref(RAIL_PREF_KEY, was ? "open" : "collapsed").catch(() => {});
+      return !was;
+    });
+  };
   // Esc fecha, como nas outras telas cheias — a não ser que o foco esteja
   // num campo (aí o Esc é dele) ou gravando um atalho.
   useEffect(() => {
@@ -1395,7 +1418,8 @@ export function SettingsView({
           setSection(s);
           contentRef.current?.scrollTo({ top: 0 });
         }}
-        collapsed={false}
+        collapsed={railCollapsed}
+        onToggle={toggleRail}
         onClose={onClose}
         search={search}
       />
