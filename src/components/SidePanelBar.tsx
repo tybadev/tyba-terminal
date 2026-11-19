@@ -1,13 +1,13 @@
 import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import {
-  Buildings,
   Clock,
   FolderSimple,
   GitDiff,
   Plug,
   X,
 } from "@phosphor-icons/react";
+import { DockerIcon } from "./icons/DockerIcon";
 
 import { Shortcut } from "@/components/ui/kbd";
 import {
@@ -32,8 +32,8 @@ const AREA: Record<PanelKind, { text: string }> = {
 };
 
 /**
- * Marca de verdade no Git; Phosphor no resto — o Docker é `Buildings`, como
- * no quadro Header. A marca guarda o desenho e
+ * Marca de verdade no Git e no Docker (dono, 2026-11-19: o `Buildings` do
+ * quadro ficou ruim); Phosphor no resto. A marca guarda o desenho e
  * pinta com `currentColor`: neutra apagada, cor da área acesa.
  */
 export function PanelIcon({
@@ -49,7 +49,7 @@ export function PanelIcon({
     case "history":
       return <Clock size={size} className={className} />;
     case "docker":
-      return <Buildings size={size} className={className} />;
+      return <DockerIcon size={size} className={className} />;
     case "services":
       return <Plug size={size} className={className} />;
     case "files":

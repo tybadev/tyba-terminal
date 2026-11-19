@@ -70,7 +70,7 @@ import {
   type Workspace,
   type WorkspaceId,
 } from "../lib/ipc";
-import { type Bindings, type KeyAction } from "../lib/keys";
+import { type Bindings, type KeyAction, formatCombo } from "../lib/keys";
 import { nextPaletteMode, type PaletteMode } from "../lib/paletteMode";
 import { fileIcon } from "../lib/fileIcon";
 import { toastError } from "../lib/toast";
@@ -444,7 +444,8 @@ export function CommandPalette({
             <button
               key={m}
               onClick={() => onModeChange(m)}
-              className={`flex items-center gap-1.5 rounded-[4px] px-2 py-1 text-[11px] transition-colors ${
+              title={combo ? `${label} · ${formatCombo(combo)}` : label}
+              className={`flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-[6px] px-2 py-1 text-[11.5px] transition-colors ${
                 mode === m
                   ? "bg-tyba-text/[.06] text-tyba-text"
                   : "text-tyba-text-faint hover:text-tyba-text-muted"
@@ -452,11 +453,13 @@ export function CommandPalette({
             >
               <Icon size={12} />
               {label}
-              <Shortcut combo={combo} className="ml-1" />
+              {/* Abas cabem numa linha (dono, 2026-11-19): o atalho só na
+                  aba ativa; nas outras ele fica no tooltip. */}
+              {mode === m && <Shortcut combo={combo} className="ml-1" />}
             </button>
           );
         })}
-        <span className="ml-auto text-[10px] text-tyba-text-faint">
+        <span className="ml-auto shrink-0 whitespace-nowrap text-[10px] text-tyba-text-faint">
           {t("paletteTabHint")}
         </span>
       </div>

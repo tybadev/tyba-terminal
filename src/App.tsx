@@ -186,7 +186,6 @@ import { TerminalSearch } from "./components/TerminalSearch";
 import {
   SettingsView,
   type DetailsPref,
-  type SidebarTogglePref,
   type StartupMode,
 } from "./components/SettingsView";
 import { TabBar } from "./components/TabBar";
@@ -611,7 +610,6 @@ const CONTEXT_MENU_PARTS: MenuParts = {
   SubContent: ContextMenuSubContent,
 };
 
-const TOGGLE_PREF_KEY = "pref.sidebar_toggle";
 const DETAILS_PREF_KEY = "pref.sidebar_details";
 const DETAILS_OVERRIDES_KEY = "pref.session_details";
 const TOOLBAR_PREF_KEY = "pref.toolbar";
@@ -917,7 +915,6 @@ export default function App() {
     () => new Map(),
   );
   const [sidebar, setSidebar] = useState<SidebarMode>("open");
-  const [togglePref, setTogglePref] = useState<SidebarTogglePref>("hidden");
   const [detailsPref, setDetailsPref] = useState<DetailsPref>("on");
   const [detailOverrides, setDetailOverrides] = useState<
     Record<string, DetailsPref>
@@ -1463,7 +1460,6 @@ export default function App() {
     if (prefsApplied.current) return;
     prefsApplied.current = true;
     const pref = (key: string) => prefs[key] ?? null;
-    const togglePrefRaw = pref(TOGGLE_PREF_KEY);
     const detailsRaw = pref(DETAILS_PREF_KEY);
     const overridesRaw = pref(DETAILS_OVERRIDES_KEY);
     const nameRaw = pref(ACCOUNT_NAME_KEY);
@@ -1480,9 +1476,6 @@ export default function App() {
     const reviewAgentRaw = pref(REVIEW_AGENT_KEY);
     const promptModeRaw = pref(PROMPT_MODE_PREF_KEY);
     setPromptModePref(promptModeEnabled(promptModeRaw));
-    if (togglePrefRaw === "rail" || togglePrefRaw === "hidden") {
-      setTogglePref(togglePrefRaw);
-    }
     if (detailsRaw === "on" || detailsRaw === "off") setDetailsPref(detailsRaw);
     if (overridesRaw) {
       try {
@@ -4138,11 +4131,6 @@ export default function App() {
     }, 260);
   }, [reducedMotion, toggleSettings]);
 
-  const changeTogglePref = useCallback((value: SidebarTogglePref) => {
-    setTogglePref(value);
-    setSidebar((current) => (current === "open" ? current : value));
-    void setPref(TOGGLE_PREF_KEY, value).catch(() => {});
-  }, []);
 
   const changeDetailsPref = useCallback((value: DetailsPref) => {
     setDetailsPref(value);
@@ -4236,9 +4224,11 @@ export default function App() {
     void setPref(STARTUP_KEY, value).catch(() => {});
   }, []);
 
+  // ⌘B só mostra ou esconde a barra inteira (dono, 2026-11-19: o modo "só
+  // ícones" não precisa existir).
   const toggleSidebar = useCallback(() => {
-    setSidebar((current) => (current === "open" ? togglePref : "open"));
-  }, [togglePref]);
+    setSidebar((current) => (current === "open" ? "hidden" : "open"));
+  }, []);
 
   useEffect(() => {
     requestTerminalRelayout();
@@ -7341,8 +7331,6 @@ export default function App() {
                         onRefreshLaunchConfigs={refreshLaunchConfigs}
                         version={version}
                         update={update}
-                        togglePref={togglePref}
-                        onTogglePrefChange={changeTogglePref}
                         detailsPref={detailsPref}
                         onDetailsPrefChange={changeDetailsPref}
                         bindings={bindings}
