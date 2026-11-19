@@ -63,6 +63,41 @@ export function parseRichInputPref(raw: string | null): RichInputPref {
   };
 }
 
+/** Os comandos do padrão de fábrica do core (`DEFAULT_AGENT_PATTERN`). */
+const DEFAULT_AGENT_COMMANDS = ["claude", "codex", "gemini"];
+
+const COMMAND_NAME = /^[\w.+-]+$/;
+
+/**
+ * "Comandos de agente" como o quadro mostra — `claude, codex, gemini` — lidos
+ * da regex que o core guarda. Vazio é o padrão do core. `null` quando a regex
+ * não é uma lista simples `^(a|b)\b`: aí o campo mostra a regex crua.
+ */
+export function agentCommandsFromRegex(regex: string): string | null {
+  if (!regex.trim()) return DEFAULT_AGENT_COMMANDS.join(", ");
+  const m = /^\^\(([^()]*)\)(?:\\b)?$/.exec(regex.trim());
+  if (!m) return null;
+  const names = m[1].split("|").map((n) => n.replace(/\\(.)/g, "$1"));
+  return names.every((n) => COMMAND_NAME.test(n)) ? names.join(", ") : null;
+}
+
+/**
+ * A regex que o core guarda para a lista digitada. A lista de fábrica volta a
+ * ser vazio (o core segue o padrão dele); texto que não é lista de nomes é
+ * tratado como regex e vai como está.
+ */
+export function agentRegexFromCommands(text: string): string {
+  const names = text
+    .split(/[\s,]+/)
+    .map((n) => n.trim())
+    .filter(Boolean);
+  if (names.length === 0) return "";
+  if (!names.every((n) => COMMAND_NAME.test(n))) return text.trim();
+  if (names.join("|") === DEFAULT_AGENT_COMMANDS.join("|")) return "";
+  const escaped = names.map((n) => n.replace(/[.+]/g, "\\$&"));
+  return `^(${escaped.join("|")})\\b`;
+}
+
 export type EnterAction = "submit" | "newline" | "none";
 
 export function enterAction(

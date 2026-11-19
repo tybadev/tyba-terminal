@@ -728,7 +728,7 @@ export function DrawerPill({
       )}
       <span className="flex text-tyba-text-faint">
         {/* Quadro: recolhida mostra o caret para baixo. */}
-        {open ? <CaretUp size={11} /> : <CaretDown size={11} />}
+        {open ? <CaretUp size={13} /> : <CaretDown size={13} />}
       </span>
     </button>
   );

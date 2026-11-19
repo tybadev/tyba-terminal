@@ -1179,7 +1179,6 @@ const resources = {
       notifyObservedRequest: "Avisar por palpite da tela",
       notifyObservedRequestHint:
         "Agente sem integração, deduzido do que está na tela. Pode errar, então nasce desligado e liga separado do aviso acima.",
-      notifySilent: "Silêncio",
       agentsBoard: "Agentes",
       agentsQueue: "Agentes",
       agentsApprovals_one: "{{count}} aprovação",
@@ -1237,8 +1236,6 @@ const resources = {
       richInputShowOnMatchHint:
         "Usa a linha de comando reportada pelo shell — dica de exibição, nunca autorização.",
       richInputRegex: "Regex de detecção de agente",
-      richInputRegexHint:
-        "Vazio usa o padrão ^(claude|codex|gemini). Avaliado no core; inválido mantém o atual.",
       richInputRegexInvalid:
         "Regex inválida — não foi salva. O core mantém a anterior.",
       defaultEditor: "Editor padrão",
@@ -2816,6 +2813,7 @@ const resources = {
       cfgWarnKeyHint: "Antes de enviar, com a chance de tirar.",
       cfgGroupDetect: "Reconhecer o agente",
       cfgAgentCommands: "Comandos de agente",
+      cfgAgentCommandsHint: "Quando um deles roda, o TYBA passa a observar a sessão.",
       cfgGroupReview: "Review do diff",
       cfgReviewer: "Quem recebe seus comentários",
       cfgReviewerHint: "Sem sessão aberta, o TYBA abre uma com ele.",
@@ -2828,9 +2826,11 @@ const resources = {
       cfgNotifyDone: "Um agente terminou o turno",
       cfgNotifyDoneHint: "Fica quieto se você já está olhando a sessão.",
       cfgGroupSound: "Som",
-      cfgSoundRequest: "Quando precisa de você",
-      cfgSoundDone: "Quando termina o turno",
-      cfgSoundObserved: "Palpite da tela",
+      cfgSoundWhen: "Quando tocar",
+      cfgSoundWhich: "Qual som",
+      cfgSoundNever: "Nunca",
+      cfgSoundOnRequests: "Nos pedidos",
+      cfgSoundAlways: "Sempre",
       cfgGroupOutside: "Fora da janela",
       cfgMacos: "Avisos do macOS",
       cfgMacosHint: "Quem muda isso são os Ajustes do Sistema.",
@@ -4028,7 +4028,6 @@ const resources = {
       notifyObservedRequest: "Notify on a screen guess",
       notifyObservedRequestHint:
         "Agent with no integration, inferred from what is on screen. It can be wrong, so it starts off and toggles apart from the notice above.",
-      notifySilent: "Silent",
       agentsBoard: "Agents",
       agentsQueue: "Agents",
       agentsApprovals_one: "{{count}} approval",
@@ -4086,8 +4085,6 @@ const resources = {
       richInputShowOnMatchHint:
         "Uses the command line reported by the shell — a display hint, never authorization.",
       richInputRegex: "Agent detection regex",
-      richInputRegexHint:
-        "Empty uses the default ^(claude|codex|gemini). Evaluated in the core; invalid keeps the current one.",
       richInputRegexInvalid:
         "Invalid regex — not saved. The core keeps the previous one.",
       defaultEditor: "Default editor",
@@ -5657,6 +5654,7 @@ const resources = {
       cfgWarnKeyHint: "Before sending, with the chance to remove it.",
       cfgGroupDetect: "Recognizing the agent",
       cfgAgentCommands: "Agent commands",
+      cfgAgentCommandsHint: "When one of them runs, TYBA starts watching the session.",
       cfgGroupReview: "Diff review",
       cfgReviewer: "Who gets your comments",
       cfgReviewerHint: "With no open session, TYBA opens one with it.",
@@ -5669,9 +5667,11 @@ const resources = {
       cfgNotifyDone: "An agent finished its turn",
       cfgNotifyDoneHint: "Stays quiet if you're already looking at the session.",
       cfgGroupSound: "Sound",
-      cfgSoundRequest: "When it needs you",
-      cfgSoundDone: "When the turn ends",
-      cfgSoundObserved: "Guess from the screen",
+      cfgSoundWhen: "When to play",
+      cfgSoundWhich: "Which sound",
+      cfgSoundNever: "Never",
+      cfgSoundOnRequests: "On requests",
+      cfgSoundAlways: "Always",
       cfgGroupOutside: "Outside the window",
       cfgMacos: "macOS notifications",
       cfgMacosHint: "System Settings is where this changes.",
