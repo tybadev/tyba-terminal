@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import {
+  Buildings,
   Clock,
   FolderSimple,
   GitDiff,
@@ -14,7 +15,6 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { DockerIcon } from "./icons/DockerIcon";
 import { GitIcon } from "./icons/GitIcon";
 import type { PanelIndicator, PanelKind } from "../lib/sidePanel";
 
@@ -32,8 +32,8 @@ const AREA: Record<PanelKind, { text: string }> = {
 };
 
 /**
- * Marca de verdade onde a coisa tem marca (Docker, Git); Phosphor no que é
- * conceito (histórico, arquivos, diff, serviços). A marca guarda o desenho e
+ * Marca de verdade no Git; Phosphor no resto — o Docker é `Buildings`, como
+ * no quadro Header. A marca guarda o desenho e
  * pinta com `currentColor`: neutra apagada, cor da área acesa.
  */
 export function PanelIcon({
@@ -49,7 +49,7 @@ export function PanelIcon({
     case "history":
       return <Clock size={size} className={className} />;
     case "docker":
-      return <DockerIcon size={size} className={className} />;
+      return <Buildings size={size} className={className} />;
     case "services":
       return <Plug size={size} className={className} />;
     case "files":
