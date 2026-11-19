@@ -16,7 +16,7 @@ import { STRIP_GAP, pickStripLevel } from "@/lib/orbitStrip";
 export function useStripLevel(
   row: RefObject<HTMLElement | null>,
   left: RefObject<HTMLElement | null>,
-  right: RefObject<HTMLElement | null>,
+  right?: RefObject<HTMLElement | null>,
 ) {
   const [level, setLevel] = useState(0);
   const [height, setHeight] = useState(44);
@@ -27,10 +27,11 @@ export function useStripLevel(
   const measure = useCallback(() => {
     const r = row.current;
     const l = left.current;
-    const rt = right.current;
-    if (!r || !l || !rt) return;
+    const rt = right?.current;
+    if (!r || !l) return;
     const at = current.current;
-    const need = l.offsetWidth + rt.offsetWidth + STRIP_GAP;
+    // Sem placa da direita (quadro Orbit: o zoom desceu para o canto), só a cápsula.
+    const need = l.offsetWidth + (rt?.offsetWidth ?? 0) + STRIP_GAP;
     if (needs.current[at] !== need) {
       if (needs.current[at] !== undefined) needs.current = [];
       needs.current[at] = need;
@@ -47,7 +48,7 @@ export function useStripLevel(
 
   useEffect(() => {
     const ro = new ResizeObserver(() => measure());
-    for (const el of [row.current, left.current, right.current]) if (el) ro.observe(el);
+    for (const el of [row.current, left.current, right?.current]) if (el) ro.observe(el);
     return () => ro.disconnect();
   }, [measure, row, left, right]);
 

@@ -13,3 +13,9 @@ export const DRAWER_WIDE = `${DRAWER} bottom-3 w-[620px]`;
 
 /** Fio da direita da biblioteca, na cor do fio da G. */
 export const LINE_R = "shadow-[inset_-1px_0_0_var(--tyba-line)]";
+
+/**
+ * Cápsula de vidro do quadro Orbit (2026-11-15): barra do grafo, cápsula do
+ * nó, ferramentas e zoom. O acrílico e a sombra da placa, em pílula.
+ */
+export const GLASS_PILL = `rounded-full border ${PLATE_LINE} ${PLATE_ACRYLIC} [box-shadow:var(--tyba-plate-shadow,var(--tyba-edge),var(--tyba-shadow-lg))]`;

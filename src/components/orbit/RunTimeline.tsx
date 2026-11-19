@@ -52,9 +52,9 @@ export function RunTimeline({
     const waiting = waitingYouOf(n);
     if (waiting) {
       return (
-        <span key={id} className="flex items-center gap-2 text-[11.5px] whitespace-nowrap">
+        <span key={id} className="flex items-center gap-1.5 text-[12.5px] whitespace-nowrap">
           <span className="text-tyba-text">{title(id)}</span>
-          <i className="size-[7px] shrink-0 rounded-full bg-tyba-amber" />
+          <i className="size-[7px] shrink-0 rounded-full bg-tyba-amber-fill" />
           <span className="text-tyba-amber">{t("orbitWaitingYouStep")}</span>
           <span className="text-tyba-text-faint">{waitedFor(now - waiting.since, true)}</span>
         </span>
@@ -64,7 +64,7 @@ export function RunTimeline({
     const elapsed = nodeElapsed(n, now, run);
     const tone = n ? STATUS_TONE[shownStatus(run, n)] : null;
     return (
-      <span key={id} className="flex items-center gap-2 text-[11.5px] whitespace-nowrap">
+      <span key={id} className="flex items-center gap-1.5 text-[12.5px] whitespace-nowrap">
         <span className="text-tyba-text">{title(id)}</span>
         {tone && <i className={`size-[7px] shrink-0 rounded-full ${tone.dot}`} />}
         {label && (
@@ -85,19 +85,18 @@ export function RunTimeline({
   return (
     <footer
       aria-label={t("orbitRunCurrent")}
-      className="flex h-16 shrink-0 items-center gap-5 border-t border-tyba-border bg-tyba-surface px-[18px] font-mono"
+      className="flex h-[52px] shrink-0 items-center gap-4 border-t border-[var(--tyba-line)] bg-[var(--tyba-glass-piece)] px-5 font-sans text-[12.5px]"
     >
       {run && isLiveRun(run) ? (
         // Quadro OrbitTerminal 4: a sessão ao vivo do Terminal, sem número
         // nem passos do grafo — o Terminal e o que ele criou, cada um com o estado.
         <>
-          <div className="flex shrink-0 flex-col gap-[3px]">
-            <span className="text-[13px] font-medium text-tyba-green">{t("orbitLiveRun")}</span>
-            <span className="text-[11px] text-tyba-text-faint">{t("orbitLiveRunHint")}</span>
-          </div>
+          {/* Quadro Orbit: "Ao vivo" e a dica numa linha só, antes dos nós. */}
+          <span className="shrink-0 font-bold text-[var(--tyba-primary)]">{t("orbitLiveRun")}</span>
+          <span className="shrink-0 text-tyba-text-muted">{t("orbitLiveRunHint")}</span>
           <ol
             aria-label={t("orbitRunSteps")}
-            className="m-0 flex min-w-0 flex-1 list-none items-center gap-5 overflow-x-auto p-0"
+            className="m-0 flex min-w-0 flex-1 list-none items-center gap-4 overflow-x-auto p-0"
           >
             {liveRunNodes(graph, run).map((id) => (
               <li key={id} className="flex">
@@ -108,14 +107,14 @@ export function RunTimeline({
         </>
       ) : run ? (
         <>
-          <div className="flex shrink-0 flex-col gap-[3px]">
-            <span className="text-[13px] font-medium text-tyba-text">
+          <div className="flex shrink-0 items-center gap-4">
+            <span className="font-bold text-tyba-text">
               {t("orbitRunNumber", { n: number })}{" "}
               <span className="font-normal text-tyba-text-faint">
                 · {formatDuration(runElapsed(run, now))}
               </span>
             </span>
-            <span className="text-[11px] text-tyba-text-faint">
+            <span className="text-tyba-text-muted">
               {run.status === "running" && !run.settled
                 ? t("orbitRunStartedAt", {
                     time: new Date(run.startedAt).toLocaleTimeString(i18n.language, {
@@ -152,7 +151,7 @@ export function RunTimeline({
           </ol>
         </>
       ) : (
-        <span className="flex-1 text-[12px] text-tyba-text-faint">{t("orbitRunNone")}</span>
+        <span className="flex-1 text-tyba-text-faint">{t("orbitRunNone")}</span>
       )}
       {queue.length > 0 && (
         <Popover open={queueOpen} onOpenChange={setQueueOpen}>
