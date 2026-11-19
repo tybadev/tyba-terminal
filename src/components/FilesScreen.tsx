@@ -2,16 +2,16 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   ClockCounterClockwise,
-  FilePlus,
   Folder,
   FolderOpen,
-  FolderSimplePlus,
   MagnifyingGlass,
+  Plus,
   X,
   type Icon,
 } from "@phosphor-icons/react";
 
 import "./gitScreen.css";
+import { Button } from "@/components/ui/button";
 import i18n from "../i18n";
 import { ComposeFileTab } from "./ComposeFileTab";
 import { EditorTab } from "./EditorTab";
@@ -58,9 +58,6 @@ const RAIL: Record<FilesSection, { icon: Icon; label: string }> = {
   search: { icon: MagnifyingGlass, label: "filesScreenSearch" },
   recent: { icon: ClockCounterClockwise, label: "filesScreenRecent" },
 };
-
-const BTN =
-  "flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-[6px] border border-tyba-border-strong px-2.5 py-1 text-[12px] text-tyba-text-muted hover:text-tyba-text disabled:opacity-50";
 
 const SEARCH_DEBOUNCE_MS = 220;
 
@@ -400,7 +397,7 @@ export function FilesScreen({
       <div className="tyba-frost flex min-w-0 flex-1 flex-col">
         {visible && session && (
           <div className="flex h-[46px] shrink-0 items-center gap-3 shadow-[inset_0_-1px_0_var(--tyba-line)] px-[18px] text-[12px]">
-            <FolderOpen size={16} className="shrink-0 text-tyba-cyan" />
+            <FolderOpen size={16} className="shrink-0 text-tyba-blue" />
             <span className="shrink-0 text-[15px] font-bold text-tyba-text">{t("filesTitle")}</span>
             <span className="min-w-0 flex-1 truncate font-mono text-tyba-text-faint" title={info?.root}>
               {info?.root ?? session.title}
@@ -413,14 +410,13 @@ export function FilesScreen({
                 {t("filesScreenChanges", { count: changed })}
               </span>
             )}
-            <button type="button" className={BTN} onClick={() => create(false)}>
-              <FilePlus size={13} />
+            <Button variant="outline" size="sm" onClick={() => create(false)}>
+              <Plus />
               {t("filesNewFile")}
-            </button>
-            <button type="button" className={BTN} onClick={() => create(true)}>
-              <FolderSimplePlus size={13} />
+            </Button>
+            <Button variant="ghost" size="sm" onClick={() => create(true)}>
               {t("filesNewFolder")}
-            </button>
+            </Button>
           </div>
         )}
 
@@ -522,7 +518,7 @@ export function FilesScreen({
                             void closeTab(f.view);
                           }}
                           className={`absolute inset-0 items-center justify-center rounded-[3px] text-tyba-text-faint hover:bg-tyba-text/[.08] hover:text-tyba-text ${
-                            dirty ? "hidden group-hover:flex" : on ? "flex" : "hidden group-hover:flex"
+                            dirty ? "hidden group-hover:flex" : "flex"
                           }`}
                         >
                           <X size={11} />
