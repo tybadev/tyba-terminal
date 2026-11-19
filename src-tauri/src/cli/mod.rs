@@ -19,7 +19,9 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::layout::LayoutState;
-use crate::session::{redact, AgentRunnerKind, ObservedState, Session, SessionKind, SessionStatus};
+use crate::session::{
+    redact, AgentRunnerKind, ObservedState, Session, SessionId, SessionKind, SessionStatus,
+};
 
 pub const EXIT_OK: i32 = 0;
 pub const EXIT_FAILURE: i32 = 1;
@@ -31,12 +33,16 @@ pub const EXIT_INTERRUPTED: i32 = 130;
 
 pub const PROTOCOL_VERSION: u32 = 1;
 const CONTROL_SOCKET_FILE: &str = "control.sock";
-const SUBCOMMANDS: &[&str] = &["ls"];
+const SUBCOMMANDS: &[&str] = &["ls", "capture"];
 const CLI_MODE: &str = "_cli";
 
 const USAGE: &str = "\
 uso:
   tyba ls [--json]       sessões e panes do TYBA aberto, com o estado do agente
+  tyba capture <pane> [--lines N] [--json]
+                         o scrollback do pane, já redigido (sem segredos)
+
+<pane>: id, rótulo, posição no `tyba ls` ou sufixo do id, nessa ordem.
 
 A CLI fala com o app aberto: fechou o TYBA, os dados somem junto.
 Saída: 0 ok, 1 falha, 2 uso inválido, 3 alvo não achado/ambíguo,
@@ -46,6 +52,12 @@ Saída: 0 ok, 1 falha, 2 uso inválido, 3 alvo não achado/ambíguo,
 pub struct ControlRequest {
     pub v: u32,
     pub op: String,
+    /// `capture`: o alvo, como o dono digitou (ver [`target`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    /// `capture --lines N`: só as últimas N linhas.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lines: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -208,19 +220,91 @@ fn agent_of(session: &Session) -> Option<AgentEntry> {
     }
 }
 
+/// A saída do `tyba capture --json`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CaptureResult {
+    pub pane: String,
+    /// Já redigidas: o texto cru nunca sai do app.
+    pub lines: Vec<String>,
+}
+
 /// Lado do app: responde um pedido já autenticado (peer do mesmo usuário).
+/// `scrollback` lê o texto CRU de um pane (`PtyPool::scrollback_lines`); a
+/// redação acontece aqui, antes de qualquer byte sair.
 pub fn handle(
     request: &ControlRequest,
     layout: &LayoutState,
     sessions: &[Session],
+    scrollback: impl Fn(SessionId) -> Option<Vec<String>>,
 ) -> ControlResponse {
+    let to_response = |value: Result<serde_json::Value, serde_json::Error>| match value {
+        Ok(value) => ControlResponse::ok(value),
+        Err(e) => ControlResponse::error(EXIT_FAILURE, e.to_string()),
+    };
     match request.op.as_str() {
-        "ls" => match serde_json::to_value(build_listing(layout, sessions)) {
-            Ok(value) => ControlResponse::ok(value),
-            Err(e) => ControlResponse::error(EXIT_FAILURE, e.to_string()),
-        },
+        "ls" => to_response(serde_json::to_value(build_listing(layout, sessions))),
+        "capture" => {
+            let listing = build_listing(layout, sessions);
+            let pane = match resolve_pane(&listing, request.target.as_deref().unwrap_or("")) {
+                Ok(pane) => pane,
+                Err(response) => return response,
+            };
+            let Some(raw) = SessionId::parse_str(&pane).ok().and_then(&scrollback) else {
+                return ControlResponse::error(EXIT_FAILURE, "o pane não tem terminal vivo");
+            };
+            to_response(serde_json::to_value(CaptureResult {
+                pane,
+                lines: redacted_tail(raw, request.lines),
+            }))
+        }
         other => ControlResponse::error(EXIT_USAGE, format!("operação desconhecida: {other}")),
     }
+}
+
+/// O id do pane que `target` nomeia, ou a resposta de erro do contrato.
+fn resolve_pane(listing: &Listing, target: &str) -> Result<String, ControlResponse> {
+    let panes: Vec<&PaneEntry> = listing.workspaces.iter().flat_map(|w| &w.panes).collect();
+    let refs: Vec<target::PaneRef<'_>> = panes
+        .iter()
+        .map(|p| target::PaneRef {
+            id: &p.id,
+            label: &p.label,
+            position: p.position,
+        })
+        .collect();
+    match target::resolve(&refs, target) {
+        Ok(i) => Ok(panes[i].id.clone()),
+        Err(target::TargetError::Empty) => Err(ControlResponse::error(EXIT_USAGE, "falta o pane")),
+        Err(target::TargetError::NotFound) => Err(ControlResponse::error(
+            EXIT_TARGET,
+            format!("nenhum pane chamado '{target}' (veja `tyba ls`)"),
+        )),
+        Err(target::TargetError::Ambiguous(ids)) => Err(ControlResponse::error(
+            EXIT_TARGET,
+            format!("'{target}' é ambíguo: {}", ids.join(", ")),
+        )),
+    }
+}
+
+/// Redige o scrollback INTEIRO e só depois corta as últimas `lines`: a
+/// redação de chave PEM depende das linhas de antes (o BEGIN), e cortar
+/// primeiro deixaria o corpo de uma chave passar.
+fn redacted_tail(raw: Vec<String>, lines: Option<usize>) -> Vec<String> {
+    let logical = raw
+        .into_iter()
+        .map(|text| crate::blocks::LogicalLine {
+            text,
+            runs: Vec::new(),
+        })
+        .collect();
+    let mut out: Vec<String> = crate::blocks::redact_lines(logical)
+        .into_iter()
+        .map(|l| l.text)
+        .collect();
+    if let Some(n) = lines {
+        out.drain(..out.len().saturating_sub(n));
+    }
+    out
 }
 
 // ================================ cliente ================================
@@ -263,21 +347,52 @@ struct Invocation {
 fn parse_args(args: &[String]) -> Result<Invocation, String> {
     let (op, rest) = args.split_first().ok_or("falta o subcomando")?;
     let mut json = false;
-    for arg in rest {
-        match arg.as_str() {
-            "--json" => json = true,
-            other => return Err(format!("argumento desconhecido: {other}")),
+    let mut lines = None;
+    let mut positional = Vec::new();
+    let mut rest = rest.iter();
+    while let Some(arg) = rest.next() {
+        let value = match arg.as_str() {
+            "--json" => {
+                json = true;
+                continue;
+            }
+            "--lines" => Some(rest.next().ok_or("--lines pede um número")?.as_str()),
+            other => other.strip_prefix("--lines="),
+        };
+        match value {
+            Some(n) => {
+                lines = Some(
+                    n.parse::<usize>()
+                        .ok()
+                        .filter(|n| *n > 0)
+                        .ok_or(format!("--lines pede um número maior que zero, veio '{n}'"))?,
+                );
+            }
+            None if arg.starts_with('-') && arg.len() > 1 => {
+                return Err(format!("argumento desconhecido: {arg}"))
+            }
+            None => positional.push(arg.clone()),
         }
     }
-    match op.as_str() {
-        "ls" => Ok(Invocation {
-            request: ControlRequest {
-                v: PROTOCOL_VERSION,
-                op: "ls".into(),
-            },
+    let request = |op: &str, target: Option<String>| ControlRequest {
+        v: PROTOCOL_VERSION,
+        op: op.into(),
+        target,
+        lines,
+    };
+    match (op.as_str(), positional.as_slice()) {
+        ("ls", []) if lines.is_none() => Ok(Invocation {
+            request: request("ls", None),
             json,
         }),
-        other => Err(format!("subcomando desconhecido: {other}")),
+        ("ls", _) => Err("`tyba ls` não recebe pane nem --lines".into()),
+        ("capture", [target]) => Ok(Invocation {
+            request: request("capture", Some(target.clone())),
+            json,
+        }),
+        ("capture", []) => Err("falta o pane: `tyba capture <pane>`".into()),
+        ("capture", _) => Err("`tyba capture` recebe um pane só".into()),
+        (other, _) => Err(format!("subcomando desconhecido: {other}")),
     }
 }
 
@@ -317,15 +432,19 @@ pub fn run(args: &[String], socket: &Path, out: &mut impl Write, err: &mut impl 
         return response.code.unwrap_or(EXIT_FAILURE);
     }
     let result = response.result.unwrap_or(serde_json::Value::Null);
-    let written = if invocation.json {
-        writeln!(out, "{result}")
+    let rendered = if invocation.json {
+        Ok(format!("{result}\n"))
+    } else if invocation.request.op == "capture" {
+        serde_json::from_value::<CaptureResult>(result)
+            .map(|c| c.lines.iter().map(|l| format!("{l}\n")).collect::<String>())
     } else {
-        match serde_json::from_value::<Listing>(result) {
-            Ok(listing) => write!(out, "{}", render_listing(&listing)),
-            Err(e) => {
-                let _ = writeln!(err, "tyba: resposta inesperada do TYBA: {e}");
-                return EXIT_FAILURE;
-            }
+        serde_json::from_value::<Listing>(result).map(|l| render_listing(&l))
+    };
+    let written = match rendered {
+        Ok(text) => out.write_all(text.as_bytes()),
+        Err(e) => {
+            let _ = writeln!(err, "tyba: resposta inesperada do TYBA: {e}");
+            return EXIT_FAILURE;
         }
     };
     match written {

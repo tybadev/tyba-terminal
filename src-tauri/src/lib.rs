@@ -10681,7 +10681,12 @@ pub fn run() {
                 let control_app = app.handle().clone();
                 let control_handler: cli::server::ControlHandler = Arc::new(move |request| {
                     let state = control_app.state::<AppState>();
-                    cli::handle(&request, &state.layout.state(), &state.sessions.list())
+                    cli::handle(
+                        &request,
+                        &state.layout.state(),
+                        &state.sessions.list(),
+                        |id| state.pty_pool.scrollback_lines(id),
+                    )
                 });
                 match cli::server::ControlServer::bind(
                     &cli::resolve_control_socket_path(),
