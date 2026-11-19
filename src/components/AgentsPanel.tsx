@@ -1,10 +1,9 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ArrowsOutSimple, CaretDown, CaretRight } from "@phosphor-icons/react";
 
 import {
   resolveApproval,
-  type AgentRunner,
   type ApprovalDecision,
   type ApprovalRequest,
   type Session,
@@ -18,7 +17,6 @@ import {
 import { formatDuration } from "@/lib/blockLayout";
 import { usageSummary } from "@/lib/agentUsage";
 import { decideApproval } from "@/lib/notifications";
-import { basename } from "@/lib/utils";
 import { withSubagentsReason } from "@/lib/sessionStatus";
 import {
   LIGHT_CLASS,
@@ -31,9 +29,6 @@ import {
   type AgentRound,
   type AgentTreeRow,
 } from "@/lib/agentTree";
-import { AgentIcon } from "./icons/AgentIcon";
-import { ClaudeIcon } from "./icons/ClaudeIcon";
-import { OpenAIIcon } from "./icons/OpenAIIcon";
 
 interface Props {
   session: Session;
@@ -42,8 +37,6 @@ interface Props {
   /** Nome do orquestrador no topo da cascata: em sessão de shell é o binário
    * detectado (`claude`), não o título da sessão (que seria o shell). */
   orchestratorTitle?: string | null;
-  /** O CLI que roda: a linha do agente usa a marca dele (Claude, OpenAI). */
-  runner?: AgentRunner | null;
   /** O subagente com o detalhe aberto na lateral (4E): a linha fica marcada. */
   selectedId: string | null;
   /** Clicar na linha abre, troca ou (na marcada) fecha o detalhe. */
@@ -59,8 +52,60 @@ const LIGHT_LABEL: Record<AgentLight, string> = {
   blocked: "subagentsStatusBlocked",
 };
 
-/** Acima de tantos subagentes vivos na rodada, a caixa AGORA vira uma linha. */
-const COMPACT_NOW_AFTER = 3;
+/**
+ * O robô do agente (decisão do dono, 2026-11-15: o mesmo do quadro, fora do
+ * Phosphor), com o piscar de olho. As cores saem dos tokens: antena e boca no
+ * violeta, corpo na tinta dele, olhos na cor do texto. Piscar só sem
+ * "reduzir movimento".
+ */
+export function RobotIcon({ size = 15, className }: { size?: number; className?: string }) {
+  const { t } = useTranslation();
+  const eyes = useRef<(SVGRectElement | null)[]>([]);
+  useEffect(() => {
+    if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
+    const running = eyes.current.map((el) =>
+      el?.animate?.(
+        [
+          { transform: "scaleY(1)", offset: 0 },
+          { transform: "scaleY(1)", offset: 0.92 },
+          { transform: "scaleY(0.1)", offset: 0.95 },
+          { transform: "scaleY(1)", offset: 1 },
+        ],
+        { duration: 3400, iterations: Infinity },
+      ),
+    );
+    return () => running.forEach((a) => a?.cancel());
+  }, []);
+  const accent = { fill: "var(--tyba-violet)" };
+  const eye = { fill: "var(--tyba-text)", transformBox: "fill-box", transformOrigin: "center" } as const;
+  return (
+    <svg
+      viewBox="4 -8 76 92"
+      width={size}
+      height={size}
+      role="img"
+      aria-label={t("agentsTitle")}
+      className={`shrink-0 ${className ?? ""}`}
+    >
+      <rect x="39" y="0" width="6" height="14" rx="3" style={accent} />
+      <circle cx="42" cy="2" r="8" style={accent} />
+      <rect
+        x="6"
+        y="14"
+        width="72"
+        height="58"
+        rx="20"
+        style={{ fill: "color-mix(in srgb, var(--tyba-violet) 22%, var(--tyba-paper-solid))" }}
+      />
+      <rect ref={(el) => void (eyes.current[0] = el)} x="23" y="35" width="12" height="16" rx="6" style={eye} />
+      <rect ref={(el) => void (eyes.current[1] = el)} x="49" y="35" width="12" height="16" rx="6" style={eye} />
+      <rect x="22" y="74" width="40" height="8" rx="4" style={accent} />
+    </svg>
+  );
+}
+
+/** Estado "em andamento" do agente principal: no quadro, azul. */
+const IN_PROGRESS = new Set(["sessionInProgress", "sessionSubagentsWorking"]);
 
 function PendingBadge({ count }: { count: number }) {
   const { t } = useTranslation();
@@ -85,7 +130,6 @@ export function AgentsPanel({
   snapshot,
   approvals,
   orchestratorTitle,
-  runner,
   selectedId,
   onSelect,
 }: Props) {
@@ -130,31 +174,27 @@ export function AgentsPanel({
           sabe dela. Com o `statusLine` do Claude: modelo, contexto, tokens,
           custo e tempo. Sem ele (Codex, Claude sem sessão do TYBA): só o
           tempo de sessão — o que não chega do core não se inventa. */}
-      <div className="mx-3 flex shrink-0 flex-col gap-1 px-0.5 pb-2 pt-1 shadow-[inset_0_-1px_0_var(--tyba-border-soft)]">
-        <div className="flex min-w-0 items-center gap-2">
-          {runner === "claude_code" ? (
-            <ClaudeIcon size={13} className="shrink-0 text-tyba-amber" />
-          ) : runner === "codex" ? (
-            <OpenAIIcon size={13} className="shrink-0 text-tyba-amber" />
-          ) : (
-            <AgentIcon size={13} className="shrink-0 text-tyba-amber" />
-          )}
-          <span className="min-w-0 flex-1 truncate text-[13px] text-tyba-text">
-            {(() => {
-              const agent = orchestratorTitle ?? session.title;
-              const where = session.worktree?.path ?? session.repo_root;
-              return where
-                ? t("agentsSessionIn", { agent, repo: basename(where) })
-                : agent;
-            })()}
+      <div className="mx-2.5 flex shrink-0 flex-col px-0.5 pb-3 pt-1.5 shadow-[inset_0_-1px_0_var(--tyba-line)]">
+        {/* Quadro Agentes (g5): robô, o nome do agente em negrito e o estado
+            à direita; embaixo, a linha de uso. */}
+        <div className="flex min-w-0 items-center gap-2 text-[14px]">
+          <RobotIcon size={18} />
+          <span className="min-w-0 truncate font-semibold text-tyba-text">
+            {orchestratorTitle ?? session.title}
           </span>
           <PendingBadge count={tree.mainPending} />
           {visual && (
-            <span className="flex shrink-0 items-center gap-1.5">
-              <span className={`size-2 rounded-full ${visual.dotClass}`} />
-              <span className={`text-[11px] ${visual.textClass}`}>
-                {t(visual.labelKey)}
-              </span>
+            <span
+              className={`ml-auto flex shrink-0 items-center gap-1.5 text-[12px] font-semibold ${
+                IN_PROGRESS.has(visual.labelKey) ? "text-tyba-blue" : visual.textClass
+              }`}
+            >
+              <span
+                className={`size-[7px] rounded-full ${
+                  IN_PROGRESS.has(visual.labelKey) ? "bg-tyba-blue" : visual.dotClass
+                }`}
+              />
+              {t(visual.labelKey)}
             </span>
           )}
         </div>
@@ -163,7 +203,7 @@ export function AgentsPanel({
           if (usage) {
             return (
               <span
-                className="truncate pl-[21px] font-mono text-[11px] text-tyba-text-faint"
+                className="mt-1.5 truncate pl-[26px] font-mono text-[11.5px] text-tyba-text-muted"
                 title={usage}
               >
                 {usage}
@@ -177,16 +217,16 @@ export function AgentsPanel({
               })
             : null;
           return took ? (
-            <span className="pl-[21px] font-mono text-[11px] text-tyba-text-faint">
+            <span className="mt-1.5 pl-[26px] font-mono text-[11.5px] text-tyba-text-muted">
               {t("agentsSessionElapsed", { time: took })}
             </span>
           ) : null;
         })()}
       </div>
 
-      <div className="max-h-[45vh] min-h-0 overflow-y-auto overflow-x-hidden px-3 pb-2.5 pt-2">
+      <div className="max-h-[45vh] min-h-0 overflow-y-auto overflow-x-hidden px-3 pb-2.5 pt-1">
         {rounds.length === 0 ? (
-          <p className="text-[12px] leading-relaxed text-tyba-text-faint">
+          <p className="pt-2 text-[12px] leading-relaxed text-tyba-text-faint">
             {t("agentsEmpty")}
           </p>
         ) : (
@@ -194,12 +234,6 @@ export function AgentsPanel({
             {rounds.map((round) => {
               const expanded = roundOpen[round.round] ?? round.latest;
               const visible = expanded ? round.rows : collapsedRows(round);
-              // Muitos rodando juntos: a caixa AGORA vira uma linha (o texto
-              // inteiro fica no hover e no detalhe aberto).
-              const compactNow =
-                round.rows.filter(
-                  (r) => r.light === "running" || r.light === "starting" || r.light === "awaiting",
-                ).length > COMPACT_NOW_AFTER;
               return (
                 <section key={round.round} className="min-w-0">
                   {rounds.length > 1 && (
@@ -215,12 +249,11 @@ export function AgentsPanel({
                       }
                     />
                   )}
-                  <ul className="flex min-w-0 flex-col gap-1.5">
+                  <ul className="flex min-w-0 flex-col">
                     {visible.map((row) => (
                       <SubagentRow
                         key={row.key}
                         row={row}
-                        compactNow={compactNow}
                         approval={
                           row.run.agent_id
                             ? (inline.get(row.run.agent_id) ?? null)
@@ -296,11 +329,8 @@ function SubagentRow({
   approval,
   selected,
   onSelect,
-  compactNow = false,
 }: {
   row: AgentTreeRow;
-  /** Muitos rodando na rodada: a ação em curso numa linha só. */
-  compactNow?: boolean;
   /** O pedido pendente mais antigo deste subagente, se houver. */
   approval: ApprovalRequest | null;
   selected: boolean;
@@ -312,14 +342,13 @@ function SubagentRow({
   const awaiting = row.light === "awaiting" && approval !== null;
   return (
     <li
-      // Quem espera por você ganha o tint âmbar (8%, mockup) — a cor que o sistema
-      // reserva para agente pedindo alguém — e o halo de luz só onde há brilho
-      // (escuro: 3× o glow do tema; claro: glow 0, sem halo).
-      className={`min-w-0 rounded-[8px] ${
+      // Quadro Agentes (g5-sub): linha solta; marcada = a placa do item ativo
+      // da lateral; pedindo você = a mesma placa com o contorno amarelo.
+      className={`min-w-0 rounded-[12px] pt-3 pb-0.5 ${
         awaiting
-          ? "-mx-2 bg-tyba-amber/[.08] px-2 py-1.5 shadow-[0_0_calc(var(--tyba-glow-size)*3)_color-mix(in_srgb,var(--tyba-amber)_8%,transparent)]"
+          ? "tyba-pill-on -mx-2 mt-1 px-2 pb-2 shadow-[var(--tyba-pill-on),inset_0_0_0_1.5px_var(--tyba-amber-fill)]!"
           : selected
-            ? "tyba-pill-on -mx-2 px-2 py-1"
+            ? "tyba-pill-on -mx-2 mt-1 px-2 pb-2"
             : ""
       }`}
     >
@@ -328,51 +357,51 @@ function SubagentRow({
         disabled={id == null}
         aria-pressed={selected}
         onClick={() => id && onSelect(id)}
-        className={`group flex w-full min-w-0 items-start gap-2.5 rounded-[5px] py-1 text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-tyba-green ${
+        className={`group flex w-full min-w-0 flex-col gap-0.5 rounded-[5px] text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-tyba-green ${
           id ? "" : "cursor-default opacity-70"
         }`}
       >
-        <span
-          className={`mt-[5px] size-[7px] shrink-0 rounded-full ${LIGHT_CLASS[row.light]}`}
-          role="img"
-          aria-label={t(LIGHT_LABEL[row.light])}
-        />
-        <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-          <span className="flex min-w-0 items-center gap-2">
-            <span
-              className={`min-w-0 flex-1 truncate text-[13px] ${
-                row.light === "done" ||
-                row.light === "failed" ||
-                row.light === "blocked"
-                  ? "text-tyba-text-muted"
-                  : "text-tyba-text"
-              } ${id ? "group-hover:text-tyba-text" : ""}`}
-            >
-              {row.run.description || row.run.agent_type || t("agentsUnknownType")}
-            </span>
-            <PendingBadge count={awaiting ? row.pending - 1 : row.pending} />
-            <span className="shrink-0 font-mono text-[11px] tabular-nums text-tyba-text-faint">
-              {formatElapsed(row.elapsedMs)}
-            </span>
-            {id &&
-              (selected ? (
-                <ArrowsOutSimple size={11} className="shrink-0 text-tyba-text-faint" />
-              ) : (
-                <CaretRight size={10} className="shrink-0 text-tyba-text-faint" />
-              ))}
+        <span className="flex w-full min-w-0 items-center gap-2.5 text-[13.5px] font-semibold">
+          <span
+            className={`size-[7px] shrink-0 rounded-full ${LIGHT_CLASS[row.light]}`}
+            role="img"
+            aria-label={t(LIGHT_LABEL[row.light])}
+          />
+          <span
+            className={`min-w-0 flex-1 truncate ${
+              row.light === "done" ||
+              row.light === "failed" ||
+              row.light === "blocked"
+                ? "text-tyba-text-muted"
+                : "text-tyba-text"
+            } ${id ? "group-hover:text-tyba-text" : ""}`}
+          >
+            {row.run.description || row.run.agent_type || t("agentsUnknownType")}
           </span>
-          {!awaiting && line && line.kind !== "run" && line.kind !== "tool" && (
-            <SubagentLineText line={line} />
-          )}
+          <PendingBadge count={awaiting ? row.pending - 1 : row.pending} />
+          <span className="shrink-0 font-mono text-[11.5px] font-medium tabular-nums text-tyba-text-faint">
+            {formatElapsed(row.elapsedMs)}
+          </span>
+          {id &&
+            (selected ? (
+              <ArrowsOutSimple size={11} className="shrink-0 text-tyba-text-faint" />
+            ) : (
+              <CaretRight size={11} className="shrink-0 text-tyba-text-faint" />
+            ))}
         </span>
+        {!awaiting && line && line.kind !== "run" && line.kind !== "tool" && (
+          <span className="pl-[17px]">
+            <SubagentLineText line={line} />
+          </span>
+        )}
       </button>
       {/* O que está executando AGORA, inteiro (mockup Subagentes): a linha
           cortada não deixava ver o comando. */}
       {line && (line.kind === "run" || line.kind === "tool") && (
         <NowBox
           line={line}
-          compact={compactNow && !selected}
-          recent={compactNow && !selected ? [] : (row.run.recent_activity ?? [])}
+          compact={!selected}
+          recent={selected ? (row.run.recent_activity ?? []) : []}
         />
       )}
       {awaiting && approval && <InlineApproval approval={approval} />}
@@ -399,17 +428,20 @@ export function NowBox({
     <>
     <div
       title={compact ? `${tool} ${detail ?? ""}` : undefined}
-      className={`ml-[17px] flex min-w-0 gap-2 rounded-[6px] bg-tyba-sunken px-2.5 shadow-[inset_0_0_0_1px_var(--tyba-border)] ${
-        compact ? "mb-1 items-center py-1" : "mb-1.5 mt-1 items-start py-1.5"
+      // Quadro Agentes (g5-now): caixa clara com fio, AGORA em verde, a
+      // ferramenta em azul e o comando numa linha (inteiro no hover e no
+      // detalhe aberto).
+      className={`mt-2 mb-1 ml-[17px] flex min-w-0 gap-2.5 rounded-[10px] bg-tyba-paper-solid px-3 py-2 font-mono text-[12px] shadow-[inset_0_0_0_1px_var(--tyba-line),0_1px_2px_color-mix(in_srgb,var(--tyba-text)_4%,transparent)] ${
+        compact ? "items-center whitespace-nowrap" : "items-start"
       }`}
     >
-      <span className="shrink-0 pt-px text-[9.5px] tracking-[0.06em] text-tyba-cyan">
+      <span className="shrink-0 pt-px text-[10px] font-semibold tracking-[0.08em] text-tyba-green">
         {t("agentsNow")}
       </span>
-      <span className="shrink-0 font-mono text-[11px] text-tyba-blue">{tool}</span>
+      <span className="shrink-0 text-tyba-blue">{tool}</span>
       {detail && (
         <span
-          className={`min-w-0 flex-1 font-mono text-[12px] leading-[17px] text-tyba-text ${
+          className={`min-w-0 flex-1 leading-[17px] text-tyba-text ${
             compact ? "truncate" : "break-all"
           }`}
         >
