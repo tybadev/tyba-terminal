@@ -3680,9 +3680,9 @@ impl<H: RunHost> Runs<H> {
     /// Sem entrega, é também o relógio do assentado: o watcher avisa o
     /// estado a cada poll, e o run assenta (ou volta) por aqui.
     ///
-    /// E a fila de atenção: com o pedido de permissão aberto (`attention`),
-    /// o nó entra em "esperando você" (o começo fica enquanto o motivo é o
-    /// mesmo); sem ele, sai.
+    /// E a fila de atenção: com o pedido aberto (`attention`: permissão,
+    /// pergunta ou turno fechado), o nó entra em "esperando você" (o começo
+    /// fica enquanto o motivo é o mesmo); sem ele, sai.
     fn agent_state(
         &self,
         run_id: &str,
@@ -3702,6 +3702,12 @@ impl<H: RunHost> Runs<H> {
                 return;
             }
             let at = now();
+            // Turno fechado com conversa por entregar (ou acabada de
+            // entregar): a vez é da mensagem, não do dono.
+            let attention = attention.filter(|w| {
+                w.reason != super::agent::WaitReason::TurnEnd
+                    || (a.talk.waiting(node_id) == 0 && !a.talk.delivering(node_id, at))
+            });
             // Também com o nó já fechado: a sessão viva pode pedir permissão
             // (o vigia só avisa enquanto ela vive).
             let waited = match a.sched.run.nodes.get_mut(node_id) {
@@ -5314,6 +5320,18 @@ impl<H: RunHost> Runs<H> {
         Ok(())
     }
 
+    /// A sessão é de um nó (agente ou Terminal) que espera o dono agora, em
+    /// algum run aberto: o clique no aviso dela vai ao nó.
+    pub fn waits_for_you(&self, session_id: &str) -> bool {
+        self.active.lock().values().any(|a| {
+            a.sched
+                .run
+                .nodes
+                .values()
+                .any(|n| n.session_id.as_deref() == Some(session_id) && n.waiting_you.is_some())
+        })
+    }
+
     /// O dono encerrou pela tela Ports o processo de um nó de processo: o nó
     /// vira "parado por você", como no ■, e não "falhou" — senão o agente
     /// que o criou vê uma falha e o sobe de novo. Chamado antes do sinal;
@@ -6411,6 +6429,9 @@ impl TauriHost {
 
 pub type SharedRuns = Arc<Runs<TauriHost>>;
 
+/// Ir ao nó da sessão (o clique no aviso do sistema), com o id dela.
+pub const EVENT_FOCUS_SESSION: &str = "orbit://focus-session";
+
 impl RunHost for TauriHost {
     fn spawn_process(
         &self,
@@ -7117,7 +7138,12 @@ mod tests {
                 .values()
                 .find(|(t, _)| t == title)
                 .expect("agente subiu");
-            on_state(state, None);
+            // Como o vigia real: turno fechado é "esperando você".
+            let attention = (state == PeerState::Ready).then_some(crate::orbit::agent::Attention {
+                reason: crate::orbit::agent::WaitReason::TurnEnd,
+                hint: None,
+            });
+            on_state(state, attention);
         }
 
         /// A sessão do agente de título `title` abre o pedido de permissão
@@ -8801,8 +8827,8 @@ mod tests {
     /// Fila de atenção (quadro OrbitEsperando): o agente com o pedido de
     /// permissão aberto entra em "esperando você" com o começo; o poll que
     /// repete o pedido não recomeça o relógio; a fila vem do mais antigo; sai
-    /// quando ele volta a trabalhar, fecha o turno ou a sessão sai. Processo
-    /// nunca entra, nem agente que só terminou.
+    /// quando ele volta a trabalhar ou a sessão sai; o turno fechado entra
+    /// como fim de turno. Processo nunca entra.
     #[cfg(unix)]
     #[test]
     fn waiting_you_queue_enters_leaves_and_keeps_the_oldest_first() {
@@ -8820,16 +8846,21 @@ mod tests {
         wait_status(&runs, &run.id, "p", NodeStatus::Failed);
         let r = runs.get(&run.id).unwrap();
         assert!(r.waiting_you.is_empty(), "{:?}", r.waiting_you);
-        // Turno fechado (pronto) não é esperar o dono.
+        // Turno fechado: a vez é do dono (fim de turno).
         host.set_state("Front", PeerState::Ready);
-        assert!(runs.get(&run.id).unwrap().nodes["a"].waiting_you.is_none());
+        let turn = runs.get(&run.id).unwrap().nodes["a"].waiting_you.clone();
+        assert_eq!(
+            turn.map(|w| w.reason),
+            Some(crate::orbit::agent::WaitReason::TurnEnd)
+        );
+        std::thread::sleep(Duration::from_millis(5));
 
         host.set_permission("Revisor", "bun test src/api");
         let r = runs.get(&run.id).unwrap();
         let w = r.nodes["b"].waiting_you.clone().expect("esperando");
         assert_eq!(w.reason, crate::orbit::agent::WaitReason::Permission);
         assert_eq!(w.hint.as_deref(), Some("bun test src/api"));
-        assert_eq!(r.waiting_you, vec!["b".to_string()]);
+        assert_eq!(r.waiting_you, vec!["a".to_string(), "b".to_string()]);
         std::thread::sleep(Duration::from_millis(5));
         host.set_permission("Front", "rm -rf dist");
         // O poll repete o pedido: o começo fica.
@@ -8897,7 +8928,8 @@ mod tests {
         let r = runs.get(&run.id).unwrap();
         assert_eq!(r.nodes[&child].status, NodeStatus::Done);
         assert!(r.nodes[&child].waiting_you.is_some(), "{r:?}");
-        assert_eq!(r.waiting_you, vec![child.clone()]);
+        // O orquestrador fechou o turno antes: está na frente.
+        assert_eq!(r.waiting_you, vec!["o".to_string(), child.clone()]);
         std::thread::sleep(Duration::from_millis(120));
         host.set_state("o", PeerState::Ready);
         host.set_permission("filho", "bun test");
@@ -8906,7 +8938,7 @@ mod tests {
         let r = wait_until(&runs, &run.id, "a sessão saiu", |r| {
             r.nodes[&child].waiting_you.is_none()
         });
-        assert!(r.waiting_you.is_empty());
+        assert_eq!(r.waiting_you, vec!["o".to_string()]);
     }
 
     /// O criado fecha o nó no fim do turno, mas a sessão segue viva no
@@ -8969,6 +9001,30 @@ mod tests {
             .unwrap_err();
         assert!(err.contains("não está mais rodando"), "{err}");
         runs.stop(&run.id).unwrap();
+    }
+
+    /// O clique no aviso só vai ao nó que ainda espera o dono.
+    #[cfg(unix)]
+    #[test]
+    fn notice_click_goes_only_to_a_node_that_still_waits() {
+        let dir = tempfile::tempdir().unwrap();
+        let (runs, host, _app) = pty_runs(dir.path().join("runs"));
+        let run = runs
+            .start_now(graph(vec![orchestrator("a")], vec![]), vec![])
+            .unwrap();
+        wait_orchestrating(&runs, &run.id, "a");
+        let session = runs.get(&run.id).unwrap().nodes["a"]
+            .session_id
+            .clone()
+            .unwrap();
+        host.set_state("a", PeerState::Working);
+        assert!(!runs.waits_for_you(&session));
+        host.set_state("a", PeerState::Ready);
+        assert!(runs.waits_for_you(&session));
+        assert!(!runs.waits_for_you("outra-sessao"));
+        runs.stop(&run.id).unwrap();
+        wait_finished(&runs, &run.id);
+        assert!(!runs.waits_for_you(&session));
     }
 
     /// Pedido novo recomeça o relógio: outro resumo, ou a sessão saiu do
@@ -10552,6 +10608,9 @@ mod tests {
         );
         assert!(inputs[0].1.contains("> revise o login"));
         assert!(!inputs[0].1.contains(&fake_key()));
+        // Turno fechado com a mensagem acabada de entregar: a vez é dela, não
+        // do dono.
+        assert!(runs.get(&run.id).unwrap().nodes["b"].waiting_you.is_none());
         assert_eq!(runs.get(&run.id).unwrap().nodes["b"].inbox, 0);
         assert!(runs.get(&run.id).unwrap().nodes["b"].inbox_from.is_empty());
 

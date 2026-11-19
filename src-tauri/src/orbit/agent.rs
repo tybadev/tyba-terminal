@@ -390,13 +390,17 @@ pub fn watch_first_turn(
 /// quando o agente espera o dono, o pedido (quadro OrbitEsperando).
 pub type OnState = Box<dyn Fn(PeerState, Option<Attention>) + Send>;
 
-/// Por que o agente espera o dono. Só a permissão: o turno fechado com
-/// pergunta o core não distingue do turno que só terminou (o `idle_prompt`
-/// do Claude chega nos dois e não muda mais o status), então não entra.
+/// Por que o agente espera o dono.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum WaitReason {
+    /// Pedido de permissão aberto no prompt do agente.
     Permission,
+    /// O agente perguntou: a pergunta estruturada do Claude
+    /// (`AskUserQuestion`) ou o `agent_needs_input`.
+    Question,
+    /// O turno fechou: a vez é do dono.
+    TurnEnd,
 }
 
 /// O agente parado esperando o dono, com o que ele pede (o resumo da
@@ -407,19 +411,52 @@ pub struct Attention {
     pub hint: Option<String>,
 }
 
-/// O pedido de permissão aberto na sessão: o prompt nativo do Claude
-/// (`PermissionRequest`) ou a aprovação do gate (`Approval`). A resposta é
-/// no terminal do agente; o TYBA não aprova nada daqui. Esperando resposta
-/// (`Reply`), trabalhando, turno fechado ou sessão morta: nada.
+/// A ferramenta de pergunta do Claude. Ela abre o prompt nativo como uma
+/// permissão (medido no Claude Code 2.1.329: `PermissionRequest` com
+/// `tool_name = AskUserQuestion`), e o resumo do pedido é o nome dela.
+const QUESTION_TOOL: &str = "AskUserQuestion";
+
+/// O que a sessão pede ao dono agora:
+/// - **permissão**: o prompt nativo do Claude (`PermissionRequest`) ou a
+///   aprovação do gate (`Approval`); o TYBA não aprova nada daqui;
+/// - **pergunta**: o prompt nativo do `AskUserQuestion`, ou a sessão
+///   esperando resposta (`Reply`, o `agent_needs_input`);
+/// - **fim de turno**: turno fechado (`Idle`), menos o que o próprio dono
+///   interrompeu.
+///
+/// Trabalhando ou sessão morta: nada.
 pub fn waiting_you(status: Option<&SessionStatus>) -> Option<Attention> {
+    let hint = |h: &Option<String>| h.clone().filter(|h| !h.trim().is_empty());
     match status? {
         SessionStatus::AwaitingInput {
-            hint,
+            hint: h,
+            reason: AwaitingReason::NativePrompt | AwaitingReason::Approval,
+        } if h.as_deref() == Some(QUESTION_TOOL) => Some(Attention {
+            reason: WaitReason::Question,
+            hint: None,
+        }),
+        SessionStatus::AwaitingInput {
+            hint: h,
             reason: AwaitingReason::NativePrompt | AwaitingReason::Approval,
         } => Some(Attention {
             reason: WaitReason::Permission,
-            hint: hint.clone().filter(|h| !h.trim().is_empty()),
+            hint: hint(h),
         }),
+        SessionStatus::AwaitingInput {
+            hint: h,
+            reason: AwaitingReason::Reply,
+        } => Some(Attention {
+            reason: WaitReason::Question,
+            hint: hint(h),
+        }),
+        SessionStatus::Idle { summary }
+            if summary.as_deref() != Some(crate::status::agent_events::INTERRUPTED_SUMMARY) =>
+        {
+            Some(Attention {
+                reason: WaitReason::TurnEnd,
+                hint: None,
+            })
+        }
         _ => None,
     }
 }
@@ -533,23 +570,27 @@ pub fn diff_since(snap: &Snapshot) -> String {
 mod tests {
     use super::*;
 
-    /// Só o pedido de permissão (prompt nativo do Claude, aprovação do gate)
-    /// é "esperando você"; resposta, trabalho, turno fechado e sessão morta,
-    /// não.
+    /// Permissão (prompt nativo, aprovação do gate), pergunta (o
+    /// `AskUserQuestion` no prompt nativo, a espera por resposta) e turno
+    /// fechado são "esperando você"; trabalho, turno que o dono interrompeu
+    /// e sessão morta, não.
     #[test]
-    fn waiting_you_is_only_the_permission_request() {
+    fn waiting_you_is_permission_question_or_turn_end() {
         use crate::session::AwaitingReason as R;
         let ask = |reason, hint: Option<&str>| SessionStatus::AwaitingInput {
             hint: hint.map(String::from),
             reason,
         };
+        let attention = |reason, hint: Option<&str>| {
+            Some(Attention {
+                reason,
+                hint: hint.map(String::from),
+            })
+        };
         for reason in [R::NativePrompt, R::Approval] {
             assert_eq!(
                 waiting_you(Some(&ask(reason, Some("bun test src/api")))),
-                Some(Attention {
-                    reason: WaitReason::Permission,
-                    hint: Some("bun test src/api".into()),
-                })
+                attention(WaitReason::Permission, Some("bun test src/api"))
             );
         }
         assert_eq!(
@@ -558,10 +599,25 @@ mod tests {
                 .hint,
             None
         );
+        assert_eq!(
+            waiting_you(Some(&ask(R::NativePrompt, Some("AskUserQuestion")))),
+            attention(WaitReason::Question, None)
+        );
+        assert_eq!(
+            waiting_you(Some(&ask(R::Reply, Some("e agora?")))),
+            attention(WaitReason::Question, Some("e agora?"))
+        );
+        for summary in [None, Some("Pronto: 3 testes".to_string())] {
+            assert_eq!(
+                waiting_you(Some(&SessionStatus::Idle { summary })),
+                attention(WaitReason::TurnEnd, None)
+            );
+        }
         for other in [
-            ask(R::Reply, Some("e agora?")),
             SessionStatus::Running,
-            SessionStatus::Idle { summary: None },
+            SessionStatus::Idle {
+                summary: Some(crate::status::agent_events::INTERRUPTED_SUMMARY.into()),
+            },
             SessionStatus::Exited { code: 0 },
             SessionStatus::Failed { reason: "x".into() },
         ] {

@@ -440,6 +440,9 @@ fn notify_native_shown(
     }
     match builder.show() {
         Ok(()) => {
+            if !focused {
+                notify::click_target().shown(id, std::time::Instant::now());
+            }
             eprintln!(
                 "[tyba] aviso {kind:?} de {id} enviado (janela em foco: {focused}, na tela: {viewed:?})"
             );

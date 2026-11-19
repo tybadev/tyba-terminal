@@ -107,6 +107,7 @@ import {
   type LaunchConfigDraftState,
 } from "./components/LaunchConfigScreen";
 import { OrbitScreen, type FocusSessionRequest } from "./components/orbit/OrbitScreen";
+import { onFocusSession } from "./lib/orbit";
 import { ShortcutsPanel } from "./components/ShortcutsPanel";
 import { EmptySessions } from "./components/EmptySessions";
 import { OrbitIcon } from "./components/icons/OrbitIcon";
@@ -4625,6 +4626,14 @@ export default function App() {
     },
     [layout.workspaces, goToSession],
   );
+  // Clicou no aviso do sistema de um nó que espera você: vai ao nó (o core
+  // decide se o foco da janela foi esse clique).
+  useEffect(() => {
+    const off = onFocusSession((id) => focusSessionOrNode(id as SessionId));
+    return () => {
+      void off.then((fn) => fn());
+    };
+  }, [focusSessionOrNode]);
   const machineTunnels = useMemo(() => sshTunnelTargets(sessions, sshHosts), [sessions, sshHosts]);
   useEffect(() => {
     if (!activeId || gitScreenOpen || orbitOpen) return;
