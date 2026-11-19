@@ -433,6 +433,7 @@ import {
   nextAttention,
   wantsAttention,
   agentForWorkspace,
+  agentLabelOf,
   observedVisual,
   type SessionPlace,
 } from "./lib/agentsBoard";
@@ -2072,6 +2073,19 @@ export default function App() {
     () => new Set(detectedBySession.keys()),
     [detectedBySession],
   );
+  // O agente que a sonda de processo achou em cada sessão, pelo nome curto: é
+  // o que põe o `codex` digitado (sem palpite de tela) nos cartões de Agentes
+  // e no ícone da linha da sessão.
+  const detectedAgents = useMemo(
+    () =>
+      new Map(
+        [...detectedBySession].map(([id, d]) => [
+          id,
+          runnerLabel({ type: "agent", runner: d.kind }) ?? "",
+        ]),
+      ),
+    [detectedBySession],
+  );
 
   const probedDetection = useRef<Set<string>>(new Set());
   useEffect(() => {
@@ -2208,8 +2222,8 @@ export default function App() {
   // derivações independentes do mesmo estado dariam contador e lista que
   // discordam — e é exatamente o número em cima da lista que denuncia.
   const agentRows = useMemo(
-    () => boardOrder(buildAgentRows(sessions, layout)),
-    [sessions, layout],
+    () => boardOrder(buildAgentRows(sessions, layout, detectedAgents)),
+    [sessions, layout, detectedAgents],
   );
   const agentsWaiting = useMemo(
     () => agentRows.filter(wantsAttention).length,
@@ -3136,8 +3150,8 @@ export default function App() {
   // observado, e o visual do observado não herda o `status` da sessão de shell
   // — que está sempre `running` e pintaria de azul um agente parado.
   const workspaceAgentStatus = useCallback(
-    (w: Workspace) => agentForWorkspace(w, sessionById),
-    [sessionById],
+    (w: Workspace) => agentForWorkspace(w, sessionById, detectedAgents),
+    [sessionById, detectedAgents],
   );
 
   const workspaceCwd = useCallback(
@@ -5599,12 +5613,18 @@ export default function App() {
     const gitStatus = chips.status;
     const runner = isConfig || isWtView ? null : workspaceAgent(w);
     const runningCmd = isConfig || isWtView ? null : workspaceCommand(w);
-    const hoverAgent = runner ?? agentFromCommand(runningCmd);
     const agentStatus = isConfig || isWtView ? null : workspaceAgentStatus(w);
+    // O agente digitado no pane (palpite de tela ou sonda de processo) também
+    // dá o logo e o nome da linha, não só o lançado pelo TYBA.
+    const hoverAgent =
+      runner ??
+      (agentStatus?.observed ? agentLabelOf(agentStatus.observed.agent) : null) ??
+      agentFromCommand(runningCmd);
     const agentLabel = agentStatus ? t(agentStatus.visual.labelKey) : null;
     const agentDetail = (() => {
       if (!agentStatus) return null;
-      if (agentStatus.observed) return agentStatus.observed.agent;
+      // Quadro: "claude rodando" — o nome já vem do `hoverAgent`; aqui o estado.
+      if (agentStatus.observed) return agentLabel;
       const status = agentStatus.session.status;
       if (status.state === "awaiting_input" && status.hint) return status.hint;
       if (status.state === "failed") return status.reason;
@@ -7718,6 +7738,7 @@ export default function App() {
                           sessions={sessions}
                           layout={layout}
                           approvals={approvals}
+                          detected={detectedAgents}
                             onJump={jumpToAgent}
                           onReviewDiff={(id) =>
                             void openDiffContentTab(id).catch(() => {})

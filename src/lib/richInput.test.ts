@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test";
 
 import type { SessionCommand } from "./ipc";
 import {
+  agentCommandsFromRegex,
+  agentRegexFromCommands,
   DEFAULT_RICH_INPUT,
   atQuery,
   enterAction,
@@ -262,5 +264,33 @@ describe("richInputToAutoOpen", () => {
     expect(richInputToAutoOpen(["grid", "node", "plain"], pref, eligible, new Set(["grid"]))).toEqual([
       "node",
     ]);
+  });
+});
+
+describe("Comandos de agente como lista", () => {
+  test("vazio é o padrão do core, mostrado como lista", () => {
+    expect(agentCommandsFromRegex("")).toBe("claude, codex, gemini");
+  });
+
+  test("lista simples sai da regex e volta para ela", () => {
+    expect(agentCommandsFromRegex("^(claude|aider)\\b")).toBe("claude, aider");
+    expect(agentRegexFromCommands("claude, aider")).toBe("^(claude|aider)\\b");
+    expect(agentCommandsFromRegex(agentRegexFromCommands("claude, my.agent"))).toBe(
+      "claude, my.agent",
+    );
+  });
+
+  test("a lista de fábrica volta a ser vazio, e vazio também", () => {
+    expect(agentRegexFromCommands("claude, codex, gemini")).toBe("");
+    expect(agentRegexFromCommands("  ")).toBe("");
+  });
+
+  test("ponto do nome é escapado: não casa qualquer letra", () => {
+    expect(agentRegexFromCommands("my.agent")).toBe("^(my\\.agent)\\b");
+  });
+
+  test("regex que não é lista fica crua dos dois lados", () => {
+    expect(agentCommandsFromRegex("^(claude|codex).*--yolo")).toBeNull();
+    expect(agentRegexFromCommands("^(claude|codex).*--yolo")).toBe("^(claude|codex).*--yolo");
   });
 });
