@@ -19,6 +19,7 @@ import {
 } from "@/lib/appIcon";
 import { getAppIcon, onAppIconChanged, setAppIcon } from "@/lib/ipc";
 import { IS_MAC } from "@/lib/platform";
+import { SettingLine } from "./settings/rows";
 
 const THUMBS: Record<AppIconId, string> = {
   blackout,
@@ -32,7 +33,8 @@ const THUMBS: Record<AppIconId, string> = {
 };
 
 /**
- * "Ícone do app": grade de rádios. Quem decide e aplica é o core; a seleção
+ * "Ícone no Dock" (quadro "Configurações (aprovada)"): uma linha com o nome
+ * do escolhido e os ícones pequenos à direita, como grupo de rádios. Quem decide e aplica é o core; a seleção
  * só muda quando ele confirma (resposta do comando ou o evento, que também
  * acompanha a escolha feita em outra janela).
  */
@@ -82,18 +84,11 @@ export function AppIconPicker() {
   const tabStop = current ? APP_ICONS.indexOf(current) : 0;
 
   return (
-    <>
-      <span id="app-icon-label" className="tyba-label">
-        {t("appIconSection")}
-      </span>
-      <p className="pt-1 pb-3 text-[11px] text-tyba-text-faint">
-        {t(IS_MAC ? "appIconHintMac" : "appIconHint")}
-      </p>
-      <div
-        role="radiogroup"
-        aria-labelledby="app-icon-label"
-        className="grid grid-cols-4 gap-2"
-      >
+    <SettingLine
+      label={<span id="app-icon-label">{t("cfgIconName", { name: APP_ICON_NAMES[current ?? APP_ICONS[0]] })}</span>}
+      hint={t(IS_MAC ? "cfgIconHintMac" : "appIconHint")}
+    >
+      <div role="radiogroup" aria-labelledby="app-icon-label" className="flex gap-1.5">
         {APP_ICONS.map((id, index) => {
           const selected = id === current;
           return (
@@ -105,30 +100,22 @@ export function AppIconPicker() {
               type="button"
               role="radio"
               aria-checked={selected}
+              aria-label={APP_ICON_NAMES[id]}
+              title={APP_ICON_NAMES[id]}
               tabIndex={index === tabStop ? 0 : -1}
               onClick={() => choose(id)}
               onKeyDown={(e) => onKeyDown(e, index)}
-              className={`flex flex-col items-center gap-1.5 rounded-[6px] border p-2 transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-tyba-border-strong ${
+              className={`grid size-10 place-items-center overflow-hidden rounded-[11px] p-0 transition-shadow focus-visible:outline-none focus-visible:[box-shadow:var(--tyba-focus-ring)] ${
                 selected
-                  ? "border-tyba-green [box-shadow:0_0_0_1px_var(--tyba-green)]"
-                  : "border-tyba-border hover:border-tyba-border-strong"
+                  ? "[box-shadow:0_0_0_2px_var(--tyba-bg),0_0_0_4px_var(--tyba-primary)]"
+                  : "[box-shadow:inset_0_0_0_1px_var(--tyba-line)]"
               }`}
             >
-              <img
-                src={THUMBS[id]}
-                alt=""
-                width={56}
-                height={56}
-                draggable={false}
-                className="size-14"
-              />
-              <span className="text-[12px] text-tyba-text">
-                {APP_ICON_NAMES[id]}
-              </span>
+              <img src={THUMBS[id]} alt="" width={40} height={40} draggable={false} className="size-10" />
             </button>
           );
         })}
       </div>
-    </>
+    </SettingLine>
   );
 }
