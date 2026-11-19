@@ -322,9 +322,9 @@ fn light_terminal() -> TerminalPalette {
     TerminalPalette {
         background: "#fbfbfd".into(),
         foreground: "#17171c".into(),
-        cursor: "#4e9622".into(),
+        cursor: "#1152d2".into(),
         cursor_accent: Some("#fbfbfd".into()),
-        selection_background: Some("#4e96224d".into()),
+        selection_background: Some("#1152d24d".into()),
         ansi: ansi([
             "#2a2a31", "#d6402e", "#4e9622", "#c47c14", "#3b66d6", "#d33d84", "#0f9d8c", "#e9e9ee",
             "#6d6d78", "#e05a48", "#6fae2e", "#d69a2b", "#5d84e0", "#7a4ce8", "#16b3a0", "#ffffff",

@@ -471,11 +471,16 @@
   /* Muriki (2026-11-18): o fundo é o ambiente da barra lateral, um azul
      quase nada no canto. "Blur mais forte não é borrão de cor mais forte"
      (dono): quem dá profundidade é o vidro, não a cor do campo. */
+  /* O "Calm ambient" do Muriki, como no quadro: luz azul no alto à
+     esquerda, um sopro de amarelo embaixo à direita, sobre o #eef2f9. */
   --tyba-field:
-    radial-gradient(60% 40% at 20% 10%, rgba(17, 82, 210, 0.06), transparent 70%),
-    #f4f6fb;
+    radial-gradient(42% 60% at 18% 22%, rgba(17, 82, 210, 0.072), transparent 72%),
+    radial-gradient(30% 48% at 88% 82%, rgba(253, 206, 4, 0.077), transparent 70%),
+    #eef2f9;
   --tyba-glass-window: transparent;
-  --tyba-glass-section: rgba(255, 255, 255, 0.74);
+  /* A barra lateral deixa o ambiente aparecer (quadro Sidebar): os
+     cartões brancos é que se destacam sobre ela. */
+  --tyba-glass-section: rgba(255, 255, 255, 0.32);
   --tyba-glass-piece: rgba(255, 255, 255, 0.8);
   --tyba-glass-float: rgba(255, 255, 255, 0.97);
   --tyba-glass-active: rgba(255, 255, 255, 0.96);
