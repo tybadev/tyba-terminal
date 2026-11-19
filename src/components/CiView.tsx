@@ -195,7 +195,7 @@ export function CiView({
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-      <div className="flex shrink-0 items-center gap-2.5 shadow-[inset_0_-1px_0_var(--tyba-line)] px-[18px] py-2 text-[12px]">
+      <div className="flex h-[46px] shrink-0 items-center gap-3 shadow-[inset_0_-1px_0_var(--tyba-line)] px-[18px] text-[12px]">
         <div
           role="tablist"
           className="tyba-segment shrink-0"
@@ -218,7 +218,7 @@ export function CiView({
             </button>
           ))}
         </div>
-        <span className="min-w-0 flex-1 truncate text-right text-[11px] text-tyba-text-faint">
+        <span className="min-w-0 flex-1 truncate text-right text-[12px] text-tyba-text-faint">
           {note ?? t("ciAutoRefresh")}
         </span>
       </div>
@@ -254,19 +254,19 @@ export function CiView({
                   <button
                     type="button"
                     onClick={() => setRunId(r.id)}
-                    className={`flex w-full flex-col gap-0.5 rounded-[6px] px-2.5 py-2 text-left ${
+                    className={`flex w-full flex-col gap-[3px] rounded-[10px] px-2.5 py-2.5 text-left ${
                       on ? "tyba-pill-on" : "hover:bg-tyba-raised/60"
                     }`}
                   >
-                    <span className="flex min-w-0 items-center gap-2 text-[12.5px]">
-                      <span className={`size-1.5 shrink-0 rounded-full ${TONE_DOT[tone]}`} />
+                    <span className="flex min-w-0 items-center gap-2 text-[13px] font-semibold">
+                      <span className={`size-[7px] shrink-0 rounded-full ${TONE_DOT[tone]}`} />
                       <span className="min-w-0 flex-1 truncate text-tyba-text">
                         {r.name}
-                        <span className="text-[11px] text-tyba-text-faint"> · {r.event}</span>
+                        <span className="text-[11.5px] font-medium text-tyba-text-faint"> · {r.event}</span>
                       </span>
-                      <span className={`shrink-0 text-[11px] ${TONE_TEXT[tone]}`}>{t(STATUS_KEY[tone])}</span>
+                      <span className={`shrink-0 text-[11.5px] ${TONE_TEXT[tone]}`}>{t(STATUS_KEY[tone])}</span>
                     </span>
-                    <span className="truncate pl-3.5 text-[11px] text-tyba-text-faint">
+                    <span className="truncate pl-[15px] text-[11.5px] text-tyba-text-faint">
                       <span className="font-mono text-tyba-blue">{r.head_branch}</span> ·{" "}
                       {relative(r.created_at, Date.now())}
                     </span>
@@ -276,8 +276,8 @@ export function CiView({
             })}
           </ul>
 
-          <div className="flex w-[260px] shrink-0 flex-col gap-1 overflow-y-auto shadow-[inset_-1px_0_0_var(--tyba-line)] p-3">
-            <span className="tyba-label px-1.5 pb-1.5">{t("ciJobs")}</span>
+          <div className="flex w-[260px] shrink-0 flex-col gap-0.5 overflow-y-auto shadow-[inset_-1px_0_0_var(--tyba-line)] px-2.5 py-3">
+            <span className="tyba-label px-2 pb-1.5 pt-1 font-semibold">{t("ciJobs")}</span>
             {jobs === null && (
               <ForgeLoading
                 step={t("loadForgeJobs")}
@@ -293,13 +293,13 @@ export function CiView({
                   key={j.id}
                   type="button"
                   onClick={() => setJobId(j.id)}
-                  className={`flex items-center gap-2 rounded-[6px] px-1.5 py-1.5 text-left text-[12.5px] ${
+                  className={`flex h-8 shrink-0 items-center gap-2 rounded-[9px] px-2.5 text-left text-[13px] ${
                     j.id === jobId ? "tyba-pill-on" : "hover:bg-tyba-raised/60"
                   }`}
                 >
-                  <span className={`w-3 shrink-0 ${TONE_TEXT[tone]}`}>{MARK[tone]}</span>
+                  <span className={`w-3 shrink-0 text-center font-bold ${TONE_TEXT[tone]}`}>{MARK[tone]}</span>
                   <span className="min-w-0 flex-1 truncate">{j.name}</span>
-                  <span className="shrink-0 text-[11px] text-tyba-text-faint">
+                  <span className="shrink-0 font-mono text-[11px] text-tyba-text-faint">
                     {duration(j.started_at, j.completed_at)}
                   </span>
                 </button>
@@ -307,17 +307,17 @@ export function CiView({
             })}
             {job && job.steps.length > 0 && (
               <>
-                <span className="tyba-label px-1.5 pb-1 pt-3.5">{t("ciSteps")}</span>
+                <span className="tyba-label px-2 pb-1.5 pt-4 font-semibold">{t("ciSteps")}</span>
                 {job.steps.map((s, i) => {
                   const tone = runTone(s);
                   return (
                     <span
                       key={`${i}:${s.name}`}
-                      className={`flex gap-2 px-1.5 text-[12px] ${
-                        tone === "failure" ? "text-tyba-text" : "text-tyba-text-muted"
+                      className={`flex h-[26px] shrink-0 items-center gap-2 px-2.5 text-[12.5px] ${
+                        tone === "failure" ? "font-semibold text-tyba-text" : "text-tyba-text-muted"
                       }`}
                     >
-                      <span className={`w-3 shrink-0 ${TONE_TEXT[tone]}`}>{MARK[tone]}</span>
+                      <span className={`w-3 shrink-0 text-center font-bold ${TONE_TEXT[tone]}`}>{MARK[tone]}</span>
                       <span className="min-w-0 truncate">{s.name}</span>
                     </span>
                   );
@@ -327,9 +327,9 @@ export function CiView({
           </div>
 
           <div className="flex min-w-0 flex-1 flex-col">
-            <div className="flex shrink-0 items-center gap-2.5 shadow-[inset_0_-1px_0_var(--tyba-line)] px-4 py-2 text-[12px]">
+            <div className="flex h-11 shrink-0 items-center gap-2.5 shadow-[inset_0_-1px_0_var(--tyba-line)] px-4 text-[13px] font-semibold">
               <span className="min-w-0 truncate text-tyba-text">{log?.failed_step ?? job?.name ?? ""}</span>
-              {log?.failed_step && <span className="shrink-0 text-[11px] text-tyba-red">{t("ciStepFailed")}</span>}
+              {log?.failed_step && <span className="shrink-0 text-[11.5px] text-tyba-red">{t("ciStepFailed")}</span>}
               <span className="flex-1" />
               <button type="button" className={BTN} disabled={!log} onClick={goToError}>
                 {t("ciGoToError")}
@@ -366,12 +366,12 @@ export function CiView({
                       : "text-tyba-text-muted"
                   }`}
                 >
-                  <span className="w-11 shrink-0 select-none pr-3 text-right text-tyba-text-ghost">{i + 1}</span>
+                  <span className="w-11 shrink-0 select-none pr-3.5 text-right text-tyba-text-faint opacity-60">{i + 1}</span>
                   <span className="pr-4">{line}</span>
                 </div>
               ))}
             </div>
-            <div className="flex shrink-0 flex-wrap items-center gap-2 shadow-[inset_0_1px_0_var(--tyba-line)] px-4 py-2.5">
+            <div className="flex min-h-[52px] shrink-0 flex-wrap items-center gap-2 shadow-[inset_0_1px_0_var(--tyba-line)] px-4 py-2.5">
               {/* Só em sessão de agente: numa de shell o prompt cairia no shell. */}
               {session.kind.type === "agent" && log && job && job.conclusion === "failure" && (
                 <button
@@ -381,7 +381,7 @@ export function CiView({
                       setNote(t("ciSentToAgent")),
                     )
                   }
-                  className="shrink-0 whitespace-nowrap rounded-[6px] bg-tyba-violet px-3 py-1.5 text-[12px] text-white hover:bg-tyba-violet/90"
+                  className="shrink-0 whitespace-nowrap rounded-[6px] bg-primary px-3 py-1.5 text-[12px] font-semibold text-primary-foreground hover:bg-primary/90"
                 >
                   {t("ciSendToAgent")}
                 </button>
