@@ -1808,12 +1808,19 @@ html {
   background: var(--tyba-field);
 }
 
-/* Muriki (2026-11-18): no claro do TYBA, o ícone aceso dos trilhos (Git,
-   Docker, Serviços, Arquivos) é o mesmo cartão do item ativo da barra
-   lateral; a cor do ícone continua a da área. */
-[data-theme='light']:not([data-imported]) .tyba-icon-on {
-  background-color: var(--tyba-glass-active);
-  box-shadow: var(--tyba-pill-on);
+/* O marcador (dono, 2026-11-19): o selecionado de ícone e de navegação é o
+   mesmo da lista de seções das Configurações em todo lugar (trilhos do Git,
+   Docker, Arquivos e Serviços, ícones do header, linhas de navegação):
+   mancha azul atrás, ícone azul e um brilho azul suave. Azul sempre, também
+   onde a área tinha cor própria, para todo marcado ser o mesmo. Nos dois
+   temas do TYBA; os esquemas importados seguem como eram. */
+[data-theme='light']:not([data-imported]) .tyba-icon-on,
+[data-theme='light']:not([data-imported]) .tyba-nav-on,
+:root:not([data-theme]):not([data-imported]) .tyba-icon-on,
+:root:not([data-theme]):not([data-imported]) .tyba-nav-on {
+  background-color: var(--tyba-blue-tint);
+  color: var(--tyba-blue) !important;
+  box-shadow: 0 0 14px 2px color-mix(in srgb, var(--tyba-blue) 18%, transparent);
 }
 /* Vidro forte das telas que abrem sobre o terminal (Git, Arquivos, Docker):
    véu fino e blur alto. O efeito vem do desfoque, não de cor no fundo. */
