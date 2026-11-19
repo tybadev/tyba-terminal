@@ -664,7 +664,7 @@ export function DockerScreen({
       tabIndex={-1}
       aria-label={t("sidePanelDocker")}
       data-exiting={exiting}
-      className="tyba-git-screen absolute inset-0 z-30 flex flex-row-reverse bg-tyba-paper-solid outline-none"
+      className="tyba-git-screen tyba-frost absolute inset-0 z-30 flex flex-row-reverse outline-none"
       onKeyDown={(e) => {
         if (
           escClosesScreen({

@@ -156,7 +156,7 @@ export function ContainerLogsView({ containerId, restartNonce }: Props) {
   }, [containerId, exportable, t]);
 
   const chipClass = (on: boolean) =>
-    `shrink-0 rounded-[6px] border px-[9px] py-[3px] text-[11px] ${
+    `shrink-0 whitespace-nowrap rounded-[6px] border px-[9px] py-[3px] text-[11px] ${
       on
         ? "tyba-pill-on border-transparent text-tyba-text"
         : "border-tyba-border-field text-tyba-text-muted hover:text-tyba-text"
@@ -208,7 +208,7 @@ export function ContainerLogsView({ containerId, restartNonce }: Props) {
             setNow(Date.now());
           }}
           aria-label={t("logsWindow")}
-          className="shrink-0 rounded-[6px] border border-tyba-border-field bg-tyba-surface px-1.5 py-0.5 text-[11px] text-tyba-text-muted"
+          className="shrink-0 whitespace-nowrap rounded-[6px] border border-tyba-border-field bg-tyba-surface px-1.5 py-0.5 text-[11px] text-tyba-text-muted"
         >
           {TIME_WINDOWS.map((w) => (
             <option key={w} value={w}>
@@ -236,7 +236,7 @@ export function ContainerLogsView({ containerId, restartNonce }: Props) {
           type="button"
           aria-pressed={follow}
           onClick={() => setFollow((v) => !v)}
-          className={`flex shrink-0 items-center gap-1.5 rounded-[6px] border px-2 py-0.5 text-[11px] ${
+          className={`flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-[6px] border px-2 py-0.5 text-[11px] ${
             follow && !ended
               ? "border-tyba-green/40 text-tyba-green"
               : "border-tyba-border-strong text-tyba-text-muted hover:text-tyba-text"
