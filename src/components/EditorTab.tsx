@@ -475,7 +475,7 @@ export function EditorTab({
         active ? "" : "hidden"
       }`}
     >
-      <div className="flex shrink-0 items-center gap-3.5 border-b border-[var(--tyba-line)] px-4 py-1.5 text-[11px] text-tyba-text-faint">
+      <div className="flex h-[34px] shrink-0 items-center gap-3.5 border-b border-[var(--tyba-line)] px-3.5 text-[11.5px] text-tyba-text-faint">
         <nav
           aria-label={t("editorBreadcrumb")}
           className="flex min-w-0 flex-1 items-center gap-1 truncate font-mono"
@@ -737,7 +737,9 @@ export function EditorTab({
         )}
       </div>
 
-      <div className="flex h-[26px] shrink-0 items-center gap-4 border-t border-[var(--tyba-line)] bg-[var(--tyba-panel-bg)] px-4 text-[11px] text-tyba-text-faint">
+      {/* 31px com o fio de cima (border-box), a altura do rodapé de LSP da
+          árvore: as duas linhas de cima caem no mesmo y. */}
+      <div className="flex h-[31px] shrink-0 items-center gap-3.5 border-t border-[var(--tyba-line)] px-3.5 text-[11.5px] text-tyba-text-faint">
         {!remote && (
           <LspStatusChip stat={lspStat} truncated={diagsTruncated} onRetry={retryLsp} />
         )}

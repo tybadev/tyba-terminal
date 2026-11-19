@@ -113,8 +113,9 @@ function SearchColumn({ session, onOpen }: { session: Session; onOpen: (rel: str
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="shrink-0 border-b border-[var(--tyba-line)] px-3 py-2.5">
-        <label className="flex items-center gap-2 rounded-[6px] border border-tyba-border-field bg-tyba-sunken px-2.5 py-[5px] text-[12px] text-tyba-text-faint">
+      {/* 37px com o fio, igual à faixa de abas do editor (linhas alinhadas). */}
+      <div className="flex h-[37px] shrink-0 items-center border-b border-[var(--tyba-line)] px-2">
+        <label className="flex h-7 min-w-0 flex-1 items-center gap-2 rounded-[8px] border border-tyba-border-field bg-tyba-sunken pl-2.5 pr-2 text-[12.5px] text-tyba-text-faint">
           <MagnifyingGlass size={13} className={`shrink-0 ${busy ? "animate-pulse" : ""}`} />
           <input
             type="text"
@@ -341,8 +342,9 @@ export function FilesScreen({
       aria-hidden={!visible}
       data-exiting={exiting}
       // A tela cobre o terminal (irmã de `[data-terminal-piece]`, não filha):
-      // a cor da folha, mas opaca, para o shell de baixo não vazar.
-      className={`tyba-git-screen absolute inset-0 z-30 flex-row-reverse bg-tyba-paper-solid outline-none ${
+      // trilho, barra e árvore são vidro forte (`.tyba-frost`) sobre ele; só o
+      // editor é chapado, porque código precisa de contraste.
+      className={`tyba-git-screen absolute inset-0 z-30 flex-row-reverse outline-none ${
         visible ? "flex" : "hidden"
       }`}
       onKeyDown={(e) => {
@@ -361,7 +363,7 @@ export function FilesScreen({
       {visible && (
         <nav
           aria-label={t("filesScreenSections")}
-          className="relative flex w-[52px] shrink-0 flex-col items-center gap-1.5 shadow-[inset_1px_0_0_var(--tyba-line)] bg-[var(--tyba-panel-bg)] pt-3"
+          className="tyba-frost relative flex w-[52px] shrink-0 flex-col items-center gap-1.5 shadow-[inset_1px_0_0_var(--tyba-line)] pt-2.5"
         >
           {FILES_SECTIONS.map((key) => {
             const { icon: SectionIcon, label } = RAIL[key];
@@ -375,7 +377,7 @@ export function FilesScreen({
                 title={t(label)}
                 onClick={() => go(key)}
                 className={`relative flex size-9 items-center justify-center rounded-[8px] transition-colors ${
-                  on ? "bg-tyba-cyan/[.12] text-tyba-cyan" : "text-tyba-text-faint hover:text-tyba-text"
+                  on ? "tyba-icon-on text-tyba-cyan" : "text-tyba-text-faint hover:text-tyba-text"
                 }`}
               >
                 <SectionIcon size={17} />
@@ -395,16 +397,16 @@ export function FilesScreen({
         </nav>
       )}
 
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className="tyba-frost flex min-w-0 flex-1 flex-col">
         {visible && session && (
-          <div className="flex h-[46px] shrink-0 items-center gap-3 shadow-[inset_0_-1px_0_var(--tyba-line)] bg-[var(--tyba-panel-bg)] px-[18px] text-[12px]">
+          <div className="flex h-[46px] shrink-0 items-center gap-3 shadow-[inset_0_-1px_0_var(--tyba-line)] px-[18px] text-[12px]">
             <FolderOpen size={16} className="shrink-0 text-tyba-cyan" />
-            <span className="shrink-0 text-[14px] font-medium text-tyba-text">{t("filesTitle")}</span>
-            <span className="min-w-0 flex-1 truncate text-tyba-text-faint" title={info?.root}>
+            <span className="shrink-0 text-[15px] font-bold text-tyba-text">{t("filesTitle")}</span>
+            <span className="min-w-0 flex-1 truncate font-mono text-tyba-text-faint" title={info?.root}>
               {info?.root ?? session.title}
             </span>
             {snapshot?.branch && (
-              <span className="shrink-0 font-mono text-tyba-blue">{snapshot.branch}</span>
+              <span className="shrink-0 font-mono font-semibold text-tyba-blue">{snapshot.branch}</span>
             )}
             {changed > 0 && (
               <span className="shrink-0 text-tyba-text-muted">
@@ -425,7 +427,7 @@ export function FilesScreen({
         {/* Árvore à direita, junto do trilho (pedido do dono, 2026-10-14). */}
         <div className="flex min-h-0 flex-1 flex-row-reverse">
           {visible && session && (
-            <div className="flex w-[280px] shrink-0 flex-col border-l border-[var(--tyba-line)] bg-[var(--tyba-panel-bg)]">
+            <div className="flex w-[280px] shrink-0 flex-col border-l border-[var(--tyba-line)]">
               {section === "files" && (
                 <FilesTree
                   key={session.id}
@@ -451,12 +453,14 @@ export function FilesScreen({
             </div>
           )}
 
-          <div className="flex min-w-0 flex-1 flex-col">
+          <div className="flex min-w-0 flex-1 flex-col bg-tyba-paper-solid">
             {visible && tabs.length > 0 && (
               <div
                 role="tablist"
                 aria-label={t("filesScreenTabs")}
-                className="flex h-[34px] shrink-0 items-end overflow-x-auto shadow-[inset_0_-1px_0_var(--tyba-line)] bg-[var(--tyba-panel-bg)]"
+                // 37px com o fio de baixo (border-box), a mesma altura do
+                // filtro da árvore: as duas linhas caem no mesmo y.
+                className="flex h-[37px] shrink-0 items-stretch overflow-x-auto border-b border-[var(--tyba-line)] bg-tyba-text/[.02]"
               >
                 {tabs.map((f) => {
                   const on = f.view === activeView;
@@ -489,10 +493,10 @@ export function FilesScreen({
                           void filesScreenActivate(workspace.id, f.view).catch(() => {});
                         }
                       }}
-                      // Ativa: fundo do editor com fio dos dois lados (mockup).
-                      className={`group flex h-[34px] shrink-0 cursor-pointer items-center gap-2 px-3.5 text-[12.5px] outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-tyba-cyan ${
+                      // Fio à direita de cada aba; a ativa tem o fundo do editor (quadro).
+                      className={`group flex shrink-0 cursor-pointer items-center gap-[7px] border-r border-[var(--tyba-line)] px-3.5 text-[12.5px] outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-tyba-cyan ${
                         on
-                          ? "bg-tyba-paper-solid text-tyba-text shadow-[inset_1px_0_0_var(--tyba-line),inset_-1px_0_0_var(--tyba-line)]"
+                          ? "bg-tyba-paper-solid font-semibold text-tyba-text"
                           : "text-tyba-text-faint hover:text-tyba-text"
                       }`}
                     >

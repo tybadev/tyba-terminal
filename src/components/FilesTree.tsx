@@ -103,7 +103,9 @@ function FilesFooter({
   }, [refresh]);
   if (!stat || stat.state === "unsupported") return null;
   return (
-    <div className="flex shrink-0 items-center gap-1.5 border-t border-[var(--tyba-line)] px-3.5 py-2 text-[11px] text-tyba-text-faint">
+    // 31px com o fio de cima (border-box), a altura da barra de status do
+    // editor: as duas linhas de cima caem no mesmo y.
+    <div className="flex h-[31px] shrink-0 items-center gap-1.5 border-t border-[var(--tyba-line)] px-3.5 text-[11.5px] text-tyba-text-faint">
       <LspStatusChip stat={stat} truncated={false} onRetry={retry} />
     </div>
   );
@@ -522,9 +524,11 @@ export function FilesTree({
         </div>
       )}
 
-      {/* Mockup ArquivosTela: filtro com o atalho do buscador à direita. */}
-      <div className="flex shrink-0 items-center gap-1.5 border-b border-[var(--tyba-line)] px-3 py-2.5">
-        <label className="flex min-w-0 flex-1 items-center gap-2 rounded-[6px] border border-tyba-border-field bg-tyba-sunken px-2.5 py-[5px] text-[12px] text-tyba-text-faint">
+      {/* Mockup ArquivosTela: filtro com o atalho do buscador à direita. 37px
+          com o fio de baixo (border-box), a altura da faixa de abas do editor:
+          as duas linhas caem no mesmo y. */}
+      <div className="flex h-[37px] shrink-0 items-center gap-1.5 border-b border-[var(--tyba-line)] px-2">
+        <label className="flex h-7 min-w-0 flex-1 items-center gap-2 rounded-[8px] border border-tyba-border-field bg-tyba-sunken pl-2.5 pr-2 text-[12.5px] text-tyba-text-faint">
           <MagnifyingGlass size={13} className="shrink-0" />
           <input
             type="text"
@@ -637,7 +641,7 @@ export function FilesTree({
         </ul>
       ) : (
         <div
-          className="min-h-0 flex-1 overflow-auto px-1.5 py-2"
+          className="min-h-0 flex-1 overflow-auto px-2 py-1.5"
           tabIndex={0}
           aria-label={t("filesTitle")}
           onKeyDown={(e) => {
@@ -649,7 +653,7 @@ export function FilesTree({
         >
           {treeEdit?.kind === "create" && (
             <div
-              className="flex h-[26px] items-center gap-[7px] pr-2.5"
+              className="flex h-[27px] items-center gap-1.5 pr-2"
               style={{
                 paddingLeft: `${
                   10 +
@@ -688,7 +692,7 @@ export function FilesTree({
               error={busy ? null : rootError}
               onRetry={() => void doRefresh()}
               shape="tree"
-              className="-mx-1.5 -my-2"
+              className="-mx-2 -my-1.5"
             />
           ) : rows.length === 0 && !treeEdit ? (
             <div className="px-3 py-2 text-[11px] text-tyba-text-faint">
@@ -716,13 +720,13 @@ export function FilesTree({
                 treeEdit?.kind === "rename" && treeEdit.rel === entry.rel_path;
               const sensitive = !entry.is_dir && isSensitivePath(entry.name);
               const FileIcon = fileIcon(entry.name);
-              // Ícone com a cor do tipo só no arquivo em foco; apagado vem em
-              // vermelho; o resto, apagado (mockup ArquivosTela).
+              // Arquivo em foco: ícone na cor da área (como o item ativo da
+              // barra lateral); apagado vem em vermelho; o resto, apagado.
               const iconClass =
                 deco === "deleted"
                   ? "text-tyba-red"
                   : isActive
-                    ? langGlyph(entry.name).className
+                    ? "text-tyba-cyan"
                     : "text-tyba-text-faint";
               return (
                 <div
@@ -736,7 +740,7 @@ export function FilesTree({
                   aria-selected={isSelected}
                   // Seleção = a placa (`.tyba-pill-on`, opção G), contorno
                   // inteiro, nunca barra de um lado só.
-                  className={`group flex h-[26px] cursor-pointer items-center gap-[7px] rounded-[5px] pr-2.5 text-[12.5px] ${
+                  className={`group flex h-[27px] cursor-pointer items-center gap-1.5 rounded-[8px] pr-2 text-[12.5px] ${
                     isSelected
                       ? "tyba-pill-on text-tyba-text"
                       : deco === "deleted"
