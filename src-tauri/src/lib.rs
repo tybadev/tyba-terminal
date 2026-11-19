@@ -3,6 +3,7 @@ pub mod app_icon;
 pub mod approvals;
 pub mod blocks;
 pub mod boot;
+pub mod cli;
 pub mod completion;
 pub mod config;
 pub mod docker;
@@ -10669,6 +10670,27 @@ pub fn run() {
                              segue sem jaula/gate automático; o shim é fail-open por construção"
                         );
                     }
+                }
+            }
+
+            // O socket de controle da CLI (`tyba ls`), irmão do canal acima.
+            // Cada pedido relê o estado na hora. Falha em bind não é fatal:
+            // a CLI sai com 4 (TYBA não está aberto) e o app segue.
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            {
+                let control_app = app.handle().clone();
+                let control_handler: cli::server::ControlHandler = Arc::new(move |request| {
+                    let state = control_app.state::<AppState>();
+                    cli::handle(&request, &state.layout.state(), &state.sessions.list())
+                });
+                match cli::server::ControlServer::bind(
+                    &cli::resolve_control_socket_path(),
+                    control_handler,
+                ) {
+                    Ok(server) => {
+                        app.manage(server);
+                    }
+                    Err(e) => eprintln!("[tyba] socket de controle da CLI não ligou ({e})"),
                 }
             }
 
