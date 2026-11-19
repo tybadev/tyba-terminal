@@ -1862,3 +1862,13 @@ html {
 :root:not([data-theme]):not([data-imported]) .tyba-aurora {
   background: var(--tyba-field);
 }
+/* Shell dividido, foco B (dono, 2026-11-18): o painel sem foco fica num
+   papel um tom abaixo, puxado para o azul, e com o conteúdo apagado. O com
+   foco fica como está, sem borda. Tokens, para valer em todo tema. */
+.tyba-pane[data-pane-dim] {
+  background: color-mix(in srgb, var(--tyba-text) 4%, color-mix(in srgb, var(--tyba-blue) 3%, var(--tyba-paper-solid)));
+}
+.tyba-pane[data-pane-dim] > .tyba-pane-body,
+.tyba-pane[data-pane-dim] > .tyba-pane-line {
+  opacity: 0.55;
+}

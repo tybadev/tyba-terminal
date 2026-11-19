@@ -5727,7 +5727,15 @@ export default function App() {
       // de altura, nunca por comando.
       <div
         key={`pane-${s.id}`}
-        className={bare ? "absolute inset-0 flex flex-col" : "flex flex-col"}
+        className={bare ? "absolute inset-0 flex flex-col" : "tyba-pane flex flex-col"}
+        // Foco B (dono, 2026-11-18): com o terminal dividido, o painel sem
+        // foco fica num papel um tom abaixo e apagado; o com foco não ganha
+        // borda nenhuma.
+        data-pane-dim={
+          !bare && paneRect && (paneLayout?.panes.length ?? 0) > 1 && s.id !== activeId
+            ? ""
+            : undefined
+        }
         style={
           bare
             ? undefined
@@ -5745,7 +5753,7 @@ export default function App() {
         {s.kind.type === "container" && (
           <ContainerShellBanner containerId={s.kind.container_id} />
         )}
-        <div className="relative min-h-0 flex-1">
+        <div className="tyba-pane-body relative min-h-0 flex-1">
           {wrapNodeTerminal(nodeZoom, <TerminalView
             key={`${s.id}:${paneEpochs.get(s.id) ?? 0}`}
             sessionId={s.id}
@@ -5971,7 +5979,7 @@ export default function App() {
           // core que decide o painel ativo, e o atalho, a
           // paleta e a caixa de agente seguem essa resposta.
           <div
-            className="shrink-0"
+            className="tyba-pane-line shrink-0"
             ref={
               bare
                 ? (el) => {
@@ -7224,36 +7232,9 @@ export default function App() {
                       null;
                     return renderPane(s, paneRect);
                   })}
-                  {/* Onde o foco está: o filamento de luz na aresta de cima
-                      do painel ativo — a mesma linha viva (estática) da aba
-                      ativa. "Estática = selecionado" é a regra da marca.
-
-                      Já foi um contorno verde em volta do painel inteiro.
-                      Num terminal BLACKOUT o retângulo aceso era o elemento
-                      mais forte da tela, competindo com o que roda; o
-                      filamento diz "é aqui" sem cercar.
-
-                      Só o painel ATIVO ganha marca, e só com mais de um: o
-                      divisor e o degrau de fundo já separam os outros.
-                      `zIndex` acima da lista de blocos (`z-10`), que cobre
-                      quase todo o painel. */}
-                  {(paneLayout?.panes.length ?? 0) > 1 &&
-                    paneLayout?.panes
-                      .filter((p) => p.session === activeId)
-                      .map((p) => (
-                        <div
-                          key={`pane-focus-${p.pane}`}
-                          aria-hidden
-                          className="tyba-flow-line tyba-flow-line--thick pointer-events-none"
-                          style={{
-                            position: "absolute",
-                            left: `${p.x}%`,
-                            top: `${p.y}%`,
-                            width: `${p.w}%`,
-                            zIndex: 30,
-                          }}
-                        />
-                      ))}
+                  {/* Onde o foco está: foco B (dono, 2026-11-18) — sem marca
+                      no painel ativo; quem diz "é aqui" é o contraste dos
+                      outros, apagados (`.tyba-pane[data-pane-dim]`). */}
                   {paneLayout?.agentViewers.map((v) => {
                     const owner = sessionById.get(v.session);
                     return (
