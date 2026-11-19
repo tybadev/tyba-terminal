@@ -4,31 +4,36 @@ import { Slot } from "radix-ui"
 
 import { cn } from "@/lib/utils"
 
+// Botão do Muriki (quadro de componentes): raio 10px, 600, aperta 2% no
+// clique. default = primário líquido; outline/secondary = vidro (branco, fio
+// fino, sombra do knob); ghost = transparente; destructive = vidro com o
+// texto em vermelho. As cores vêm dos tokens `--tyba-control-*`/`--primary`.
 const buttonVariants = cva(
-  "inline-flex shrink-0 items-center justify-center gap-2 rounded-md text-sm font-medium whitespace-nowrap transition-all outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
+  "inline-flex shrink-0 items-center justify-center gap-2 rounded-[10px] border border-transparent text-sm font-semibold whitespace-nowrap transition-[transform,background-color,box-shadow,color] duration-150 outline-none active:scale-[.98] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:pointer-events-none disabled:opacity-45 aria-invalid:outline-2 aria-invalid:outline-destructive [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
   {
     variants: {
       variant: {
-        default: "bg-primary text-primary-foreground hover:bg-primary/90",
+        default:
+          "bg-primary text-primary-foreground [box-shadow:var(--tyba-primary-shadow)] hover:bg-[color-mix(in_srgb,var(--primary)_88%,black)] [&_kbd]:border-transparent! [&_kbd]:bg-white/20! [&_kbd]:text-primary-foreground! [&_kbd]:shadow-none!",
         destructive:
-          "bg-destructive text-destructive-foreground hover:bg-destructive/90 focus-visible:ring-destructive/20 dark:bg-destructive/60 dark:focus-visible:ring-destructive/40",
+          "bg-[var(--tyba-control-bg)] text-tyba-red [box-shadow:inset_0_0_0_1px_var(--tyba-control-line),var(--tyba-control-shadow)] hover:bg-tyba-red-tint focus-visible:outline-destructive",
         outline:
-          "border bg-background shadow-xs hover:bg-accent hover:text-accent-foreground dark:border-input dark:bg-input/30 dark:hover:bg-input/50",
+          "bg-[var(--tyba-control-bg)] text-tyba-text [box-shadow:inset_0_0_0_1px_var(--tyba-control-line),var(--tyba-control-shadow)] hover:bg-[color-mix(in_srgb,var(--tyba-text)_4%,var(--tyba-control-bg))]",
         secondary:
-          "bg-secondary text-secondary-foreground hover:bg-secondary/80",
+          "bg-[var(--tyba-control-bg)] text-tyba-text [box-shadow:inset_0_0_0_1px_var(--tyba-control-line),var(--tyba-control-shadow)] hover:bg-[color-mix(in_srgb,var(--tyba-text)_4%,var(--tyba-control-bg))]",
         ghost:
-          "hover:bg-accent hover:text-accent-foreground dark:hover:bg-accent/50",
+          "text-tyba-text-muted hover:bg-tyba-text/5 hover:text-tyba-text",
         link: "text-primary underline-offset-4 hover:underline",
       },
       size: {
-        default: "h-9 px-4 py-2 has-[>svg]:px-3",
-        xs: "h-6 gap-1 rounded-md px-2 text-xs has-[>svg]:px-1.5 [&_svg:not([class*='size-'])]:size-3",
-        sm: "h-8 gap-1.5 rounded-md px-3 has-[>svg]:px-2.5",
-        lg: "h-10 rounded-md px-6 has-[>svg]:px-4",
+        default: "h-9 px-4 has-[>svg]:px-3.5",
+        xs: "h-6 gap-1 rounded-[8px] px-2 text-xs has-[>svg]:px-1.5 [&_svg:not([class*='size-'])]:size-3",
+        sm: "h-[34px] gap-1.5 px-3.5 text-[13px] has-[>svg]:px-3",
+        lg: "h-10 px-5 has-[>svg]:px-4 [&_svg:not([class*='size-'])]:size-[18px]",
         icon: "size-9",
-        "icon-xs": "size-6 rounded-md [&_svg:not([class*='size-'])]:size-3",
-        "icon-sm": "size-8",
-        "icon-lg": "size-10",
+        "icon-xs": "size-6 rounded-[8px] [&_svg:not([class*='size-'])]:size-3",
+        "icon-sm": "size-[34px]",
+        "icon-lg": "size-10 [&_svg:not([class*='size-'])]:size-[18px]",
       },
     },
     defaultVariants: {

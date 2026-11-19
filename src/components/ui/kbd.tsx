@@ -1,11 +1,13 @@
 import { cn } from "@/lib/utils";
 import { comboKeys } from "@/lib/keys";
 
+// Tecla do Muriki: chapada, um véu do texto. Nos temas escuros fica o
+// relevo de tecla de antes (fio e sombra embaixo).
 function Kbd({ className, children }: { className?: string; children: React.ReactNode }) {
   return (
     <kbd
       className={cn(
-        "inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-[4px] border border-tyba-border-strong/60 bg-tyba-text/[.05] px-1 font-mono text-[10px] leading-none text-tyba-text-muted [box-shadow:inset_0_-1px_0_rgba(0,0,0,0.35)]",
+        "inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-[4px] bg-tyba-text/[.06] px-1.5 font-mono text-[11px] leading-none font-medium text-tyba-text-faint dark:border dark:border-tyba-border-strong/60 dark:bg-tyba-text/[.05] dark:px-1 dark:text-[10px] dark:text-tyba-text-muted dark:[box-shadow:inset_0_-1px_0_rgba(0,0,0,0.35)]",
         className,
       )}
     >
