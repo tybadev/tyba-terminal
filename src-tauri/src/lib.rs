@@ -1483,7 +1483,9 @@ async fn create_session(
     // A pasta que o usuário escolheu, para as recentes da tela inicial. Fora
     // o split (herda o cwd vivo, que é `cd` e não escolha) e o agente anexado
     // a um worktree que o próprio TYBA criou (review, conflitos).
-    let recent = (opts.inherit_cwd_from.is_none() && !opts.attach_existing)
+    let recent = opts
+        .inherit_cwd_from
+        .is_none()
         .then(|| (opts.kind.clone(), opts.cwd.clone()));
 
     let handle = app.clone();

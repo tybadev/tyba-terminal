@@ -1550,6 +1550,13 @@ impl SessionManager {
         let Some(folder) = recent_folder_candidate(kind, requested, home.as_deref()) else {
             return;
         };
+        // Worktree que o próprio TYBA criou (review, conflito) não é pasta
+        // escolhida: agente aberto pela tela inicial numa pasta do usuário é.
+        if crate::worktree::managed_root()
+            .is_ok_and(|root| folder.starts_with(crate::repo::canonicalize_or(&root)))
+        {
+            return;
+        }
         let at_ms = crate::approvals::now_ms() as i64;
         if let Err(e) = self
             .store
