@@ -29,6 +29,8 @@ function ToastViewport({
   );
 }
 
+// Toast do Muriki (quadro Main): raio 14px, título 14px/600 em caixa de
+// frase, descrição 13px apagada; a ação fica na mesma linha, à direita.
 function Toast({
   className,
   ...props
@@ -37,7 +39,7 @@ function Toast({
     <ToastPrimitive.Root
       data-slot="toast"
       className={cn(
-        "pointer-events-auto relative w-full rounded-lg border border-tyba-border bg-tyba-overlay/95 p-3 text-tyba-text backdrop-blur-xl [box-shadow:var(--tyba-edge),var(--tyba-shadow-lg)]",
+        "pointer-events-auto relative w-full rounded-[14px] border border-tyba-border bg-tyba-overlay/95 p-3 text-tyba-text backdrop-blur-xl [box-shadow:var(--tyba-edge),var(--tyba-shadow-lg)]",
         "motion-safe:animate-tyba-pop-in",
         "data-[swipe=move]:translate-x-[var(--radix-toast-swipe-move-x)] data-[swipe=cancel]:translate-x-0 data-[swipe=end]:translate-x-[var(--radix-toast-swipe-end-x)] data-[swipe=move]:transition-none",
         className,
@@ -54,7 +56,7 @@ function ToastTitle({
   return (
     <ToastPrimitive.Title
       data-slot="toast-title"
-      className={cn("tyba-label text-tyba-text-faint", className)}
+      className={cn("text-[14px] leading-5 font-semibold text-tyba-text", className)}
       {...props}
     />
   );
@@ -67,7 +69,7 @@ function ToastDescription({
   return (
     <ToastPrimitive.Description
       data-slot="toast-description"
-      className={cn("mt-1 text-tyba-text", className)}
+      className={cn("mt-0.5 text-[13px] leading-[18px] text-tyba-text-muted", className)}
       {...props}
     />
   );

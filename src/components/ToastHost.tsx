@@ -1,5 +1,8 @@
 import { useEffect, useState } from "react";
-import { Info, Warning, WarningOctagon } from "@phosphor-icons/react";
+import { CheckCircle, Info, Warning, WarningOctagon } from "@phosphor-icons/react";
+
+import { buttonVariants } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 
 import {
   Toast,
@@ -20,12 +23,14 @@ import {
 
 const TONE_ICON: Record<ToastTone, typeof Info> = {
   info: Info,
+  success: CheckCircle,
   warning: Warning,
   error: WarningOctagon,
 };
 
 const TONE_CLASS: Record<ToastTone, string> = {
   info: "text-tyba-blue",
+  success: "text-tyba-green",
   warning: "text-tyba-amber",
   error: "text-tyba-red",
 };
@@ -47,13 +52,13 @@ export function ToastHost() {
               if (!open) dismissToast(toast.id);
             }}
           >
-            <ToastClose />
-            <div className="flex items-start gap-2 pr-4">
+            {/* Linha do Muriki: ícone, texto, ação e fechar lado a lado. */}
+            <div className="flex items-center gap-3">
               <Icon
                 aria-hidden="true"
-                size={16}
+                size={20}
                 weight="fill"
-                className={`mt-0.5 shrink-0 ${TONE_CLASS[toast.tone]}`}
+                className={`shrink-0 self-start ${TONE_CLASS[toast.tone]}`}
               />
               <div className="min-w-0 flex-1">
                 <ToastTitle>{toast.title}</ToastTitle>
@@ -64,16 +69,20 @@ export function ToastHost() {
                     </span>
                   </ToastDescription>
                 )}
-                {toast.action && (
-                  <ToastAction
-                    altText={toast.action.label}
-                    onClick={toast.action.run}
-                    className="tyba-label mt-2 inline-flex w-fit items-center rounded-md border border-tyba-border px-2 py-1 text-tyba-blue hover:bg-tyba-blue/10"
-                  >
-                    {toast.action.label}
-                  </ToastAction>
-                )}
               </div>
+              {toast.action && (
+                <ToastAction
+                  altText={toast.action.label}
+                  onClick={toast.action.run}
+                  className={cn(
+                    buttonVariants({ variant: "ghost", size: "sm" }),
+                    "shrink-0 text-tyba-blue hover:text-tyba-blue",
+                  )}
+                >
+                  {toast.action.label}
+                </ToastAction>
+              )}
+              <ToastClose className="static shrink-0 rounded-[8px] p-1.5" />
             </div>
           </Toast>
         );
