@@ -6936,17 +6936,6 @@ export default function App() {
                 </aside>
               )}
 
-              <ErrorBoundary region="notificações">
-                <NotificationsInbox
-                  sessions={sessions}
-                  approvals={approvals}
-                  open={inboxOpen}
-                  onOpenChange={setInboxOpen}
-                  onGoToSession={goToSession}
-                  onBadgeChange={setInboxBadge}
-                />
-              </ErrorBoundary>
-
               <main ref={mainAreaRef} className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden">
                 {gitScreenSession && activeWorkspace && (
                   <GitScreen
@@ -7603,6 +7592,19 @@ export default function App() {
                   </>
                 )}
               </main>
+
+              {/* O Inbox abre pela direita, do lado do ícone dele no header
+                  (dono, 2026-11-19). */}
+              <ErrorBoundary region="notificações">
+                <NotificationsInbox
+                  sessions={sessions}
+                  approvals={approvals}
+                  open={inboxOpen}
+                  onOpenChange={setInboxOpen}
+                  onGoToSession={goToSession}
+                  onBadgeChange={setInboxBadge}
+                />
+              </ErrorBoundary>
 
               <ShortcutsPanel
                 open={shortcutsOpen}
