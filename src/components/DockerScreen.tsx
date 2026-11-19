@@ -1,16 +1,22 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
+  ArrowClockwise,
   Cube,
   HardDrives,
   Image as ImageIcon,
   MagnifyingGlass,
+  Play,
   Stack,
+  Stop,
+  Trash,
   X,
   type Icon,
 } from "@phosphor-icons/react";
 
 import "./gitScreen.css";
+import { Button } from "@/components/ui/button";
+import { FIELD_SURFACE } from "@/components/ui/input";
 import { ContainerFilesPanel } from "./ContainerFilesPanel";
 import { ContainerLogsView } from "./ContainerLogsView";
 import { ContainerShellBanner, ContainerStrip } from "./ContainerStrip";
@@ -81,8 +87,6 @@ const LOCAL_REFRESH_MS = 3000;
 const REMOTE_REFRESH_MS = 15000;
 /** CPU/RAM: `docker stats` amostra ~2s; o core ainda segura em ≥5s. */
 const USAGE_REFRESH_MS = 5000;
-/** Acima disso aparece o filtro. */
-const FILTER_THRESHOLD = 8;
 
 const RAIL: Record<DockerSection, { icon: Icon; label: string }> = {
   containers: { icon: Cube, label: "dockerScreenContainers" },
@@ -97,9 +101,6 @@ const PANE_LABEL: Record<ContainerPane, string> = {
   files: "containerFiles",
   details: "dockerScreenDetails",
 };
-
-const BTN =
-  "shrink-0 whitespace-nowrap rounded-[6px] border border-tyba-border-strong px-2.5 py-1 text-[12px] text-tyba-text-muted hover:text-tyba-text disabled:opacity-50";
 
 const FULL_RECT = { left: 0, top: 0, width: 100, height: 100 } as const;
 
@@ -167,13 +168,15 @@ function ShellPane({
             />
           )}
           {exited && (
-            <button
-              type="button"
+            <Button
+              variant="outline"
+              size="sm"
               onClick={() => setNonce((n) => n + 1)}
-              className={`absolute bottom-3 right-4 ${BTN}`}
+              className="absolute bottom-3 right-4"
             >
+              <ArrowClockwise />
               {t(kind === "logs" ? "dockerScreenLogsReopen" : "dockerScreenShellReopen")}
-            </button>
+            </Button>
           )}
         </div>
       )}
@@ -584,7 +587,7 @@ export function DockerScreen({
         onClick={() => pick(c.id)}
         title={`${c.name}\n${image.full}\n${c.status}`}
         // Escolhido = fundo elevado com contorno inteiro; nunca barra lateral.
-        className={`flex w-full flex-col gap-[5px] rounded-[6px] px-3 py-2.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-tyba-blue ${
+        className={`flex w-full flex-col gap-[5px] rounded-[10px] px-3 py-2.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-tyba-blue ${
           on
             ? "tyba-pill-on"
             : "hover:bg-tyba-text/[.03]"
@@ -717,7 +720,7 @@ export function DockerScreen({
         {state.section === "compose" ? (
           <div className="flex h-[46px] shrink-0 items-center gap-3 tyba-divide-b bg-[var(--tyba-panel-bg)] px-[18px] text-[12px]">
             <Stack size={16} className="shrink-0 text-tyba-blue" />
-            <span className="shrink-0 text-[14px] font-medium text-tyba-text">
+            <span className="shrink-0 text-[15px] font-bold tracking-[-0.01em] text-tyba-text">
               {t("dockerScreenComposeTitle")}
             </span>
             <span className="min-w-0 flex-1 truncate text-tyba-text-faint" title={session.title}>
@@ -746,7 +749,7 @@ export function DockerScreen({
         ) : (
           <div className="flex h-[46px] shrink-0 items-center gap-3 tyba-divide-b bg-[var(--tyba-panel-bg)] px-[18px] text-[12px]">
             <PanelIcon kind="docker" size={16} className="shrink-0 text-tyba-blue" />
-            <span className="shrink-0 text-[14px] font-medium text-tyba-text">
+            <span className="shrink-0 text-[15px] font-bold tracking-[-0.01em] text-tyba-text">
               {t("sidePanelDocker")}
             </span>
             <span className="min-w-0 flex-1 truncate text-tyba-text-faint" title={session.title}>
@@ -772,22 +775,24 @@ export function DockerScreen({
             )}
             {repoProject && (
               <>
-                <button
-                  type="button"
-                  className={BTN}
+                <Button
+                  variant="outline"
+                  size="sm"
                   disabled={busy || !repoContainers.some((c) => c.state !== "running")}
                   onClick={() => void bulk("start")}
                 >
+                  <Play />
                   {t("dockerScreenStartAll")}
-                </button>
-                <button
-                  type="button"
-                  className={BTN}
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
                   disabled={busy || !repoContainers.some((c) => c.state === "running")}
                   onClick={() => void bulk("stop")}
                 >
+                  <Stop />
                   {t("dockerScreenStopAll")}
-                </button>
+                </Button>
               </>
             )}
           </div>
@@ -797,13 +802,13 @@ export function DockerScreen({
           <div className="flex flex-1 flex-col items-start gap-2 px-[18px] py-4 text-[12px] text-tyba-text-muted">
             {t("dockerUnavailable")}
             {!host && (
-              <button
-                type="button"
-                className={BTN}
+              <Button
+                variant="outline"
+                size="sm"
                 onClick={() => void dockerOpenDesktop().catch(() => {})}
               >
                 {t("dockerPanelOpenDesktop")}
-              </button>
+              </Button>
             )}
           </div>
         ) : state.section === "compose" ? (
@@ -825,36 +830,36 @@ export function DockerScreen({
         ) : (
           // Coluna à direita, junto do trilho, como em Arquivos (dono, 2026-10-14).
           <div className="flex min-h-0 flex-1 flex-row-reverse">
-            <div className="flex w-[300px] shrink-0 flex-col border-l border-[var(--tyba-line)] bg-[var(--tyba-panel-bg)]">
-              <div className="flex shrink-0 items-center gap-2 px-3.5 pb-1.5 pt-3 text-[11px] text-tyba-text-faint">
+            <div className="flex w-[320px] shrink-0 flex-col border-l border-[var(--tyba-line)] bg-[var(--tyba-panel-bg)]">
+              <div className="flex shrink-0 items-center gap-2 px-4 pb-1.5 pt-3.5 text-[12.5px] text-tyba-text-muted">
                 <span className="flex-1">
                   {t("dockerScreenContainersCount", { count: list?.length ?? 0 })}
                 </span>
               </div>
-              {(list?.length ?? 0) > FILTER_THRESHOLD && (
-                <div className="shrink-0 px-3 pb-2">
-                  <label className="flex items-center gap-2 rounded-[6px] border border-tyba-border-field bg-tyba-sunken px-2.5 py-[5px] text-[12px] text-tyba-text-faint">
-                    <MagnifyingGlass size={13} className="shrink-0" />
-                    <input
-                      type="text"
-                      spellCheck={false}
-                      autoCapitalize="off"
-                      autoCorrect="off"
-                      value={query}
-                      onChange={(e) => setQuery(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Escape" && query) {
-                          e.preventDefault();
-                          setQuery("");
-                        }
-                      }}
-                      placeholder={t("dockerPanelFilter")}
-                      aria-label={t("dockerPanelFilter")}
-                      className="min-w-0 flex-1 bg-transparent text-tyba-text outline-none placeholder:text-tyba-text-faint"
-                    />
-                  </label>
-                </div>
-              )}
+              <div className="shrink-0 px-3 pb-2">
+                <label
+                  className={`${FIELD_SURFACE} flex h-9 items-center gap-2 px-3 text-[13px] text-tyba-text-faint focus-within:[box-shadow:var(--tyba-field-focus)]`}
+                >
+                  <MagnifyingGlass size={14} className="shrink-0" />
+                  <input
+                    type="text"
+                    spellCheck={false}
+                    autoCapitalize="off"
+                    autoCorrect="off"
+                    value={query}
+                    onChange={(e) => setQuery(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Escape" && query) {
+                        e.preventDefault();
+                        setQuery("");
+                      }
+                    }}
+                    placeholder={t("dockerPanelFilter")}
+                    aria-label={t("dockerPanelFilter")}
+                    className="min-w-0 flex-1 bg-transparent text-tyba-text outline-none placeholder:text-tyba-text-faint"
+                  />
+                </label>
+              </div>
               <div className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-2 py-1">
                 {list === null ? (
                   firstLoad("list", "-mx-2 -my-1")
@@ -919,14 +924,16 @@ export function DockerScreen({
                       })}
                     </span>
                     {selected.state !== "running" && (
-                      <button
-                        type="button"
-                        className={`ml-auto ${BTN}`}
+                      <Button
+                        variant="destructive"
+                        size="sm"
+                        className="ml-auto"
                         disabled={busy}
                         onClick={() => void remove(selected)}
                       >
+                        <Trash />
                         {t("dockerPanelRemove")}
-                      </button>
+                      </Button>
                     )}
                   </div>
                   <div className="relative min-h-0 flex-1">

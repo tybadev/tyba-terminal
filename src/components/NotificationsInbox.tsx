@@ -233,7 +233,7 @@ export function NotificationsInbox({
             {red ? t("notifRedTitle") : t("notifAskTitle")}
           </div>
           <div className={`${DESC} line-clamp-3 break-all`} title={request.command}>
-            {request.command} · {sessionTitle(request.session_id)}
+            {request.command} · {t("notifInSession", { session: sessionTitle(request.session_id) })}
           </div>
           {request.context && <div className={DESC}>{request.context}</div>}
           <div className={META}>
@@ -357,9 +357,13 @@ export function NotificationsInbox({
       <div className="min-w-0 flex-1 pr-3">
         <div className={`${TITLE} font-semibold text-tyba-text`}>{entryTitle(e)}</div>
         <div className={`${DESC} truncate`} title={e.command ?? undefined}>
-          {[e.command, e.session_title].filter(Boolean).join(" · ")}
+          {[e.command, e.session_title && t("notifInSession", { session: e.session_title })]
+            .filter(Boolean)
+            .join(" · ")}
         </div>
-        <div className={META}>{ago(e.at_ms)}</div>
+        <div className={META}>
+          {ago(e.at_ms)} · {t("notifAnswerInPrompt")}
+        </div>
         <div className={ACTS}>{openInSessionBtn(e.session_id, () => markRead(e))}</div>
       </div>
       {!e.read && <UnreadDot label={t("notifUnread")} />}
@@ -430,7 +434,8 @@ export function NotificationsInbox({
             )}
             <span className="shrink-0">{clock(e.at_ms)}</span>
           </div>
-          {(e.kind === "agent_finished" || e.kind === "agent_failed" || limit) && (
+          {/* Quadro: falha e limite são só aviso, sem botões. */}
+          {e.kind === "agent_finished" && (
             <div className={ACTS}>
               {diffTarget && (
                 <button
