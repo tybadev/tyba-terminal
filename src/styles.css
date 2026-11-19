@@ -408,42 +408,15 @@
 /* Só o escuro do TYBA (sem data-theme). `data-imported` marca tema importado,
    que usa o mesmo atributo de polaridade mas não leva os literais do TYBA. */
 :root:not([data-theme]):not([data-imported]) {
-  /* Muriki noturno (dono, 2026-11-18): o escuro do TYBA sai do preto com
-     verde e vira marinho, com o azul da marca clareado e o amarelo de
-     "precisa de você". Os esquemas (Dracula, Monokai…) continuam herdando
-     o :root de sempre; isto vale só para o TYBA escuro. */
-  --tyba-bg: #07122a;
-  --tyba-surface: #0a1830;
-  --tyba-raised: #0e1d38;
-  --tyba-overlay: #10213f;
-  --tyba-sunken: #060f24;
-  --tyba-text: #eef3ff;
-  --tyba-text-muted: #a9b8d6;
-  --tyba-text-faint: #8193b6;     /* 5,6:1 sobre #07122a */
-  --tyba-text-inverse: #07122a;
-  --tyba-green: #4ade80;
-  --tyba-lime: #a3e635;
-  --tyba-amber: #fdce04;
-  --tyba-magenta: #f472b6;
-  --tyba-violet: #a78bfa;
-  --tyba-blue: #5b8cff;
-  --tyba-cyan: #5eead4;
-  --tyba-red: #ff6b6b;
-  --tyba-primary: var(--tyba-blue);
-  --tyba-glow-alpha: 40%;
-  --tyba-ghost-mix: 46%;
-  --tyba-diff-add-text: #b7f5cd;
-  --tyba-diff-del-text: #ffc2c2;
-  /* Campo: o mesmo ambiente quase sem cor do claro, em marinho. */
-  --tyba-field:
-    radial-gradient(60% 40% at 20% 10%, rgba(91, 140, 255, 0.1), transparent 70%),
-    #07122a;
+  --tyba-ghost-mix: 46%;          /* fantasma ≈ #3a3a3f (mockups) */
+  --tyba-diff-add-text: #c9ecaa;
+  --tyba-diff-del-text: #f3b2a8;
+  /* Opção G no BLACKOUT: o cromo é acrílico encorpado sobre a aurora do
+     escuro, e o terminal é preto translúcido. */
   --tyba-glass-section: color-mix(in srgb, var(--tyba-surface) 80%, transparent);
-  --tyba-paper: rgba(6, 15, 36, 0.78);
-  --tyba-paper-solid: #060f24;
+  --tyba-paper: rgba(0, 0, 0, 0.72);
+  --tyba-paper-solid: #030304;
   --tyba-panel-bg: transparent;
-  /* Selecionado: o cartão do item ativo da barra lateral, um tom acima. */
-  --tyba-glass-active: rgba(255, 255, 255, 0.1);
 }
 
 /* Só o claro do TYBA (os outros claros herdam o bloco de cima e têm acentos
@@ -1853,19 +1826,6 @@ html {
   background: color-mix(in srgb, var(--tyba-surface) 42%, transparent);
   backdrop-filter: blur(40px) saturate(140%);
   -webkit-backdrop-filter: blur(40px) saturate(140%);
-}
-/* Muriki noturno: o selecionado é o mesmo cartão da barra lateral, um tom
-   acima do marinho, com sombra; e a janela fica no campo marinho. */
-:root:not([data-theme]):not([data-imported]) {
-  --tyba-pill-on: inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 1px 2px rgba(0, 0, 0, 0.4), 0 4px 12px rgba(0, 0, 0, 0.35);
-  --tyba-pill-sheen: none;
-}
-:root:not([data-theme]):not([data-imported]) .tyba-icon-on {
-  background-color: var(--tyba-glass-active);
-  box-shadow: var(--tyba-pill-on);
-}
-:root:not([data-theme]):not([data-imported]) .tyba-aurora {
-  background: var(--tyba-field);
 }
 /* Shell dividido, foco B (dono, 2026-11-18): o painel sem foco fica num
    papel um tom abaixo, puxado para o azul, e com o conteúdo apagado. O com
