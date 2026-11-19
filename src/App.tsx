@@ -6665,7 +6665,7 @@ export default function App() {
             </div>
           )}
           <>
-            {sidebar !== "hidden" && (
+            {sidebar !== "hidden" && !orbitOpen && (
                 <aside
                   // Barra lateral do quadro Sidebar (aprovada em 2026-11-15):
                   // busca, Nova sessão/Orbit/Conexões SSH, Sessões por grupo,
