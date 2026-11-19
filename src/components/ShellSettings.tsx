@@ -1,8 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Trash } from "@phosphor-icons/react";
+import { PenNib, Plus, Trash, UploadSimple } from "@phosphor-icons/react";
 
-import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import {
   clearCommandHistory,
@@ -22,7 +21,7 @@ import {
   type Snippet,
 } from "../lib/ipc";
 import { PROMPT_MODE_PREF_KEY, promptModeEnabled } from "../lib/commandLine";
-import { SettingGroup, SettingLine, SettingNote } from "./settings/rows";
+import { SettingButton, SettingGroup, SettingLine, SettingNote } from "./settings/rows";
 import {
   autocompleteAutoOpen,
   autocompleteShowUses,
@@ -45,7 +44,11 @@ function blankSnippet(): Snippet {
   };
 }
 
-/** O miolo da seção Terminal; `lineRows` são as linhas da linha de comando que moram no `SettingsView`. */
+/**
+ * O miolo da seção Terminal, na ordem do quadro "Configurações (aprovada)":
+ * Digitar, O que o TYBA sabe da sessão (`lineRows`, que moram no
+ * `SettingsView`), Histórico e Snippets.
+ */
 export function ShellSettings({ lineRows }: { lineRows?: React.ReactNode }) {
   const { t } = useTranslation();
   const [historyOn, setHistoryOn] = useState(true);
@@ -157,149 +160,147 @@ export function ShellSettings({ lineRows }: { lineRows?: React.ReactNode }) {
 
   return (
     <>
-      <SettingGroup title={t("settingsCommandLine")} />
-      {lineRows}
-      <SettingLine label={t("promptModeTitle")} hint={t("promptModeShortHint")}>
-        <Switch checked={promptOn} onCheckedChange={togglePrompt} aria-label={t("promptModeTitle")} />
-      </SettingLine>
+      <SettingGroup title={t("cfgGroupTyping")}>
+        <SettingLine label={t("promptModeTitle")} hint={t("cfgPromptModeHint")}>
+          <Switch checked={promptOn} onCheckedChange={togglePrompt} aria-label={t("promptModeTitle")} />
+        </SettingLine>
+        <SettingLine label={t("cfgAutoOpen")} hint={t("cfgAutoOpenHint")}>
+          <Switch
+            checked={autoOpen}
+            aria-label={t("cfgAutoOpen")}
+            onCheckedChange={(c) => {
+              setAutoOpen(c);
+              setAutocompleteAutoOpen(c);
+            }}
+          />
+        </SettingLine>
+        <SettingLine label={t("autocompleteShowUses")}>
+          <Switch
+            checked={showUses}
+            aria-label={t("autocompleteShowUses")}
+            onCheckedChange={(c) => {
+              setShowUses(c);
+              setAutocompleteShowUses(c);
+            }}
+          />
+        </SettingLine>
+      </SettingGroup>
 
-      <SettingGroup title={t("settingsAutocomplete")} />
-      <SettingLine label={t("autocompleteAutoOpen")} hint={t("autocompleteAutoOpenHint")}>
-        <Switch
-          checked={autoOpen}
-          onCheckedChange={(c) => {
-            setAutoOpen(c);
-            setAutocompleteAutoOpen(c);
-          }}
-        />
-      </SettingLine>
-      <SettingLine label={t("autocompleteShowUses")} hint={t("autocompleteShowUsesHint")}>
-        <Switch
-          checked={showUses}
-          onCheckedChange={(c) => {
-            setShowUses(c);
-            setAutocompleteShowUses(c);
-          }}
-        />
-      </SettingLine>
+      {lineRows && <SettingGroup title={t("cfgGroupSessionKnows")}>{lineRows}</SettingGroup>}
 
       <SettingGroup
-        title={t("settingsHistory")}
+        title={t("cfgGroupHistory")}
         note={historyTotal !== null ? t("historyTotal", { count: historyTotal }) : undefined}
-      />
-      <SettingLine label={t("historyEnabled")} hint={t("historyHint")}>
-        <Switch checked={historyOn} onCheckedChange={toggleHistory} aria-label={t("historyEnabled")} />
-      </SettingLine>
-      <SettingLine
-        label={t("historyImportTitle")}
-        hint={
-          importSources.length === 0
-            ? t("historyImportNoSources")
-            : importSources
-                .map((source) => t("historyImportFound", { entries: source.entries, path: source.path }))
-                .join(" · ")
-        }
       >
-        {importProgress && (
-          <span className="text-[11px] tabular-nums text-tyba-text-faint">
-            {importProgress.source} {importProgress.imported}/{importProgress.total}
-          </span>
-        )}
-        <Button variant="ghost" size="sm" onClick={runImport} disabled={importing || importSources.length === 0}>
-          {importing ? t("historyImportRunning") : t("historyImportAction")}
-        </Button>
-      </SettingLine>
-      {importReport?.sources.map((outcome) => (
-        <SettingNote key={outcome.path} tone={outcome.skipped ? "amber" : "faint"}>
-          {outcome.source}:{" "}
-          {outcome.skipped
-            ? t("historyImportSkipped", { reason: outcome.skipped })
-            : t("historyImportDone", { imported: outcome.imported, discarded: outcome.discarded })}
-        </SettingNote>
-      ))}
-      <SettingLine label={t("historyClear")} hint={t("historyClearHint")}>
-        <Button variant="ghost" size="sm" className="text-tyba-red" onClick={clear}>
-          {t("historyClearShort")}
-        </Button>
-      </SettingLine>
-
-      <SettingGroup
-        title={t("settingsSnippets")}
-        note={
-          !draft && (
-            <button onClick={() => setDraft(blankSnippet())} className="text-tyba-blue hover:text-tyba-text">
-              + {t("snippetNew")}
-            </button>
-          )
-        }
-      />
-      {snippets.length === 0 && !draft && <SettingNote>{t("snippetsEmpty")}</SettingNote>}
-      {snippets.map((snippet) => (
-        <div
-          key={snippet.id}
-          className="grid grid-cols-[160px_1fr_auto_auto] items-center gap-4 border-b border-tyba-border-soft px-[18px] py-[9px] text-[12.5px]"
+        <SettingLine label={t("cfgHistoryOn")} hint={t("cfgHistoryOnHint")}>
+          <Switch checked={historyOn} onCheckedChange={toggleHistory} aria-label={t("cfgHistoryOn")} />
+        </SettingLine>
+        <SettingLine
+          label={t("cfgHistoryImport")}
+          hint={
+            importSources.length === 0
+              ? t("historyImportNoSources")
+              : importSources
+                  .map((source) => t("historyImportFound", { entries: source.entries, path: source.path }))
+                  .join(" · ")
+          }
         >
-          <button onClick={() => setDraft(snippet)} className="truncate text-left text-tyba-text">
-            {snippet.name}
-          </button>
-          <button onClick={() => setDraft(snippet)} className="truncate text-left font-mono text-tyba-text-muted">
-            {snippet.command}
-          </button>
-          <span className="text-[11px] text-tyba-text-faint">
-            {snippet.source === "repo" ? t("snippetScopeRepo") : t("snippetScopeGlobal")}
-          </span>
-          <button
-            aria-label={t("snippetDelete")}
-            onClick={() => remove(snippet.id)}
-            className="rounded-[4px] p-1 text-tyba-text-faint hover:bg-tyba-text/[.05] hover:text-tyba-red"
+          {importProgress && (
+            <span className="text-[12px] tabular-nums text-tyba-text-faint">
+              {importProgress.source} {importProgress.imported}/{importProgress.total}
+            </span>
+          )}
+          <SettingButton
+            icon={<UploadSimple size={16} />}
+            onClick={runImport}
+            disabled={importing || importSources.length === 0}
           >
-            <Trash size={14} />
-          </button>
-        </div>
-      ))}
-      {draft ? (
-        <div className="mx-[18px] mt-2 flex flex-col gap-2 rounded-[6px] border border-tyba-border p-4">
-          <input
-            spellCheck={false}
-            autoCapitalize="off"
-            autoCorrect="off"
-            autoFocus
-            value={draft.name}
-            placeholder={t("snippetName")}
-            onChange={(e) => setDraft({ ...draft, name: e.target.value })}
-            className="rounded-[4px] border border-tyba-border bg-transparent px-2 py-1 text-[13px] text-tyba-text outline-none focus:border-tyba-green/50"
-          />
-          <textarea
-            spellCheck={false}
-            autoCapitalize="off"
-            autoCorrect="off"
-            value={draft.command}
-            rows={2}
-            placeholder={t("snippetCommand")}
-            onChange={(e) => setDraft({ ...draft, command: e.target.value })}
-            className="resize-none rounded-[4px] border border-tyba-border bg-transparent px-2 py-1 font-mono text-[12px] text-tyba-text outline-none focus:border-tyba-green/50"
-          />
-          <input
-            autoCapitalize="sentences"
-            autoCorrect="on"
-            spellCheck
-            value={draft.description ?? ""}
-            placeholder={t("snippetDescription")}
-            onChange={(e) =>
-              setDraft({ ...draft, description: e.target.value })
-            }
-            className="rounded-[4px] border border-tyba-border bg-transparent px-2 py-1 text-[12px] text-tyba-text outline-none focus:border-tyba-green/50"
-          />
-          <div className="flex items-center justify-end gap-2">
-            <Button variant="ghost" size="sm" onClick={() => setDraft(null)}>
-              {t("cancel")}
-            </Button>
-            <Button size="sm" onClick={persist}>
-              {t("snippetSave")}
-            </Button>
+            {importing ? t("historyImportRunning") : t("historyImportAction")}
+          </SettingButton>
+        </SettingLine>
+        {importReport?.sources.map((outcome) => (
+          <SettingNote key={outcome.path} tone={outcome.skipped ? "amber" : "faint"}>
+            {outcome.source}:{" "}
+            {outcome.skipped
+              ? t("historyImportSkipped", { reason: outcome.skipped })
+              : t("historyImportDone", { imported: outcome.imported, discarded: outcome.discarded })}
+          </SettingNote>
+        ))}
+        <SettingLine label={t("cfgHistoryClear")} hint={t("cfgHistoryClearHint")}>
+          <SettingButton tone="danger" icon={<Trash size={16} />} onClick={clear}>
+            {t("cfgClear")}
+          </SettingButton>
+        </SettingLine>
+      </SettingGroup>
+
+      <SettingGroup title={t("settingsSnippets")}>
+        {snippets.length === 0 && !draft && <SettingNote>{t("snippetsEmpty")}</SettingNote>}
+        {snippets.map((snippet) => (
+          <SettingLine
+            key={snippet.id}
+            label={snippet.name}
+            hint={<span className="font-mono text-[12.5px] text-tyba-text">{snippet.command}</span>}
+          >
+            <SettingButton tone="ghost" icon={<PenNib size={16} />} onClick={() => setDraft(snippet)}>
+              {t("launchEdit")}
+            </SettingButton>
+            <SettingButton
+              tone="ghost"
+              aria-label={t("snippetDelete")}
+              className="px-2.5 hover:text-tyba-red"
+              onClick={() => remove(snippet.id)}
+              icon={<Trash size={16} />}
+            />
+          </SettingLine>
+        ))}
+        {draft ? (
+          <div className="my-2 flex flex-col gap-2 rounded-[10px] p-4 shadow-[inset_0_0_0_1px_var(--tyba-line)]">
+            <input
+              spellCheck={false}
+              autoCapitalize="off"
+              autoCorrect="off"
+              autoFocus
+              value={draft.name}
+              placeholder={t("snippetName")}
+              onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+              className="rounded-[6px] border border-tyba-border bg-transparent px-2 py-1 text-[13px] text-tyba-text outline-none focus:border-tyba-border-strong"
+            />
+            <textarea
+              spellCheck={false}
+              autoCapitalize="off"
+              autoCorrect="off"
+              value={draft.command}
+              rows={2}
+              placeholder={t("snippetCommand")}
+              onChange={(e) => setDraft({ ...draft, command: e.target.value })}
+              className="resize-none rounded-[6px] border border-tyba-border bg-transparent px-2 py-1 font-mono text-[12px] text-tyba-text outline-none focus:border-tyba-border-strong"
+            />
+            <input
+              autoCapitalize="sentences"
+              autoCorrect="on"
+              spellCheck
+              value={draft.description ?? ""}
+              placeholder={t("snippetDescription")}
+              onChange={(e) =>
+                setDraft({ ...draft, description: e.target.value })
+              }
+              className="rounded-[6px] border border-tyba-border bg-transparent px-2 py-1 text-[12px] text-tyba-text outline-none focus:border-tyba-border-strong"
+            />
+            <div className="flex items-center justify-end gap-2">
+              <SettingButton tone="ghost" onClick={() => setDraft(null)}>
+                {t("cancel")}
+              </SettingButton>
+              <SettingButton onClick={persist}>{t("snippetSave")}</SettingButton>
+            </div>
           </div>
-        </div>
-      ) : null}
+        ) : (
+          <SettingLine>
+            <SettingButton icon={<Plus size={16} />} onClick={() => setDraft(blankSnippet())}>
+              {t("snippetNew")}
+            </SettingButton>
+          </SettingLine>
+        )}
+      </SettingGroup>
     </>
   );
 }

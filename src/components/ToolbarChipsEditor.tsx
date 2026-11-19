@@ -204,7 +204,7 @@ export function ToolbarChipsEditor({ pref, onChange }: Props) {
   };
 
   return (
-    <div className="border-b border-tyba-border-soft px-[18px] pt-1 pb-3">
+    <div className="pt-1">
       <ToolbarPreview pref={shown} />
       <DndContext
         sensors={sensors}
