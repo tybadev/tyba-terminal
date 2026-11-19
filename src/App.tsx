@@ -6612,7 +6612,15 @@ export default function App() {
               <IconAction
                 label={t("filesPanel")}
                 shortcut={bindings.files}
-                onClick={() => void openFilesPanel(fileSessionId).catch(() => {})}
+                // Alterna (dono, 2026-11-19): com Arquivos aberto, o mesmo
+                // ícone fecha a tela.
+                onClick={() => {
+                  if (filesTarget && activeWorkspace) {
+                    void closeSideView(activeWorkspace.id).catch(() => {});
+                  } else {
+                    void openFilesPanel(fileSessionId).catch(() => {});
+                  }
+                }}
               >
                 <FolderSimple size={18} />
               </IconAction>
