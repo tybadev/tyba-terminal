@@ -27,6 +27,7 @@ import {
   X,
 } from "@phosphor-icons/react";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
+import { homeDir } from "@tauri-apps/api/path";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { Button } from "@/components/ui/button";
@@ -109,6 +110,7 @@ import { OrbitScreen, type FocusSessionRequest } from "./components/orbit/OrbitS
 import { ShortcutsPanel } from "./components/ShortcutsPanel";
 import { EmptySessions } from "./components/EmptySessions";
 import { OrbitIcon } from "./components/icons/OrbitIcon";
+import { ShellGlyph } from "./components/icons/ShellGlyph";
 import { ConnectionsView } from "./components/ConnectionsView";
 import {
   HostFormDialog,
@@ -416,10 +418,12 @@ import {
 } from "./lib/startup";
 import {
   compactPath,
+  dirLabel,
   resolveWorkspaceCwd,
   workspaceMatchDir,
 } from "./lib/workspaceCwd";
 import { findSessionLocation } from "./lib/sessionLocation";
+import type { LaunchPlan } from "./lib/emptySessions";
 import { chipText, workspacePorts } from "./lib/services";
 import { useSessionPorts } from "./lib/useSessionPorts";
 import {
@@ -675,36 +679,6 @@ function agentGlyph(label: string, size = 16): React.ReactNode {
   if (label === "codex")
     return <OpenAIIcon size={size} className="shrink-0 text-tyba-text" />;
   return <AgentIcon size={size} className="shrink-0" />;
-}
-
-/** Ícone de sessão de shell (dono, 2026-11-15): o `Terminal` do Phosphor
- *  (>_) dentro de um círculo, no desenho de `ds/terminal-shell-icon.svg`. */
-function ShellGlyph({
-  size = 16,
-  className,
-  style,
-}: {
-  size?: number;
-  className?: string;
-  style?: React.CSSProperties;
-}) {
-  return (
-    <svg
-      viewBox="0 0 256 256"
-      width={size}
-      height={size}
-      aria-hidden
-      className={`shrink-0 ${className ?? ""}`}
-      style={style}
-    >
-      <circle cx="128" cy="128" r="114" fill="none" stroke="currentColor" strokeWidth="16" />
-      <path
-        fill="currentColor"
-        transform="translate(128 128) scale(0.52) translate(-125 -129)"
-        d="M117.31,134l-72,64a8,8,0,1,1-10.63-12L100,128,34.69,70A8,8,0,1,1,45.32,58l72,64a8,8,0,0,1,0,12ZM216,184H120a8,8,0,0,0,0,16h96a8,8,0,0,0,0-16Z"
-      />
-    </svg>
-  );
 }
 
 /** Badge amarelo do Muriki (`mk-sb-badge`): contagem que pede você. */
@@ -4064,6 +4038,25 @@ export default function App() {
     void setPref("pref.last_session_dir", dir).catch(() => {});
     await newSession(dir, basename(dir));
   }, [newSession]);
+
+  // "Abrir sessão" da tela inicial: cada combinação pela intenção que já
+  // existe — shell como o "Abrir pasta", agente na pasta como o review
+  // (`attach_existing`, sem worktree), host pelo `connect_host`.
+  const launchFromEmpty = useCallback(
+    (plan: LaunchPlan) => {
+      const run = async () => {
+        if (plan.kind === "ssh") return connectToHost(plan.host);
+        if (plan.cwd) void setPref("pref.last_session_dir", plan.cwd).catch(() => {});
+        if (plan.kind === "shell") {
+          return newSession(plan.cwd, plan.cwd ? basename(plan.cwd) : "shell");
+        }
+        const cwd = plan.cwd ?? (await homeDir());
+        await spawnAgentSession(dirLabel(cwd), cwd, plan.runner);
+      };
+      void run().catch((e) => toastError(t("startFailed"), e));
+    },
+    [connectToHost, newSession, spawnAgentSession, t],
+  );
 
   const confirmCloseWithRunningAgent = useCallback(
     async (running: Session | null): Promise<boolean> => {
@@ -7505,16 +7498,25 @@ export default function App() {
                         hasWorkspaces={layout.workspaces.length > 0}
                         bindings={bindings}
                         hosts={sshHosts}
-                        onNewSession={() => openNewSession()}
+                        onLaunch={launchFromEmpty}
+                        onChooseFolder={async () => {
+                          const dir = await openFileDialog({
+                            directory: true,
+                            multiple: false,
+                          });
+                          return typeof dir === "string" ? dir : null;
+                        }}
                         onNewTab={() => void newTab()}
                         onConnectSsh={() =>
                           sshHosts.length > 0
                             ? setHostPickerOpen(true)
                             : void openViewTab("connections").catch(() => {})
                         }
+                        onOrbit={() => {
+                          (document.activeElement as HTMLElement | null)?.blur();
+                          setOrbitOpen(true);
+                        }}
                         onPalette={() => openPalette("actions")}
-                        onTogglePanel={toggleSidebar}
-                        onPickHost={(host) => void connectToHost(host)}
                       />
                     </div>
                   )}
