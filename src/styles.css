@@ -1400,13 +1400,28 @@ samp {
   from { background-position: 0% 0; }
   to { background-position: 200% 0; }
 }
-/* O ponto vivo do mockup (.pulse): 1 → .45 em 1,6s. */
+/* O ponto vivo do quadro (Sidebar/Agents, `pl`): um anel da cor do ponto
+   que cresce 5px para fora e some. Os pontos se pintam pelo fundo
+   (`bg-*`), não pela cor do texto, então o anel é um `::after` que herda o
+   fundo — e não briga com o brilho que alguns pontos já têm no
+   box-shadow. Parado em reduzir movimento (bloco abaixo). */
+/* Escala 2,4 num ponto de 6–7px ≈ os 5px de anel do quadro. */
 @keyframes tyba-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.45; }
+  0% { transform: scale(1); opacity: 0.6; }
+  70%, 100% { transform: scale(2.4); opacity: 0; }
 }
 .tyba-pulse {
-  animation: tyba-pulse 1.6s ease-in-out infinite;
+  position: relative;
+}
+.tyba-pulse::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: inherit;
+  box-shadow: none;
+  pointer-events: none;
+  animation: tyba-pulse 1.6s ease-out infinite;
 }
 /* "Em andamento" no cartão da sessão: o meio círculo pinta um lado, depois o
    outro, alternando — o movimento é o sinal de que está rodando. */
@@ -1419,8 +1434,8 @@ samp {
 }
 @media (prefers-reduced-motion: reduce) {
   .tyba-flow-line--live,
-  .tyba-pulse,
   .tyba-half-flip { animation: none; }
+  .tyba-pulse::after { animation: none; display: none; }
 }
 
 /* Esqueleto de carregamento (feature carregamento): a forma final do que vai
@@ -1781,6 +1796,24 @@ samp {
 }
 .tyba-segment > * {
   border-radius: 9999px;
+}
+/* Item da paleta de comandos (Muriki, `.mk-cmd-icon`): o primeiro ícone
+   vira um quadrado de 30px com o fio fino; no item selecionado acende no
+   azul da marca com o ícone branco. */
+.tyba-cmd-item > svg:first-child {
+  box-sizing: border-box;
+  width: 30px;
+  height: 30px;
+  padding: 7px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--tyba-glass-active) 70%, transparent);
+  box-shadow: inset 0 0 0 1px var(--tyba-line);
+  transition: background-color 120ms, color 120ms;
+}
+.tyba-cmd-item[data-selected='true'] > svg:first-child {
+  background: var(--tyba-blue);
+  color: var(--primary-foreground) !important;
+  box-shadow: none;
 }
 /* A placa: o que está aceso (pílula Terminal, aba ativa, sessão, busca). */
 .tyba-pill-on {
