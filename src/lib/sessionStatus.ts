@@ -8,6 +8,18 @@ import type {
 } from "./ipc";
 import { sameAgentUsage } from "./agentUsage";
 
+/**
+ * Há quanto tempo o turno que roda começou, a partir do instante que o core
+ * mandou. `null` quando a sessão não está rodando ou o core não viu o começo.
+ */
+export const turnElapsedMs = (
+  session: Pick<Session, "status" | "turn_started_at_ms">,
+  now: number,
+): number | null =>
+  session.status.state === "running" && session.turn_started_at_ms != null
+    ? Math.max(0, now - session.turn_started_at_ms)
+    : null;
+
 export const isFinishedStatus = (status: SessionStatus): boolean =>
   status.state === "exited" || status.state === "failed";
 
@@ -223,6 +235,7 @@ export const mergeSessionUpdate = (
     sameAgentUsage(current.agent_usage, incoming.agent_usage) &&
     sameTurnDigest(current.last_turn, incoming.last_turn) &&
     Boolean(current.turn_open) === Boolean(incoming.turn_open) &&
+    (current.turn_started_at_ms ?? null) === (incoming.turn_started_at_ms ?? null) &&
     Boolean(current.shell_resume_offer) === Boolean(incoming.shell_resume_offer)
   ) {
     return null;
@@ -235,6 +248,7 @@ export const mergeSessionUpdate = (
     agent_usage: incoming.agent_usage ?? null,
     last_turn: incoming.last_turn ?? null,
     turn_open: incoming.turn_open ?? false,
+    turn_started_at_ms: incoming.turn_started_at_ms ?? null,
     shell_resume_offer: incoming.shell_resume_offer ?? false,
     connection: incoming.connection,
     connection_failure: incoming.connection_failure ?? null,

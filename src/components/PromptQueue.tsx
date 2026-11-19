@@ -46,6 +46,8 @@ import {
 import { drawerBox, type DrawerBox } from "../lib/appFooter";
 import { queueIndicator, reorderIds, slotAt, type QueueTone } from "../lib/promptQueue";
 import { toastError } from "../lib/toast";
+import { formatElapsed } from "../lib/agentTree";
+import { useNow } from "./ui/loading";
 import { AgentsPanel, RobotIcon } from "./AgentsPanel";
 import { PLATE, PLATE_FLOAT, PLATE_LINE } from "./plate";
 import { GLASS_BTN, TurnPanel } from "./TurnPanel";
@@ -592,6 +594,7 @@ export function DrawerPill({
   queueCount,
   agents,
   turn,
+  runningSince,
   open,
   compact,
   onToggle,
@@ -599,11 +602,15 @@ export function DrawerPill({
   queueCount: number;
   agents: PillAgents | null;
   turn: PillTurn | null;
+  runningSince: number | null;
   open: boolean;
   compact: boolean;
   onToggle: () => void;
 }) {
   const { t } = useTranslation();
+  // O tempo do turno que roda, contado aqui a partir do começo que o core mandou.
+  useNow(runningSince !== null);
+  const elapsed = runningSince !== null ? formatElapsed(Date.now() - runningSince) : null;
   const state = agents?.state ?? null;
   const attn = state?.kind === "attn";
   const stateText =
@@ -620,6 +627,7 @@ export function DrawerPill({
     t("promptQueueButton", { count: queueCount }),
     agents && `${t("agentsTitle")} ${agents.done}/${agents.total}`,
     stateText,
+    elapsed && `${t("pillTurnRunning")} ${elapsed}`,
     turn && pillTurnLabel(turn, t),
   ]
     .filter(Boolean)
@@ -669,6 +677,13 @@ export function DrawerPill({
               <span className="font-mono">{state.count}</span>
             </span>
           )}
+        </>
+      )}
+      {elapsed && (
+        <>
+          {sep}
+          {!compact && <span>{t("pillTurnRunning")}</span>}
+          <span className={`${em} tabular-nums`}>{elapsed}</span>
         </>
       )}
       {turn && (

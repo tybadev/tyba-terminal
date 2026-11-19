@@ -7,6 +7,9 @@ import {
   tokenValues,
 } from "../lib/agentsSidebar";
 import type { AgentRow } from "../lib/agentsBoard";
+import { formatElapsed } from "../lib/agentTree";
+import { turnElapsedMs } from "../lib/sessionStatus";
+import { useNow } from "./ui/loading";
 import type { SessionId, SubagentSnapshot } from "../lib/ipc";
 import type { SessionPlace } from "../lib/agentsBoard";
 
@@ -110,6 +113,8 @@ export function AgentsSidebar({ rows, open, onSelect, subagents }: Props) {
   // Calculado sobre a lista inteira, e não por linha: saber se uma linha é
   // ambígua exige olhar as outras.
   const marcas = useMemo(() => disambiguators(rows), [rows]);
+  // Com algum turno rodando, redesenha a cada segundo para o tempo andar.
+  useNow(rows.some((row) => turnElapsedMs(row.session, 0) !== null));
   if (rows.length === 0) return null;
   const now = Date.now();
 
@@ -138,12 +143,15 @@ export function AgentsSidebar({ rows, open, onSelect, subagents }: Props) {
         }
         const status = row.session.status;
         const turn = row.session.last_turn;
-        // Tempo só do que o core mediu: o fim do último turno, com o agente
-        // parado. Rodando, o começo do turno aberto não chega — sem tempo.
+        // Tempo só do que o core mediu: rodando, desde o começo do turno
+        // aberto; parado, desde o fim do último turno.
+        const running = turnElapsedMs(row.session, now);
         const time =
-          status.state !== "running" && turn
-            ? t("agentAgo", { time: ago(turn.ended_at_ms, now) })
-            : null;
+          running !== null
+            ? formatElapsed(running)
+            : status.state !== "running" && turn
+              ? t("agentAgo", { time: ago(turn.ended_at_ms, now) })
+              : null;
         const name = agentName(row);
         const detail = values.detail ?? row.session.status_note ?? null;
         const subs = (subagents?.get(row.session.id)?.subagents ?? []).filter(

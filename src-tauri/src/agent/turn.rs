@@ -811,6 +811,17 @@ impl Turns {
             .is_some_and(|slot| slot.open.is_some())
     }
 
+    /// Quando o turno aberto começou (ms desde a época), se há um.
+    pub fn open_started_at(&self, id: SessionId) -> Option<u64> {
+        self.slots
+            .lock()
+            .expect("turns lock")
+            .get(&id)?
+            .open
+            .as_ref()
+            .map(|open| open.started_at_ms)
+    }
+
     /// Guarda as árvores do turno `seq` (ou a falta delas) e apaga o
     /// diretório privado dos turnos anteriores ao último que fechou. Um
     /// turno mais antigo que termina de calcular depois não troca as de um
