@@ -979,13 +979,12 @@ export function SettingsView({
   );
 
   return (
-    <div className="flex min-h-0 flex-1 justify-center text-tyba-text" style={{ background: "var(--tyba-field)" }}>
-      {/* Coluna de ajustes e lista de seções juntas, num bloco centrado: em
-          janela larga a lista não vai parar no canto e não sobra um vazio no
-          meio (dono, 2026-11-19: "tá feião"). */}
-      <div className="flex min-h-0 w-full max-w-[1040px]">
+    <div className="flex min-h-0 flex-1 text-tyba-text" style={{ background: "var(--tyba-field)" }}>
       <div ref={contentRef} className="tyba-settings min-h-0 min-w-0 flex-1 overflow-y-auto px-14 pt-9 pb-12">
-        <div className="max-w-[680px]">
+        {/* A coluna fica no meio do espaço livre, e a lista de seções colada
+            na borda direita (dono, 2026-11-19: em janela larga a coluna
+            presa à esquerda deixava um vazio enorme). */}
+        <div className="mx-auto max-w-[680px]">
           <div className="flex items-end justify-between gap-6">
             <div className="min-w-0">
               <h1 className="m-0 text-[28px] leading-[34px] font-bold tracking-[-.025em]">
@@ -1427,7 +1426,6 @@ export function SettingsView({
         onClose={onClose}
         search={search}
       />
-      </div>
     </div>
   );
 }
