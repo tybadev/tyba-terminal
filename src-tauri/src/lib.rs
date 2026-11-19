@@ -7869,6 +7869,97 @@ async fn agent_binary_available(runner: crate::session::AgentRunnerKind) -> bool
         .unwrap_or(false)
 }
 
+/// Handoff entre agentes: os agentes para onde a sessão pode passar o
+/// trabalho. `spawn_blocking` pelo mesmo motivo de [`agent_binary_available`].
+#[tauri::command]
+async fn handoff_targets(
+    state: State<'_, AppState>,
+    id: SessionId,
+) -> Result<Vec<agent::handoff::HandoffTarget>, String> {
+    let session = state.sessions.get(id).ok_or("sessão não encontrada")?;
+    let origin = agent::handoff::origin_agent(&session).ok_or("a sessão não é de agente")?;
+    tauri::async_runtime::spawn_blocking(move || {
+        agent::handoff::targets(&origin, agent::binary_available)
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+async fn prepare_handoff(
+    state: &State<'_, AppState>,
+    id: SessionId,
+    target: String,
+    note: String,
+) -> Result<agent::handoff::Prepared, String> {
+    let session = state.sessions.get(id).ok_or("sessão não encontrada")?;
+    tauri::async_runtime::spawn_blocking(move || {
+        agent::handoff::prepare(&session, &target, &note, agent::binary_available, |p| {
+            repo::toplevel(p).is_some()
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// O texto exato que o handoff vai mandar, já redigido no core.
+#[tauri::command]
+async fn session_handoff_preview(
+    state: State<'_, AppState>,
+    id: SessionId,
+    target: String,
+    note: String,
+) -> Result<agent::handoff::HandoffPreview, String> {
+    Ok(prepare_handoff(&state, id, target, note).await?.preview)
+}
+
+/// Abre o agente de destino na MESMA pasta da origem (nunca worktree novo),
+/// pelo caminho da launch config: `create_session` em attach e o texto como
+/// prompt inicial, escrito no pane esperando o Enter. O texto é remontado e
+/// redigido aqui de novo: do webview vêm só o agente e a nota. A origem não
+/// é tocada e nenhuma aprovação passa para a sessão nova.
+#[tauri::command]
+async fn session_handoff_open(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: SessionId,
+    target: String,
+    note: String,
+) -> Result<Session, String> {
+    let agent::handoff::Prepared {
+        runner,
+        folder,
+        preview,
+    } = prepare_handoff(&state, id, target, note).await?;
+    let session = create_session(
+        app.clone(),
+        state.clone(),
+        CreateSessionOpts {
+            kind: SessionKind::Agent { runner },
+            title: Some(preview.target_label),
+            cwd: Some(folder),
+            cols: 100,
+            rows: 30,
+            worktree_task: None,
+            attach_existing: true,
+            shell: None,
+            inherit_cwd_from: None,
+            initial_prompt: None,
+            agent_model: None,
+            prepared_worktree: None,
+        },
+    )
+    .await?;
+    let _ = app.emit(
+        launch_config::EVENT_PREFILL,
+        PrefillPayload {
+            session_id: session.id,
+            prompt: preview.text,
+            submit: false,
+        },
+    );
+    Ok(session)
+}
+
 /// Agente (claude/codex) detectado rodando na sessão de shell `session_id`, se
 /// houver. Estado alimentado pelo poll de [`poll_agent_probers`]. Mesma forma
 /// de payload que `agent-detected://changed` (Track C, tech-spec §7) — o
@@ -10732,6 +10823,9 @@ pub fn run() {
             config_warnings,
             boot_gate,
             agent_binary_available,
+            handoff_targets,
+            session_handoff_preview,
+            session_handoff_open,
             detected_agent,
             create_session,
             broadcast_write,
@@ -11906,6 +12000,7 @@ mod tests {
             agent_usage: None,
             last_turn: None,
             turn_open: false,
+            last_words: None,
             shell_resume_offer: false,
             agent_conversation_cwd: None,
             owner: Default::default(),
