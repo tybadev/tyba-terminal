@@ -1406,6 +1406,15 @@ fn on_orbit_tool(ctx: &HandlerCtx, event: &HookEvent) -> HookAction {
                 .into(),
         };
     };
+    orbit_tool_action(tools, event)
+}
+
+/// O pedido `OrbitTool` da ponte (`tyba _orbit-mcp`) levado às ferramentas
+/// do nó: chamada, cancelamento ou confirmação de entrega.
+pub(crate) fn orbit_tool_action(
+    tools: &crate::orbit::orchestrator::ToolHandler,
+    event: &HookEvent,
+) -> HookAction {
     use crate::orbit::orchestrator::ToolRequest;
     let text = |key: &str| event.raw.get(key).and_then(|t| t.as_str());
     let tool = text("tool").unwrap_or_default();
@@ -2011,7 +2020,7 @@ pub(crate) const FORCE_HYPERLINK: (&str, &str) = ("FORCE_HYPERLINK", "1");
 /// PATH com `TYBA_HOSTED=1`, como no pane: um claude aberto de dentro do
 /// agente (Bash, script, `claude -p`) passa pelo `_jail` e ganha o
 /// guarda-corpo.
-fn free_agent_env(
+pub(crate) fn free_agent_env(
     base: HashMap<String, String>,
     login_path: String,
     nested_wrapper: Option<&Path>,
@@ -2475,8 +2484,8 @@ fn note_turn_tail(tail: &mut TurnTail, event: &HookEvent) {
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-struct FreeCommand {
-    cmd: portable_pty::CommandBuilder,
+pub(crate) struct FreeCommand {
+    pub(crate) cmd: portable_pty::CommandBuilder,
     worktree_root: PathBuf,
     /// Sempre `true`: o hook do nó só observa, como o do claude digitado.
     observe_only: bool,
@@ -2498,7 +2507,7 @@ fn prompt_arg(prompt: &str) -> String {
 /// login, guarda-corpo de push, sem o que desligaria os hooks) mais o que o
 /// nó pede, por cima.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-fn node_agent_env(
+pub(crate) fn node_agent_env(
     free_env: HashMap<String, String>,
     extra: &[(String, String)],
 ) -> HashMap<String, String> {
@@ -2513,7 +2522,7 @@ fn node_agent_env(
 /// de observação, prompt como argumento, `Sandbox` passthrough.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[allow(clippy::too_many_arguments)]
-fn build_free_command(
+pub(crate) fn build_free_command(
     runner: &dyn AgentRunner,
     cwd: &Path,
     env: &HashMap<String, String>,

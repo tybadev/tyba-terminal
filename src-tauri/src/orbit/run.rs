@@ -3559,6 +3559,7 @@ impl<H: RunHost> Runs<H> {
     /// Os agentes ligados a `agent` por `talk` (nos dois sentidos), com o
     /// estado de cada um e quantas mensagens esperam por ele.
     pub fn peers(&self, run_id: &str, agent: &str) -> Result<serde_json::Value, String> {
+        let live = self.live_agents(run_id);
         let active = self.active.lock();
         let a = active
             .get(run_id)
@@ -3570,10 +3571,13 @@ impl<H: RunHost> Runs<H> {
             .filter_map(|id| a.graph.nodes.iter().find(|n| n.id == id))
             .map(|n| {
                 let run = a.sched.run.nodes.get(&n.id);
+                // O nó fechado com a sessão viva (o criado depois do turno)
+                // ainda conversa.
+                let alive = run.is_some_and(|r| talk_alive(r, &live));
                 let state = match (run.map(|r| r.status), a.talk.state(&n.id)) {
-                    (Some(NodeStatus::Running), Some(s)) => serde_json::to_value(s).ok(),
-                    (Some(NodeStatus::Running), None) => Some("working".into()),
                     (Some(NodeStatus::Waiting), _) => Some("notStarted".into()),
+                    (_, Some(s)) if alive => serde_json::to_value(s).ok(),
+                    (_, None) if alive => Some("working".into()),
                     _ => Some("gone".into()),
                 };
                 serde_json::json!({
@@ -3599,6 +3603,7 @@ impl<H: RunHost> Runs<H> {
         to: &str,
         text: &str,
     ) -> Result<usize, String> {
+        let live = self.live_agents(run_id);
         let mut active = self.active.lock();
         let a = active
             .get_mut(run_id)
@@ -3616,7 +3621,7 @@ impl<H: RunHost> Runs<H> {
             .run
             .nodes
             .get(to)
-            .is_none_or(|n| n.status.is_terminal());
+            .is_none_or(|n| !talk_alive(n, &live));
         if gone {
             return Err(format!(
                 "{to} não está mais rodando: a mensagem não teria quem leia"
@@ -6324,6 +6329,12 @@ impl<H: RunHost> Runs<H> {
     }
 }
 
+/// O agente ainda lê a conversa: o nó roda, ou já fechou (o criado depois
+/// do turno, o 1º turno que falhou) com a sessão viva.
+fn talk_alive(n: &NodeRun, live: &[String]) -> bool {
+    n.status == NodeStatus::Running || n.session_id.as_ref().is_some_and(|s| live.contains(s))
+}
+
 fn is_created(a: &Active, id: &str) -> bool {
     a.sched.run.created.iter().any(|c| c.node.id == id)
 }
@@ -8896,6 +8907,68 @@ mod tests {
             r.nodes[&child].waiting_you.is_none()
         });
         assert!(r.waiting_you.is_empty());
+    }
+
+    /// O criado fecha o nó no fim do turno, mas a sessão segue viva no
+    /// canvas: quem conversa com ele ainda manda, a fila sai no `Idle` dele e
+    /// o `orbit_peers` diz o estado da sessão, não "gone". Saiu a sessão,
+    /// recusa.
+    #[cfg(unix)]
+    #[test]
+    fn a_closed_created_agent_with_a_live_session_still_gets_messages() {
+        use serde_json::json;
+        let dir = tempfile::tempdir().unwrap();
+        let (runs, host, _app) = pty_runs(dir.path().join("runs"));
+        let run = runs
+            .start_now(graph(vec![orchestrator("o")], vec![]), vec![])
+            .unwrap();
+        wait_orchestrating(&runs, &run.id, "o");
+        let tools = tools_of(&host, "o");
+        let child = tools
+            .call(
+                "orbit_create_agent",
+                &json!({"title": "filho", "runner": "claude", "prompt": "x", "dir": dir.path()}),
+            )
+            .unwrap()["node_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        tools
+            .call(
+                "orbit_connect",
+                &json!({"from": "o", "to": child, "kind": "talk"}),
+            )
+            .unwrap();
+        let r = wait_status(&runs, &run.id, &child, NodeStatus::Done);
+        let session = r.nodes[&child].session_id.clone().unwrap();
+        host.set_state("filho", PeerState::Working);
+
+        let peers = tools.call("orbit_peers", &json!({})).unwrap();
+        assert_eq!(peers["peers"][0]["state"], "working", "{peers}");
+        let got = tools
+            .call("orbit_send", &json!({"to": child, "text": "agora o login"}))
+            .unwrap();
+        assert_eq!(got["queued"], 1);
+        host.set_state("filho", PeerState::Ready);
+        let inputs = host.inputs.lock().clone();
+        assert!(
+            inputs
+                .iter()
+                .any(|(s, t)| *s == session && t.contains("> agora o login")),
+            "{inputs:?}"
+        );
+
+        host.exit_agent(&session);
+        let _ = wait_until(&runs, &run.id, "a sessão saiu", |r| {
+            !r.live_agents.contains(&session)
+        });
+        let peers = tools.call("orbit_peers", &json!({})).unwrap();
+        assert_eq!(peers["peers"][0]["state"], "gone", "{peers}");
+        let err = tools
+            .call("orbit_send", &json!({"to": child, "text": "mais"}))
+            .unwrap_err();
+        assert!(err.contains("não está mais rodando"), "{err}");
+        runs.stop(&run.id).unwrap();
     }
 
     /// Pedido novo recomeça o relógio: outro resumo, ou a sessão saiu do
