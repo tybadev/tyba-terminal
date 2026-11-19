@@ -6,6 +6,7 @@ import {
   ArrowsLeftRight,
   CaretDown,
   CaretRight,
+  Columns,
   Copy,
   DotsThree,
   Eye,
@@ -14,7 +15,6 @@ import {
   GearSix,
   GitDiff,
   HardDrives,
-  Keyboard,
   MagnifyingGlass,
   Monitor,
   Plug,
@@ -135,7 +135,6 @@ import {
 import type { SshNoteAction } from "./components/SshTypedNote";
 import { SshSwapToast } from "./components/SshSwap";
 import { DockerIcon } from "./components/icons/DockerIcon";
-import { TybaMark } from "./components/icons/TybaMark";
 import { NewSessionPrompt } from "./components/NewSessionPrompt";
 import { WorktreeCreateDialog } from "./components/WorktreeCreateDialog";
 import { WorktreesView } from "./components/WorktreesView";
@@ -374,6 +373,7 @@ import {
   connectingHostIds,
   isFinishedStatus,
   mergeSessionUpdate,
+  statusVisual,
 } from "./lib/sessionStatus";
 import {
   agentsPanelActionableIds,
@@ -425,6 +425,7 @@ import {
   nextAttention,
   wantsAttention,
   agentForWorkspace,
+  observedVisual,
   type SessionPlace,
 } from "./lib/agentsBoard";
 import {
@@ -582,7 +583,7 @@ import {
   type TerminalPasteDetail,
 } from "./lib/termRegistry";
 import { HoverCard, HoverCardTrigger } from "@/components/ui/hover-card";
-import { Shortcut } from "@/components/ui/kbd";
+import { Kbd, Shortcut } from "@/components/ui/kbd";
 import type { ShellBoot } from "./lib/loading";
 
 const EMPTY_LAYOUT: LayoutState = { workspaces: [], active_workspace: null };
@@ -5446,6 +5447,18 @@ export default function App() {
           {t("menuLeaveGroup")}
         </M.Item>
       )}
+      {/* Divide o painel ativo, a mesma ação do atalho e da paleta: por isso
+          só aparece no menu da sessão que está na tela. */}
+      {w.id === layout.active_workspace && activeTab?.active_pane && (
+        <M.Item
+          className="gap-2.5 text-[13px]"
+          onSelect={() => void splitActive("v")}
+        >
+          <Columns size={15} className="shrink-0" />
+          {t("splitRight")}
+          <Shortcut combo={bindings.splitRight} className="ml-auto" />
+        </M.Item>
+      )}
       <M.Separator />
       {branch && (
         <M.Item className="gap-2.5 text-[13px]" onSelect={() => copyText(branch)}>
@@ -5864,6 +5877,31 @@ export default function App() {
           }),
         })
       : null;
+    // Cabeçalho de 24px do painel, só com o terminal dividido (quadro
+    // ShellSplit): ícone, nome, estado do agente ou o comando que roda com a
+    // porta, e o fechar no hover. Maximizar ainda não existe.
+    const splitHeader =
+      !bare && paneRect !== null && (paneLayout?.panes.length ?? 0) > 1;
+    const paneDimmed = splitHeader && s.id !== activeId;
+    const paneCommand = sessionCommands[s.id]?.running
+      ? (sessionCommands[s.id]?.command ?? null)
+      : null;
+    const paneAgent =
+      runnerLabel(s.kind) ??
+      (detected ? agentBinaryName(detected.kind) : null) ??
+      agentFromCommand(paneCommand);
+    const paneVisual =
+      s.kind.type === "agent"
+        ? statusVisual(s.status, s.attention)
+        : s.observed
+          ? observedVisual(s.observed)
+          : null;
+    const panePorts = chipText(sessionPorts[s.id] ?? []);
+    const paneState = paneAgent
+      ? paneVisual
+        ? t(paneVisual.labelKey)
+        : null
+      : [paneCommand, panePorts].filter(Boolean).join(" · ") || null;
     return (
       // O painel é uma coluna: a área de conteúdo (terminal e
       // blocos) em cima, a linha do TYBA embaixo. A altura da
@@ -5895,6 +5933,43 @@ export default function App() {
             : { display: "none" }
         }
       >
+        {splitHeader && paneRect && (
+          <div
+            className={`group/ph flex h-6 shrink-0 items-center gap-1.5 px-2.5 font-sans text-[11px] text-tyba-text-faint shadow-[inset_0_-1px_0_var(--tyba-line)] ${
+              paneDimmed ? "bg-tyba-text/[.03]" : ""
+            }`}
+          >
+            {paneAgent ? (
+              agentGlyph(paneAgent, 11)
+            ) : (
+              <ShellGlyph size={12} />
+            )}
+            <span
+              className={`shrink-0 font-semibold ${
+                paneDimmed ? "text-tyba-text-muted" : "text-tyba-text"
+              }`}
+            >
+              {paneAgent ?? s.title}
+            </span>
+            {paneState && (
+              <span
+                className={`min-w-0 truncate font-mono text-[10.5px] ${
+                  paneAgent && paneVisual ? paneVisual.textClass : ""
+                }`}
+              >
+                {paneState}
+              </span>
+            )}
+            <button
+              aria-label={t("closePane")}
+              title={t("closePane")}
+              onClick={() => void closePane(paneRect.pane).catch(() => {})}
+              className="ml-auto flex size-4 shrink-0 items-center justify-center rounded-[4px] opacity-0 transition-opacity hover:bg-tyba-text/[.08] hover:text-tyba-text focus-visible:opacity-100 group-hover/ph:opacity-100"
+            >
+              <X size={12} />
+            </button>
+          </div>
+        )}
         {s.kind.type === "container" && (
           <ContainerShellBanner containerId={s.kind.container_id} />
         )}
@@ -6476,11 +6551,10 @@ export default function App() {
             IS_MAC ? "pl-[84px]" : "pl-2.5"
           }`}
         >
-          {/* Marca + wordmark. Sem eventos: o clique cai no header, que
+          {/* Só o wordmark, como no quadro Header. Sem eventos: o clique cai no header, que
               arrasta a janela. */}
           <span className="pointer-events-none flex shrink-0 items-center gap-3">
-            <TybaMark size={16} />
-            <span className="font-sans text-[13px] font-semibold tracking-[0.02em] text-tyba-text">
+            <span className="font-sans text-[14px] font-semibold tracking-[0.02em] text-tyba-text">
               TYBA
             </span>
             <span aria-hidden className="h-[18px] w-px bg-tyba-border" />
@@ -7427,6 +7501,68 @@ export default function App() {
                     );
                   })()}
                 </div>
+                {/* Rodapé da COLUNA do terminal (quadro Shell): começa à direita da
+                    lateral e para onde o terminal para. Some junto com a coluna
+                    quando o painel lateral vai para tela cheia (`hidden`), então não
+                    empilha com o rodapé do painel nem monta o `RichInput` num
+                    `display: none`. */}
+                {activeTab && activeWorkspace && (
+                  <Toolbar
+                    hints={[
+                      {
+                        key: "actions",
+                        label: t("hintCommands"),
+                        combo: bindings.paletteActions,
+                        onClick: () => openPalette("actions"),
+                      },
+                      {
+                        key: "history",
+                        label: t("hintHistory"),
+                        combo: bindings.paletteHistory,
+                        onClick: () => openPalette("history"),
+                      },
+                      {
+                        key: "snippets",
+                        label: t("hintSnippets"),
+                        combo: bindings.paletteSnippets,
+                        onClick: () => openPalette("snippets"),
+                      },
+                      {
+                        key: "shortcuts",
+                        label: t("hintShortcuts"),
+                        icon: <Kbd>?</Kbd>,
+                        onClick: () => setShortcutsOpen((open) => !open),
+                      },
+                    ]}
+                    pref={toolbarPref}
+                    cwd={activeChips.cwd}
+                    branch={activeChips.branch}
+                    snapshot={activeChips.snapshot}
+                    remoteChanged={activeChips.remoteChanged}
+                    hasWorktree={Boolean(
+                      activeSession?.worktree ??
+                        worktreeSessionOf(activeWorkspace)?.worktree,
+                    )}
+                    onOpenDiff={() => {
+                      const target = activeSession?.worktree
+                        ? activeSession
+                        : (worktreeSessionOf(activeWorkspace) ?? activeSession);
+                      if (target) void openDiffContentTab(target.id).catch(() => {});
+                    }}
+                    showRichInput={richInputEligible && !richInputVisible}
+                    richInputCombo={bindings.richInput}
+                    onOpenRichInput={() => {
+                      if (activeId) openRichInput(activeId);
+                    }}
+                    suggestPlugin={
+                      (activeId && detectedBySession.get(activeId)?.suggestPlugin) ||
+                      false
+                    }
+                    sessionId={activeId ?? null}
+                    pill={footerPill}
+                    rootRef={footerRef}
+                  />
+                )}
                 </div>
                 {sideVisible && activeWorkspace && (
                   <>
@@ -7621,72 +7757,6 @@ export default function App() {
               />
           </>
         </div>
-        {/* Rodapé da JANELA, não da coluna do terminal. Enquanto ele morava
-            dentro da coluna, a linha dele parava no meio da tela — aqui é uma
-            só, de moldura a moldura.
-            `!sideExpanded` não é detalhe: com o painel em tela cheia a coluna
-            do terminal ganha `hidden`, e antes o rodapé sumia junto por ser
-            filho dela. Solto aqui ele sobreviveria — empilhando uma segunda
-            barra debaixo do rodapé do próprio painel, e pior, o botão de
-            entrada rica continuaria montando o `RichInput` DENTRO da coluna
-            escondida: nada aparece e o foco entra num `display: none`. */}
-        {activeTab && activeWorkspace && !(sideVisible && sideExpanded) && (
-          <Toolbar
-            hints={[
-              {
-                key: "actions",
-                label: t("hintCommands"),
-                combo: bindings.paletteActions,
-                onClick: () => openPalette("actions"),
-              },
-              {
-                key: "history",
-                label: t("hintHistory"),
-                combo: bindings.paletteHistory,
-                onClick: () => openPalette("history"),
-              },
-              {
-                key: "snippets",
-                label: t("hintSnippets"),
-                combo: bindings.paletteSnippets,
-                onClick: () => openPalette("snippets"),
-              },
-              {
-                key: "shortcuts",
-                label: t("hintShortcuts"),
-                icon: <Keyboard size={13} />,
-                onClick: () => setShortcutsOpen((open) => !open),
-              },
-            ]}
-            pref={toolbarPref}
-            cwd={activeChips.cwd}
-            branch={activeChips.branch}
-            snapshot={activeChips.snapshot}
-            remoteChanged={activeChips.remoteChanged}
-            hasWorktree={Boolean(
-              activeSession?.worktree ??
-                worktreeSessionOf(activeWorkspace)?.worktree,
-            )}
-            onOpenDiff={() => {
-              const target = activeSession?.worktree
-                ? activeSession
-                : (worktreeSessionOf(activeWorkspace) ?? activeSession);
-              if (target) void openDiffContentTab(target.id).catch(() => {});
-            }}
-            showRichInput={richInputEligible && !richInputVisible}
-            richInputCombo={bindings.richInput}
-            onOpenRichInput={() => {
-              if (activeId) openRichInput(activeId);
-            }}
-            suggestPlugin={
-              (activeId && detectedBySession.get(activeId)?.suggestPlugin) ||
-              false
-            }
-            sessionId={activeId ?? null}
-            pill={footerPill}
-            rootRef={footerRef}
-          />
-        )}
         </div>
       </div>
     </TooltipProvider>
