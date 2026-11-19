@@ -6608,17 +6608,65 @@ export default function App() {
             {/* A pasta do header abre a tela de Arquivos da sessão (pedido do dono,
                 2026-10-14); "Abrir pasta do projeto" fica no menu, na paleta e no
                 atalho. */}
-            <IconAction
-              label={t("filesPanel")}
-              shortcut={bindings.files}
-              onClick={() => {
-                if (fileSessionId) void openFilesPanel(fileSessionId).catch(() => {});
-              }}
-            >
-              <FolderSimple size={18} />
-            </IconAction>
+            {fileSessionId && (
+              <IconAction
+                label={t("filesPanel")}
+                shortcut={bindings.files}
+                onClick={() => void openFilesPanel(fileSessionId).catch(() => {})}
+              >
+                <FolderSimple size={18} />
+              </IconAction>
+            )}
             </>
             )}
+          </div>
+
+          {/* Fixos no header (dono, 2026-11-19): só o Inbox e o avatar. As
+              Configurações moram no menu do avatar; a barra lateral fica com
+              Nova sessão, Orbit, SSH, Sessões e Agentes. */}
+          <div className="flex items-center gap-1 pl-1">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={() => setInboxOpen((o) => !o)}
+                  aria-label={inboxBadge > 0 ? t("notifAria", { count: inboxBadge }) : t("inbox")}
+                  aria-pressed={inboxOpen}
+                  className={`relative size-[34px] rounded-[10px] text-tyba-text-muted hover:text-tyba-text ${
+                    inboxOpen ? "tyba-icon-on" : ""
+                  }`}
+                >
+                  <Tray size={18} />
+                  {inboxBadge > 0 && (
+                    <span className="absolute -right-0.5 -top-0.5 grid h-4 min-w-4 place-items-center rounded-full bg-tyba-amber-fill px-1 text-[10px] font-bold text-[color-mix(in_srgb,var(--tyba-amber-fill)_16%,black)]">
+                      {inboxBadge > 9 ? "9+" : inboxBadge}
+                    </span>
+                  )}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">{t("inbox")}</TooltipContent>
+            </Tooltip>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  aria-label={t("accountMenu")}
+                  className="grid size-[30px] place-items-center rounded-full bg-tyba-blue-tint text-[12px] font-bold text-tyba-blue outline-none focus-visible:[box-shadow:var(--tyba-focus-ring)]"
+                >
+                  {(accountName.trim()[0] ?? "?").toUpperCase()}
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-[220px]">
+                {accountName.trim() && (
+                  <div className="px-2 py-1.5 text-[13px] font-semibold text-tyba-text">{accountName.trim()}</div>
+                )}
+                <DropdownMenuItem onSelect={() => void openViewTab("settings").catch(() => {})}>
+                  <GearSix size={16} />
+                  <span className="flex-1">{t("settings")}</span>
+                  <span className="text-[12px] text-tyba-text-faint">{formatCombo(bindings.settings)}</span>
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
 
           <WindowControls />
@@ -6884,29 +6932,6 @@ export default function App() {
                         }}
                       />
                     </div>
-                  </div>
-                  <div
-                    className={`flex shrink-0 flex-col gap-0.5 pb-3 pt-2 shadow-[inset_0_1px_0_var(--tyba-line)] ${
-                      open ? "mx-3" : "mx-1"
-                    }`}
-                  >
-                    <SidebarItem
-                      open={open}
-                      active={inboxOpen}
-                      icon={<Tray size={18} />}
-                      label={t("inbox")}
-                      ariaLabel={inboxBadge > 0 ? t("notifAria", { count: inboxBadge }) : t("inbox")}
-                      badge={inboxBadge}
-                      onClick={() => setInboxOpen((o) => !o)}
-                    />
-                    <SidebarItem
-                      open={open}
-                      active={activeTab?.view === "settings"}
-                      icon={<GearSix size={18} />}
-                      label={t("settings")}
-                      kbd={formatCombo(bindings.settings)}
-                      onClick={() => void openViewTab("settings").catch(() => {})}
-                    />
                   </div>
                 </aside>
               )}
