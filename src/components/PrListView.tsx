@@ -61,7 +61,7 @@ const CHIP: Record<ReviewChip["tone"], string> = {
 
 /** Grade da lista (mockup GitPRs): ícone · título · CI · revisão · comentários · alterações. */
 const GRID =
-  "grid grid-cols-[16px_minmax(0,1fr)_130px_210px_44px_96px] items-center gap-x-3.5 px-4";
+  "grid grid-cols-[16px_minmax(0,1fr)_130px_210px_44px_96px] items-center gap-x-3.5 px-2";
 
 /** "ci" é da tela (runs de CI por branch, o que o popover antigo mostrava); não vai ao core. */
 type ListFilter = PrFilter | "ci";
@@ -85,7 +85,7 @@ function StateIcon({ state }: { state: PrListItem["state"] }) {
 
 function Avatar({ name }: { name: string }) {
   return (
-    <span className="flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-tyba-blue/[.18] px-1 text-[9px] text-tyba-blue">
+    <span className="flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-tyba-blue/[.14] px-1 text-[8.5px] font-bold text-tyba-blue">
       {initials(name)}
     </span>
   );
@@ -210,33 +210,33 @@ export function PrListView({
         onKeyDown={(e) => {
           if (e.key === "Enter") onOpenPr(item.number);
         }}
-        className={`${GRID} group/pr cursor-pointer shadow-[inset_0_-1px_0_var(--tyba-line)] py-3 text-[13px] outline-none hover:bg-tyba-raised focus-visible:bg-tyba-raised ${
+        className={`${GRID} group/pr cursor-pointer shadow-[inset_0_-1px_0_var(--tyba-line)] py-3 text-[13.5px] outline-none hover:bg-tyba-raised focus-visible:bg-tyba-raised ${
           dim ? "opacity-75" : ""
         }`}
       >
         <StateIcon state={item.state} />
         <div className="min-w-0">
-          <div className="flex min-w-0 items-center gap-2">
+          <div className="flex min-w-0 items-center gap-2 font-semibold">
             <span
               className={`truncate ${item.state === "draft" ? "text-tyba-text-muted" : "text-tyba-text"}`}
               title={item.title}
             >
               {item.title}
             </span>
-            <span className="shrink-0 text-tyba-text-faint">#{item.number}</span>
+            <span className="shrink-0 font-medium text-tyba-text-faint">#{item.number}</span>
             {agent && (
-              <span className="shrink-0 rounded-[4px] bg-tyba-amber/[.12] px-1.5 text-[10px] text-tyba-amber">
+              <span className="shrink-0 rounded-full bg-tyba-amber/[.12] px-2 py-px text-[11px] font-semibold text-tyba-amber">
                 {agent}
               </span>
             )}
           </div>
-          <div className="mt-1 flex min-w-0 items-center gap-2.5 text-[11px] text-tyba-text-faint">
+          <div className="mt-1 flex min-w-0 items-center gap-1.5 whitespace-nowrap text-[12px] text-tyba-text-faint">
             <Avatar name={author} />
             <span className="truncate">
               {author}
               {linked && <> · {t("prBySession", { title: linked.title })}</>}
             </span>
-            <span className="truncate font-mono text-tyba-blue/80">
+            <span className="truncate font-mono text-[11.5px] text-tyba-blue">
               {item.head} → {item.base}
             </span>
             <span className="shrink-0">
@@ -260,12 +260,12 @@ export function PrListView({
             )}
           </div>
         </div>
-        <span className={`truncate text-[12px] ${TONE_TEXT[ci.tone]}`}>
+        <span className={`truncate text-[12.5px] font-semibold ${TONE_TEXT[ci.tone]}`}>
           {t(ci.key, { count: ci.count, total: ci.total })}
         </span>
         <span className="flex min-w-0 flex-wrap gap-1.5">
           {chips.map((chip) => (
-            <span key={chip.key} className={`rounded-[4px] px-1.5 text-[11px] ${CHIP[chip.tone]}`}>
+            <span key={chip.key} className={`rounded-full px-[9px] py-0.5 text-[11.5px] font-semibold ${CHIP[chip.tone]}`}>
               {t(chip.key, { count: chip.count ?? 0 })}
             </span>
           ))}
@@ -279,8 +279,8 @@ export function PrListView({
           {item.comments}
         </span>
         <span className="text-right font-mono text-[12px]">
-          <span className="text-tyba-green">+{item.additions}</span>{" "}
-          <span className="text-tyba-red">−{item.deletions}</span>
+          <span className="font-semibold text-tyba-green">+{item.additions}</span>{" "}
+          <span className="font-semibold text-tyba-red">−{item.deletions}</span>
         </span>
       </div>
     );
@@ -288,8 +288,8 @@ export function PrListView({
 
   return (
     <div className="absolute inset-0 flex min-w-0 flex-col">
-      <header className="flex h-12 shrink-0 items-center gap-2.5 shadow-[inset_0_-1px_0_var(--tyba-line)] px-4 text-[12px] text-tyba-text-muted">
-        <div role="tablist" className="tyba-segment">
+      <header className="flex h-[52px] shrink-0 items-center gap-3 whitespace-nowrap shadow-[inset_0_-1px_0_var(--tyba-line)] px-[18px] text-[12px] text-tyba-text-muted">
+        <div role="tablist" className="tyba-segment shrink-0">
           {FILTERS.map((f) => {
             const on = filter === f.key;
             const count = f.count && page ? page.counts[f.count] : null;
@@ -302,7 +302,7 @@ export function PrListView({
                   setFilter(f.key);
                   setLimit(PR_PAGE_LIMIT);
                 }}
-                className={`flex items-center gap-1.5 rounded-[5px] px-2.5 py-1 ${
+                className={`flex items-center gap-1.5 whitespace-nowrap rounded-[5px] px-2.5 py-1 ${
                   on ? "tyba-pill-on text-tyba-text" : "hover:text-tyba-text"
                 }`}
               >
@@ -316,7 +316,7 @@ export function PrListView({
             );
           })}
         </div>
-        <label className="flex w-[280px] items-center gap-1.5 rounded-[6px] bg-tyba-sunken px-2.5 shadow-[inset_0_0_0_1px_var(--tyba-border-field)]">
+        <label className="flex w-[240px] shrink-0 items-center gap-1.5 rounded-[6px] bg-tyba-sunken px-2.5 shadow-[inset_0_0_0_1px_var(--tyba-border-field)]">
           <MagnifyingGlass size={12} className="shrink-0 text-tyba-text-faint" aria-hidden />
           <input
             type="text"
@@ -332,7 +332,7 @@ export function PrListView({
         {status && (
           <Button
             size="sm"
-            className="h-auto gap-1.5 rounded-[6px] bg-tyba-green px-3 py-1.5 text-[12px] font-normal text-tyba-text-inverse hover:bg-tyba-green/90"
+            className="h-auto shrink-0 gap-1.5 rounded-[6px] px-3 py-1.5 text-[12px] font-semibold"
             onClick={() => setCreating(true)}
           >
             <Plus size={12} weight="bold" />
@@ -341,9 +341,9 @@ export function PrListView({
         )}
         <span className="flex-1" />
         {page && (
-          <span className="flex min-w-0 items-center gap-1.5 truncate">
+          <span className="flex min-w-0 items-center gap-1.5 text-[12.5px]" title={`GitHub · ${page.repo}`}>
             <GithubLogo size={13} className="shrink-0" aria-hidden />
-            GitHub · <span className="truncate text-tyba-text">{page.repo}</span>
+            <span className="truncate">{page.repo.split("/").pop()}</span>
           </span>
         )}
         {page && (
@@ -351,9 +351,9 @@ export function PrListView({
             onClick={() => load(true)}
             disabled={loading}
             title={t("prRefresh")}
-            className="flex shrink-0 items-center gap-1 text-[11px] text-tyba-text-faint hover:text-tyba-text"
+            className="flex shrink-0 items-center gap-[5px] text-[12px] text-tyba-text-faint hover:text-tyba-text"
           >
-            {loading && <ArrowsClockwise size={11} className="animate-spin" />}
+            <ArrowsClockwise size={12} className={loading ? "animate-spin" : undefined} aria-hidden />
             {t("prFetchedAgo", { ago: relative(page.fetched_at, now) })}
           </button>
         )}
@@ -365,7 +365,7 @@ export function PrListView({
         </p>
       )}
 
-      <div className="min-h-0 flex-1 overflow-y-auto">
+      <div className="min-h-0 flex-1 overflow-y-auto px-[18px] py-1">
         {page === undefined && (
           <ForgeLoading
             step={
@@ -393,7 +393,7 @@ export function PrListView({
         {page && filter === "ci" && <CiTab sessionId={session.id} wide />}
         {page && filter !== "ci" && (
           <>
-            <div className={`${GRID} shadow-[inset_0_-1px_0_var(--tyba-line)] py-2 text-[11px] text-tyba-text-faint`}>
+            <div className={`${GRID} shadow-[inset_0_-1px_0_var(--tyba-line)] pb-2 pt-2.5 text-[11.5px] text-tyba-text-faint`}>
               <span />
               <span>
                 {filter === "open"
@@ -407,10 +407,10 @@ export function PrListView({
             </div>
             {items.map((item) => row(item))}
             {items.length === 0 && (
-              <p className="px-4 py-6 text-[12px] text-tyba-text-faint">{t("prListEmpty")}</p>
+              <p className="px-2 py-6 text-[12px] text-tyba-text-faint">{t("prListEmpty")}</p>
             )}
             {page.capped && nextPrLimit(limit) !== null && (
-              <div className="flex justify-center px-4 py-3">
+              <div className="flex justify-center pb-1.5 pt-3.5">
                 <button
                   type="button"
                   disabled={loading}
@@ -428,7 +428,7 @@ export function PrListView({
             )}
             {merged.length > 0 && (
               <>
-                <div className="px-4 pb-1.5 pt-3.5 text-[11px] text-tyba-text-faint">{t("prRecentMerged")}</div>
+                <div className="px-2 pb-1 pt-3.5 text-[12px] font-bold text-tyba-text-muted">{t("prRecentMerged")}</div>
                 {merged.map((item) => row(item, true))}
               </>
             )}
@@ -436,9 +436,9 @@ export function PrListView({
         )}
       </div>
 
-      <footer className="flex shrink-0 justify-between gap-4 shadow-[inset_0_1px_0_var(--tyba-line)] px-4 py-2.5 text-[11px] text-tyba-text-faint">
-        <span>{t("prListNote")}</span>
-        <span>{t("prListNotePush")}</span>
+      <footer className="flex min-h-9 shrink-0 items-center justify-between gap-4 shadow-[inset_0_1px_0_var(--tyba-line)] px-[18px] py-2 text-[11.5px] text-tyba-text-faint">
+        <span className="min-w-0">{t("prListNote")}</span>
+        <span className="shrink-0 whitespace-nowrap">{t("prListNotePush")}</span>
       </footer>
 
       {status && (
