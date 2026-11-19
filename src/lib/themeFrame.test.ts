@@ -364,9 +364,11 @@ describe("claro A · aurora", () => {
     });
   }
 
-  const mockupAurora = ["rgba(122, 76, 232, 0.13)", "rgba(15, 157, 140, 0.11)", "rgba(78, 150, 34, 0.09)"];
+  // Muriki (quadro "TYBA 2.0 · Conceito", 2026-11-19): azul da marca e um
+  // sopro de amarelo, no lugar da tripla violeta/verde-água/verde.
+  const mockupAurora = ["rgba(17, 82, 210, 0.1)", "rgba(253, 206, 4, 0.1)"];
 
-  it("a aurora do claro do TYBA é a do mockup PropostaClaro, literal", () => {
+  it("a aurora do claro do TYBA é a do Muriki, literal", () => {
     // Literal de propósito: os acentos do claro são tons de texto (escuros)
     // e viravam cinza misturados no branco (2026-10-13).
     const tybaLight = CSS.match(/^\[data-theme='light'\]:not\(\[data-imported\]\)\s*\{([\s\S]*?)^\}/m)?.[1];

@@ -6719,14 +6719,23 @@ export default function App() {
                       onClick={() => void openViewTab("connections").catch(() => {})}
                     />
                   </div>
+                  {/* Sessões e Agentes são duas áreas fixas (dono, 2026-11-19):
+                      cada uma com o seu título, o seu espaço e a sua rolagem,
+                      separadas por uma linha. "Sessões" aparece mesmo vazia,
+                      e toda sessão nova abre dentro dela. */}
+                  {open && (
+                    <span className="mx-3 shrink-0 px-3 pb-1.5 pt-4 text-[11px] font-semibold uppercase tracking-[0.04em] text-tyba-text-faint">
+                      {t("sessionsTitle")}
+                    </span>
+                  )}
                   <nav
-                    className={`tyba-scroll-fade flex min-h-0 flex-1 flex-col overflow-y-auto pb-2 ${
+                    className={`tyba-scroll-fade flex min-h-[96px] flex-[3] flex-col overflow-y-auto pb-2 ${
                       open ? "px-3" : "mt-2 gap-0.5 px-1"
                     }`}
                   >
-                    {open && sidebarGroups.length > 0 && (
-                      <span className="px-3 pb-1.5 pt-4 text-[11px] font-semibold uppercase tracking-[0.04em] text-tyba-text-faint">
-                        {t("sessionsTitle")}
+                    {open && sidebarGroups.length === 0 && (
+                      <span className="px-3 py-2 text-[12.5px] text-tyba-text-faint">
+                        {t("sidebarNoSessions")}
                       </span>
                     )}
                     {sidebarGroups.map((g) => {
@@ -6822,6 +6831,12 @@ export default function App() {
                         </div>
                       );
                     })}
+                  </nav>
+                  <div
+                    className={`flex min-h-[96px] flex-[2] flex-col overflow-hidden shadow-[inset_0_1px_0_var(--tyba-line)] ${
+                      open ? "mx-3" : "mx-1"
+                    }`}
+                  >
                     {/* Agentes (quadro): o rótulo com o badge de quem espera é
                         a entrada da fila; embaixo, um cartão por agente. */}
                     {open ? (
@@ -6859,15 +6874,17 @@ export default function App() {
                         />
                       </div>
                     )}
-                    <AgentsSidebar
-                      rows={agentRows}
-                      open={open}
-                      subagents={subagentsBySession}
-                      onSelect={(sessionId, place) => {
-                        jumpToAgent(sessionId, place);
-                      }}
-                    />
-                  </nav>
+                    <div className="tyba-scroll-fade min-h-0 flex-1 overflow-y-auto pb-2">
+                      <AgentsSidebar
+                        rows={agentRows}
+                        open={open}
+                        subagents={subagentsBySession}
+                        onSelect={(sessionId, place) => {
+                          jumpToAgent(sessionId, place);
+                        }}
+                      />
+                    </div>
+                  </div>
                   <div
                     className={`flex shrink-0 flex-col gap-0.5 pb-3 pt-2 shadow-[inset_0_1px_0_var(--tyba-line)] ${
                       open ? "mx-3" : "mx-1"
