@@ -1,8 +1,8 @@
 import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import {
-  ClockCounterClockwise,
-  FolderOpen,
+  Clock,
+  FolderSimple,
   GitDiff,
   Plug,
   X,
@@ -47,13 +47,13 @@ export function PanelIcon({
 }) {
   switch (kind) {
     case "history":
-      return <ClockCounterClockwise size={size} className={className} />;
+      return <Clock size={size} className={className} />;
     case "docker":
       return <DockerIcon size={size} className={className} />;
     case "services":
       return <Plug size={size} className={className} />;
     case "files":
-      return <FolderOpen size={size} className={className} />;
+      return <FolderSimple size={size} className={className} />;
     case "git":
       return <GitIcon size={size - 1} className={className} />;
     case "diff":
@@ -115,17 +115,17 @@ export function SidePanelBar({
                 aria-label={tab.label}
                 aria-pressed={on}
                 onClick={() => onClick(tab.kind)}
-                className={`relative flex h-[30px] w-8 items-center justify-center rounded-[6px] outline-none focus-visible:ring-2 focus-visible:ring-tyba-cyan ${
+                className={`relative flex size-[34px] items-center justify-center rounded-[10px] outline-none focus-visible:ring-2 focus-visible:ring-tyba-cyan ${
                   on
                     ? `${area.text} tyba-icon-on`
                     : "text-tyba-text-muted hover:text-tyba-text"
                 }`}
               >
-                <PanelIcon kind={tab.kind} />
+                <PanelIcon kind={tab.kind} size={18} />
                 {tab.indicator.dot && (
                   <span
                     aria-hidden
-                    className={`absolute right-[5px] top-1 size-[5px] rounded-full ${DOT[tab.indicator.dot]}`}
+                    className={`absolute right-1.5 top-1.5 size-1.5 rounded-full ${DOT[tab.indicator.dot]}`}
                   />
                 )}
                 {tab.indicator.count !== null && (

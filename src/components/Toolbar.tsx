@@ -11,7 +11,7 @@ import { useTranslation } from "react-i18next";
 import {
   ArrowDown,
   ArrowUp,
-  Folder,
+  FolderSimple,
   GitBranch,
   GitDiff,
   PuzzlePiece,
@@ -100,8 +100,8 @@ interface Props {
   rootRef: RefObject<HTMLDivElement>;
 }
 
-/** gap-4 entre os grupos e px-3.5 dos dois lados. */
-const FOOTER_CHROME = 16 + 28;
+/** gap-4 entre os grupos e px-2.5 dos dois lados. */
+const FOOTER_CHROME = 16 + 20;
 
 /**
  * Degrau da escada do rodapé (quadro GavetaPaneEstreito, Rodapé): mede a
@@ -183,7 +183,12 @@ function ClockChip() {
     hour: "2-digit",
     minute: "2-digit",
   }).format(now);
-  return <span className="font-mono tabular-nums">{time}</span>;
+  // Hora do quadro Shell: mono, apagada, com o fio fino à esquerda.
+  return (
+    <span className="ml-1 border-l border-[var(--tyba-line)] pl-2 pr-1.5 font-mono text-[11.5px] tabular-nums text-tyba-text-faint">
+      {time}
+    </span>
+  );
 }
 
 function basename(path: string): string {
@@ -226,10 +231,10 @@ export function Toolbar({
           <span
             key={id}
             title={cwd}
-            className="flex min-w-0 shrink items-center gap-1"
+            className="flex h-6 min-w-0 shrink items-center gap-1.5 whitespace-nowrap rounded-full bg-tyba-text/[.05] px-2.5 text-[11.5px] font-semibold text-tyba-text-muted"
             aria-label={t("toolbarCwd")}
           >
-            <Folder size={12} className="shrink-0" />
+            <FolderSimple size={13} className="shrink-0" />
             {keeps(FOOTER_STEP.cwdLabel) && (
               <span className="truncate">{basename(cwd)}</span>
             )}
@@ -245,7 +250,7 @@ export function Toolbar({
             <span
               key={id}
               title={t("toolbarBranchUnknownHint")}
-              className="flex min-w-0 shrink items-center gap-1 text-tyba-text-muted"
+              className="flex h-6 min-w-0 shrink items-center gap-1.5 whitespace-nowrap rounded-full bg-tyba-text/[.05] px-2.5 text-[11.5px] font-semibold text-tyba-text-muted"
               aria-label={t("toolbarBranchUnknown")}
             >
               <GitBranch size={12} className="shrink-0" />
@@ -261,7 +266,8 @@ export function Toolbar({
         // mexe no working tree.
         // Azul, a cor do git (mockup Proposta): o chip colorido da barra.
         return branch.sessionId ? (
-          <span key={id} className="flex min-w-0 shrink text-tyba-blue">
+          <span key={id} className="flex h-6 min-w-0 shrink items-center gap-1.5 whitespace-nowrap rounded-full bg-tyba-text/[.05] px-2.5 text-[11.5px] font-semibold text-tyba-blue">
+            <span aria-hidden className="size-1.5 shrink-0 rounded-full bg-current" />
             <BranchPicker
               sessionId={branch.sessionId}
               browsing={null}
@@ -275,9 +281,10 @@ export function Toolbar({
           <span
             key={id}
             title={branch.label}
-            className="flex min-w-0 shrink items-center gap-1 text-tyba-blue"
+            className="flex h-6 min-w-0 shrink items-center gap-1.5 whitespace-nowrap rounded-full bg-tyba-text/[.05] px-2.5 text-[11.5px] font-semibold text-tyba-blue"
             aria-label={t("toolbarBranch")}
           >
+            <span aria-hidden className="size-1.5 shrink-0 rounded-full bg-current" />
             <span className="truncate">{branch.label}</span>
           </span>
         );
@@ -380,18 +387,21 @@ export function Toolbar({
     // dentro); o de fora só recorta se nem o último degrau couber.
     <div
       ref={rootRef}
-      className="tyba-section flex h-[26px] min-w-0 shrink-0 items-center justify-between gap-4 px-3.5 text-[11px] text-tyba-text-faint shadow-[inset_0_1px_0_var(--tyba-line)]"
+      // Barra de status do quadro Shell (36px): atalhos à esquerda; pasta e
+      // branch em pílulas neutras e a hora com o fio. A ordem dos chips segue
+      // a preferência do dono (ToolbarChipsEditor).
+      className="tyba-section flex h-9 min-w-0 shrink-0 items-center justify-between gap-4 px-2.5 text-[12px] text-tyba-text-muted shadow-[inset_0_1px_0_var(--tyba-line)]"
     >
       <div className="flex min-w-0 overflow-hidden">
-        <div ref={leftRef} className="flex w-max items-center gap-4">
+        <div ref={leftRef} className="flex w-max items-center gap-1">
           {richInput && (
             <button
               onClick={onOpenRichInput}
               title={t("richInputHint")}
               aria-label={t("richInputToggle")}
-              className="flex shrink-0 items-center gap-1.5 rounded-[4px] px-1.5 py-0.5 text-tyba-text-muted transition-colors hover:bg-tyba-text/[.06] hover:text-tyba-text"
+              className="flex h-[26px] shrink-0 items-center gap-1.5 rounded-[8px] px-2 font-medium text-tyba-text-muted transition-colors hover:bg-tyba-text/[.05] hover:text-tyba-text"
             >
-              <TextAlignLeft size={12} />
+              <TextAlignLeft size={13} />
               {keeps(FOOTER_STEP.richInputLabel) && <span>{t("richInputToggle")}</span>}
               <Shortcut combo={richInputCombo} />
             </button>
@@ -406,7 +416,7 @@ export function Toolbar({
                 onClick={hint.onClick}
                 aria-label={hint.label}
                 title={labeled ? undefined : hint.label}
-                className="flex shrink-0 items-center gap-1.5 rounded-[4px] px-1 py-0.5 text-tyba-text-faint transition-colors hover:bg-tyba-text/[.06] hover:text-tyba-text"
+                className="flex h-[26px] shrink-0 items-center gap-1.5 rounded-[8px] px-2 font-medium text-tyba-text-muted transition-colors hover:bg-tyba-text/[.05] hover:text-tyba-text"
               >
                 {hint.combo ? <Shortcut combo={hint.combo} /> : hint.icon}
                 {labeled && <span>{hint.label}</span>}
@@ -416,7 +426,7 @@ export function Toolbar({
           {left}
         </div>
       </div>
-      <div ref={rightRef} className="flex shrink-0 items-center gap-4">
+      <div ref={rightRef} className="flex shrink-0 items-center gap-1">
         {pill && (
           <DrawerPill
             queueCount={pill.queueCount}

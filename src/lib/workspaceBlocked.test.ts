@@ -15,7 +15,8 @@ describe("workspace: a view antiga segue fechada, o Orbit abre pela lateral", ()
     // Decisão do dono (2026-11-02): o Workspace deixou de ser "em breve" — é
     // por ele, na lateral, que se entra no Orbit (e não por um seletor na
     // barra). Ele alterna o Orbit e acende enquanto o Orbit está aberto.
-    expect(APP).toMatch(/aria-label=\{t\("orbitView"\)\}\s*\n\s*aria-pressed=\{orbitOpen\}/);
+    // `SidebarItem` põe `aria-pressed={active}` no botão.
+    expect(APP).toMatch(/active=\{orbitOpen\}[\s\S]{0,120}label=\{t\("orbitView"\)\}/);
     expect(APP).toContain("setOrbitOpen((o) => !o)");
   });
 });

@@ -229,7 +229,8 @@ export function TabBar({
   return (
     // Opção G: as abas moram na migalha da barra, num degrau de tinta; a
     // ativa é a placa. Passou de 6, o resto vai para a lista do `+N`.
-    <div className="relative flex min-w-0">
+    <div className="flex min-w-0 items-center">
+      <div className="relative flex min-w-0">
       <div
         ref={faixaRef}
         onScroll={aoRolar}
@@ -238,7 +239,9 @@ export function TabBar({
           if (passo === 0 || !faixaRef.current) return;
           faixaRef.current.scrollLeft += passo;
         }}
-        className={`tyba-segment tyba-sem-barra flex h-7 min-w-0 items-stretch overflow-x-auto ${
+        // Quadro Header: degrau de 12px de raio e 3px de folga; a aba ativa
+        // é o cartão branco.
+        className={`tyba-segment tyba-sem-barra flex h-[34px] min-w-0 items-stretch overflow-x-auto !rounded-[12px] !p-[3px] ${
           borda.antes ? "tyba-fade-x--ini" : ""
         } ${borda.depois ? "tyba-fade-x--fim" : ""}`}
       >
@@ -259,9 +262,9 @@ export function TabBar({
               const cwd = tabCwd(tab, cwds);
               return cwd ? `${compactPath(cwd)} · ${combo}` : combo;
             })()}
-            className={`group relative flex max-w-40 shrink-0 items-center gap-1.5 rounded-[5px] px-2.5 text-[12.5px] font-medium transition-colors ${
+            className={`group relative flex max-w-40 shrink-0 items-center gap-1.5 rounded-[9px] px-3.5 text-[12.5px] transition-colors ${
               isActive
-                ? "tyba-pill-on text-tyba-text"
+                ? "tyba-pill-on font-semibold text-tyba-text"
                 : "text-tyba-text-muted hover:text-tyba-text"
             }`}
           >
@@ -323,13 +326,13 @@ export function TabBar({
         <DropdownMenu>
           <DropdownMenuTrigger
             aria-label={t("moreTabs", { count: hidden.length })}
-            className="flex shrink-0 items-center gap-1.5 rounded-[5px] bg-tyba-text/[.07] px-2.5 text-[12.5px] font-medium text-tyba-text"
+            className="flex shrink-0 items-center gap-1.5 rounded-[9px] px-3.5 text-[12.5px] font-medium text-tyba-text-muted hover:text-tyba-text"
           >
             {hiddenAttention && (
               <span aria-hidden className="size-1.5 rounded-full bg-tyba-amber" />
             )}
             +{hidden.length}
-            <CaretDown size={10} weight="bold" />
+            <CaretDown size={13} />
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-64">
             <DropdownMenuLabel className="text-[11px] tracking-[0.08em] text-tyba-text-faint">
@@ -363,13 +366,6 @@ export function TabBar({
           </DropdownMenuContent>
         </DropdownMenu>
       )}
-      <button
-        onClick={onNew}
-        aria-label={t("newTab")}
-        className="flex w-7 shrink-0 items-center justify-center rounded-[5px] text-tyba-text-faint transition-colors hover:text-tyba-text"
-      >
-        <Plus size={12} weight="bold" />
-      </button>
       </div>
       {/* Fora da faixa que rola: dentro dele o filete rolaria junto e a
           posição deixaria de significar posição. E fora da máscara, senão o
@@ -382,6 +378,15 @@ export function TabBar({
           style={{ left: `${marca.esquerda}%`, width: `${marca.largura}%` }}
         />
       )}
+      </div>
+      {/* Nova aba: botão fantasma fora do degrau, como no quadro. */}
+      <button
+        onClick={onNew}
+        aria-label={t("newTab")}
+        className="ml-1.5 flex size-8 shrink-0 items-center justify-center rounded-[8px] text-tyba-text-muted transition-colors hover:bg-tyba-text/[.05] hover:text-tyba-text"
+      >
+        <Plus size={16} />
+      </button>
     </div>
   );
 }
