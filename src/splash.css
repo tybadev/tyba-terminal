@@ -7,9 +7,9 @@
 @import "@fontsource/space-grotesk/latin-700.css";
 @import "@fontsource/jetbrains-mono/latin-400.css";
 
-/* BLACKOUT */
+/* Muriki noturno (o escuro do TYBA desde 2026-11-18) */
 :root {
-  --bg: #050505;
+  --bg: #07122a;
   --fg: #ffffff;
   --muted: color-mix(in srgb, var(--fg) 45%, transparent);
   --track: color-mix(in srgb, var(--fg) 6%, transparent);
