@@ -14,7 +14,7 @@ import {
   terminalStaleVars,
   type NodeKind,
 } from "@/lib/orbit";
-import { NodeDir, NodeFrame, useOrbit, type OrbitFlowNode } from "./NodeFrame";
+import { LiveChip, NodeDir, NodeFrame, useOrbit, type OrbitFlowNode } from "./NodeFrame";
 import { NodeTerminal } from "./NodeTerminal";
 
 type TerminalKind = Extract<NodeKind, { type: "terminal" }>;
@@ -55,7 +55,7 @@ export function TerminalNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
       node={node}
       selected={selected}
       mark={<Terminal size={14} weight="bold" />}
-      markTone={open ? "text-tyba-green" : "text-tyba-text-muted"}
+      markTone={open ? "text-[var(--tyba-primary)]" : "text-tyba-text-muted"}
       ring={hostedAgent ? "working" : open ? "live" : "idle"}
       status={
         open ? (
@@ -78,9 +78,7 @@ export function TerminalNode({ id, data, selected }: NodeProps<OrbitFlowNode>) {
                 codex
               </span>
             )}
-            <span className="shrink-0 rounded-full bg-tyba-green/[.14] px-2.5 text-[11.5px] leading-[20px] text-tyba-green">
-              {t("orbitTerminalLive")}
-            </span>
+            <LiveChip>{t("orbitTerminalLive")}</LiveChip>
           </>
         ) : (
           false
