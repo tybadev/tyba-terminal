@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { ArrowClockwise, Copy, GithubLogo } from "@phosphor-icons/react";
+
+import { Button } from "@/components/ui/button";
 
 import { useRelative } from "./GitHistoryView";
 import { ForgeLoading } from "./ForgeLoading";
@@ -36,9 +39,6 @@ const STATUS_KEY: Record<CheckTone, string> = {
   pending: "ciRunRunning",
 };
 const MARK: Record<CheckTone, string> = { success: "✓", failure: "✗", pending: "●" };
-
-const BTN =
-  "shrink-0 whitespace-nowrap rounded-[6px] border border-tyba-border-strong px-2.5 py-1 text-[11.5px] text-tyba-text-muted hover:text-tyba-text disabled:opacity-50";
 
 /** Só corre com a seção aberta E com run em andamento (cada tick é um `gh`). */
 const REFRESH_MS = 15000;
@@ -331,17 +331,18 @@ export function CiView({
               <span className="min-w-0 truncate text-tyba-text">{log?.failed_step ?? job?.name ?? ""}</span>
               {log?.failed_step && <span className="shrink-0 text-[11.5px] text-tyba-red">{t("ciStepFailed")}</span>}
               <span className="flex-1" />
-              <button type="button" className={BTN} disabled={!log} onClick={goToError}>
+              <Button variant="ghost" size="sm" disabled={!log} onClick={goToError}>
                 {t("ciGoToError")}
-              </button>
-              <button
-                type="button"
-                className={BTN}
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
                 disabled={!log}
                 onClick={() => log && void writeClipboardText(log.text)}
               >
+                <Copy />
                 {t("ciCopyLog")}
-              </button>
+              </Button>
             </div>
             <div ref={logRef} className="min-h-0 flex-1 overflow-auto py-2 font-mono text-[12px] leading-5">
               {logError && <p className="px-4 text-tyba-red">{logError}</p>}
@@ -374,30 +375,31 @@ export function CiView({
             <div className="flex min-h-[52px] shrink-0 flex-wrap items-center gap-2 shadow-[inset_0_1px_0_var(--tyba-line)] px-4 py-2.5">
               {/* Só em sessão de agente: numa de shell o prompt cairia no shell. */}
               {session.kind.type === "agent" && log && job && job.conclusion === "failure" && (
-                <button
-                  type="button"
+                <Button
+                  size="sm"
                   onClick={() =>
                     void onSendToAgent(ciFailurePrompt(run, job, log.failed_step, log.text)).then(() =>
                       setNote(t("ciSentToAgent")),
                     )
                   }
-                  className="shrink-0 whitespace-nowrap rounded-[6px] bg-primary px-3 py-1.5 text-[12px] font-semibold text-primary-foreground hover:bg-primary/90"
                 >
                   {t("ciSendToAgent")}
-                </button>
+                </Button>
               )}
               <span className="flex-1" />
-              <button type="button" className={BTN} onClick={() => void openExternalUrl(run.url)}>
+              <Button variant="ghost" size="sm" onClick={() => void openExternalUrl(run.url)}>
+                <GithubLogo />
                 GitHub ↗
-              </button>
-              <button
-                type="button"
-                className={`${BTN} text-tyba-text`}
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
                 disabled={run.status !== "completed"}
                 onClick={() => void rerun()}
               >
+                <ArrowClockwise />
                 {t("ciRerun")}
-              </button>
+              </Button>
             </div>
           </div>
         </div>

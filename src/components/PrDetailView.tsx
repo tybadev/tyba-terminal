@@ -12,9 +12,15 @@ import {
   X,
 } from "@phosphor-icons/react";
 
+import { Button } from "@/components/ui/button";
+import { Select } from "@/components/ui/select";
 import { useRelative } from "./GitHistoryView";
 import { MarkdownView } from "./MarkdownView";
 import { ForgeLoading } from "./ForgeLoading";
+
+/** Card de comentário do quadro: branco .75 com fio por dentro. */
+const CARD =
+  "rounded-[12px] bg-[color-mix(in_srgb,var(--tyba-glass-active)_78%,transparent)] shadow-[inset_0_0_0_1px_var(--tyba-line)]";
 import { getEffectiveBase } from "@/theme";
 import { openExternalUrl } from "../lib/clipboard";
 import { requestConfirm } from "../lib/confirm";
@@ -335,19 +341,19 @@ export function PrDetailView({
   const target = pr.session?.agent ? pr.session.session : null;
   const forwardButton = (id: string, prompt: () => string) =>
     target && (
-      <button
-        type="button"
+      <Button
+        variant="ghost"
+        size="xs"
         disabled={forwarded.has(id)}
         onClick={() =>
           void onForward(target, prompt()).then(() =>
             setForwarded((prev) => new Set(prev).add(id)),
           )
         }
-        className="flex shrink-0 items-center gap-1 rounded-[6px] border border-tyba-border-strong px-2 py-0.5 text-[11px] text-tyba-text-muted hover:text-tyba-text disabled:opacity-60"
       >
-        {forwarded.has(id) ? <Check size={11} /> : <ArrowRight size={11} />}
+        {forwarded.has(id) ? <Check /> : <ArrowRight />}
         {forwarded.has(id) ? t("prForwarded") : t("prForward")}
-      </button>
+      </Button>
     );
 
   const externalTag = (
@@ -376,7 +382,7 @@ export function PrDetailView({
   const threadCard = (thread: PrThread, id: string) => {
     const [first, ...rest] = thread.comments;
     return (
-      <div className="flex flex-col overflow-hidden rounded-[12px] border border-tyba-border bg-tyba-raised/60">
+      <div className={`flex flex-col overflow-hidden ${CARD}`}>
         <div className="flex items-center gap-2 shadow-[inset_0_-1px_0_var(--tyba-line)] px-3.5 py-2.5 text-[12.5px] text-tyba-text-muted">
           <Avatar name={first.author} />
           <span className="font-semibold text-tyba-text">{first.author}</span>
@@ -458,12 +464,12 @@ export function PrDetailView({
               <span className="text-tyba-text-faint">· {relative(event.at, now)}</span>
             </div>
             {event.body.trim() && (
-              <div className="relative rounded-[12px] border border-tyba-border bg-tyba-raised/60 px-3.5 py-3">
+              <div className={`relative ${CARD} px-3.5 py-3`}>
                 <div className={bodyOpen ? "" : "max-h-[220px] overflow-hidden"}>
                   <MarkdownView text={event.body} dark={dark} compact />
                 </div>
                 {!bodyOpen && (
-                  <div className="pointer-events-none absolute inset-x-0 bottom-9 h-10 bg-gradient-to-b from-transparent to-[var(--tyba-raised)]" />
+                  <div className="pointer-events-none absolute inset-x-0 bottom-9 h-10 bg-gradient-to-b from-transparent to-[color-mix(in_srgb,var(--tyba-glass-active)_78%,transparent)]" />
                 )}
                 <button
                   type="button"
@@ -517,13 +523,14 @@ export function PrDetailView({
                 <span className="min-w-[70px]">{c.name}</span>
                 <span className="font-mono text-[11px] text-tyba-text-faint">{checkDuration(c) ?? ""}</span>
                 {c.status === "failure" && c.url && (
-                  <button
-                    type="button"
+                  <Button
+                    variant="ghost"
+                    size="xs"
+                    className="ml-auto"
                     onClick={() => void openExternalUrl(c.url as string)}
-                    className="ml-auto rounded-[6px] border border-tyba-border-strong px-2 py-0.5 text-[11px] text-tyba-text-muted hover:text-tyba-text"
                   >
                     {t("prViewLog")}
-                  </button>
+                  </Button>
                 )}
               </span>
             ))}
@@ -534,7 +541,7 @@ export function PrDetailView({
       case "review": {
         const verb = REVIEW_VERB[event.review.state];
         body = (
-          <div className="flex flex-col overflow-hidden rounded-[12px] border border-tyba-border bg-tyba-raised/60">
+          <div className={`flex flex-col overflow-hidden ${CARD}`}>
             <div className="flex items-center gap-2 px-3.5 py-2.5 text-[12.5px] text-tyba-text-muted">
               <Avatar name={event.review.author} />
               <span className="font-semibold text-tyba-text">{event.review.author}</span>
@@ -561,7 +568,7 @@ export function PrDetailView({
         break;
       case "comment":
         body = (
-          <div className="flex flex-col overflow-hidden rounded-[12px] border border-tyba-border bg-tyba-raised/60">
+          <div className={`flex flex-col overflow-hidden ${CARD}`}>
             <div className="flex items-center gap-2 px-3.5 py-2.5 text-[12.5px] text-tyba-text-muted">
               <Avatar name={event.comment.author} />
               <span className="font-semibold text-tyba-text">{event.comment.author}</span>
@@ -615,24 +622,14 @@ export function PrDetailView({
           <span className="shrink-0 text-[17px] text-tyba-text-faint">#{pr.number}</span>
           <span className="flex-1" />
           {!pr.session && onOpenSession && (
-            <button
-              type="button"
-              disabled={acting !== null}
-              onClick={() => void openSession()}
-              className="shrink-0 rounded-[6px] border border-tyba-border-strong px-2.5 py-1 text-[12px] text-tyba-text-muted hover:text-tyba-text disabled:opacity-50"
-            >
+            <Button variant="outline" size="sm" disabled={acting !== null} onClick={() => void openSession()}>
               {t("prOpenInTyba")}
-            </button>
+            </Button>
           )}
           {!pr.session && !session.worktree && (
-            <button
-              type="button"
-              disabled={acting !== null}
-              onClick={() => void checkout()}
-              className="shrink-0 rounded-[6px] border border-tyba-border-strong px-2.5 py-1 text-[12px] text-tyba-text-muted hover:text-tyba-text disabled:opacity-50"
-            >
+            <Button variant="outline" size="sm" disabled={acting !== null} onClick={() => void checkout()}>
               {t("prCheckout")}
-            </button>
+            </Button>
           )}
           <button
             type="button"
@@ -757,13 +754,9 @@ export function PrDetailView({
                   </span>
                   <span className="text-tyba-text-faint">{checkDuration(c) ?? ""}</span>
                   {c.url && (
-                    <button
-                      type="button"
-                      onClick={() => void openExternalUrl(c.url as string)}
-                      className="rounded-[6px] border border-tyba-border-strong px-2 py-0.5 text-[11px] text-tyba-text-muted hover:text-tyba-text"
-                    >
+                    <Button variant="ghost" size="xs" onClick={() => void openExternalUrl(c.url as string)}>
                       {t("prViewLog")}
-                    </button>
+                    </Button>
                   )}
                 </li>
               ))}
@@ -829,15 +822,15 @@ export function PrDetailView({
                 })}
               </fieldset>
               <span className="flex-1" />
-              <button
+              <Button
                 type="submit"
+                size="sm"
                 disabled={
                   acting !== null || (reviewEvent !== "approve" && !reviewBody.trim())
                 }
-                className="shrink-0 whitespace-nowrap rounded-[6px] bg-primary px-3.5 py-1.5 font-semibold text-primary-foreground hover:bg-primary/90 disabled:opacity-40"
               >
                 {acting === "review" ? t("prReviewSending") : t("prReviewSend")}
-              </button>
+              </Button>
             </div>
             {actionNote?.from === "review" && (
               <p role="status" className={`text-[11px] ${actionNote.error ? "text-tyba-red" : "text-tyba-green"}`}>
@@ -849,8 +842,8 @@ export function PrDetailView({
         )}
         </div>
 
-        <aside className="flex min-w-0 flex-[2] flex-col shadow-[inset_1px_0_0_var(--tyba-line)]">
-          <section className="flex flex-col gap-2 shadow-[inset_0_-1px_0_var(--tyba-line)] px-[18px] py-4 text-[13px]">
+        <aside className="flex min-w-0 flex-[2] flex-col gap-[22px] overflow-y-auto px-[18px] py-4 shadow-[inset_1px_0_0_var(--tyba-line)]">
+          <section className="flex flex-col gap-2 text-[13px]">
             <div className="flex items-baseline justify-between text-[12px] font-semibold text-tyba-text-faint">
               <span className="text-[13px] font-bold text-tyba-text">{t("prReviewers")}</span>
               <span>{t("prReviewersApproved", { count: approvedCount, total: reviewers.length })}</span>
@@ -882,7 +875,7 @@ export function PrDetailView({
               </div>
             ))}
           </section>
-          <section className="flex flex-col gap-2 shadow-[inset_0_-1px_0_var(--tyba-line)] px-[18px] py-4 text-[13px]">
+          <section className="flex flex-col gap-2 text-[13px]">
             <div className="flex items-baseline justify-between text-[12px] font-semibold text-tyba-text-faint">
               <span className="text-[13px] font-bold text-tyba-text">{t("prTabChecks")}</span>
               {checks.total > 0 && (
@@ -902,7 +895,7 @@ export function PrDetailView({
           </section>
           {/* Depois do merge o formulário e os controles somem; o resultado fica. */}
           {pr.state === "merged" && (
-            <section className="flex flex-col gap-2 px-[18px] py-4 text-[12.5px] text-tyba-text-muted">
+            <section className="flex flex-col gap-2 text-[12.5px] text-tyba-text-muted">
               <span className="text-[13px] font-bold text-tyba-text">{t("prMerge")}</span>
               <span role="status" className="flex items-center gap-2 text-tyba-violet">
                 <GitMerge size={12} />
@@ -911,7 +904,7 @@ export function PrDetailView({
             </section>
           )}
           {pr.state !== "merged" && pr.state !== "closed" && (
-            <section className="flex flex-col gap-2 px-[18px] py-4 text-[12.5px] text-tyba-text-muted">
+            <section className="flex flex-col gap-2 text-[12.5px] text-tyba-text-muted">
               <span className="text-[13px] font-bold text-tyba-text">{t("prMerge")}</span>
               <span className="flex items-center gap-2">
                 {pr.merge_state === "behind" ? (
@@ -945,28 +938,31 @@ export function PrDetailView({
                     {t("prMergeAwaitingReview", { author: r.author })}
                   </span>
                 ))}
-              <label htmlFor="pr-merge-strategy" className="pt-1 text-[12px] text-tyba-text-muted">
-                {t("prMergeStrategy")}
-              </label>
-              <select
-                id="pr-merge-strategy"
-                value={strategy}
-                onChange={(e) => setStrategy(e.target.value as PrMergeStrategy)}
-                className="rounded-[6px] border border-tyba-border-field bg-tyba-raised px-2.5 py-1.5 text-[12px] text-tyba-text outline-none"
-              >
-                <option value="squash">{t("prMergeSquash")}</option>
-                <option value="merge">{t("prMergeCommit")}</option>
-                <option value="rebase">{t("prMergeRebase")}</option>
-              </select>
-              <button
-                type="button"
-                disabled={!mergeReady || acting !== null}
-                title={mergeReady ? undefined : t("prMergeBlocked")}
-                onClick={() => void merge()}
-                className="whitespace-nowrap rounded-[6px] border border-tyba-green/55 px-3 py-1.5 text-[12px] text-tyba-green hover:bg-tyba-green/[.08] disabled:border-tyba-border-strong disabled:text-tyba-text-faint disabled:hover:bg-transparent"
-              >
-                {acting === "merge" ? t("prMerging") : t("prMergeAction")}
-              </button>
+              <div className="mt-1 flex items-center gap-2.5">
+                <span className="text-[12px] text-tyba-text-muted">{t("prMergeStrategy")}</span>
+                <Select
+                  value={strategy}
+                  onChange={(v) => setStrategy(v as PrMergeStrategy)}
+                  options={[
+                    { value: "squash", label: t("prMergeSquash") },
+                    { value: "merge", label: t("prMergeCommit") },
+                    { value: "rebase", label: t("prMergeRebase") },
+                  ]}
+                  className="w-[190px]"
+                />
+              </div>
+              <div className="mt-1">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={!mergeReady || acting !== null}
+                  title={mergeReady ? undefined : t("prMergeBlocked")}
+                  onClick={() => void merge()}
+                >
+                  <Check />
+                  {acting === "merge" ? t("prMerging") : t("prMergeAction")}
+                </Button>
+              </div>
               {actionNote?.from === "merge" && (
                 <p role="status" className={`text-[11px] ${actionNote.error ? "text-tyba-red" : "text-tyba-green"}`}>
                   {actionNote.text}
@@ -974,8 +970,7 @@ export function PrDetailView({
               )}
             </section>
           )}
-          <div className="flex-1" />
-          <p className="shadow-[inset_0_1px_0_var(--tyba-line)] px-[18px] py-3 text-[11.5px] text-tyba-text-faint">{t("prExternalNote")}</p>
+          <p className="mt-auto text-[11.5px] text-tyba-text-faint">{t("prExternalNote")}</p>
         </aside>
       </div>
     </div>

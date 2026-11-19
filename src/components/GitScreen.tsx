@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
+  CaretLeft,
   ClockCounterClockwise,
   Files,
   GitDiff,
@@ -12,6 +13,7 @@ import {
 } from "@phosphor-icons/react";
 
 import "./gitScreen.css";
+import { Button } from "@/components/ui/button";
 import { CiView } from "./CiView";
 import { DiffView } from "./DiffView";
 import { GitChangesView } from "./GitChangesView";
@@ -51,9 +53,6 @@ const RAIL: Record<GitSection, { icon: Icon; label: string }> = {
   prs: { icon: GitPullRequest, label: "gitScreenPrs" },
   ci: { icon: Lightning, label: "gitScreenCi" },
 };
-
-const BTN =
-  "shrink-0 whitespace-nowrap rounded-[6px] border border-tyba-border-strong px-2.5 py-1 text-[12px] text-tyba-text-muted hover:text-tyba-text disabled:opacity-50";
 
 /**
  * Tela cheia de Git (protótipo "Git em tela cheia"). Cobre abas e shell; a
@@ -241,8 +240,13 @@ export function GitScreen({
       <div className="tyba-frost flex min-w-0 flex-1 flex-col">
         <div className="flex h-[46px] shrink-0 items-center gap-3 tyba-divide-b px-[18px] text-[12px]">
           {place.section === "prs" && place.pr !== null && (
-            <button type="button" className={BTN} onClick={() => go({ section: "prs", pr: null })}>
-              ← {t("gitScreenPrs")}
+            <button
+              type="button"
+              className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-full px-2.5 text-[12.5px] text-tyba-text-muted shadow-[inset_0_0_0_1px_var(--tyba-line)] hover:text-tyba-text focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+              onClick={() => go({ section: "prs", pr: null })}
+            >
+              <CaretLeft size={12} />
+              {t("gitScreenPrs")}
             </button>
           )}
           <span className="shrink-0 text-[15px] font-bold tracking-[-0.01em] text-tyba-text">
@@ -264,20 +268,20 @@ export function GitScreen({
                 ↑{ahead} ↓{behind} {snapshot?.upstream ?? ""}
               </span>
             )}
-            <button type="button" className={BTN} disabled={busy !== null} onClick={() => void run("fetch")}>
+            <Button variant="outline" size="sm" disabled={busy !== null} onClick={() => void run("fetch")}>
               {busy === "fetch" ? t("gitScreenFetching") : t("gitScreenFetch")}
-            </button>
-            <button
-              type="button"
-              className={BTN}
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
               disabled={busy !== null || behind === null}
               onClick={() => void run("pull")}
             >
               {busy === "pull" ? t("gitScreenPulling") : t("gitScreenPull")}
-            </button>
-            <button
-              type="button"
-              className={`${BTN} text-tyba-text`}
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
               disabled={busy !== null}
               onClick={() => void run("push")}
             >
@@ -286,7 +290,7 @@ export function GitScreen({
                 : ahead
                   ? `${t("gitScreenPush")} ↑${ahead}`
                   : t("gitScreenPush")}
-            </button>
+            </Button>
           </span>
         </div>
 

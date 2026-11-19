@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { DotsThree } from "@phosphor-icons/react";
+import { ArrowClockwise, DotsThree } from "@phosphor-icons/react";
+
+import { Button } from "@/components/ui/button";
 
 import {
   dockerContainerAction,
@@ -180,7 +182,7 @@ export function ContainerStrip({ containerId, current, host, onRestarted, inScre
     >
       {/* Quebra linha em vez de cortar: imagem e portas são o que importa ver. */}
       <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1">
-        <span className="min-w-0 max-w-[40%] shrink-0 truncate text-tyba-text">
+        <span className="min-w-0 max-w-[40%] shrink-0 truncate text-[14px] font-bold text-tyba-text">
           {detail?.name ?? containerId.slice(0, 12)}
         </span>
         {detail && (
@@ -244,25 +246,20 @@ export function ContainerStrip({ containerId, current, host, onRestarted, inScre
         </DropdownMenu>
       ) : (
         secondary.map((a) => (
-          <button
-            key={a.key}
-            type="button"
-            className={chip}
-            disabled={a.disabled}
-            onClick={a.run}
-          >
+          <Button key={a.key} variant="outline" size="sm" disabled={a.disabled} onClick={a.run}>
+            {a.key === "restart" && <ArrowClockwise />}
             {a.label}
-          </button>
+          </Button>
         ))
       )}
-      <button
-        type="button"
-        className={`${chip} border-tyba-amber/35 text-tyba-amber hover:bg-tyba-amber/10 hover:text-tyba-amber`}
+      <Button
+        variant="ghost"
+        size="sm"
         disabled={busy !== null || !running}
         onClick={() => void act("stop")}
       >
         {t("containerStop")}
-      </button>
+      </Button>
     </div>
   );
 }
