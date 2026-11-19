@@ -13,13 +13,19 @@ import { hasTurnDiff, openGitScreen } from "../lib/gitScreen";
 import { agentsDrawerCollapse, type FileStatus, type SessionId, type TurnDigest } from "../lib/ipc";
 import { useNow } from "./ui/loading";
 
+/** Botão de vidro pequeno do quadro (Pausar, Ver diff do turno). */
+export const GLASS_BTN =
+  "inline-flex h-[34px] shrink-0 items-center gap-2 rounded-[10px] bg-[var(--tyba-glass-piece)] px-3.5 text-[13px] font-semibold whitespace-nowrap text-tyba-text shadow-[inset_0_0_0_1px_var(--tyba-line)] outline-none hover:bg-tyba-hover focus-visible:[box-shadow:var(--tyba-focus-ring)] disabled:pointer-events-none disabled:opacity-45";
+
+// Quadro Agentes (g6-box): caixa clara com fio; a cor do estado fica no
+// ícone (e no texto, quando o turno falhou).
 const BAND: Record<TurnBand, string> = {
-  changed: "text-tyba-green bg-tyba-green-tint",
-  failed: "text-tyba-red bg-tyba-red-tint",
-  interrupted: "text-tyba-text-muted bg-tyba-neutral-tint",
-  none: "text-tyba-text-muted bg-tyba-neutral-tint",
-  no_repo: "text-tyba-text-muted bg-tyba-neutral-tint",
-  unavailable: "text-tyba-text-muted bg-tyba-neutral-tint",
+  changed: "text-tyba-green",
+  failed: "text-tyba-red",
+  interrupted: "text-tyba-text-muted",
+  none: "text-tyba-green",
+  no_repo: "text-tyba-text-muted",
+  unavailable: "text-tyba-text-muted",
 };
 
 export const TURN_LETTER: Record<FileStatus, string> = {
@@ -76,33 +82,33 @@ export function TurnPanel({ sessionId, turn }: { sessionId: SessionId; turn: Tur
 
   return (
     <>
-      <div className="mx-3 flex items-baseline gap-2 px-0.5 pt-0.5 text-[12.5px]">
+      <div className="mx-3 mt-0.5 flex items-center gap-2 font-mono text-[12.5px]">
         <span className="text-tyba-text-faint">&gt;</span>
         <span className="min-w-0 flex-1 truncate text-tyba-text" title={turn.prompt ?? undefined}>
           {turn.prompt}
         </span>
-        <span className="shrink-0 text-[11px] text-tyba-text-faint">
+        <span className="shrink-0 text-[11.5px] text-tyba-text-faint">
           {turnAgo(turn, now, t)}
         </span>
       </div>
-      <div className="mx-3 mb-[9px] mt-0.5 truncate pl-[18px] pr-0.5 font-mono text-[11px] text-tyba-text-faint">
+      <div className="mx-3 mt-1 truncate pl-[18px] font-mono text-[11.5px] text-tyba-text-muted">
         {turnMeta(turn, i18n.language, t)}
       </div>
       <div
-        className={`mx-3 mb-2 flex items-center gap-2 rounded-[6px] px-2.5 py-[7px] text-[12px] ${BAND[band]}`}
+        className="mx-2.5 mb-2 mt-3 flex items-center gap-2.5 rounded-[10px] bg-tyba-paper-solid px-3 py-2.5 text-[13px] font-medium text-tyba-text shadow-[inset_0_0_0_1px_var(--tyba-line)]"
       >
         {band === "failed" ? (
           <span className="size-[7px] shrink-0 rounded-full bg-tyba-red-fill" />
         ) : band === "interrupted" ? (
-          <Pause size={13} className="shrink-0" />
+          <Pause size={15} className={`shrink-0 ${BAND[band]}`} />
         ) : band === "no_repo" ? (
-          <Folder size={13} className="shrink-0" />
+          <Folder size={15} className={`shrink-0 ${BAND[band]}`} />
         ) : band === "unavailable" ? (
-          <Minus size={13} className="shrink-0" />
+          <Minus size={15} className={`shrink-0 ${BAND[band]}`} />
         ) : (
-          <Check size={13} className="shrink-0" />
+          <Check size={15} className={`shrink-0 ${BAND[band]}`} />
         )}
-        <span className="shrink-0 whitespace-nowrap">
+        <span className={`shrink-0 whitespace-nowrap ${band === "failed" ? BAND.failed : ""}`}>
           {band === "failed"
             ? t("pillTurnFailed")
             : band === "interrupted"
@@ -117,7 +123,7 @@ export function TurnPanel({ sessionId, turn }: { sessionId: SessionId; turn: Tur
         </span>
         {band === "failed"
           ? turn.failure && (
-              <span className="ml-auto min-w-0 truncate text-[11px] text-tyba-text-muted">
+              <span className="ml-auto min-w-0 truncate text-[11px] font-normal text-tyba-text-muted">
                 {turn.failure}
               </span>
             )
@@ -172,7 +178,7 @@ export function TurnPanel({ sessionId, turn }: { sessionId: SessionId; turn: Tur
       {(band === "none" ||
         turn.diff === "no_repo" ||
         (turn.diff === "unavailable" && band !== "unavailable")) && (
-        <p className="mx-3 px-0.5 pb-1 pt-2.5 text-[12px] leading-[18px] text-tyba-text-faint">
+        <p className="mx-3.5 mb-2.5 mt-1 text-[12.5px] leading-[19px] text-tyba-text-muted">
           {t(
             turn.diff === "no_repo"
               ? "turnNoRepoHint"
@@ -182,23 +188,21 @@ export function TurnPanel({ sessionId, turn }: { sessionId: SessionId; turn: Tur
           )}
         </p>
       )}
+      {/* Quadro Agentes (g6-foot). "Passar para…" vem com o handoff, que
+          ainda não está nesta base: sem botão até a ação existir. */}
       <div
-        className={`flex items-center gap-2 px-3 pb-3 pt-2.5 shadow-[inset_0_1px_0_var(--tyba-border-soft)] ${
-          hasFiles ? "mt-1.5" : "mt-0.5"
+        className={`flex min-h-[56px] items-center gap-2 px-3 pb-3 pt-2.5 shadow-[inset_0_1px_0_var(--tyba-line)] ${
+          hasFiles ? "mt-1.5" : ""
         }`}
       >
         {canDiff && (
-          <button
-            type="button"
-            onClick={() => seeDiff(null)}
-            className="inline-flex h-6 items-center gap-1.5 whitespace-nowrap rounded-[6px] px-[9px] text-[11.5px] text-tyba-text shadow-[inset_0_0_0_1px_var(--tyba-border-field)]"
-          >
-            <GitBranch size={12} />
+          <button type="button" onClick={() => seeDiff(null)} className={GLASS_BTN}>
+            <GitBranch size={15} />
             {t("turnSeeDiff")}
           </button>
         )}
         <span className="flex-1" />
-        <span className="text-[11px] text-tyba-text-faint">
+        <span className="font-mono text-[11.5px] text-tyba-text-faint">
           {t(hasFiles ? "turnSince" : "turnStartedAt", { time: since })}
         </span>
       </div>
