@@ -1845,6 +1845,11 @@ html {
 /* Vidro forte das telas que abrem sobre o terminal (Git, Arquivos, Docker):
    véu fino e blur alto. O efeito vem do desfoque, não de cor no fundo. */
 .tyba-frost {
+  /* Fora dos dois temas do TYBA a tela continua sólida, como sempre foi. */
+  background: var(--tyba-paper-solid);
+}
+[data-theme='light']:not([data-imported]) .tyba-frost,
+:root:not([data-theme]):not([data-imported]) .tyba-frost {
   background: color-mix(in srgb, var(--tyba-surface) 42%, transparent);
   backdrop-filter: blur(40px) saturate(140%);
   -webkit-backdrop-filter: blur(40px) saturate(140%);
