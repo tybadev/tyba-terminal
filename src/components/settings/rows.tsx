@@ -44,9 +44,9 @@ export function SettingLine({
   return (
     <div
       data-setting-row
-      className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-8 gap-y-3 border-b border-[var(--tyba-line)] py-[13px]"
+      className="flex flex-wrap items-center gap-x-8 gap-y-3 border-b border-[var(--tyba-line)] py-[13px]"
     >
-      <div className="flex min-w-0 flex-col gap-0.5">
+      <div className="flex min-w-[240px] flex-1 basis-[240px] flex-col gap-0.5">
         {label && <span className="text-[14px] leading-5 font-semibold text-tyba-text">{label}</span>}
         {hint && (
           <span className="max-w-[420px] break-words text-[13px] leading-[19px] text-tyba-text-muted">
@@ -54,8 +54,8 @@ export function SettingLine({
           </span>
         )}
       </div>
-      {children && <div className="flex shrink-0 items-center justify-end gap-2">{children}</div>}
-      {below && <div className="col-span-2">{below}</div>}
+      {children && <div className="ml-auto flex shrink-0 items-center justify-end gap-2">{children}</div>}
+      {below && <div className="w-full">{below}</div>}
     </div>
   );
 }
