@@ -1,9 +1,15 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Info, Plus, X } from "@phosphor-icons/react";
+import { Info, PenNib, Plus, X } from "@phosphor-icons/react";
 
 import { Switch } from "@/components/ui/switch";
+import { HostFormDialog, type HostDialogState } from "../HostFormDialog";
 import {
+  listHostGroups,
+  listHosts,
+  onHostsChanged,
+  type Host,
+  type HostGroup,
   sshTypedAllow,
   sshTypedDeny,
   sshTypedPrefs,
@@ -31,11 +37,32 @@ export function SshSection() {
   const { t } = useTranslation();
   const [prefs, setPrefs] = useState<TypedSshPrefs | null>(null);
   const [draft, setDraft] = useState("");
+  // Os Hosts cadastrados (quadro: lista com Editar e "Adicionar host"). O
+  // core é dono da lista e avisa a cada gravação (`ssh://hosts-changed`).
+  const [hosts, setHosts] = useState<Host[]>([]);
+  const [groups, setGroups] = useState<HostGroup[]>([]);
+  const [editor, setEditor] = useState<HostDialogState>(null);
 
   useEffect(() => {
     void sshTypedPrefs()
       .then(setPrefs)
       .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    const load = () => {
+      void listHosts()
+        .then(setHosts)
+        .catch(() => {});
+      void listHostGroups()
+        .then(setGroups)
+        .catch(() => {});
+    };
+    load();
+    const unlisten = onHostsChanged(load);
+    return () => {
+      void unlisten.then((off) => off());
+    };
   }, []);
 
   const apply = (call: Promise<TypedSshPrefs>, onOk?: () => void) =>
@@ -54,6 +81,39 @@ export function SshSection() {
   if (!prefs) return null;
   return (
     <SettingGroup title={t("cfgGroupSsh")}>
+      {hosts.map((host) => (
+        <SettingLine
+          key={host.id}
+          label={host.alias}
+          hint={
+            <span className="font-mono">
+              {host.username ? `${host.username}@` : ""}
+              {host.hostname}
+              {host.port ? `:${host.port}` : ""}
+            </span>
+          }
+        >
+          <SettingButton
+            tone="ghost"
+            icon={<PenNib size={16} />}
+            onClick={() => setEditor({ mode: "edit", host })}
+            aria-label={t("cfgSshHostEditAria", { host: host.alias })}
+          >
+            {t("cfgSshHostEdit")}
+          </SettingButton>
+        </SettingLine>
+      ))}
+      <SettingLine>
+        <SettingButton icon={<Plus size={16} />} onClick={() => setEditor({ mode: "create" })}>
+          {t("cfgSshHostAdd")}
+        </SettingButton>
+      </SettingLine>
+      <HostFormDialog
+        state={editor}
+        groups={groups}
+        onClose={() => setEditor(null)}
+        onSaved={() => setEditor(null)}
+      />
       <SettingLine label={t("sshTypedDetect")} hint={t("sshTypedDetectHint")}>
         <Switch
           checked={prefs.detect}

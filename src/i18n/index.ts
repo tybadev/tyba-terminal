@@ -747,8 +747,8 @@ const resources = {
       claudePluginHint:
         "Instala um plugin do TYBA no seu Claude Code. Num pane do TYBA, o claude avisa o app quando começa, para e pede permissão, e push para main/master e merge de PR são recusados. As outras permissões continuam no prompt do próprio Claude. Fora do TYBA o plugin não faz nada. Mexe na configuração global do Claude Code, por isso só instala quando você pedir.",
       claudePluginInstall: "Instalar integração com Claude Code",
-      claudePluginUninstall: "Desinstalar",
-      claudePluginInstalled: "Instalada",
+      claudePluginUninstall: "Desconectar",
+      claudePluginInstalled: "Conectado",
       claudePluginUnavailable: "Claude Code não encontrado no PATH.",
       claudePluginBlockedAll:
         "Bloqueada: o Claude Code está com disableAllHooks — nenhum hook roda, nem o do TYBA.",
@@ -2795,6 +2795,9 @@ const resources = {
       cfgDocker: "Docker",
       cfgDockerHint: "Os containers do projeto no header, com logs, shell e compose.",
       cfgGroupSsh: "Hosts SSH",
+      cfgSshHostEdit: "Editar",
+      cfgSshHostEditAria: "Editar {{host}}",
+      cfgSshHostAdd: "Adicionar host",
       cfgSshDeniedSince: "Negado desde {{date}}: o aviso não aparece para ele.",
       cfgSshDenyHint: "Negar um host: o aviso de ssh não aparece para ele.",
       cfgSshDenyAdd: "Negar",
@@ -3550,8 +3553,8 @@ const resources = {
       claudePluginHint:
         "Installs a TYBA plugin in your Claude Code. In a TYBA pane, claude tells the app when it starts, stops and asks for permission, and pushes to main/master and PR merges are refused. Every other permission stays in Claude's own prompt. Outside TYBA the plugin does nothing. It changes Claude Code's global configuration, so it only installs when you ask.",
       claudePluginInstall: "Install Claude Code integration",
-      claudePluginUninstall: "Uninstall",
-      claudePluginInstalled: "Installed",
+      claudePluginUninstall: "Disconnect",
+      claudePluginInstalled: "Connected",
       claudePluginUnavailable: "Claude Code not found on PATH.",
       claudePluginBlockedAll:
         "Blocked: Claude Code has disableAllHooks on — no hook runs, TYBA's included.",
@@ -5588,6 +5591,9 @@ const resources = {
       cfgDocker: "Docker",
       cfgDockerHint: "The project's containers in the header, with logs, shell and compose.",
       cfgGroupSsh: "SSH hosts",
+      cfgSshHostEdit: "Edit",
+      cfgSshHostEditAria: "Edit {{host}}",
+      cfgSshHostAdd: "Add host",
       cfgSshDeniedSince: "Denied since {{date}}: the notice doesn't show for it.",
       cfgSshDenyHint: "Deny a host: the ssh notice doesn't show for it.",
       cfgSshDenyAdd: "Deny",
