@@ -248,6 +248,11 @@ pub struct Session {
     /// tempo dele. Anda junto com `turn_open`. Só memória.
     #[serde(default, skip_deserializing)]
     pub turn_started_at_ms: Option<u64>,
+    /// De onde sai a fala final do último turno, para o handoff entre agentes
+    /// ([`crate::agent::handoff`]). **Nunca serializado**: nem ao webview nem
+    /// ao SQLite. Só memória, como `last_turn`.
+    #[serde(skip)]
+    pub last_words: Option<crate::agent::handoff::LastWords>,
     /// O restart trouxe de volta um shell em que rodava uma conversa do Claude
     /// que continua no disco, e o pane oferece retomá-la. **In-memory**: nasce
     /// só no `resume_startup` e some quando o dono aceita, dispensa ou roda um
@@ -621,7 +626,6 @@ impl SessionManager {
         result
     }
 
-    #[allow(clippy::too_many_arguments)]
     #[allow(clippy::too_many_arguments)]
     pub fn create_command_session(
         &self,
@@ -1026,6 +1030,7 @@ impl SessionManager {
             last_turn: None,
             turn_open: false,
             turn_started_at_ms: None,
+            last_words: None,
             shell_resume_offer: false,
             agent_conversation_cwd: previous.and_then(|s| s.agent_conversation_cwd),
             owner,
@@ -1234,6 +1239,18 @@ impl SessionManager {
         s.turn_open = true;
         s.turn_started_at_ms = started;
         Some(s.clone())
+    }
+
+    /// Mexe na fala final guardada para o handoff. Sem IPC e sem `persist`:
+    /// o campo não sai do core.
+    pub(crate) fn update_last_words(
+        &self,
+        id: SessionId,
+        f: impl FnOnce(&mut Option<crate::agent::handoff::LastWords>),
+    ) {
+        if let Some(s) = self.sessions.write().get_mut(&id) {
+            f(&mut s.last_words);
+        }
     }
 
     /// Grava o id da conversa nativa do agente. Chamado de dentro do handler de
@@ -2482,6 +2499,7 @@ mod tests {
             last_turn: None,
             turn_open: false,
             turn_started_at_ms: None,
+            last_words: None,
             shell_resume_offer: false,
             agent_conversation_cwd: None,
             owner: Default::default(),
