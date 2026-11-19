@@ -1884,10 +1884,6 @@ export const dockerScreenShow = (workspace: WorkspaceId, container: string, pane
 export const dockerScreenShell = (containerId: string, host?: string | null) =>
   invoke<SessionId>("docker_screen_shell", { containerId, host: host ?? null });
 
-/** Os logs (`docker logs -f`) da tela de Docker em sessão SSH: sessão de terminal sem aba. */
-export const dockerScreenLogs = (containerId: string, host?: string | null) =>
-  invoke<SessionId>("docker_screen_logs", { containerId, host: host ?? null });
-
 export interface ImageInfo {
   id: string;
   repository: string;
@@ -3697,8 +3693,8 @@ export interface LogsSnapshot {
   following: boolean;
 }
 
-export const dockerLogsStart = (containerId: string) =>
-  invoke<LogsSnapshot>("docker_logs_start", { containerId });
+export const dockerLogsStart = (containerId: string, host?: string | null) =>
+  invoke<LogsSnapshot>("docker_logs_start", { containerId, host: host ?? null });
 
 export const onDockerLogs = (
   containerId: string,
@@ -3763,11 +3759,11 @@ export interface ContainerFsFile {
   binary: boolean;
 }
 
-export const dockerFsList = (containerId: string, path: string) =>
-  invoke<ContainerFsEntry[]>("docker_fs_list", { containerId, path });
+export const dockerFsList = (containerId: string, path: string, host?: string | null) =>
+  invoke<ContainerFsEntry[]>("docker_fs_list", { containerId, path, host: host ?? null });
 
-export const dockerFsRead = (containerId: string, path: string) =>
-  invoke<ContainerFsFile>("docker_fs_read", { containerId, path });
+export const dockerFsRead = (containerId: string, path: string, host?: string | null) =>
+  invoke<ContainerFsFile>("docker_fs_read", { containerId, path, host: host ?? null });
 
 /** Texto com segredos mascarados pelo core (#10), para copiar. */
 export const exportRedacted = (lines: string[]) =>
