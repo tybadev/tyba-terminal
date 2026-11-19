@@ -24,6 +24,7 @@ import {
   urgencyOf,
   wantsAttention,
   agentForWorkspace,
+  agentLabelOf,
 } from "./agentsBoard";
 
 const session = (
@@ -324,6 +325,78 @@ describe("agente do workspace, para a barra lateral", () => {
     ]);
 
     expect(agentForWorkspace(w, mapa([calmo, preso]))?.session.id).toBe("preso");
+  });
+});
+
+describe("quais sessões viram cartão de agente", () => {
+  const shell = (id: string, over: Partial<Session> = {}): Session =>
+    session(id, running, { kind: { type: "shell" } as SessionKind, ...over });
+  const umaAba = (...ids: string[]) =>
+    layout(
+      ids.map((id, i) =>
+        workspace(`w${i}`, `pasta${i}`, [tab(`t${i}`, leaf(`p${i}`, id))]),
+      ),
+    );
+
+  test("agente aberto pelo TYBA vira cartão", () => {
+    const rows = boardOrder(buildRows([session("a", running)], umaAba("a")));
+    expect(rows.map((r) => r.session.id)).toEqual(["a"]);
+  });
+
+  test("claude digitado no pane vira cartão pelo palpite de tela", () => {
+    const s = shell("s", { observed: { agent: "claude-code", state: "running" } });
+    const rows = boardOrder(buildRows([s], umaAba("s")));
+    expect(rows.map((r) => r.observed?.agent)).toEqual(["claude-code"]);
+  });
+
+  test("codex digitado (sem manifesto de tela) vira cartão pela sonda de processo", () => {
+    const rows = boardOrder(
+      buildRows([shell("s")], umaAba("s"), new Map([["s", "codex"]])),
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].observed).toEqual({ agent: "codex", state: null });
+    // Sem estado ninguém afirma nada: "sem sinal", nunca o "rodando" do shell.
+    expect(rows[0].visual.labelKey).toBe(NO_SIGNAL.labelKey);
+  });
+
+  test("palpite de tela vence a sonda: ele sabe o estado", () => {
+    const s = shell("s", { observed: { agent: "claude-code", state: "awaiting_input" } });
+    const rows = boardOrder(buildRows([s], umaAba("s"), new Map([["s", "claude"]])));
+    expect(rows[0].observed?.state).toBe("awaiting_input");
+  });
+
+  test("shell sem agente não vira cartão", () => {
+    expect(boardOrder(buildRows([shell("s")], umaAba("s"), new Map()))).toEqual([]);
+  });
+
+  test("agente do TYBA não duplica pela sonda", () => {
+    const rows = boardOrder(
+      buildRows([session("a", running)], umaAba("a"), new Map([["a", "claude"]])),
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].observed).toBeNull();
+  });
+
+  test("sessão fora do layout não vira cartão", () => {
+    expect(
+      boardOrder(buildRows([shell("s")], layout([]), new Map([["s", "codex"]]))),
+    ).toEqual([]);
+  });
+
+  test("a linha da sessão também acha o codex digitado", () => {
+    const w = workspace("w", "api", [tab("t", leaf("p", "s"))]);
+    const found = agentForWorkspace(
+      w,
+      new Map([["s", shell("s")]]),
+      new Map([["s", "codex"]]),
+    );
+    expect(found?.observed?.agent).toBe("codex");
+  });
+
+  test("nome curto do agente: o id do manifesto do Claude vira claude", () => {
+    expect(agentLabelOf("claude-code")).toBe("claude");
+    expect(agentLabelOf("codex")).toBe("codex");
+    expect(agentLabelOf("opencode")).toBe("opencode");
   });
 });
 

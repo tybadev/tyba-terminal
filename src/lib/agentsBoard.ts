@@ -244,9 +244,40 @@ const byUrgencyThenName = (a: AgentRow, b: AgentRow): number =>
  * delas carregar `observed` — palpite de tela sobre sessão que tem hook —, ela
  * conta uma vez só, entre as gerenciadas, que é onde estão as garantias.
  */
+/**
+ * O agente que a sonda de processo do core achou em cada sessão (o `claude` ou
+ * o `codex` digitado no pane), pelo nome curto: "claude", "codex".
+ */
+export type DetectedAgents = ReadonlyMap<SessionId, string>;
+
+/**
+ * O nome curto do agente, como a barra lateral escreve ("claude rodando"). O
+ * palpite de tela chega com o id do manifesto, que no Claude é `claude-code`.
+ */
+export const agentLabelOf = (agent: string): string =>
+  agent === "claude-code" ? "claude" : agent;
+
+/**
+ * O agente de uma sessão que o TYBA não lançou: o palpite de tela e, sem ele,
+ * a presença que a sonda de processo achou — sem estado ("sem sinal").
+ *
+ * Sem o segundo caminho o `codex` digitado nunca virava cartão: ele não tem
+ * manifesto de tela de propósito (o título dele não o identifica, decisão de
+ * 2026-08-24), então `observed` nunca chega, mas o processo está lá.
+ */
+const observedOf = (
+  session: Session,
+  detected: DetectedAgents | undefined,
+): ObservedAgent | null => {
+  if (session.observed) return session.observed;
+  const agent = detected?.get(session.id);
+  return agent ? { agent, state: null } : null;
+};
+
 export const buildRows = (
   sessions: Session[],
   layout: LayoutState,
+  detected?: DetectedAgents,
 ): BoardSections => {
   const places = placesBySession(layout);
   const managed: AgentRow[] = [];
@@ -267,7 +298,7 @@ export const buildRows = (
       });
       continue;
     }
-    const seen = session.observed;
+    const seen = observedOf(session, detected);
     if (!seen) continue;
     observed.push({
       session,
@@ -327,6 +358,7 @@ export interface WorkspaceAgent {
 export const agentForWorkspace = (
   workspace: Workspace,
   sessionById: Map<SessionId, Session>,
+  detected?: DetectedAgents,
 ): WorkspaceAgent | null => {
   let best: (WorkspaceAgent & { urgency: number }) | null = null;
   for (const tab of workspace.tabs) {
@@ -349,16 +381,19 @@ export const agentForWorkspace = (
             urgency: urgencyOf(session) + 100,
           };
         }
-      } else if (session.observed) {
-        candidate = {
-          session,
-          visual: withSubagentsReason(
-            observedVisual(session.observed),
-            session.subagents_working === true,
-          ),
-          observed: session.observed,
-          urgency: observedUrgency(session.observed),
-        };
+      } else {
+        const seen = observedOf(session, detected);
+        if (seen) {
+          candidate = {
+            session,
+            visual: withSubagentsReason(
+              observedVisual(seen),
+              session.subagents_working === true,
+            ),
+            observed: seen,
+            urgency: observedUrgency(seen),
+          };
+        }
       }
 
       if (candidate && (!best || candidate.urgency > best.urgency)) {
