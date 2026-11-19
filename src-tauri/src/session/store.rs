@@ -296,7 +296,27 @@ CREATE TABLE IF NOT EXISTS orbit_run (
     body_json TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS orbit_run_by_graph ON orbit_run (graph_id, started_at_ms);
+CREATE TABLE IF NOT EXISTS recent_folder (
+    path TEXT PRIMARY KEY,
+    last_opened_at_ms INTEGER NOT NULL
+);
 ";
+
+/// Quantas pastas recentes o banco guarda. Mais do que a tela mostra
+/// ([`RECENT_FOLDERS_SHOWN`]) para que pasta apagada do disco, filtrada na
+/// leitura, não deixe a lista curta.
+const RECENT_FOLDERS_KEPT: i64 = 20;
+
+/// Quantas pastas recentes a tela inicial recebe.
+const RECENT_FOLDERS_SHOWN: usize = 8;
+
+/// Pasta local aberta pelo usuário, para a tela inicial. Ver
+/// [`Store::touch_recent_folder`].
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct RecentFolder {
+    pub path: String,
+    pub last_opened_at_ms: i64,
+}
 
 /// Teto do histórico. Sem ele a tabela cresce com o uso e nunca encolhe: é a
 /// única do banco alimentada por cada Enter que o usuário dá. Dimensionado para
@@ -3209,6 +3229,57 @@ impl Store {
             params![id, crate::approvals::now_ms() as i64],
         )?;
         Ok(())
+    }
+
+    /// Põe `path` no topo das pastas recentes (upsert pelo caminho) e poda o
+    /// que passou de [`RECENT_FOLDERS_KEPT`], os mais antigos primeiro.
+    pub fn touch_recent_folder(&self, path: &str, at_ms: i64) -> Result<(), StoreError> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "INSERT INTO recent_folder (path, last_opened_at_ms) VALUES (?1, ?2)
+             ON CONFLICT(path) DO UPDATE SET last_opened_at_ms = excluded.last_opened_at_ms",
+            params![path, at_ms],
+        )?;
+        conn.execute(
+            "DELETE FROM recent_folder WHERE path NOT IN (
+                 SELECT path FROM recent_folder
+                 ORDER BY last_opened_at_ms DESC, path ASC LIMIT ?1)",
+            params![RECENT_FOLDERS_KEPT],
+        )?;
+        Ok(())
+    }
+
+    /// As pastas recentes, mais recente primeiro, no máximo
+    /// [`RECENT_FOLDERS_SHOWN`]. Pasta que sumiu do disco sai da lista mas
+    /// fica no banco: um volume desmontado volta a aparecer quando remontar.
+    ///
+    /// Volume que pode não estar montado ([`super::cwd::may_hang_shared_thread`])
+    /// entra sem `stat` — num mount morto o `stat` pendura sem timeout.
+    pub fn list_recent_folders(&self) -> Result<Vec<RecentFolder>, StoreError> {
+        let rows = {
+            let conn = self.conn.lock();
+            let mut stmt = conn.prepare(
+                "SELECT path, last_opened_at_ms FROM recent_folder
+                 ORDER BY last_opened_at_ms DESC, path ASC",
+            )?;
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok(RecentFolder {
+                        path: row.get(0)?,
+                        last_opened_at_ms: row.get(1)?,
+                    })
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            rows
+        };
+        Ok(rows
+            .into_iter()
+            .filter(|f| {
+                let path = Path::new(&f.path);
+                super::cwd::may_hang_shared_thread(path) || path.is_dir()
+            })
+            .take(RECENT_FOLDERS_SHOWN)
+            .collect())
     }
 
     pub fn list_orbit_graphs(&self) -> Result<Vec<crate::orbit::Graph>, StoreError> {
@@ -8228,5 +8299,85 @@ mod tests {
         store.delete_orbit_role("qa").unwrap();
         assert_eq!(store.list_orbit_roles().unwrap().len(), 1);
         assert_eq!(store.get_orbit_role("qa").unwrap(), None);
+    }
+
+    #[test]
+    fn recent_folder_upsert_moves_to_top() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a");
+        let b = dir.path().join("b");
+        std::fs::create_dir(&a).unwrap();
+        std::fs::create_dir(&b).unwrap();
+        let (a, b) = (a.to_string_lossy(), b.to_string_lossy());
+        let store = Store::open_in_memory().unwrap();
+
+        store.touch_recent_folder(&a, 1).unwrap();
+        store.touch_recent_folder(&b, 2).unwrap();
+        store.touch_recent_folder(&a, 3).unwrap();
+
+        let list = store.list_recent_folders().unwrap();
+        assert_eq!(
+            list,
+            vec![
+                RecentFolder {
+                    path: a.to_string(),
+                    last_opened_at_ms: 3
+                },
+                RecentFolder {
+                    path: b.to_string(),
+                    last_opened_at_ms: 2
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn recent_folders_read_caps_at_shown_and_prunes_at_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open_in_memory().unwrap();
+        for i in 0..25 {
+            let p = dir.path().join(format!("p{i:02}"));
+            std::fs::create_dir(&p).unwrap();
+            store.touch_recent_folder(&p.to_string_lossy(), i).unwrap();
+        }
+
+        let list = store.list_recent_folders().unwrap();
+        assert_eq!(list.len(), RECENT_FOLDERS_SHOWN);
+        assert_eq!(list[0].last_opened_at_ms, 24);
+        assert_eq!(list[7].last_opened_at_ms, 17);
+
+        let conn = store.conn.lock();
+        let (count, oldest): (i64, i64) = conn
+            .query_row(
+                "SELECT COUNT(*), MIN(last_opened_at_ms) FROM recent_folder",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(count, RECENT_FOLDERS_KEPT);
+        assert_eq!(oldest, 5);
+    }
+
+    #[test]
+    fn recent_folder_missing_on_disk_is_filtered_not_deleted() {
+        let dir = tempfile::tempdir().unwrap();
+        let alive = dir.path().join("viva");
+        std::fs::create_dir(&alive).unwrap();
+        let gone = dir.path().join("sumiu");
+        let store = Store::open_in_memory().unwrap();
+        store
+            .touch_recent_folder(&alive.to_string_lossy(), 1)
+            .unwrap();
+        store
+            .touch_recent_folder(&gone.to_string_lossy(), 2)
+            .unwrap();
+
+        let list = store.list_recent_folders().unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].path, alive.to_string_lossy());
+
+        // Voltou ao disco: volta à lista, porque a linha ficou.
+        std::fs::create_dir(&gone).unwrap();
+        assert_eq!(store.list_recent_folders().unwrap().len(), 2);
     }
 }

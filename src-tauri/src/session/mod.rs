@@ -1542,6 +1542,23 @@ impl SessionManager {
         reattach
     }
 
+    /// Grava a pasta em que o usuário abriu uma sessão local nas pastas
+    /// recentes da tela inicial. Só a pasta com que a sessão nasce: o `cd` do
+    /// shell (OSC 7) não passa por aqui. Ver [`recent_folder_candidate`].
+    pub fn remember_recent_folder(&self, kind: &SessionKind, requested: Option<&Path>) {
+        let home = std::env::var("HOME").ok().map(PathBuf::from);
+        let Some(folder) = recent_folder_candidate(kind, requested, home.as_deref()) else {
+            return;
+        };
+        let at_ms = crate::approvals::now_ms() as i64;
+        if let Err(e) = self
+            .store
+            .touch_recent_folder(&folder.to_string_lossy(), at_ms)
+        {
+            eprintln!("tyba: pasta recente não gravada: {e}");
+        }
+    }
+
     pub fn mark_seen(&self, app: &AppHandle, id: SessionId) {
         let mut sessions = self.sessions.write();
         if let Some(s) = sessions.get_mut(&id) {
@@ -1780,6 +1797,33 @@ pub fn expand_home(path: &Path) -> PathBuf {
         return PathBuf::from(home).join(rest);
     }
     path.to_path_buf()
+}
+
+/// A pasta que entra nas recentes quando uma sessão `kind` abre em
+/// `requested`, ou `None` quando não entra: sessão remota (SSH, container),
+/// sem pasta pedida, pasta que não existe (o spawn cairia no home), o próprio
+/// home e a raiz.
+pub fn recent_folder_candidate(
+    kind: &SessionKind,
+    requested: Option<&Path>,
+    home: Option<&Path>,
+) -> Option<PathBuf> {
+    if !matches!(kind, SessionKind::Shell | SessionKind::Agent { .. }) {
+        return None;
+    }
+    let expanded = expand_home(requested?);
+    if !expanded.is_dir() {
+        return None;
+    }
+    let folder = strip_verbatim_prefix(&crate::repo::canonicalize_or(&expanded));
+    // A raiz não tem pai.
+    folder.parent()?;
+    if let Some(home) = home {
+        if folder == strip_verbatim_prefix(&crate::repo::canonicalize_or(home)) {
+            return None;
+        }
+    }
+    Some(folder)
 }
 
 /// O `is_dir()` daqui é o que faz uma pasta que sumiu virar `$HOME` em vez de
@@ -2448,6 +2492,64 @@ mod hook_zsh_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recent_folder_only_for_local_sessions_in_a_chosen_folder() {
+        let home = tempfile::tempdir().unwrap();
+        let project = home.path().join("projeto");
+        std::fs::create_dir(&project).unwrap();
+        let project_canon = strip_verbatim_prefix(&crate::repo::canonicalize_or(&project));
+        let h = Some(home.path());
+        let agent = SessionKind::Agent {
+            runner: AgentRunnerKind::ClaudeCode,
+        };
+
+        assert_eq!(
+            recent_folder_candidate(&SessionKind::Shell, Some(&project), h),
+            Some(project_canon.clone())
+        );
+        assert_eq!(
+            recent_folder_candidate(&agent, Some(&project), h),
+            Some(project_canon)
+        );
+        let ssh = SessionKind::Ssh {
+            host_id: "host-sintetico".into(),
+        };
+        assert_eq!(recent_folder_candidate(&ssh, Some(&project), h), None);
+        let container = SessionKind::Container {
+            host_id: None,
+            container_id: "c0ffee".into(),
+        };
+        assert_eq!(recent_folder_candidate(&container, Some(&project), h), None);
+        assert_eq!(recent_folder_candidate(&SessionKind::Shell, None, h), None);
+        assert_eq!(
+            recent_folder_candidate(&SessionKind::Shell, Some(home.path()), h),
+            None
+        );
+        assert_eq!(
+            recent_folder_candidate(&SessionKind::Shell, Some(Path::new("/")), h),
+            None
+        );
+        assert_eq!(
+            recent_folder_candidate(&SessionKind::Shell, Some(&project.join("sumiu")), h),
+            None
+        );
+    }
+
+    #[test]
+    fn remote_session_does_not_record_recent_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        let manager = SessionManager::new(Arc::clone(&store));
+        let ssh = SessionKind::Ssh {
+            host_id: "host-sintetico".into(),
+        };
+        manager.remember_recent_folder(&ssh, Some(dir.path()));
+        assert!(store.list_recent_folders().unwrap().is_empty());
+
+        manager.remember_recent_folder(&SessionKind::Shell, Some(dir.path()));
+        assert_eq!(store.list_recent_folders().unwrap().len(), 1);
+    }
 
     #[test]
     fn git_hooks_live_in_the_app_data_dir() {

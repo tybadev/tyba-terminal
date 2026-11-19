@@ -1480,6 +1480,12 @@ async fn create_session(
     // para não duplicar workspace.
     let _ = wait_for_boot(Arc::clone(&state.boot)).await;
 
+    // A pasta que o usuário escolheu, para as recentes da tela inicial. Fora
+    // o split (herda o cwd vivo, que é `cd` e não escolha) e o agente anexado
+    // a um worktree que o próprio TYBA criou (review, conflitos).
+    let recent = (opts.inherit_cwd_from.is_none() && !opts.attach_existing)
+        .then(|| (opts.kind.clone(), opts.cwd.clone()));
+
     let handle = app.clone();
     let session = match &opts.kind {
         SessionKind::Agent { .. } => {
@@ -1532,7 +1538,19 @@ async fn create_session(
         }
     };
     run_setup_if_consented(&app, &state, &session);
+    if let Some((kind, cwd)) = recent {
+        state.sessions.remember_recent_folder(&kind, cwd.as_deref());
+    }
     Ok(session)
+}
+
+/// As pastas locais abertas por último, para a tela inicial. `async` porque
+/// confere cada pasta no disco, e isso não pode segurar a main thread.
+#[tauri::command]
+async fn list_recent_folders(
+    state: State<'_, AppState>,
+) -> Result<Vec<session::store::RecentFolder>, String> {
+    state.store.list_recent_folders().map_err(|e| e.to_string())
 }
 
 fn store_err(e: session::store::StoreError) -> crate::error::AppError {
@@ -11054,6 +11072,7 @@ pub fn run() {
             set_history_enabled,
             agent_stats,
             list_snippets,
+            list_recent_folders,
             save_snippet,
             delete_snippet,
             orbit_list_graphs,
