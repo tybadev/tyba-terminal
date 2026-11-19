@@ -115,7 +115,7 @@ describe("statusVisual", () => {
     const v = statusVisual({ state: "failed", reason: "x" }, false);
     expect(v?.rank).toBe(4);
     expect(v?.dotClass).toContain("bg-tyba-red");
-    expect(v?.dotClass).not.toContain("animate-pulse");
+    expect(v?.dotClass).not.toContain("tyba-pulse");
   });
 
   test("awaiting distingue aprovação de resposta", () => {
@@ -130,7 +130,7 @@ describe("statusVisual", () => {
     expect(approval?.labelKey).toBe("sessionBlocked");
     expect(reply?.labelKey).toBe("sessionAwaiting");
     expect(approval?.dotClass).toContain("bg-tyba-amber");
-    expect(approval?.dotClass).toContain("animate-pulse");
+    expect(approval?.dotClass).toContain("tyba-pulse");
   });
 
   test("prompt nativo tem rótulo próprio, não o de resposta", () => {
@@ -159,13 +159,13 @@ describe("statusVisual", () => {
     const v = statusVisual({ state: "idle", summary: null }, true);
     expect(v?.labelKey).toBe("sessionFinished");
     expect(v?.dotClass).toContain("bg-tyba-green");
-    expect(v?.dotClass).not.toContain("animate-pulse");
+    expect(v?.dotClass).not.toContain("tyba-pulse");
   });
 
   test("running pulsa azul; exited não sinaliza", () => {
     const running = statusVisual({ state: "running" }, false);
     expect(running?.dotClass).toContain("bg-tyba-blue");
-    expect(running?.dotClass).toContain("animate-pulse");
+    expect(running?.dotClass).toContain("tyba-pulse");
     expect(statusVisual({ state: "exited", code: 0 }, true)).toBeNull();
   });
 
@@ -210,7 +210,7 @@ describe("selo de atenção da aba", () => {
       const selo = tabAttention([withStatus("a", awaiting(reason))]);
       expect(selo?.labelKey).toBe(awaitingLabelKey(reason));
       expect(selo?.dotClass).toContain("bg-tyba-amber");
-      expect(selo?.dotClass).toContain("motion-safe:animate-pulse");
+      expect(selo?.dotClass).toContain("tyba-pulse");
     }
   });
 

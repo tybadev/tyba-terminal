@@ -264,7 +264,7 @@ export const EDGE_COLOR: Record<EdgeKind, string> = {
  */
 export const STATUS_TONE: Record<NodeStatus, { text: string; dot: string }> = {
   waiting: { text: "text-tyba-amber", dot: "border-[1.5px] border-tyba-amber" },
-  running: { text: "text-[var(--tyba-primary)]", dot: "bg-[var(--tyba-primary)] animate-pulse" },
+  running: { text: "text-[var(--tyba-primary)]", dot: "bg-[var(--tyba-primary)] tyba-pulse" },
   done: { text: "text-tyba-text-muted", dot: "bg-tyba-green" },
   failed: { text: "text-tyba-red", dot: "bg-tyba-red" },
   skipped: { text: "text-tyba-text-faint", dot: "border-[1.5px] border-tyba-text-faint" },
@@ -444,7 +444,7 @@ function CapsuleStatus({ nodeId, nodeRun }: { nodeId: string; nodeRun: NodeRun }
 /** Chip da cápsula (quadro Orbit): pílula de 24 com o ponto que pulsa. */
 const chipClass =
   "inline-flex h-6 shrink-0 items-center gap-1.5 rounded-full px-2.5 font-sans text-[11.5px] font-semibold whitespace-nowrap";
-const chipDot = "size-[7px] shrink-0 rounded-full animate-pulse motion-reduce:animate-none";
+const chipDot = "size-[7px] shrink-0 rounded-full tyba-pulse";
 
 /** "ao vivo" (ou o tempo rodando): o chip na cor primária. */
 export function LiveChip({ children }: { children: ReactNode }) {

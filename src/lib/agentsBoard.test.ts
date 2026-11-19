@@ -475,7 +475,7 @@ describe("seção dos observados", () => {
     expect(semSinal.visual.dotClass).not.toMatch(
       /bg-tyba-(amber|blue|green|red)/,
     );
-    expect(semSinal.visual.dotClass).not.toMatch(/animate-pulse/);
+    expect(semSinal.visual.dotClass).not.toMatch(/tyba-pulse/);
     expect(semSinal.urgency).toBe(0);
 
     // O contraste que discrimina: estado deduzido de verdade ganha cor, e o

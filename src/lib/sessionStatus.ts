@@ -109,7 +109,7 @@ export const statusVisual = (
     case "awaiting_input":
       return {
         dotClass:
-          "bg-tyba-amber-fill [box-shadow:var(--tyba-glow-amber)] motion-safe:animate-pulse",
+          "bg-tyba-amber-fill [box-shadow:var(--tyba-glow-amber)] tyba-pulse",
         textClass: "text-tyba-amber",
         labelKey: awaitingLabelKey(status.reason),
         rank: 3,
@@ -125,7 +125,7 @@ export const statusVisual = (
     case "running":
       return {
         dotClass:
-          "bg-tyba-blue [box-shadow:var(--tyba-glow-blue)] motion-safe:animate-pulse",
+          "bg-tyba-blue [box-shadow:var(--tyba-glow-blue)] tyba-pulse",
         textClass: "text-tyba-blue",
         labelKey: "sessionInProgress",
         rank: 1,

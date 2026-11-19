@@ -275,7 +275,7 @@ export function ContainerLogsView({ containerId, restartNonce }: Props) {
             aria-hidden
             className={`size-1.5 rounded-full ${
               follow && !ended
-                ? "animate-pulse bg-tyba-green shadow-[var(--tyba-glow-green)]"
+                ? "tyba-pulse bg-tyba-green shadow-[var(--tyba-glow-green)]"
                 : "bg-tyba-text-faint"
             }`}
           />

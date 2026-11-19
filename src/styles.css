@@ -1410,8 +1410,12 @@ samp {
   0% { transform: scale(1); opacity: 0.6; }
   70%, 100% { transform: scale(2.4); opacity: 0; }
 }
-.tyba-pulse {
-  position: relative;
+/* Em camada, para um ponto `absolute` (selo no canto do ícone) continuar
+   absoluto: fora de camada o `relative` venceria a utilitária. */
+@layer components {
+  .tyba-pulse {
+    position: relative;
+  }
 }
 .tyba-pulse::after {
   content: "";
