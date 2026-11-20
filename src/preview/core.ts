@@ -159,7 +159,8 @@ const handlers: Record<string, Handler> = {
       status: { dirty: false, changed: 0, insertions: 0, deletions: 0 },
     })),
   ],
-  services_session_ports: () => ({}),
+  // O `bun run dev` do Shell dividido escuta na 3000.
+  services_session_ports: () => ({ [ID.server]: [3000] }),
   "plugin:path|resolve_directory": () => HOME,
   attach_session: ({ id }) => attach(id),
   resize_session: () => null,

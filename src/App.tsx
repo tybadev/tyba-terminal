@@ -6010,7 +6010,10 @@ export default function App() {
     const panePorts = chipText(sessionPorts[s.id] ?? []);
     const paneState = paneAgent
       ? paneVisual
-        ? t(paneVisual.labelKey)
+        ? // Quadro ShellSplit: "claude rodando · 1m 12s".
+          paneVisual.labelKey === "sessionInProgress"
+          ? t("sidebarRunning")
+          : t(paneVisual.labelKey)
         : null
       : [paneCommand, panePorts].filter(Boolean).join(" · ") || null;
     return (
@@ -6694,11 +6697,8 @@ export default function App() {
               // Pílula de modo do quadro Header: branca, fio fino, ícone azul.
               className="flex h-[30px] shrink-0 items-center gap-2 whitespace-nowrap rounded-full border border-[var(--tyba-line)] bg-tyba-raised px-3 text-[13px] font-semibold text-tyba-text"
             >
-              {orbitOpen ? (
-                <OrbitIcon size={15} className="text-tyba-blue" />
-              ) : (
-                <CaretRight size={15} className="text-tyba-blue" />
-              )}
+              {/* Na tinta do texto, como sai renderizado o quadro Header. */}
+              {orbitOpen ? <OrbitIcon size={15} /> : <CaretRight size={15} />}
               {orbitOpen ? t("orbitView") : t("terminalView")}
             </button>
             {/* Com as abas na barra, o nome da sessão sai da migalha: ele
@@ -7074,7 +7074,8 @@ export default function App() {
                                 [g.key]: !prev[g.key],
                               }))
                             }
-                            className="text-tyba-text-faint transition-colors hover:text-tyba-text"
+                            // A seta na tinta do título (`.gh2`), não apagada.
+                            className="transition-colors hover:text-tyba-text"
                           >
                             {collapsed ? <CaretRight size={13} /> : <CaretDown size={13} />}
                           </button>

@@ -314,7 +314,7 @@ export function Toolbar({
             onClick={onOpenDiff}
             title={t("gitStatusIconLabel")}
             aria-label={t("toolbarDiff")}
-            className="rounded-[4px] px-1 py-0.5 font-mono transition-colors hover:bg-tyba-text/[.06] hover:text-tyba-text"
+            className="shrink-0 whitespace-nowrap rounded-[4px] px-1 py-0.5 font-mono transition-colors hover:bg-tyba-text/[.06] hover:text-tyba-text"
           >
             {t("toolbarChanges", { count: status.changed })}{" "}
             <span className="text-tyba-green">+{status.insertions}</span>{" "}

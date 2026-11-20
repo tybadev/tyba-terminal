@@ -134,7 +134,25 @@ export const SESSIONS: Session[] = [
     agent_model: "Opus 5.5",
     turn_open: true,
     turn_started_at_ms: NOW - 29_000,
-    subagents_working: true,
+    // Quadro Agents: "em andamento" e a aba "Turno · 3" (o turno anterior).
+    subagents_working: false,
+    last_turn: {
+      seq: 2,
+      outcome: "completed",
+      failure: null,
+      started_at_ms: NOW - 400_000,
+      ended_at_ms: NOW - 300_000,
+      duration_ms: 100_000,
+      prompt: null,
+      diff: "ok",
+      files: [],
+      files_total: 3,
+      insertions: 42,
+      deletions: 7,
+      commits: 0,
+      cost_usd: 0.4,
+      tokens: 12_000,
+    },
     agent_usage: { model: "Opus 5.5", context_pct: 7, tokens_in: 66_000, cost_usd: 1.05, duration_ms: 29_000 },
   }),
   session({
@@ -212,7 +230,7 @@ export function initialLayout(): LayoutState {
           tab("tab-api-split", {
             type: "split",
             id: "split-api",
-            split: "h",
+            split: "v",
             ratio: 0.5,
             first: { type: "leaf", id: "pane-split-a", session_id: ID.claudeSplit },
             second: { type: "leaf", id: "pane-split-b", session_id: ID.server },
@@ -465,22 +483,24 @@ export const BLOCKS: Record<string, Block[]> = {
 const ESC = "\x1b[";
 const dim = (t: string) => `${ESC}2m${t}${ESC}0m`;
 const bold = (t: string) => `${ESC}1m${t}${ESC}0m`;
+const gray = (t: string) => `${ESC}90m${t}${ESC}0m`;
 const orange = (t: string) => `${ESC}38;2;217;119;87m${t}${ESC}0m`;
 const nl = (lines: string[]) => lines.join("\r\n") + "\r\n";
 
 /** O que a tela do agente mostra (o PTY), copiado dos quadros. */
 export const SCREENS: Record<string, string> = {
+  // As cores do quadro Agents: o ● da ferramenta azul, o texto em negrito e
+  // a árvore e a espera em cinza.
   [ID.claudeApi]: nl([
-    dim("❯ rode subagentes com ls -la e for 1 até 10 e ai sleep de 2 no final"),
+    "❯ rode subagentes com ls -la e for 1 até 10 e ai sleep de 2 no final",
+    `${ESC}34m●${ESC}0m ${bold("3 background agents launched")}`,
+    gray("├ Run ls -la"),
+    gray("├ Run for loop 1 to 10"),
+    gray("└ Run sleep 2"),
     "",
-    `${orange("●")} 3 background agents launched`,
-    dim("  ├ Run ls -la"),
-    dim("  ├ Run for loop 1 to 10"),
-    dim("  └ Run sleep 2"),
+    `● ${bold("Iniciei 3 subagentes em paralelo, um para cada comando.")}`,
     "",
-    `${orange("●")} Iniciei 3 subagentes em paralelo, um para cada comando.`,
-    "",
-    orange("✻ Waiting for 3 background agents to finish"),
+    gray("✻ Waiting for 3 background agents to finish"),
   ]),
   [ID.claudeSplit]: nl([
     `${orange("●")} O desconto é aplicado depois do imposto. Vou corrigir a ordem.`,
@@ -505,7 +525,6 @@ export const SCREENS: Record<string, string> = {
   ]),
   [ID.notas]: nl([`${orange("●")} Atualizei v2.md (3 seções).`]),
   [ID.server]: nl([
-    `${ESC}32m❯${ESC}0m bun run dev`,
     "Listening on http://localhost:3000",
     dim("GET /health 200 · 2 ms"),
     dim("GET /invoices 200 · 14 ms"),
@@ -518,4 +537,5 @@ SCREENS[ID.dev] = SCREENS[ID.claudeSplit].split("\r\n").slice(0, 3).join("\r\n")
 /** Comando em execução por sessão (o `session://command` do core). */
 export const RUNNING: Record<string, { command: string; startedAtMs: number }> = {
   [ID.dev]: { command: "claude", startedAtMs: NOW - 72_000 },
+  [ID.server]: { command: "bun run dev", startedAtMs: NOW - 720_000 },
 };
