@@ -106,7 +106,7 @@ import {
 } from "../lib/ipc";
 import { formatDiagnostics, platformLabel } from "../lib/diagnostics";
 import { openExternalUrl, writeClipboardText } from "../lib/clipboard";
-import { commitUrl, docsUrl, LICENSE_NAME, LICENSE_URL, REPO_URL } from "../lib/links";
+import { commitUrl, docsUrl, LICENSE_NAME, LICENSE_URL, REPO_URL, themeDocsUrl } from "../lib/links";
 import {
   actionsByCategory,
   ACTION_LABEL_KEYS,
@@ -432,32 +432,6 @@ const TEXT_SIZES = [
   { value: 13, label: "cfgSizeMedium" },
   { value: 15, label: "cfgSizeLarge" },
 ];
-
-const THEME_EXAMPLE = `{
-  "name": "Meu Tema",
-  "base": "dark",
-  "ui": {
-    "bg": "#282a36",
-    "surface": "#313342",
-    "text": "#f8f8f2",
-    "primary": "#50fa7b",
-    "violet": "#bd93f9"
-  },
-  "terminal": {
-    "background": "#282a36",
-    "foreground": "#f8f8f2",
-    "cursor": "#f8f8f2",
-    "selectionBackground": "#44475a80",
-    "ansi": ["#21222c", "#ff5555", "#50fa7b", "#f1fa8c",
-             "#bd93f9", "#ff79c6", "#8be9fd", "#f8f8f2",
-             "#6272a4", "#ff6e6e", "#69ff94", "#ffffa5",
-             "#d6acff", "#ff92df", "#a4ffff", "#ffffff"]
-  }
-}`;
-
-function copyThemeExample() {
-  void navigator.clipboard?.writeText(THEME_EXAMPLE).catch(() => {});
-}
 
 const MAC_SOUNDS = ["Ping", "Glass", "Submarine", "Hero", "Funk", "Blow"];
 
@@ -971,7 +945,8 @@ export function SettingsView({
   const importTheme = async () => {
     const path = await openFileDialog({
       multiple: false,
-      filters: [{ name: "Tema Tyba (JSON)", extensions: ["json"] }],
+      // O tema de cor do VS Code ou o do TYBA: o core reconhece qual é.
+      filters: [{ name: t("themeImportFilter"), extensions: ["json", "jsonc"] }],
     });
     if (typeof path !== "string") return;
     try {
@@ -1134,7 +1109,7 @@ export function SettingsView({
                 fontSize={fontSize}
                 footer={toolbarPref.enabled}
                 onImport={() => void importTheme()}
-                onCopyExample={copyThemeExample}
+                onHowTo={() => void openExternalUrl(themeDocsUrl(i18n.language)).catch(() => {})}
               />
               <SettingGroup title={t("cfgGroupText")}>
                 <SettingLine label={t("cfgFont")} hint={t("cfgFontHint")}>

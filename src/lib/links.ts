@@ -10,6 +10,12 @@ export function docsUrl(language: string): string {
   return `${DOCS_URL}/${siteLocale(language)}`;
 }
 
+/** A página da doc sobre fazer e importar um tema, no idioma do app. */
+export function themeDocsUrl(language: string): string {
+  const locale = siteLocale(language);
+  return `${DOCS_URL}/${locale}/${locale === "pt-br" ? "temas/importar-tema" : "themes/import-a-theme"}`;
+}
+
 export function commitUrl(commit: string): string {
   return `${REPO_URL}/commit/${commit}`;
 }

@@ -69,6 +69,11 @@ export const SCENARIOS: Record<string, () => Promise<unknown> | void> = {
     await dockerScreenSelect("ws-api", "c-postgres18");
   },
   settings: () => menu("settings"),
+  "settings-appearance": async () => {
+    await menu("settings");
+    const item = await waitFor(() => byText("button", /^Aparência$/));
+    item.click();
+  },
   orbit: () => menu("toggleOrbit"),
   handoff: () => requestHandoff({ sessionId: ID.claudeApi, from: "claude", turn: TURN_HANDOFF }),
   inbox: async () => {

@@ -40,6 +40,8 @@ type Handler = (args: Args) => unknown;
 
 export const state = {
   theme: "dark" as "dark" | "light",
+  /** O modo salvo; "system" segue o `prefers-color-scheme` do navegador. */
+  mode: null as "system" | null,
   layout: initialLayout(),
   drawers: [] as DrawerState[],
 };
@@ -83,7 +85,7 @@ function attach(id: unknown): null {
 const isShell = (id: unknown) => SESSIONS.some((s) => s.id === id && s.kind.type === "shell");
 
 const themeState = () => ({
-  mode: state.theme,
+  mode: state.mode ?? state.theme,
   dark: THEMES[0],
   light: THEMES[1],
 });
@@ -105,7 +107,8 @@ const handlers: Record<string, Handler> = {
   get_theme_state: themeState,
   list_themes: () => THEMES,
   set_theme_mode: ({ mode }) => {
-    state.theme = mode === "light" ? "light" : "dark";
+    state.mode = mode === "system" ? "system" : null;
+    if (mode !== "system") state.theme = mode === "light" ? "light" : "dark";
     void emit("theme://changed", themeState());
     return null;
   },
