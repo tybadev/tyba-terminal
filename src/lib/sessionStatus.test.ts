@@ -11,6 +11,7 @@ import {
   statusGlyph,
   statusVisual,
   tabAttention,
+  turnElapsedMs,
   withSubagentsReason,
 } from "./sessionStatus";
 import type { AwaitingReason, Session, SessionStatus } from "./ipc";
@@ -379,5 +380,19 @@ describe("statusGlyph", () => {
     expect(statusGlyph("sessionFailed")).toBe("failed");
     expect(statusGlyph("sessionIdle")).toBe("resting");
     expect(statusGlyph("agentsBoardNoSignal")).toBe("resting");
+  });
+});
+
+describe("turnElapsedMs", () => {
+  test("rodando com começo conhecido conta a partir dele", () => {
+    const s = { status: { state: "running" } as SessionStatus, turn_started_at_ms: 1_000 };
+    expect(turnElapsedMs(s, 135_000)).toBe(134_000);
+  });
+
+  test("sem começo ou fora de rodando não há tempo", () => {
+    const running = { state: "running" } as SessionStatus;
+    const idle = { state: "idle", summary: null } as SessionStatus;
+    expect(turnElapsedMs({ status: running, turn_started_at_ms: null }, 5)).toBeNull();
+    expect(turnElapsedMs({ status: idle, turn_started_at_ms: 1 }, 5)).toBeNull();
   });
 });

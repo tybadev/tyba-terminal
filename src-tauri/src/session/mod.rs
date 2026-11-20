@@ -244,6 +244,10 @@ pub struct Session {
     /// memória.
     #[serde(default, skip_deserializing)]
     pub turn_open: bool,
+    /// Quando o turno aberto começou (ms desde a época), para a UI contar o
+    /// tempo dele. Anda junto com `turn_open`. Só memória.
+    #[serde(default, skip_deserializing)]
+    pub turn_started_at_ms: Option<u64>,
     /// De onde sai a fala final do último turno, para o handoff entre agentes
     /// ([`crate::agent::handoff`]). **Nunca serializado**: nem ao webview nem
     /// ao SQLite. Só memória, como `last_turn`.
@@ -1031,6 +1035,7 @@ impl SessionManager {
             agent_usage: None,
             last_turn: None,
             turn_open: false,
+            turn_started_at_ms: None,
             last_words: None,
             shell_resume_offer: false,
             agent_conversation_cwd: previous.and_then(|s| s.agent_conversation_cwd),
@@ -1216,7 +1221,8 @@ impl SessionManager {
             return None;
         }
         s.last_turn = Some(digest);
-        s.turn_open = self.turns.is_open(id);
+        s.turn_started_at_ms = self.turns.open_started_at(id);
+        s.turn_open = s.turn_started_at_ms.is_some();
         Some(s.clone())
     }
 
@@ -1230,10 +1236,14 @@ impl SessionManager {
     pub(crate) fn apply_turn_open(&self, id: SessionId) -> Option<Session> {
         let mut sessions = self.sessions.write();
         let s = sessions.get_mut(&id)?;
-        if s.turn_open {
+        // O resumo do turno anterior pode chegar depois do prompt novo: aí
+        // `turn_open` já está ligado, mas o começo é outro.
+        let started = self.turns.open_started_at(id);
+        if s.turn_open && s.turn_started_at_ms == started {
             return None;
         }
         s.turn_open = true;
+        s.turn_started_at_ms = started;
         Some(s.clone())
     }
 
@@ -2499,6 +2509,7 @@ mod tests {
             agent_usage: None,
             last_turn: None,
             turn_open: false,
+            turn_started_at_ms: None,
             last_words: None,
             shell_resume_offer: false,
             agent_conversation_cwd: None,
@@ -4025,6 +4036,39 @@ echo beta
         assert_eq!(manager.turns.end(id).expect("turno novo").seq, 2);
         manager.apply_last_turn(id, turn_digest(2, "segundo"));
         assert!(!manager.get(id).unwrap().turn_open);
+    }
+
+    /// O começo do turno vai ao front enquanto ele roda e some quando o
+    /// resumo dele chega. Prompt novo com o anterior aberto troca o começo,
+    /// mesmo com o resumo do anterior chegando depois.
+    #[test]
+    fn comeco_do_turno_acompanha_o_turno_aberto() {
+        let (_store, mut manager, id) = restored_agent();
+        let dir = tempfile::tempdir().unwrap();
+        manager.turns = crate::agent::turn::Turns::at(dir.path().join("privado"));
+        let dir = dir.path().join("pasta");
+        std::fs::create_dir(&dir).unwrap();
+        let begin = |at| {
+            let bound = std::time::Duration::from_secs(120);
+            manager.turns.begin(id, dir.clone(), bound, at, None, None)
+        };
+        assert_eq!(manager.get(id).unwrap().turn_started_at_ms, None);
+
+        assert!(begin(1_000).is_none());
+        manager.apply_turn_open(id).unwrap();
+        assert_eq!(manager.get(id).unwrap().turn_started_at_ms, Some(1_000));
+
+        // Prompt novo antes do resumo do anterior: o começo é o do novo.
+        assert!(begin(5_000).is_some());
+        let s = manager.apply_turn_open(id).expect("começo trocou");
+        assert_eq!(s.turn_started_at_ms, Some(5_000));
+        manager.apply_last_turn(id, turn_digest(1, "primeiro"));
+        assert_eq!(manager.get(id).unwrap().turn_started_at_ms, Some(5_000));
+
+        manager.turns.end(id).expect("turno aberto");
+        manager.apply_last_turn(id, turn_digest(2, "segundo"));
+        let s = manager.get(id).unwrap();
+        assert_eq!((s.turn_open, s.turn_started_at_ms), (false, None));
     }
 
     /// A prova que dá sentido ao campo separado: o palpite não alcança o fato.

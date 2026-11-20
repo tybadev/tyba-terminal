@@ -150,6 +150,14 @@ describe("resumo do turno chega à pílula", () => {
     expect(merged?.turn_open).toBe(false);
   });
 
+  test("começo do turno trocado é novidade", () => {
+    const merged = mergeSessionUpdate(
+      shell({ turn_open: true, turn_started_at_ms: 1_000 }),
+      shell({ turn_open: true, turn_started_at_ms: 5_000 }),
+    );
+    expect(merged?.turn_started_at_ms).toBe(5_000);
+  });
+
   test("turno novo abrindo é novidade", () => {
     const last_turn = digest();
     const merged = mergeSessionUpdate(

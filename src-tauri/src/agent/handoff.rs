@@ -728,6 +728,7 @@ mod tests {
             last_turn: None,
             turn_open: false,
             last_words: None,
+            turn_started_at_ms: None,
             shell_resume_offer: false,
             agent_conversation_cwd: None,
             owner: Default::default(),

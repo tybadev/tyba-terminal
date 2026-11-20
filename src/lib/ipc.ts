@@ -112,6 +112,9 @@ export interface Session {
   /** Há um turno aberto: o prompt chegou e o resumo dele ainda não. Só
    * memória no core. */
   turn_open?: boolean;
+  /** Quando o turno aberto começou (ms desde a época). Anda com
+   * `turn_open`; o front só conta o tempo a partir dele. Só memória no core. */
+  turn_started_at_ms?: number | null;
   /** Shell restaurado com uma conversa do Claude que ainda dá para retomar.
    * Decidido pelo core no boot; só em memória. */
   shell_resume_offer?: boolean;

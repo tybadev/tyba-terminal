@@ -378,6 +378,7 @@ import {
   isFinishedStatus,
   mergeSessionUpdate,
   statusVisual,
+  turnElapsedMs,
 } from "./lib/sessionStatus";
 import {
   agentsPanelActionableIds,
@@ -2871,6 +2872,10 @@ export default function App() {
         drawer?.outcome_seen ?? false,
       ),
       turn: pillTurn(activeSession),
+      runningSince:
+        activeSession && turnElapsedMs(activeSession, 0) !== null
+          ? (activeSession.turn_started_at_ms ?? null)
+          : null,
       open,
       onToggle: () =>
         void (

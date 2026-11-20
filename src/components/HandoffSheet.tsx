@@ -2,7 +2,9 @@ import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ArrowLineRight, Folder, Lock, Sparkle, Warning, X } from "@phosphor-icons/react";
 
+import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
+import { Textarea } from "@/components/ui/textarea";
 import { PLATE, PLATE_FLOAT, PLATE_LINE } from "./plate";
 import { ClaudeIcon } from "./icons/ClaudeIcon";
 import { OpenAIIcon } from "./icons/OpenAIIcon";
@@ -126,18 +128,19 @@ export function HandoffSheetBody({
     <>
       <div className="flex items-center gap-2 pb-1 pl-4 pr-3 pt-3">
         <ArrowLineRight size={15} className="shrink-0 text-tyba-blue" />
-        <DialogTitle className="text-[13px] font-medium leading-normal text-tyba-text">
+        <DialogTitle className="text-[14px] font-semibold leading-normal text-tyba-text">
           {t("handoffTitle")}
         </DialogTitle>
         <span className="flex-1" />
-        <button
+        <Button
           type="button"
+          variant="ghost"
+          size="icon-xs"
           aria-label={t("cancel")}
           onClick={onCancel}
-          className="inline-flex size-6 shrink-0 items-center justify-center rounded-[5px] text-tyba-text-faint hover:text-tyba-text"
         >
           <X size={13} />
-        </button>
+        </Button>
       </div>
       <DialogDescription asChild>
         <div className="px-4 pb-2.5 text-[11px] text-tyba-text-faint">
@@ -157,7 +160,7 @@ export function HandoffSheetBody({
       </DialogDescription>
 
       <div className="flex min-h-0 flex-col gap-2.5 px-4 pb-3">
-        <div className="text-[10.5px] font-medium uppercase tracking-[.12em] text-tyba-text-faint">
+        <div className="tyba-label">
           {t("handoffPickAgent")}
         </div>
         <div role="radiogroup" className="flex gap-1.5">
@@ -171,24 +174,24 @@ export function HandoffSheetBody({
                 aria-checked={on}
                 disabled={!x.available}
                 onClick={() => onTarget(x.agent)}
-                className={`flex h-9 flex-1 items-center gap-[9px] rounded-[7px] px-2.5 text-[12.5px] ${
+                className={`flex h-10 flex-1 items-center gap-[9px] rounded-[10px] px-3 text-[13px] font-medium outline-none transition-colors focus-visible:[box-shadow:var(--tyba-focus-ring)] ${
                   on
-                    ? "bg-tyba-green/[.06] text-tyba-text shadow-[inset_0_0_0_1px_var(--tyba-green)]"
+                    ? "tyba-pill-on text-tyba-text"
                     : x.available
-                      ? "text-tyba-text shadow-[inset_0_0_0_1px_var(--tyba-border)]"
-                      : "text-tyba-text-ghost shadow-[inset_0_0_0_1px_var(--tyba-border)]"
+                      ? "text-tyba-text shadow-[inset_0_0_0_1px_var(--tyba-line)] hover:bg-tyba-hover"
+                      : "text-tyba-text-ghost shadow-[inset_0_0_0_1px_var(--tyba-line)]"
                 }`}
               >
                 <span
                   className={`size-3 shrink-0 rounded-full ${
                     on
-                      ? "shadow-[inset_0_0_0_4px_var(--tyba-green)]"
-                      : "shadow-[inset_0_0_0_1px_var(--tyba-border-strong)]"
+                      ? "shadow-[inset_0_0_0_4px_var(--primary)]"
+                      : "shadow-[inset_0_0_0_1px_var(--tyba-control-line)]"
                   }`}
                 />
                 <HandoffAgentIcon agent={x.agent} size={15} />
                 {x.label}
-                <span className="ml-auto text-[11px] text-tyba-text-faint">
+                <span className="ml-auto text-[11px] font-normal text-tyba-text-faint">
                   {x.available ? t("handoffInstalled") : x.reason}
                 </span>
               </button>
@@ -196,7 +199,7 @@ export function HandoffSheetBody({
           })}
         </div>
 
-        <div className="flex items-center gap-2 text-[10.5px] font-medium uppercase tracking-[.12em] text-tyba-text-faint">
+        <div className="tyba-label flex items-center gap-2">
           {t("handoffPreviewLabel")}
           <span className="ml-auto inline-flex items-center gap-[5px] font-normal normal-case tracking-normal">
             <Lock size={11} />
@@ -206,7 +209,7 @@ export function HandoffSheetBody({
             {t("handoffReadOnly")}
           </span>
         </div>
-        <div className="flex min-h-0 flex-col rounded-[6px] bg-tyba-text/[.02] font-mono text-[12px] leading-[19px] shadow-[inset_0_0_0_1px_var(--tyba-border)]">
+        <div className="flex min-h-0 flex-col overflow-hidden rounded-[10px] bg-tyba-paper-solid font-mono text-[12px] leading-[19px] shadow-[inset_0_0_0_1px_var(--tyba-line)]">
           {error ? (
             <div
               role="alert"
@@ -238,20 +241,17 @@ export function HandoffSheetBody({
               ))}
             </pre>
           )}
-          <div className="px-3 pb-3 pt-2.5 shadow-[inset_0_1px_0_var(--tyba-border-soft)]">
-            <label htmlFor="handoff-note" className="mb-1.5 block font-medium text-tyba-text">
+          <div className="px-3 pb-3 pt-2.5 shadow-[inset_0_1px_0_var(--tyba-line)]">
+            <label htmlFor="handoff-note" className="mb-1.5 block font-semibold text-tyba-text">
               {t("handoffNoteLabel")}
             </label>
-            <textarea
+            <Textarea
               id="handoff-note"
               autoFocus
-              autoCorrect="off"
-              autoCapitalize="off"
-              spellCheck={false}
               maxLength={NOTE_MAX}
               value={note}
               onChange={(e) => onNote(e.target.value)}
-              className="block min-h-[46px] w-full resize-none rounded-[5px] bg-tyba-surface px-[9px] py-1.5 text-tyba-text outline-none shadow-[inset_0_0_0_1px_var(--tyba-border-field)] focus:shadow-[inset_0_0_0_1px_var(--tyba-green)]"
+              className="block min-h-[46px] resize-none px-3 py-2 text-[12px]"
             />
             {sent !== null && (
               <div
@@ -265,7 +265,7 @@ export function HandoffSheetBody({
         </div>
       </div>
 
-      <div className="flex items-center gap-2 pb-3 pl-4 pr-3 pt-2.5 shadow-[inset_0_1px_0_var(--tyba-border-soft)]">
+      <div className="flex items-center gap-2 pb-3 pl-4 pr-3 pt-2.5 shadow-[inset_0_1px_0_var(--tyba-line)]">
         <div className="flex min-w-0 flex-col gap-[3px] text-[11px]">
           <span className="flex items-center gap-1.5 whitespace-nowrap text-tyba-amber">
             <Warning size={12} />
@@ -279,22 +279,18 @@ export function HandoffSheetBody({
           )}
         </div>
         <span className="flex-1" />
-        <button
-          type="button"
-          onClick={onCancel}
-          className="inline-flex h-7 items-center gap-1.5 whitespace-nowrap rounded-[6px] px-3 text-[12px] text-tyba-text shadow-[inset_0_0_0_1px_var(--tyba-border-field)]"
-        >
+        <Button type="button" variant="outline" size="sm" onClick={onCancel}>
           {t("cancel")}
-        </button>
-        <button
+        </Button>
+        <Button
           type="button"
+          size="sm"
           disabled={!chosen || !preview || Boolean(error) || opening}
           onClick={onOpen}
-          className="inline-flex h-7 items-center gap-1.5 whitespace-nowrap rounded-[6px] bg-tyba-primary px-3 text-[12px] font-medium text-tyba-text-inverse disabled:opacity-50"
         >
-          {chosen && <HandoffAgentIcon agent={chosen.agent} size={13} />}
+          {chosen && <HandoffAgentIcon agent={chosen.agent} size={15} />}
           {noAgent ? t("handoffNoAgent") : t("handoffOpenIn", { agent: chosen?.label ?? "" })}
-        </button>
+        </Button>
       </div>
     </>
   );
