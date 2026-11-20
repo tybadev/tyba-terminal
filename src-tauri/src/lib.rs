@@ -3,6 +3,7 @@ pub mod app_icon;
 pub mod approvals;
 pub mod blocks;
 pub mod boot;
+pub mod cli;
 pub mod completion;
 pub mod config;
 pub mod docker;
@@ -6070,7 +6071,7 @@ fn container_command(
     host: Option<&str>,
 ) -> (Vec<String>, String) {
     let (args, title) = match tab {
-        docker::ContainerTab::Logs | docker::ContainerTab::ScreenLogs => (
+        docker::ContainerTab::Logs => (
             vec![
                 "logs".to_string(),
                 "-f".to_string(),
@@ -6734,29 +6735,7 @@ async fn docker_screen_shell(
     .await?
 }
 
-/// Os logs (`docker logs -f`) de container REMOTO dentro da tela de Docker:
-/// mesmo esquema do shell da tela — sem aba, reaproveitado enquanto vivo,
-/// morre quando a tela fecha. O local usa o visor estruturado.
-#[tauri::command]
-async fn docker_screen_logs(
-    app: AppHandle,
-    container_id: String,
-    host: Option<String>,
-) -> Result<SessionId, String> {
-    off_main(app, move |app, state| {
-        screen_container_session(
-            app,
-            &state,
-            &container_id,
-            host.as_deref(),
-            docker::ContainerTab::ScreenLogs,
-        )
-    })
-    .await?
-}
-
-/// Sessão de terminal sem aba que mora na tela de Docker (`ScreenShell` ou
-/// `ScreenLogs`).
+/// Sessão de terminal sem aba que mora na tela de Docker (`ScreenShell`).
 fn screen_container_session(
     app: &AppHandle,
     state: &State<'_, AppState>,
@@ -6954,12 +6933,14 @@ async fn container_open_tab(
 }
 
 /// Liga (ou reaproveita) o `docker logs -f` do container e devolve o que já
-/// foi lido. As linhas novas chegam em lote por `docker-logs://<id>`.
+/// foi lido. As linhas novas chegam em lote por `docker-logs://<id>`. Com
+/// `host`, o seguidor fala com o docker do servidor (`DOCKER_HOST=ssh://`).
 #[tauri::command]
 async fn docker_logs_start(
     app: AppHandle,
     state: State<'_, AppState>,
     container_id: String,
+    host: Option<String>,
 ) -> Result<docker::logs::LogsSnapshot, String> {
     // Aba já fechada (corrida com o fechamento): não liga seguidor que nenhum
     // `emit_layout` voltaria a soltar.
@@ -6970,20 +6951,25 @@ async fn docker_logs_start(
     let logs = Arc::clone(&state.docker_logs);
     docker_blocking(move || {
         // Sem inspect (container removido) ainda dá para ler o que houver;
-        // só os links de arquivo ficam desabilitados.
-        let mapping = docker
-            .detail(&container_id, None)
-            .map(|d| docker::logs::PathMapping {
-                workdir: d.workdir,
-                mounts: d.mounts,
-            })
-            .unwrap_or_default();
+        // só os links de arquivo ficam desabilitados. No remoto o mount aponta
+        // para o disco do servidor, não deste Mac: nem se pergunta (uma ida a
+        // menos), e os links de stack trace ficam de fora.
+        let mapping = match host {
+            Some(_) => docker::logs::PathMapping::default(),
+            None => docker
+                .detail(&container_id, None)
+                .map(|d| docker::logs::PathMapping {
+                    workdir: d.workdir,
+                    mounts: d.mounts,
+                })
+                .unwrap_or_default(),
+        };
         let event = format!("docker-logs://{container_id}");
         let emit: docker::logs::Emit = Arc::new(move |batch| {
             let _ = app.emit(&event, batch);
         });
         logs.start(&container_id, mapping, emit, |since| {
-            docker::spawn_logs_follow(&container_id, since.as_deref(), None)
+            docker::spawn_logs_follow(&container_id, since.as_deref(), host.as_deref())
                 .map_err(|e| e.to_string())
         })
     })
@@ -7033,8 +7019,8 @@ async fn docker_container_action(
         docker
             .action(&container_id, action, host.as_deref())
             .map_err(|e| e.to_string())?;
-        if action == docker::ContainerAction::Restart && host.is_none() {
-            reopen_logs_after_restart(&logs, &container_id);
+        if action == docker::ContainerAction::Restart {
+            reopen_logs_after_restart(&logs, &container_id, host.as_deref());
         }
         Ok(())
     })
@@ -7042,11 +7028,14 @@ async fn docker_container_action(
 }
 
 /// O restart derruba o `docker logs -f` do container (o stop fecha o stream):
-/// sem reabrir, a aba de logs para de receber. Só local — é o único que tem
-/// seguidor estruturado.
-fn reopen_logs_after_restart(logs: &docker::logs::LogsManager, container_id: &str) {
+/// sem reabrir, a aba de logs para de receber. Reabre no mesmo alvo.
+fn reopen_logs_after_restart(
+    logs: &docker::logs::LogsManager,
+    container_id: &str,
+    host: Option<&str>,
+) {
     let _ = logs.restart(container_id, |since| {
-        docker::spawn_logs_follow(container_id, since.as_deref(), None).map_err(|e| e.to_string())
+        docker::spawn_logs_follow(container_id, since.as_deref(), host).map_err(|e| e.to_string())
     });
 }
 
@@ -7055,11 +7044,12 @@ async fn docker_fs_list(
     state: State<'_, AppState>,
     container_id: String,
     path: String,
+    host: Option<String>,
 ) -> Result<Vec<docker::FsEntry>, String> {
     let docker = Arc::clone(&state.docker);
     docker_blocking(move || {
         docker
-            .fs_list(&container_id, &path, None)
+            .fs_list(&container_id, &path, host.as_deref())
             .map_err(|e| e.to_string())
     })
     .await?
@@ -7070,11 +7060,12 @@ async fn docker_fs_read(
     state: State<'_, AppState>,
     container_id: String,
     path: String,
+    host: Option<String>,
 ) -> Result<docker::FsFile, String> {
     let docker = Arc::clone(&state.docker);
     docker_blocking(move || {
         docker
-            .fs_read(&container_id, &path, None)
+            .fs_read(&container_id, &path, host.as_deref())
             .map_err(|e| e.to_string())
     })
     .await?
@@ -7401,8 +7392,8 @@ async fn docker_container_op(
         docker
             .container_op(&container_id, op, host.as_deref())
             .map_err(|e| e.to_string())?;
-        if op == docker::ContainerOp::Restart && host.is_none() {
-            reopen_logs_after_restart(&logs, &container_id);
+        if op == docker::ContainerOp::Restart {
+            reopen_logs_after_restart(&logs, &container_id, host.as_deref());
         }
         Ok(())
     })
@@ -10687,6 +10678,32 @@ pub fn run() {
                 }
             }
 
+            // O socket de controle da CLI (`tyba ls`), irmão do canal acima.
+            // Cada pedido relê o estado na hora. Falha em bind não é fatal:
+            // a CLI sai com 4 (TYBA não está aberto) e o app segue.
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            {
+                let control_app = app.handle().clone();
+                let control_handler: cli::server::ControlHandler = Arc::new(move |request| {
+                    let state = control_app.state::<AppState>();
+                    cli::handle(
+                        &request,
+                        &state.layout.state(),
+                        &state.sessions.list(),
+                        |id| state.pty_pool.scrollback_lines(id),
+                    )
+                });
+                match cli::server::ControlServer::bind(
+                    &cli::resolve_control_socket_path(),
+                    control_handler,
+                ) {
+                    Ok(server) => {
+                        app.manage(server);
+                    }
+                    Err(e) => eprintln!("[tyba] socket de controle da CLI não ligou ({e})"),
+                }
+            }
+
             spawn_agents_panel_closer(app.handle().clone());
 
             // Fim de subagente async detectado por arquivo desce a sessão a Idle
@@ -10971,7 +10988,6 @@ pub fn run() {
             docker_screen_select,
             docker_screen_pane,
             docker_screen_shell,
-            docker_screen_logs,
             docker_list_images,
             docker_list_volumes,
             set_side_view_expanded,

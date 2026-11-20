@@ -4653,8 +4653,9 @@ impl<H: RunHost> Runs<H> {
         if agent {
             if n.outputs.contains_key(&EdgeKind::Context) {
                 unknown.push(
-                    "text e diff são do primeiro turno do agente; os turnos seguintes o \
-                     TYBA não guarda (peça o resumo a ele por orbit_send, se houver conversa)",
+                    "text é do último turno fechado do agente; diff é do primeiro turno \
+                     (o dos turnos seguintes o TYBA não guarda: peça a ele por orbit_send, \
+                     se houver conversa)",
                 );
                 if diff.is_none() {
                     unknown.push("sem diff: a pasta do agente não é um repositório git");
@@ -6540,6 +6541,8 @@ impl RunHost for TauriHost {
             servers: Arc::clone(&state.hook_servers),
             subagents: Arc::clone(&state.subagents),
         };
+        // O `context.md` que o fim de cada turno regrava (ver `agent_outputs`).
+        let context = launch.out_dir.join("context.md");
         let spec = crate::agent::session::FreeAgentSpec {
             runner: super::agent::runner_kind(launch.runner),
             cwd: launch.cwd,
@@ -6576,6 +6579,7 @@ impl RunHost for TauriHost {
             on_turn,
             on_exit,
             on_state,
+            Some(context),
         );
         Ok(session.id.to_string())
     }

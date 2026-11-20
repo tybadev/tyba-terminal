@@ -344,13 +344,16 @@ fn turn_from_tail(tail: &TurnTail) -> AgentTurn {
 /// continua vivo depois; isto só avisa o Run. Com `on_exit` (o orquestrador),
 /// segue olhando a sessão pelo mesmo estado e chama `on_exit` quando ela sai.
 /// `on_state` recebe o estado a cada poll (o turno fechado só depois do
-/// `on_turn`): é o que entrega a fila da conversa.
+/// `on_turn`): é o que entrega a fila da conversa. Com `context` (o
+/// `context.md` que o `on_turn` grava), cada turno seguinte que fecha com
+/// fala o regrava: a ligação de contexto leva o último turno, não o primeiro.
 pub fn watch_first_turn(
     status: impl Fn() -> Option<SessionStatus> + Send + 'static,
     tail: SharedTurnTail,
     on_turn: Box<dyn FnOnce(AgentTurn) + Send>,
     on_exit: Option<Box<dyn FnOnce() + Send>>,
     on_state: OnState,
+    context: Option<PathBuf>,
 ) {
     std::thread::spawn(move || {
         loop {
@@ -372,11 +375,23 @@ pub fn watch_first_turn(
             }
         }
         let Some(on_exit) = on_exit else { return };
+        let mut ended = true;
         loop {
             let status = status();
-            if turn_state(status.as_ref()) == TurnState::Gone {
+            let state = turn_state(status.as_ref());
+            if state == TurnState::Gone {
                 break;
             }
+            if state == TurnState::Ended && !ended {
+                std::thread::sleep(TURN_SETTLE);
+                let tail = tail.lock().expect("turn tail lock").clone();
+                if let (Some(path), AgentTurn::Done { text: Some(text) }) =
+                    (&context, turn_from_tail(&tail))
+                {
+                    let _ = std::fs::write(path, context_markdown(&text));
+                }
+            }
+            ended = state == TurnState::Ended;
             if let Some(s) = peer_state(status.as_ref()) {
                 on_state(s, waiting_you(status.as_ref()));
             }
@@ -932,10 +947,65 @@ mod tests {
             Box::new(move |turn| turn_tx.send(format!("{turn:?}")).unwrap()),
             Some(Box::new(move || tx.send("saiu".into()).unwrap())),
             Box::new(|_, _| {}),
+            None,
         );
         let wait = Duration::from_secs(10);
         assert!(rx.recv_timeout(wait).unwrap().starts_with("Done"));
         assert_eq!(rx.recv_timeout(wait).unwrap(), "saiu");
+    }
+
+    #[test]
+    fn context_carries_the_last_turn_not_the_first() {
+        use std::sync::{mpsc, Arc, Mutex};
+        // Fixture sintética: dois turnos, cada um com a sua fala final.
+        let dir = tempfile::tempdir().unwrap();
+        let context = dir.path().join("context.md");
+        let tail = Arc::new(Mutex::new(TurnTail {
+            last_message: Some("resposta do primeiro turno".into()),
+            ..TurnTail::default()
+        }));
+        let states = Arc::new(Mutex::new(vec![
+            None,
+            Some(SessionStatus::Idle { summary: None }),
+            Some(SessionStatus::Running),
+            Some(SessionStatus::Idle { summary: None }),
+        ]));
+        let status = {
+            let (states, tail) = (Arc::clone(&states), Arc::clone(&tail));
+            move || {
+                let mut s = states.lock().unwrap();
+                let next = if s.len() > 1 {
+                    s.pop().unwrap()
+                } else {
+                    s[0].clone()
+                };
+                // O segundo turno roda e fecha com outra fala.
+                if next == Some(SessionStatus::Running) {
+                    tail.lock().unwrap().last_message = Some("resposta do último turno".into());
+                }
+                next
+            }
+        };
+        let (tx, rx) = mpsc::channel();
+        let first = context.clone();
+        watch_first_turn(
+            status,
+            tail,
+            // O que o `agent_outputs` faz no fim do primeiro turno.
+            Box::new(move |turn| {
+                if let AgentTurn::Done { text: Some(t) } = turn {
+                    std::fs::write(&first, context_markdown(&t)).unwrap();
+                }
+            }),
+            Some(Box::new(move || tx.send(()).unwrap())),
+            Box::new(|_, _| {}),
+            Some(context.clone()),
+        );
+        rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&context).unwrap(),
+            "resposta do último turno"
+        );
     }
 
     fn git(dir: &Path, args: &[&str]) {
