@@ -9,17 +9,23 @@ export interface SegmentOption<T extends string> {
   disabled?: boolean;
 }
 
-// Segmentado do Muriki (`SegmentedControl`): trilho em pílula com 4px de
-// folga, opções de 30px em 13px/600 e o knob branco que desliza para a
-// opção acesa com a mola de 320ms. O knob é a placa (`.tyba-pill-on`), então
-// os outros temas ganham a deles.
+// Segmentado do Muriki (`SegmentedControl`, `mk-glass mk-seg`): trilho de
+// vidro em pílula com a aresta branca e 4px de folga, opções de 30px em
+// 13px/600 e o knob branco que desliza para a opção acesa com a mola de
+// 320ms. O vidro, a aresta e a mola são do claro do TYBA (`--tyba-mk-*`);
+// nos outros temas o trilho fica na tinta de 6%, sem aresta, e a mola em
+// 300ms. O knob é a placa (`.tyba-pill-on`), então cada tema ganha a sua.
+// `tone="tint"`: o trilho de tinta das telas de Git e Docker (o quadro tira
+// o vidro dele ali), com a mesma medida.
 export function SegmentedControl<T extends string>({
   value,
   options,
   onChange,
   className,
+  tone = "glass",
   "aria-label": ariaLabel,
 }: {
+  tone?: "glass" | "tint";
   value: T;
   options: SegmentOption<T>[];
   onChange: (value: T) => void;
@@ -43,14 +49,17 @@ export function SegmentedControl<T extends string>({
       role="radiogroup"
       aria-label={ariaLabel}
       className={cn(
-        "relative inline-flex shrink-0 rounded-full bg-tyba-text/[.06] p-1",
+        "relative inline-flex shrink-0 rounded-full border-[length:var(--tyba-mk-edge-w,0px)] bg-tyba-text/[.06] p-1",
+        tone === "glass"
+          ? "tyba-mk-glass border-[var(--tyba-mk-glass-edge,transparent)]"
+          : "border-transparent",
         className,
       )}
     >
       {knob && (
         <span
           aria-hidden
-          className="tyba-pill-on absolute top-1 bottom-1 left-0 rounded-full transition-[transform,width] duration-300 ease-[cubic-bezier(.3,1.4,.5,1)] motion-reduce:transition-none"
+          className="tyba-pill-on absolute top-1 bottom-1 left-0 rounded-full transition-[transform,width] duration-[var(--tyba-mk-spring,300ms)] ease-[cubic-bezier(.3,1.4,.5,1)] motion-reduce:transition-none"
           style={{ width: knob.w, transform: `translateX(${knob.x}px)` }}
         />
       )}

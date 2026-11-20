@@ -293,6 +293,7 @@ export function PrListView({
       <header className="flex h-[52px] shrink-0 items-center gap-3 whitespace-nowrap shadow-[inset_0_-1px_0_var(--tyba-line)] px-[18px] text-[12px] text-tyba-text-muted">
         {/* Quadro PRs: o filtro é o segmentado do Muriki, com a contagem no rótulo. */}
         <SegmentedControl
+          tone="tint"
           aria-label={t("notifFilter")}
           value={filter}
           onChange={(key) => {

@@ -1175,11 +1175,12 @@ samp {
   box-shadow: var(--tyba-edge), var(--tyba-shadow-md);
 }
 
-/* Label de seção em caixa alta (estilo do brand board) */
+/* Label de seção em caixa alta (estilo do brand board). No claro do TYBA, o
+   do Muriki: 11px, 600, .04em. */
 .tyba-label {
-  font-size: var(--tyba-text-xs);
-  font-weight: 500;
-  letter-spacing: var(--tyba-tracking-wide);
+  font-size: var(--tyba-mk-label-size, var(--tyba-text-xs));
+  font-weight: var(--tyba-mk-label-weight, 500);
+  letter-spacing: var(--tyba-mk-label-tracking, var(--tyba-tracking-wide));
   text-transform: uppercase;
   color: var(--tyba-text-faint);
 }
@@ -1883,6 +1884,32 @@ html {
   --tyba-mk-filter-sm-sat: blur(12px) saturate(180%);
   --tyba-mk-filter-md: blur(24px) saturate(180%);
   --tyba-mk-filter-lg: blur(40px) saturate(180%);
+  /* Controles do Muriki (src/components/ui), também só aqui. */
+  --tyba-mk-brand-glass: rgba(17, 82, 210, 0.84);
+  --tyba-mk-brand-glass-hover: rgba(13, 69, 181, 0.9);
+  --tyba-mk-brand-edge: rgba(255, 255, 255, 0.28);
+  --tyba-mk-shadow-button: inset 0 1px 0 rgba(255, 255, 255, 0.2), 0 1px 2px rgba(10, 24, 48, 0.1);
+  --tyba-mk-shadow-button-glass: inset 0 1px 0 rgba(255, 255, 255, 0.7), 0 1px 2px rgba(10, 24, 48, 0.04);
+  --tyba-mk-shadow-chip: inset 0 0 0 1px rgba(255, 255, 255, 0.9), var(--tyba-mk-shadow-button-glass);
+  --tyba-mk-spring: 320ms;
+  --tyba-mk-btn-px: 20px;
+  --tyba-mk-btn-px-sm: 16px;
+  --tyba-mk-btn-min: 88px;
+  --tyba-mk-btn-min-sm: 72px;
+  --tyba-mk-btn-gap-sm: 8px;
+  --tyba-mk-edge-w: 1px;
+  --tyba-mk-field-h: 40px;
+  --tyba-mk-field-pl: 16px;
+  --tyba-mk-field-size: 14px;
+  --tyba-mk-knob-press: 28px;
+  --tyba-mk-knob-press-x: 15px;
+  /* Rótulo em caixa alta do Muriki (`.mk-sb-label`, `.q-lbl`): 11/600/.04em. */
+  --tyba-mk-label-size: 11px;
+  --tyba-mk-label-weight: 600;
+  --tyba-mk-label-tracking: 0.04em;
+  /* Foco do campo (`.mk-input:focus-within`): anel de 2px da marca e o halo
+     de 5px no azul suave. */
+  --tyba-field-focus: 0 0 0 2px var(--tyba-blue), 0 0 0 5px var(--tyba-brand-soft);
   /* Placa (diálogo, gaveta, toast) = vidro `is-float` do Muriki. */
   --tyba-plate-shadow: var(--tyba-mk-shadow-float);
   /* Controles do quadro de componentes do Muriki (Main), literais: campo e
@@ -1972,6 +1999,23 @@ html {
 [data-theme='light']:not([data-imported]) .tyba-mk-glass.is-deep {
   -webkit-backdrop-filter: var(--tyba-mk-filter-lg);
   backdrop-filter: var(--tyba-mk-filter-lg);
+}
+/* O desfoque dos controles do Muriki (primário, botão de vidro, campo,
+   chip). Em camada, para utilitária da peça vencer; fora do claro do TYBA o
+   token não existe e fica sem desfoque, como sempre foi. */
+@layer components {
+  .tyba-mk-filter-sm {
+    -webkit-backdrop-filter: var(--tyba-mk-filter-sm, none);
+    backdrop-filter: var(--tyba-mk-filter-sm, none);
+  }
+  .tyba-mk-filter-sm-sat {
+    -webkit-backdrop-filter: var(--tyba-mk-filter-sm-sat, none);
+    backdrop-filter: var(--tyba-mk-filter-sm-sat, none);
+  }
+  .tyba-mk-filter-md {
+    -webkit-backdrop-filter: var(--tyba-mk-filter-md, none);
+    backdrop-filter: var(--tyba-mk-filter-md, none);
+  }
 }
 /* Header (quadro Header, `.hd`): o vidro com o fio de baixo. */
 [data-theme='light']:not([data-imported]) .tyba-window .tyba-bar.tyba-mk-glass {

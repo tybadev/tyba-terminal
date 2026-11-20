@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Info, PenNib, Plus, X } from "@phosphor-icons/react";
 
+import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { HostFormDialog, type HostDialogState } from "../HostFormDialog";
 import {
@@ -155,7 +156,7 @@ export function SshSection() {
         );
       })}
       <SettingLine hint={t("cfgSshDenyHint")}>
-        <input
+        <Input
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => {
@@ -163,10 +164,7 @@ export function SshSection() {
           }}
           placeholder={t("sshDeniedPlaceholder")}
           aria-label={t("sshDeniedPlaceholder")}
-          spellCheck={false}
-          autoCorrect="off"
-          autoCapitalize="off"
-          className={`${SETTING_FIELD} px-3 font-mono text-[12.5px] text-tyba-text outline-none placeholder:text-tyba-text-ghost focus:shadow-[0_0_0_1px_var(--tyba-border-strong)]`}
+          className={`${SETTING_FIELD} pl-[var(--tyba-mk-field-pl,12px)] font-mono text-[12.5px] placeholder:text-tyba-text-ghost`}
         />
         <SettingButton icon={<Plus size={14} />} onClick={add}>
           {t("cfgSshDenyAdd")}

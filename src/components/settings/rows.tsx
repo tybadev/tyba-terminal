@@ -1,5 +1,8 @@
 import { Lock } from "@phosphor-icons/react";
 
+import { Button } from "@/components/ui/button";
+import { SegmentedControl } from "@/components/ui/segmented";
+
 /**
  * As peças das Configurações, no desenho do quadro "Configurações (aprovada)":
  * grupo = título curto em caixa normal, sem caixa em volta; linha = nome e
@@ -103,7 +106,7 @@ export function SettingFixed({ children }: { children: React.ReactNode }) {
   );
 }
 
-/** Controle segmentado do quadro: trilho de tinta, placa acesa no escolhido. */
+/** Controle segmentado do quadro: o `SegmentedControl` do Muriki. */
 export function SettingSegment<T extends string>({
   label,
   options,
@@ -116,38 +119,27 @@ export function SettingSegment<T extends string>({
   onChange: (value: T) => void;
 }) {
   return (
-    <div role="radiogroup" aria-label={label} className="tyba-segment rounded-full! p-1!">
-      {options.map((o) => (
-        <button
-          key={o.value}
-          type="button"
-          role="radio"
-          aria-checked={o.value === value}
-          onClick={() => onChange(o.value)}
-          className={`flex h-[30px] items-center gap-2 rounded-full px-4 text-[13px] font-semibold whitespace-nowrap transition-colors focus-visible:outline-none focus-visible:[box-shadow:var(--tyba-focus-ring)] ${
-            o.value === value ? "tyba-pill-on text-tyba-text" : "text-tyba-text-muted hover:text-tyba-text"
-          }`}
-        >
-          {o.label}
-        </button>
-      ))}
-    </div>
+    <SegmentedControl<T>
+      aria-label={label}
+      options={options}
+      // Sem escolha ainda (preferência lendo), nenhuma opção acende.
+      value={value as T}
+      onChange={onChange}
+    />
   );
 }
 
 const BUTTON_TONE = {
-  glass:
-    "bg-[var(--tyba-glass-piece)] text-tyba-text shadow-[inset_0_0_0_1px_var(--tyba-line)] hover:bg-tyba-hover",
-  ghost: "text-tyba-text-muted hover:bg-tyba-hover hover:text-tyba-text",
-  danger:
-    "bg-[var(--tyba-glass-piece)] text-tyba-red shadow-[inset_0_0_0_1px_var(--tyba-line)] hover:bg-tyba-red-tint",
+  glass: "outline",
+  ghost: "ghost",
+  danger: "destructive",
 } as const;
 
-/** Botão pequeno do quadro (glass, ghost ou danger), com ícone opcional. */
+/** Botão pequeno do quadro (glass, ghost ou danger), com ícone opcional: o
+ *  `Button` sm do Muriki. */
 export function SettingButton({
   tone = "glass",
   icon,
-  className = "",
   children,
   ...props
 }: React.ComponentProps<"button"> & {
@@ -155,17 +147,15 @@ export function SettingButton({
   icon?: React.ReactNode;
 }) {
   return (
-    <button
-      type="button"
-      {...props}
-      className={`inline-flex h-[34px] shrink-0 items-center justify-center gap-2 rounded-[10px] px-3.5 text-[13px] font-semibold whitespace-nowrap transition-colors outline-none focus-visible:[box-shadow:var(--tyba-focus-ring)] disabled:cursor-not-allowed disabled:opacity-45 ${BUTTON_TONE[tone]} ${className}`}
-    >
+    <Button type="button" size="sm" variant={BUTTON_TONE[tone]} {...props}>
       {icon}
       {children}
-    </button>
+    </Button>
   );
 }
 
-/** Campo de texto e select do quadro: 230px, cantos de 10px, fio fino. */
+/** Campo de texto e select do quadro: o `Input`/`Select` do Muriki com
+ *  230px. No claro do TYBA é o campo de 40px; nos outros temas o fallback
+ *  mantém o campo de 36px com o fio da linha de antes. */
 export const SETTING_FIELD =
-  "h-9 w-[230px] rounded-[10px] border-transparent bg-[var(--tyba-glass-piece)] shadow-[0_0_0_1px_var(--tyba-line)] hover:border-transparent";
+  "h-[var(--tyba-mk-field-h,2.25rem)] w-[230px] rounded-[10px] border-[var(--tyba-mk-glass-edge,transparent)] bg-[var(--tyba-mk-glass-strong,var(--tyba-glass-piece))] shadow-[0_0_0_1px_var(--tyba-line)] hover:border-[var(--tyba-mk-glass-edge,transparent)]";

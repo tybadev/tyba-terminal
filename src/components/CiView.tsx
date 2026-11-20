@@ -198,6 +198,7 @@ export function CiView({
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       <div className="flex h-[46px] shrink-0 items-center gap-3 shadow-[inset_0_-1px_0_var(--tyba-line)] px-[18px] text-[12px]">
         <SegmentedControl
+          tone="tint"
           aria-label={t("ciRunsScope")}
           value={scope}
           onChange={setScope}

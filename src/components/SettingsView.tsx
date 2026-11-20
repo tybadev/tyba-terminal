@@ -28,6 +28,7 @@ import {
 } from "@phosphor-icons/react";
 
 import { Input } from "@/components/ui/input";
+import { cn } from "@/lib/utils";
 import { Select } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -690,10 +691,8 @@ function TextField({
   const [draft, setDraft] = useState(value);
   useEffect(() => setDraft(value), [value]);
   return (
-    <input
-      spellCheck={false}
-      autoCapitalize="off"
-      autoCorrect="off"
+    // O campo do Muriki; no claro, 40px, 0 12 0 16 e 14px como o quadro.
+    <Input
       value={draft}
       placeholder={placeholder}
       aria-label={ariaLabel}
@@ -702,7 +701,11 @@ function TextField({
       onKeyDown={(e) => {
         if (e.key === "Enter") (e.target as HTMLInputElement).blur();
       }}
-      className={`${SETTING_FIELD} px-3 text-[13px] text-tyba-text outline-none placeholder:text-tyba-text-faint focus:shadow-[0_0_0_1px_var(--tyba-border-strong)] ${className}`}
+      className={cn(
+        SETTING_FIELD,
+        "pl-[var(--tyba-mk-field-pl,12px)] text-[length:var(--tyba-mk-field-size,13px)]",
+        className,
+      )}
     />
   );
 }
