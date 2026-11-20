@@ -118,11 +118,12 @@ export function HandoffSheetBody({
   return (
     <div className="flex min-h-0 flex-col gap-3 px-6 pb-[18px] pt-[22px]">
       <div className="flex items-center gap-2.5">
-        <ArrowRight size={18} className="shrink-0 text-tyba-blue" />
+        {/* Quadro renderizado: a seta na cor do texto e o fechar logo depois
+            do título. */}
+        <ArrowRight size={18} className="shrink-0 text-tyba-text" />
         <DialogTitle className="text-[17px] font-bold leading-normal text-tyba-text">
           {t("handoffTitle")}
         </DialogTitle>
-        <span className="flex-1" />
         <Button
           type="button"
           variant="ghost"
@@ -225,7 +226,8 @@ export function HandoffSheetBody({
           <label htmlFor="handoff-note" className="block text-tyba-text">
             {t("handoffNoteLabel")}
           </label>
-          {/* Quadro: Input de uma linha, na sans do campo. */}
+          {/* Quadro: Input de uma linha, na sans do campo, com a largura do
+              campo do Muriki (`.mk-field`, 280px). */}
           <Input
             id="handoff-note"
             autoFocus
@@ -233,7 +235,7 @@ export function HandoffSheetBody({
             value={note}
             onChange={(e) => onNote(e.target.value)}
             placeholder={t("handoffNotePlaceholder")}
-            className="[font-family:var(--tyba-font-ui)]"
+            className="w-[280px] max-w-full [font-family:var(--tyba-font-ui)]"
           />
           {sent !== null && (
             <div
@@ -247,7 +249,7 @@ export function HandoffSheetBody({
       </div>
 
       <div className="flex items-center gap-2.5 pt-1.5">
-        <div className="flex min-w-0 flex-1 flex-col gap-1 text-[12px]">
+        <div className="flex min-w-0 flex-1 flex-col gap-1 text-[12px] leading-[normal]">
           <span className="flex items-center gap-1.5 text-tyba-amber">
             <Warning size={14} className="shrink-0" />
             {t("handoffNoApprovals")}
