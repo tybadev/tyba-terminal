@@ -4,7 +4,7 @@
 
 import { emit } from "@tauri-apps/api/event";
 
-import type { DrawerState, LayoutState, Session, Workspace } from "../lib/ipc";
+import type { DrawerState, LayoutState, RepoSnapshot, Session, Workspace } from "../lib/ipc";
 import {
   BLOCKS,
   HOME,
@@ -28,6 +28,7 @@ import {
   PR_PAGE,
   RUN_LOG,
   SUBAGENTS,
+  TURN_PANEL_GUTTER,
   TURN_PANEL_SRC,
   WORKFLOW_JOBS,
   WORKFLOW_RUNS,
@@ -42,6 +43,8 @@ export const state = {
   font: "mono" as "mono" | "grotesk",
   layout: initialLayout(),
   drawers: [] as DrawerState[],
+  /** Repos a mais no `repo_snapshots`, só no cenário que pede. */
+  snapshots: [] as RepoSnapshot[],
 };
 
 function activeWorkspace(): Workspace {
@@ -88,6 +91,8 @@ const themeState = () => ({
   light: THEMES[1],
 });
 
+const LSP_READY = { state: "ready", server: "typescript", diagnostics: 0, truncated: false };
+
 const handlers: Record<string, Handler> = {
   boot_snapshot: () => ({
     ready: true,
@@ -129,6 +134,7 @@ const handlers: Record<string, Handler> = {
       branch: BRANCH,
       status: { dirty: true, changed: 4, insertions: 42, deletions: 7 },
     },
+    ...state.snapshots,
   ],
   services_session_ports: () => ({}),
   "plugin:path|resolve_directory": () => HOME,
@@ -190,13 +196,16 @@ const handlers: Record<string, Handler> = {
   files_watch_dir: () => null,
   files_unwatch_dir: () => null,
   files_decorations: () => DECORATIONS,
-  files_gutter: () => [],
+  files_gutter: ({ path }) => (String(path).endsWith("TurnPanel.tsx") ? TURN_PANEL_GUTTER : []),
   files_edit_begin: ({ path }) => ({ text: String(path).endsWith(".tsx") ? TURN_PANEL_SRC : "", hash: "preview" }),
-  lsp_status: () => ({ state: "ready", server: "typescript", diagnostics: 0, truncated: false }),
-  lsp_open: () => null,
+  lsp_status: () => LSP_READY,
+  lsp_open: () => LSP_READY,
+  lsp_symbol_path: ({ line }) => (Number(line) >= 39 ? ["TurnPanel"] : []),
+  lsp_code_actions: () => [],
   lsp_open_doc: () => null,
   lsp_close_doc: () => null,
   lsp_did_change: () => null,
+  lsp_change: () => null,
   files_read: () => ({
     kind: "text",
     text: TURN_PANEL_SRC,
@@ -274,7 +283,9 @@ export function setup(opts: {
   files?: Workspace["screens"]["files"];
   /** Campos a mais em sessões só deste cenário (as outras telas não mudam). */
   sessions?: Record<string, Partial<Session>>;
+  snapshots?: RepoSnapshot[];
 }): void {
+  if (opts.snapshots) state.snapshots = opts.snapshots;
   for (const [id, patch] of Object.entries(opts.sessions ?? {})) {
     const target = SESSIONS.find((x) => x.id === id);
     if (target) Object.assign(target, patch);

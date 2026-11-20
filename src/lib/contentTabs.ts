@@ -250,11 +250,11 @@ export function langGlyph(rel: string): { text: string; className: string } {
 
 const LANG_NAMES: Record<string, string> = {
   js: "JavaScript",
-  jsx: "JavaScript",
+  jsx: "JavaScript React",
   mjs: "JavaScript",
   cjs: "JavaScript",
   ts: "TypeScript",
-  tsx: "TypeScript",
+  tsx: "TypeScript React",
   rs: "Rust",
   py: "Python",
   go: "Go",

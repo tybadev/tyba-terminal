@@ -1290,8 +1290,11 @@ const resources = {
       editorQuickFix: "Corrigir: {{title}}",
       editorLspServer: "LSP {{server}}",
       lspReady: "pronto",
+      // CLDR põe o 0 no singular em pt; o quadro Files escreve "0 erros".
+      editorErrors_zero: "0 erros",
       editorErrors_one: "{{count}} erro",
       editorErrors_other: "{{count}} erros",
+      editorWarnings_zero: "0 avisos",
       editorWarnings_one: "{{count}} aviso",
       editorWarnings_other: "{{count}} avisos",
       editorCursor: "Ln {{line}}, Col {{col}}",

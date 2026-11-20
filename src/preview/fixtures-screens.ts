@@ -350,10 +350,52 @@ export const DECORATIONS: FileDecoration[] = [
   { path: "src/components/HandoffSheet.tsx", status: "added" },
   { path: "src/components/TurnPanel.tsx", status: "modified" },
   { path: "src/components/CommandPalette.tsx", status: "modified" },
-  { path: "CLAUDE.md", status: "modified" },
 ];
 
-export const TURN_PANEL_SRC = `import { useState } from "react";
+/**
+ * Fonte de TurnPanel.tsx no quadro Files: 39 linhas antes, para o trecho do
+ * quadro cair nas linhas 40–55. A linha 47 salva tem um espaço no fim que o
+ * cenário apaga (aba com alteração não salva, como no quadro). Sem quebra de
+ * linha no fim: o quadro termina na 55.
+ */
+export const TURN_PANEL_SRC = `import { useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
+
+import { Button } from "@/components/ui/button";
+import { HandoffSheet } from "./HandoffSheet";
+import { TurnSummary } from "./TurnSummary";
+import { useTurnFiles } from "../lib/turn";
+import type { TurnDigest } from "../lib/ipc";
+
+/**
+ * Aba Turno: o resumo do último turno do agente e o botão
+ * "Passar para…", que abre a folha do handoff com a nota.
+ * A nota vai para o agente de destino como prompt, marcada
+ * como vinda de outro agente.
+ */
+interface Props {
+  turn: TurnDigest;
+  /** Chamado quando o handoff sai; a sessão de destino já existe. */
+  onHandoff: (target: string) => void;
+}
+
+/** Turno sem arquivo mudado não oferece handoff. */
+export function canHandoff(turn: TurnDigest): boolean {
+  return turn.diff === "ok" && turn.files_total > 0;
+}
+
+/** Rótulo do botão: o agente de destino quando só há um. */
+export function handoffLabel(targets: string[]): string {
+  return targets.length === 1 ? \`Passar para \${targets[0]}\` : "Passar para…";
+}
+
+function useHandoffTargets(turn: TurnDigest): string[] {
+  const { t } = useTranslation();
+  return useMemo(
+    () => (canHandoff(turn) ? [t("agent.codex")] : []),
+    [turn, t],
+  );
+}
 
 export function TurnPanel({ turn, onHandoff }: Props) {
   const files = useTurnFiles(turn.id);
@@ -362,7 +404,7 @@ export function TurnPanel({ turn, onHandoff }: Props) {
   return (
     <section className="turn">
       <TurnSummary turn={turn} files={files} />
-      <Button onClick={() => setSheet(true)}>
+      <Button onClick={() => setSheet(true)}> 
         {t("turn.handoff")}
       </Button>
       {sheet && (
@@ -370,8 +412,17 @@ export function TurnPanel({ turn, onHandoff }: Props) {
       )}
     </section>
   );
-}
-`;
+}`;
+
+/** Faixas do quadro: 42 e 50–52 novas, 47–48 alteradas. */
+export const TURN_PANEL_GUTTER = [
+  { line: 42, kind: "added" as const },
+  { line: 47, kind: "modified" as const },
+  { line: 48, kind: "modified" as const },
+  { line: 50, kind: "added" as const },
+  { line: 51, kind: "added" as const },
+  { line: 52, kind: "added" as const },
+];
 
 // --- Docker -----------------------------------------------------------------
 
