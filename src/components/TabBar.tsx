@@ -239,9 +239,9 @@ export function TabBar({
           if (passo === 0 || !faixaRef.current) return;
           faixaRef.current.scrollLeft += passo;
         }}
-        // Quadro Header: degrau de 12px de raio e 3px de folga; a aba ativa
-        // é o cartão branco.
-        className={`tyba-segment tyba-sem-barra flex h-[34px] min-w-0 items-stretch overflow-x-auto !rounded-[12px] !p-[3px] ${
+        // Mesmo desenho do segmentado do Docker (dono, 2026-11-20): trilho em
+        // pílula e a aba ativa no knob branco.
+        className={`tyba-sem-barra flex h-9 min-w-0 items-stretch overflow-x-auto rounded-full bg-tyba-text/[.06] p-[3px] ${
           borda.antes ? "tyba-fade-x--ini" : ""
         } ${borda.depois ? "tyba-fade-x--fim" : ""}`}
       >
@@ -262,9 +262,9 @@ export function TabBar({
               const cwd = tabCwd(tab, cwds);
               return cwd ? `${compactPath(cwd)} · ${combo}` : combo;
             })()}
-            className={`group relative flex max-w-40 shrink-0 items-center gap-1.5 rounded-[9px] px-3.5 text-[12.5px] transition-colors ${
+            className={`group relative flex max-w-40 shrink-0 items-center gap-1.5 rounded-full px-4 text-[13px] font-semibold transition-colors ${
               isActive
-                ? "tyba-pill-on font-semibold text-tyba-text"
+                ? "tyba-pill-on text-tyba-text"
                 : "text-tyba-text-muted hover:text-tyba-text"
             }`}
           >
@@ -326,7 +326,7 @@ export function TabBar({
         <DropdownMenu>
           <DropdownMenuTrigger
             aria-label={t("moreTabs", { count: hidden.length })}
-            className="flex shrink-0 items-center gap-1.5 rounded-[9px] px-3.5 text-[12.5px] font-medium text-tyba-text-muted hover:text-tyba-text"
+            className="flex shrink-0 items-center gap-1.5 rounded-full px-4 text-[13px] font-semibold text-tyba-text-muted hover:text-tyba-text"
           >
             {hiddenAttention && (
               <span aria-hidden className="size-1.5 rounded-full bg-tyba-amber" />
