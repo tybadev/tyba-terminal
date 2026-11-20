@@ -7180,6 +7180,21 @@ fn play_notify_sound(name: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// "Testar aviso" das Configurações: um aviso do sistema na hora, para ver
+/// se chega (ou se os Ajustes do Sistema o bloqueiam). O texto vem traduzido
+/// do front e é cortado: é só um teste, não um canal.
+#[tauri::command]
+fn test_notification(app: AppHandle, title: String, body: String) -> Result<(), String> {
+    use tauri_plugin_notification::NotificationExt;
+    let cut = |s: &str| s.chars().take(120).collect::<String>();
+    app.notification()
+        .builder()
+        .title(cut(&title))
+        .body(cut(&body))
+        .show()
+        .map_err(|e| e.to_string())
+}
+
 /// Abre os Ajustes do Sistema em Notificações (endereço fixo, só macOS).
 #[tauri::command]
 async fn open_notification_settings() -> Result<(), String> {
@@ -11222,6 +11237,7 @@ pub fn run() {
             user_config_path,
             preview_notify_sound,
             open_notification_settings,
+            test_notification,
             splash::splash_done,
         ])
         .build(tauri::generate_context!())

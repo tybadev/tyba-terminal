@@ -101,6 +101,7 @@ import {
   userConfigPath,
   dockerAvailable,
   openNotificationSettings,
+  testNotification,
   previewNotifySound,
   updateCheck,
 } from "../lib/ipc";
@@ -532,6 +533,17 @@ function NotifyPrefs() {
       {IS_MAC && (
         <SettingGroup title={t("cfgGroupOutside")}>
           <SettingLine label={t("cfgMacos")} hint={t("cfgMacosHint")}>
+            <SettingButton
+              tone="ghost"
+              icon={<Bell size={16} />}
+              onClick={() =>
+                void testNotification(t("notifyTestTitle"), t("notifyTestBody")).catch((e) =>
+                  toastError(t("notifyTestFailed"), e),
+                )
+              }
+            >
+              {t("notifyTest")}
+            </SettingButton>
             <SettingButton onClick={() => void openNotificationSettings().catch(() => {})}>
               {t("notifyMacosOpen")}
             </SettingButton>

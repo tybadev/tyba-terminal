@@ -113,6 +113,24 @@ const handlers: Record<string, Handler> = {
     return null;
   },
   app_version: () => "2.0.0-preview",
+  // Páginas das Configurações (quadro SettingsSpecimen).
+  list_snippets: () => [
+    { id: "s-deploy", name: "deploy", command: "./scripts/deploy.sh", description: null, tags: [], source: "local" },
+    { id: "s-testes", name: "testes", command: "bun run test --watch", description: null, tags: [], source: "local" },
+  ],
+  list_launch_configs: () => [],
+  command_history_total: () => 0,
+  scan_shell_history_sources: () => [],
+  claude_plugin_status: () => ({ available: true, installed: true, blocked: null }),
+  ssh_typed_prefs: () => ({ detect: true, mode: "ask", denied: [] }),
+  app_build_info: () => ({
+    version: "2.0.0",
+    commit: "a1b2c3d",
+    commit_date: "2026-11-01",
+    os: "macos",
+    arch: "aarch64",
+    webview: "WebKit",
+  }),
   update_check: () => null,
   config_warnings: () => [],
   list_hosts: () => HOSTS,

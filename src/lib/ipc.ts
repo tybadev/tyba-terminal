@@ -1133,6 +1133,9 @@ export const previewNotifySound = (name: string) =>
 
 /** Ajustes do Sistema → Notificações (macOS). */
 export const openNotificationSettings = () => invoke<void>("open_notification_settings");
+/** Um aviso do sistema de teste (Configurações → Notificações). */
+export const testNotification = (title: string, body: string) =>
+  invoke<void>("test_notification", { title, body });
 
 
 /** Onde mora o `config.toml` do usuário; `null` se a pasta foi recusada. */

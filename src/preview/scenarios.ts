@@ -27,6 +27,15 @@ const byText = (selector: string, text: RegExp) =>
 
 const menu = (action: string) => emit("tyba:menu", action);
 
+/** Configurações abertas numa página da lista da direita. */
+async function settingsPage(label: string) {
+  await menu("settings");
+  const item = await waitFor(() =>
+    [...document.querySelectorAll<HTMLElement>('nav[aria-label="Seções"] button')].find((b) => b.textContent?.trim() === label),
+  );
+  item.click();
+}
+
 /** Estado inicial do core falso por cenário (antes do app montar). */
 export const SCENARIO_SETUP: Record<string, Parameters<typeof setup>[0]> = {
   "shell-split": { workspace: "ws-api", tab: "tab-api-split" },
@@ -69,11 +78,13 @@ export const SCENARIOS: Record<string, () => Promise<unknown> | void> = {
     await dockerScreenSelect("ws-api", "c-postgres18");
   },
   settings: () => menu("settings"),
-  "settings-appearance": async () => {
-    await menu("settings");
-    const item = await waitFor(() => byText("button", /^Aparência$/));
-    item.click();
-  },
+  "settings-appearance": () => settingsPage("Aparência"),
+  "settings-terminal": () => settingsPage("Terminal"),
+  "settings-agents": () => settingsPage("Agentes"),
+  "settings-notifications": () => settingsPage("Notificações"),
+  "settings-integrations": () => settingsPage("Integrações"),
+  "settings-security": () => settingsPage("Segurança"),
+  "settings-about": () => settingsPage("Sobre"),
   orbit: () => menu("toggleOrbit"),
   handoff: () => requestHandoff({ sessionId: ID.claudeApi, from: "claude", turn: TURN_HANDOFF }),
   inbox: async () => {
