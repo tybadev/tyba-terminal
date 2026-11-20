@@ -28,11 +28,11 @@ describe("cmPalette", () => {
     }
   });
 
-  it("segue os mockups Editor/EditorClaro — paletas distintas", () => {
+  it("segue os mockups Editor e Files (claro) — paletas distintas", () => {
     expect(cmPalette(true).keyword).toBe("#c792ea");
     expect(cmPalette(true).string).toBe("#a8e05f");
     expect(cmPalette(false).keyword).toBe("#7a4ce8");
-    expect(cmPalette(false).function).toBe("#3b66d6");
+    expect(cmPalette(false).function).toBe("#1152d2");
     expect(cmPalette(true).string).not.toBe(cmPalette(false).string);
   });
 });

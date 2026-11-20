@@ -133,14 +133,16 @@ interface ChipProps {
   stat: LspStatus | null;
   truncated: boolean;
   onRetry: () => void;
+  /** Rodapé da árvore (quadro Files): "LSP typescript · pronto". */
+  readyNote?: boolean;
 }
 
 /** O começo da linha de status do editor: o servidor e em que pé ele está. */
-export function LspStatusChip({ stat, truncated, onRetry }: ChipProps) {
+export function LspStatusChip({ stat, truncated, onRetry, readyNote = false }: ChipProps) {
   const { t } = useTranslation();
   if (!stat || stat.state === "unsupported") return null;
   const dot = (cls: string, pulse = false) => (
-    <span aria-hidden className={`size-1.5 rounded-full ${cls} ${pulse ? "tyba-pulse" : ""}`} />
+    <span aria-hidden className={`size-[7px] rounded-full ${cls} ${pulse ? "tyba-pulse" : ""}`} />
   );
   switch (stat.state) {
     case "ready":
@@ -149,6 +151,7 @@ export function LspStatusChip({ stat, truncated, onRetry }: ChipProps) {
           {dot("bg-tyba-green-fill shadow-[var(--tyba-glow-green)]")}
           {t("editorLspServer", { server: stat.server })}
           {(truncated || stat.truncated) && <span className="font-mono">+</span>}
+          {readyNote && <> · {t("lspReady")}</>}
         </span>
       );
     case "experimental":

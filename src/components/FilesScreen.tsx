@@ -357,7 +357,7 @@ export function FilesScreen({
       {visible && (
         <nav
           aria-label={t("filesScreenSections")}
-          className="tyba-frost relative flex w-[52px] shrink-0 flex-col items-center gap-1.5 shadow-[inset_1px_0_0_var(--tyba-line)] pt-2.5"
+          className="tyba-frost relative flex w-[52px] shrink-0 flex-col items-center gap-1.5 shadow-[inset_1px_0_0_var(--tyba-line)] py-2.5"
         >
           {FILES_SECTIONS.map((key) => {
             const { icon: SectionIcon, label } = RAIL[key];
@@ -370,7 +370,7 @@ export function FilesScreen({
                 aria-pressed={on}
                 title={t(label)}
                 onClick={() => go(key)}
-                className={`relative flex size-9 items-center justify-center rounded-[8px] transition-colors ${
+                className={`relative flex size-9 items-center justify-center rounded-[10px] transition-colors ${
                   on ? "tyba-icon-on text-tyba-cyan" : "text-tyba-text-faint hover:text-tyba-text"
                 }`}
               >
@@ -384,7 +384,7 @@ export function FilesScreen({
             aria-label={t("filesScreenClose")}
             title={t("filesScreenClose")}
             onClick={onClose}
-            className="mb-2.5 flex size-9 items-center justify-center rounded-[8px] text-tyba-text-faint hover:text-tyba-text"
+            className="flex size-9 items-center justify-center rounded-[10px] text-tyba-text-faint hover:text-tyba-text"
           >
             <X size={15} />
           </button>
@@ -393,7 +393,7 @@ export function FilesScreen({
 
       <div className="tyba-frost flex min-w-0 flex-1 flex-col">
         {visible && session && (
-          <div className="flex h-[46px] shrink-0 items-center gap-3 shadow-[inset_0_-1px_0_var(--tyba-line)] px-[18px] text-[12px]">
+          <div className="flex h-[46px] shrink-0 items-center gap-2.5 shadow-[inset_0_-1px_0_var(--tyba-line)] px-[18px] text-[12px]">
             <FolderOpen size={16} className="shrink-0 text-tyba-blue" />
             <span className="shrink-0 text-[15px] font-bold text-tyba-text">{t("filesTitle")}</span>
             <span className="min-w-0 flex-1 truncate font-mono text-tyba-text-faint" title={info?.root}>
@@ -420,7 +420,7 @@ export function FilesScreen({
         {/* Árvore à direita, junto do trilho (pedido do dono, 2026-10-14). */}
         <div className="flex min-h-0 flex-1 flex-row-reverse">
           {visible && session && (
-            <div className="flex w-[280px] shrink-0 flex-col border-l border-[var(--tyba-line)]">
+            <div className="flex w-[280px] shrink-0 flex-col border-l border-[var(--tyba-line)] bg-[var(--tyba-tree-bg,transparent)]">
               {section === "files" && (
                 <FilesTree
                   key={session.id}
@@ -446,14 +446,14 @@ export function FilesScreen({
             </div>
           )}
 
-          <div className="flex min-w-0 flex-1 flex-col bg-tyba-paper-solid">
+          <div className="flex min-w-0 flex-1 flex-col bg-[var(--tyba-editor-bg,var(--tyba-paper-solid))]">
             {visible && tabs.length > 0 && (
               <div
                 role="tablist"
                 aria-label={t("filesScreenTabs")}
                 // 37px com o fio de baixo (border-box), a mesma altura do
                 // filtro da árvore: as duas linhas caem no mesmo y.
-                className="flex h-[37px] shrink-0 items-stretch overflow-x-auto border-b border-[var(--tyba-line)] bg-tyba-text/[.02]"
+                className="flex h-[37px] shrink-0 items-stretch overflow-x-auto border-b border-[var(--tyba-line)] bg-[var(--tyba-editor-strip,color-mix(in_srgb,var(--tyba-text)_2%,transparent))]"
               >
                 {tabs.map((f) => {
                   const on = f.view === activeView;
@@ -489,12 +489,12 @@ export function FilesScreen({
                       // Fio à direita de cada aba; a ativa tem o fundo do editor (quadro).
                       className={`group flex shrink-0 cursor-pointer items-center gap-[7px] border-r border-[var(--tyba-line)] px-3.5 text-[12.5px] outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-tyba-cyan ${
                         on
-                          ? "bg-tyba-paper-solid font-semibold text-tyba-text"
+                          ? "bg-[var(--tyba-editor-code-bg,var(--tyba-paper-solid))] font-semibold text-tyba-text"
                           : "text-tyba-text-faint hover:text-tyba-text"
                       }`}
                     >
                       <TIcon
-                        size={15}
+                        size={14}
                         className={`shrink-0 ${on ? langGlyph(f.rel).className : ""}`}
                       />
                       <span className={f.preview ? "italic" : ""}>{baseName(f.rel)}</span>
@@ -503,7 +503,7 @@ export function FilesScreen({
                           <span
                             aria-label={t("filesScreenUnsaved")}
                             title={t("filesScreenUnsaved")}
-                            className="size-[7px] rounded-full bg-tyba-text group-hover:hidden"
+                            className="size-[7px] rounded-full bg-[var(--tyba-editor-dirty,var(--tyba-text))] group-hover:hidden"
                           />
                         )}
                         <button
@@ -514,8 +514,9 @@ export function FilesScreen({
                             e.stopPropagation();
                             void closeTab(f.view);
                           }}
+                          // Quadro: a aba de prévia (itálico) não mostra o X; ele aparece no hover, como na suja.
                           className={`absolute inset-0 items-center justify-center rounded-[3px] text-tyba-text-faint hover:bg-tyba-text/[.08] hover:text-tyba-text ${
-                            dirty ? "hidden group-hover:flex" : "flex"
+                            dirty || f.preview ? "hidden group-hover:flex group-focus-visible:flex" : "flex"
                           }`}
                         >
                           <X size={11} />

@@ -1392,6 +1392,15 @@ samp {
 .cm-editor {
   font-size: 13px;
 }
+/* No claro do Muriki o corpo é o `.q-code` do quadro Files: 12.5px com
+   entrelinha de 21px. Também aqui, numa folha real. */
+[data-theme='light']:not([data-imported]) .cm-editor {
+  font-size: 12.5px;
+}
+[data-theme='light']:not([data-imported]) .cm-content,
+[data-theme='light']:not([data-imported]) .cm-gutters {
+  line-height: 21px;
+}
 
 /* Vidro sobre o void (sidebar, painéis flutuantes) */
 .tyba-glass {
@@ -1968,6 +1977,17 @@ html {
   --tyba-frost-bg: rgba(246, 248, 252, 0.42);
   /* Anel que recorta o ponto sobre o ícone (`.q-dotr`): o fundo do quadro. */
   --tyba-ring-bg: #f4f6fb;
+  /* Arquivos (quadro Files): editor #fbfcfe com a faixa de abas sem fundo,
+     aba ativa, trilha e código no branco; árvore com o véu branco .08. */
+  --tyba-editor-bg: #fbfcfe;
+  --tyba-editor-strip: transparent;
+  --tyba-editor-code-bg: #ffffff;
+  --tyba-editor-dirty: var(--tyba-text-muted);
+  --tyba-editor-pad: 6px 0;
+  --tyba-editor-active-line: rgba(17, 82, 210, 0.05);
+  --tyba-editor-diff-add: #15803d;
+  --tyba-editor-diff-mod: #d4a017;
+  --tyba-tree-bg: rgba(255, 255, 255, 0.08);
 }
 /* No claro a sans do cromo é a do Muriki (Plus Jakarta Sans), mas só quando
    a preferência pede sans: "Fonte da interface: mono" vale também no claro
