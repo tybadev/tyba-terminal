@@ -29,10 +29,15 @@ export function SegmentedControl<T extends string>({
   const refs = React.useRef<(HTMLButtonElement | null)[]>([]);
   const [knob, setKnob] = React.useState<{ x: number; w: number } | null>(null);
   const idx = options.findIndex((o) => o.value === value);
+  // A cada render, e não só quando muda a opção: rótulo que cresce (a
+  // contagem que chega depois) muda a largura sem mudar o índice.
   React.useLayoutEffect(() => {
     const el = refs.current[idx];
-    setKnob(el ? { x: el.offsetLeft, w: el.offsetWidth } : null);
-  }, [idx, options.length]);
+    const next = el ? { x: el.offsetLeft, w: el.offsetWidth } : null;
+    setKnob((prev) =>
+      prev?.x === next?.x && prev?.w === next?.w ? prev : next,
+    );
+  });
   return (
     <div
       role="radiogroup"

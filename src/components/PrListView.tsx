@@ -11,6 +11,8 @@ import {
 } from "@phosphor-icons/react";
 
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { SegmentedControl } from "@/components/ui/segmented";
 import { useRelative } from "./GitHistoryView";
 import { OpenPrDialog } from "./OpenPrDialog";
 import { CiTab } from "./ForgePanel";
@@ -289,46 +291,40 @@ export function PrListView({
   return (
     <div className="absolute inset-0 flex min-w-0 flex-col">
       <header className="flex h-[52px] shrink-0 items-center gap-3 whitespace-nowrap shadow-[inset_0_-1px_0_var(--tyba-line)] px-[18px] text-[12px] text-tyba-text-muted">
-        <div role="tablist" className="tyba-segment shrink-0">
-          {FILTERS.map((f) => {
-            const on = filter === f.key;
+        {/* Quadro PRs: o filtro é o segmentado do Muriki, com a contagem no rótulo. */}
+        <SegmentedControl
+          aria-label={t("notifFilter")}
+          value={filter}
+          onChange={(key) => {
+            setFilter(key);
+            setLimit(PR_PAGE_LIMIT);
+          }}
+          options={FILTERS.map((f) => {
             const count = f.count && page ? page.counts[f.count] : null;
-            return (
-              <button
-                key={f.key}
-                role="tab"
-                aria-selected={on}
-                onClick={() => {
-                  setFilter(f.key);
-                  setLimit(PR_PAGE_LIMIT);
-                }}
-                className={`flex items-center gap-1.5 whitespace-nowrap rounded-[5px] px-2.5 py-1 ${
-                  on ? "tyba-pill-on text-tyba-text" : "hover:text-tyba-text"
-                }`}
-              >
-                {t(f.label)}
-                {count !== null && count > 0 && (
-                  <span className={f.key === "review" ? "text-tyba-amber" : "text-tyba-text-muted"}>
-                    {prCountLabel(count, page?.capped ?? false)}
-                  </span>
-                )}
-              </button>
-            );
+            return {
+              value: f.key,
+              label: (
+                <>
+                  {t(f.label)}
+                  {count !== null && count > 0 && (
+                    <span className={f.key === "review" ? "text-tyba-amber" : "text-tyba-text-muted"}>
+                      {prCountLabel(count, page?.capped ?? false)}
+                    </span>
+                  )}
+                </>
+              ),
+            };
           })}
-        </div>
-        <label className="flex w-[240px] shrink-0 items-center gap-1.5 rounded-[6px] bg-tyba-sunken px-2.5 shadow-[inset_0_0_0_1px_var(--tyba-border-field)]">
-          <MagnifyingGlass size={12} className="shrink-0 text-tyba-text-faint" aria-hidden />
-          <input
-            type="text"
-            spellCheck={false}
-            autoCapitalize="off"
-            autoCorrect="off"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder={t("prSearchPlaceholder")}
-            className="min-w-0 flex-1 bg-transparent py-1.5 text-[12px] text-tyba-text outline-none placeholder:text-tyba-text-faint"
-          />
-        </label>
+        />
+        <Input
+          icon={<MagnifyingGlass size={16} aria-hidden />}
+          type="text"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder={t("prSearchPlaceholder")}
+          aria-label={t("prSearchPlaceholder")}
+          className="w-[240px] shrink-0"
+        />
         {status && (
           <Button size="sm" onClick={() => setCreating(true)}>
             <Plus weight="bold" />
