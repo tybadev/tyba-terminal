@@ -1,5 +1,4 @@
 import { getPref, onConfigPrefs, setPref } from "./lib/ipc";
-import { getEffectiveBase, onEffectiveBaseChange } from "./theme";
 
 export type UiFont = "mono" | "grotesk";
 
@@ -15,48 +14,26 @@ const PREF_KEY = "pref.ui_font";
 
 const fontListeners = new Set<(font: UiFont) => void>();
 
-const stored = localStorage.getItem(STORAGE_KEY);
-let font: UiFont = stored === "grotesk" ? "grotesk" : "mono";
-// Sem escolha salva, a interface segue o tema: a sans do Muriki no claro (o
-// quadro aprovado) e a mono no escuro de sempre. Escolher "mono" ou "sans"
-// vale nos dois temas (dono, 2026-11-02).
-let explicit = stored === "mono" || stored === "grotesk";
+let font: UiFont = localStorage.getItem(STORAGE_KEY) === "grotesk" ? "grotesk" : "mono";
 let dirty = false;
 
 function apply() {
   const root = document.documentElement;
-  if (!explicit) {
-    root.setAttribute("data-font", "auto");
-  } else if (font === "grotesk") {
+  if (font === "grotesk") {
     root.setAttribute("data-font", "grotesk");
   } else {
     root.removeAttribute("data-font");
   }
 }
 
-function notify() {
-  const effective = getUiFont();
-  for (const cb of fontListeners) cb(effective);
-}
-
 function commit(next: UiFont) {
   font = next;
-  explicit = true;
   localStorage.setItem(STORAGE_KEY, next);
   apply();
-  notify();
-}
-
-function reset() {
-  font = "mono";
-  explicit = false;
-  localStorage.removeItem(STORAGE_KEY);
-  apply();
-  notify();
+  for (const cb of fontListeners) cb(next);
 }
 
 export function getUiFont(): UiFont {
-  if (!explicit) return getEffectiveBase() === "light" ? "grotesk" : "mono";
   return font;
 }
 
@@ -66,7 +43,7 @@ export function onUiFontChange(cb: (font: UiFont) => void): () => void {
 }
 
 export function setUiFont(next: UiFont) {
-  if (explicit && next === font) return;
+  if (next === font) return;
   dirty = true;
   commit(next);
   void setPref(PREF_KEY, next).catch(() => {});
@@ -77,11 +54,11 @@ async function init() {
     const remote = await getPref(PREF_KEY);
     if (dirty) return;
     if (remote === "mono" || remote === "grotesk") {
-      if (!explicit || remote !== font) commit(remote);
-    } else if (explicit) {
+      if (remote !== font) commit(remote);
+    } else if (font !== "mono") {
       // O config.toml é a fonte da verdade: sem valor lá, vale o padrão — o
       // cache local não reescreve o arquivo.
-      reset();
+      commit("mono");
     }
   } catch {
     apply();
@@ -90,15 +67,8 @@ async function init() {
 
 apply();
 void init();
-onEffectiveBaseChange(() => {
-  if (!explicit) notify();
-});
 // Edição na mão do ~/.tyba/config.toml: o core manda as prefs já validadas.
 void onConfigPrefs((prefs) => {
-  const raw = prefs[PREF_KEY];
-  if (raw === "mono" || raw === "grotesk") {
-    if (!explicit || raw !== font) commit(raw);
-  } else if (explicit) {
-    reset();
-  }
+  const next: UiFont = prefs[PREF_KEY] === "grotesk" ? "grotesk" : "mono";
+  if (next !== font) commit(next);
 }).catch(() => {});
