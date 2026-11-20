@@ -436,20 +436,27 @@
   --tyba-red: #c21f3a;
   /* Aurora do mockup aprovado (PropostaClaro, 2026-10-12), valores literais:
      não deriva dos acentos, que no claro foram escurecidos para texto. */
+  /* Muriki (2026-11-19): a aurora é o ambiente do quadro, azul da marca e
+     um sopro de amarelo; sai o violeta/verde-água/verde da paleta antiga. */
   --tyba-aurora:
-    radial-gradient(1100px 460px at 70% -12%, rgba(122, 76, 232, 0.13), transparent 62%),
-    radial-gradient(800px 400px at 20% -10%, rgba(15, 157, 140, 0.11), transparent 60%),
-    radial-gradient(600px 340px at 45% -8%, rgba(78, 150, 34, 0.09), transparent 58%);
-  --tyba-green-fill: #3d8a17;
-  --tyba-diff-add-bg: rgba(56, 126, 21, 0.08);
-  --tyba-diff-del-bg: rgba(201, 60, 43, 0.08);
-  --tyba-diff-add-text: #1f4d0a;
-  --tyba-diff-del-text: #7a2215;
+    radial-gradient(1100px 460px at 70% -12%, rgba(17, 82, 210, 0.1), transparent 62%),
+    radial-gradient(700px 360px at 18% -10%, rgba(253, 206, 4, 0.1), transparent 60%);
+  /* Só azul, amarelo, marinho, verde de sucesso e vermelho (paleta do
+     Muriki): o violeta da IA e o ciano das áreas viram o azul da marca. */
+  --tyba-violet: #1152d2;
+  --tyba-cyan: #1152d2;
+  --tyba-lime: #0a7044;
+  --tyba-magenta: #c21f3a;
+  --tyba-green-fill: #0a7044;
+  --tyba-diff-add-bg: rgba(10, 112, 68, 0.08);
+  --tyba-diff-del-bg: rgba(194, 31, 58, 0.08);
+  --tyba-diff-add-text: #075233;
+  --tyba-diff-del-text: #8f1428;
   --tyba-amber-fill: #fdce04;
-  --tyba-red-fill: #d6402e;
-  --tyba-filament: linear-gradient(90deg, #3d8a17, #0f9d8c, #7a4ce8);
-  --tyba-filament-v: linear-gradient(180deg, #3d8a17, #0f9d8c, #7a4ce8);
-  --tyba-flow-gradient: linear-gradient(90deg, transparent, #3d8a17 15%, #0f9d8c 45%, #7a4ce8 75%, transparent);
+  --tyba-red-fill: #c21f3a;
+  --tyba-filament: linear-gradient(90deg, #1152d2, #fdce04);
+  --tyba-filament-v: linear-gradient(180deg, #1152d2, #fdce04);
+  --tyba-flow-gradient: linear-gradient(90deg, transparent, #1152d2 25%, #fdce04 75%, transparent);
 
   /* Vidro v2 (página Vidro do canvas, validado 2026-10-26): o campo do
      bem-medical em força total atrás, camadas de branco translúcido por cima
@@ -464,11 +471,16 @@
   /* Muriki (2026-11-18): o fundo é o ambiente da barra lateral, um azul
      quase nada no canto. "Blur mais forte não é borrão de cor mais forte"
      (dono): quem dá profundidade é o vidro, não a cor do campo. */
+  /* O "Calm ambient" do Muriki, como no quadro: luz azul no alto à
+     esquerda, um sopro de amarelo embaixo à direita, sobre o #eef2f9. */
   --tyba-field:
-    radial-gradient(60% 40% at 20% 10%, rgba(17, 82, 210, 0.06), transparent 70%),
-    #f4f6fb;
+    radial-gradient(42% 60% at 18% 22%, rgba(17, 82, 210, 0.072), transparent 72%),
+    radial-gradient(30% 48% at 88% 82%, rgba(253, 206, 4, 0.077), transparent 70%),
+    #eef2f9;
   --tyba-glass-window: transparent;
-  --tyba-glass-section: rgba(255, 255, 255, 0.74);
+  /* A barra lateral deixa o ambiente aparecer (quadro Sidebar): os
+     cartões brancos é que se destacam sobre ela. */
+  --tyba-glass-section: rgba(255, 255, 255, 0.32);
   --tyba-glass-piece: rgba(255, 255, 255, 0.8);
   --tyba-glass-float: rgba(255, 255, 255, 0.97);
   --tyba-glass-active: rgba(255, 255, 255, 0.96);
@@ -1738,7 +1750,7 @@ samp {
    acrílico sobre a própria saída, fio e uma sombra curta embaixo. */
 .tyba-pinned {
   background: color-mix(in srgb, var(--tyba-paper-solid) 94%, transparent);
-  box-shadow: 0 1px 0 var(--tyba-line), 0 6px 14px -10px rgba(60, 40, 120, 0.28);
+  box-shadow: 0 1px 0 var(--tyba-line), 0 6px 14px -10px rgba(10, 24, 48, 0.28);
   backdrop-filter: blur(16px) saturate(140%);
   -webkit-backdrop-filter: blur(16px) saturate(140%);
 }
@@ -1813,9 +1825,9 @@ html {
      cartão branco quase opaco com a sombra do knob. */
   --tyba-pill-on: inset 0 1px 0 #ffffff, 0 1px 2px rgba(10, 24, 48, 0.1), 0 4px 12px rgba(10, 24, 48, 0.1);
   --tyba-pill-sheen: none;
-  --tyba-piece-shadow: 0 1px 2px rgba(60, 40, 120, 0.05);
+  --tyba-piece-shadow: 0 1px 2px rgba(10, 24, 48, 0.05);
   /* Placa de painel/modal no claro: brilho na aresta de cima e sombra violeta. */
-  --tyba-plate-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9), 0 1px 2px rgba(60, 40, 120, 0.06), 0 24px 60px -12px rgba(60, 40, 120, 0.22);
+  --tyba-plate-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9), 0 1px 2px rgba(10, 24, 48, 0.06), 0 24px 60px -12px rgba(10, 24, 48, 0.2);
   /* Controles do quadro de componentes do Muriki (Main), literais: campo e
      botão de vidro brancos com o fio fino, primário azul com a sombra
      líquida, knob branco, foco no azul da marca. */

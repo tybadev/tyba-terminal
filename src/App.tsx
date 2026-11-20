@@ -2,30 +2,29 @@ import type { ElementType } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
+  ArrowBendUpLeft,
   ArrowsLeftRight,
   CaretDown,
   CaretRight,
-  Check,
-  CheckCircle,
-  Circle,
-  CircleDashed,
-  CircleHalf,
+  Copy,
   DotsThree,
-  FolderOpen,
+  Eye,
+  EyeSlash,
+  FolderSimple,
   GearSix,
-  GitBranch,
   GitDiff,
   HardDrives,
   Keyboard,
   MagnifyingGlass,
+  Monitor,
   Plug,
   Plus,
-  Prohibit,
+  Rows,
   SquaresFour,
-  TerminalWindow,
+  TextT,
+  Trash,
   Tray,
   X,
-  XCircle,
 } from "@phosphor-icons/react";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -67,7 +66,7 @@ import { IS_MAC } from "./lib/platform";
 import { AgentIcon } from "./components/icons/AgentIcon";
 import { AgentsBoard } from "./components/AgentsBoard";
 import { AgentsQueue } from "./components/AgentsQueue";
-import { AgentsSidebar } from "./components/AgentsSidebar";
+import { AgentsSidebar, RobotIcon } from "./components/AgentsSidebar";
 import { ClaudeIcon } from "./components/icons/ClaudeIcon";
 import { OpenAIIcon } from "./components/icons/OpenAIIcon";
 import { CommandPalette } from "./components/CommandPalette";
@@ -380,8 +379,6 @@ import {
   connectingHostIds,
   isFinishedStatus,
   mergeSessionUpdate,
-  statusGlyph,
-  type StatusGlyph,
 } from "./lib/sessionStatus";
 import {
   agentsPanelActionableIds,
@@ -681,6 +678,115 @@ function agentGlyph(label: string, size = 16): React.ReactNode {
   return <AgentIcon size={size} className="shrink-0" />;
 }
 
+/** Ícone de sessão de shell (dono, 2026-11-15): o `Terminal` do Phosphor
+ *  (>_) dentro de um círculo, no desenho de `ds/terminal-shell-icon.svg`. */
+function ShellGlyph({
+  size = 16,
+  className,
+  style,
+}: {
+  size?: number;
+  className?: string;
+  style?: React.CSSProperties;
+}) {
+  return (
+    <svg
+      viewBox="0 0 256 256"
+      width={size}
+      height={size}
+      aria-hidden
+      className={`shrink-0 ${className ?? ""}`}
+      style={style}
+    >
+      <circle cx="128" cy="128" r="114" fill="none" stroke="currentColor" strokeWidth="16" />
+      <path
+        fill="currentColor"
+        transform="translate(128 128) scale(0.52) translate(-125 -129)"
+        d="M117.31,134l-72,64a8,8,0,1,1-10.63-12L100,128,34.69,70A8,8,0,1,1,45.32,58l72,64a8,8,0,0,1,0,12ZM216,184H120a8,8,0,0,0,0,16h96a8,8,0,0,0,0-16Z"
+      />
+    </svg>
+  );
+}
+
+/** Badge amarelo do Muriki (`mk-sb-badge`): contagem que pede você. */
+function SidebarBadge({ count }: { count: number }) {
+  return (
+    <span className="ml-auto grid h-[18px] min-w-[18px] place-items-center rounded-full bg-tyba-amber-fill px-[5px] text-[11px] font-bold text-[color-mix(in_srgb,var(--tyba-amber-fill)_16%,black)]">
+      {count > 9 ? "9+" : count}
+    </span>
+  );
+}
+
+/**
+ * Item de navegação da barra lateral (`mk-sb-item` do quadro Sidebar): ícone,
+ * rótulo, tecla ou badge à direita. Aceso = o cartão branco do item ativo,
+ * com o ícone azul. Fechada (trilho), sobra o ícone com o tooltip.
+ */
+function SidebarItem({
+  open,
+  active = false,
+  icon,
+  label,
+  kbd,
+  badge = 0,
+  onClick,
+  ariaLabel,
+}: {
+  open: boolean;
+  active?: boolean;
+  icon: React.ReactNode;
+  label: string;
+  kbd?: string;
+  badge?: number;
+  onClick: () => void;
+  ariaLabel?: string;
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          onClick={onClick}
+          aria-label={ariaLabel ?? label}
+          aria-pressed={active}
+          className={`relative flex h-9 shrink-0 items-center gap-3 rounded-[8px] text-[14px] transition-colors ${
+            open ? "px-3" : "justify-center px-0"
+          } ${
+            active
+              ? "tyba-pill-on font-semibold text-tyba-text"
+              : "text-tyba-text-muted hover:bg-tyba-raised/50 hover:text-tyba-text"
+          }`}
+        >
+          <span className={`flex shrink-0 ${active ? "text-tyba-blue" : ""}`}>{icon}</span>
+          {open && (
+            <>
+              <span className="min-w-0 flex-1 truncate text-left">{label}</span>
+              {badge > 0 ? (
+                <SidebarBadge count={badge} />
+              ) : (
+                kbd && (
+                  <span className="ml-auto font-mono text-[11px] font-normal text-tyba-text-faint">
+                    {kbd}
+                  </span>
+                )
+              )}
+            </>
+          )}
+          {!open && badge > 0 && (
+            <span aria-hidden className="absolute right-1 top-1 size-1.5 rounded-full bg-tyba-amber-fill" />
+          )}
+        </button>
+      </TooltipTrigger>
+      {!open && (
+        <TooltipContent side="right" className="flex items-center gap-2">
+          {label}
+          {kbd && <span className="font-mono text-tyba-text-faint">{kbd}</span>}
+        </TooltipContent>
+      )}
+    </Tooltip>
+  );
+}
+
 const SESSION_COLORS = [
   "green",
   "amber",
@@ -698,7 +804,7 @@ const copyText = (text: string) => {
 type SidebarMode = "open" | "rail" | "hidden";
 
 const SIDEBAR_WIDTH: Record<SidebarMode, number> = {
-  open: 224,
+  open: 272,
   rail: 44,
   hidden: 0,
 };
@@ -735,7 +841,7 @@ function IconAction({
           onClick={disabled ? undefined : onClick}
           aria-label={label}
           aria-disabled={disabled || undefined}
-          className={`h-7 w-[30px] rounded-[6px] text-tyba-text-faint ${
+          className={`size-[34px] rounded-[10px] text-tyba-text-muted ${
             disabled ? "cursor-not-allowed opacity-40 hover:bg-transparent" : "hover:text-tyba-text"
           }`}
         >
@@ -778,26 +884,6 @@ const withHostingState = (p: AgentDetectedPayload): DetectedAgentState | null =>
  * (reinstall, limpar dados do app) é mostrar o toast de novo, nunca um gate
  * a menos: não é decisão de segurança. */
 const HOSTING_INTRO_TOAST_SEEN_KEY = "tyba.shim-v2-hosting-intro-seen";
-
-/** Forma e cor de cada estado no cartão da barra lateral. */
-const STATUS_GLYPH: Record<
-  StatusGlyph,
-  { icon: typeof Circle; weight: "regular" | "fill" | "bold"; className: string }
-> = {
-  progress: {
-    icon: CircleHalf,
-    weight: "fill",
-    className: "text-tyba-blue tyba-half-flip",
-  },
-  done: { icon: CheckCircle, weight: "fill", className: "text-tyba-green" },
-  waiting: {
-    icon: CircleDashed,
-    weight: "bold",
-    className: "text-tyba-amber motion-safe:animate-pulse",
-  },
-  failed: { icon: XCircle, weight: "fill", className: "text-tyba-red" },
-  resting: { icon: Circle, weight: "regular", className: "text-tyba-text-faint" },
-};
 
 export default function App() {
   const { t, i18n } = useTranslation();
@@ -3305,6 +3391,63 @@ export default function App() {
     };
   }, [workspaces]);
 
+  // Grupos da barra lateral no quadro Sidebar: por tipo (este computador,
+  // cada host SSH) e depois os grupos manuais. As telas cheias (Configurações,
+  // Conexões…) ficam fora da lista, como sempre.
+  const sidebarGroups = useMemo(() => {
+    const local: Workspace[] = [];
+    const byHost = new Map<string, Workspace[]>();
+    for (const w of groupedWorkspaces.loose) {
+      if (
+        isConfigWorkspace(w) ||
+        isWorktreesWorkspace(w) ||
+        isConnectionsWorkspace(w) ||
+        isStatsWorkspace(w) ||
+        isAgentBoardWorkspace(w)
+      )
+        continue;
+      const hostId = workspaceSshHostId(w);
+      if (hostId) byHost.set(hostId, [...(byHost.get(hostId) ?? []), w]);
+      else local.push(w);
+    }
+    const out: {
+      key: string;
+      kind: "local" | "ssh" | "manual";
+      label: string;
+      host: Host | null;
+      color: string | null;
+      list: Workspace[];
+    }[] = [];
+    if (local.length > 0) {
+      out.push({ key: "\u0000local", kind: "local", label: "", host: null, color: null, list: local });
+    }
+    for (const [hostId, list] of byHost) {
+      const host = sshHosts.find((h) => h.id === hostId) ?? null;
+      out.push({
+        key: `\u0000ssh:${hostId}`,
+        kind: "ssh",
+        label: host?.alias ?? host?.hostname ?? hostId,
+        host,
+        color: null,
+        list,
+      });
+    }
+    for (const [name, list] of groupedWorkspaces.groups) {
+      out.push({
+        key: name,
+        kind: "manual",
+        label: name,
+        host: null,
+        color:
+          hostGroups.find((g) => g.name === name)?.color ??
+          list.find((w) => w.color)?.color ??
+          null,
+        list,
+      });
+    }
+    return out;
+  }, [groupedWorkspaces, workspaceSshHostId, sshHosts, hostGroups]);
+
   const cycleWorkspace = useCallback(
     (dir: 1 | -1) => {
       const list = layout.workspaces;
@@ -5253,6 +5396,9 @@ export default function App() {
   ]);
 
   const open = sidebar === "open";
+  const agentQueueOpen =
+    activeWorkspace?.side_view === "agent-queue" ||
+    !!activeWorkspace?.side_view?.startsWith("agents:");
 
   const worktreeSessionOf = (w: Workspace): Session | null => {
     for (const tab of w.tabs) {
@@ -5265,118 +5411,171 @@ export default function App() {
     return null;
   };
 
+  /** Cor de um grupo manual: a do grupo de hosts de mesmo nome, se houver;
+   *  senão a da primeira sessão colorida dele. Sem nenhuma, neutro. */
+  const groupColor = (name: string): string | null =>
+    hostGroups.find((g) => g.name === name)?.color ??
+    layout.workspaces.find((w) => w.group === name && w.color)?.color ??
+    null;
+
+  // Menu ⋯ da sessão no quadro SessionMenu: seção "Sessão"; Cor e grupo em
+  // submenu (cores em grade, grupos com o quadradinho de cor, Novo grupo…).
   const renderWorkspaceMenuItems = (
     w: Workspace,
     branch: string | undefined,
     M: MenuParts,
   ) => (
     <>
+      <div className="px-2 pb-1 pt-1.5 text-[11px] font-semibold uppercase tracking-[0.04em] text-tyba-text-faint">
+        {t("menuSession")}
+      </div>
       <M.Item
-        className="text-xs"
+        className="gap-2.5 text-[13px]"
         onSelect={() => setPrompt({ kind: "rename", ws: w })}
       >
-        {t("renameSession")}
+        <TextT size={15} className="shrink-0" />
+        {t("menuRename")}
       </M.Item>
-      {worktreeSessionOf(w) && (
-        <M.Item
-          className="text-xs"
-          onSelect={() => {
-            const target = worktreeSessionOf(w);
-            if (target) void openDiffContentTab(target.id).catch(() => {});
-          }}
-        >
-          {t("diffReviewAction")}
-        </M.Item>
-      )}
       <M.Sub>
-        <M.SubTrigger className="text-xs">{t("groupSession")}</M.SubTrigger>
-        <M.SubContent className="w-44">
-          {groupNames.map((name) => (
-            <M.Item
-              key={name}
-              className="text-xs"
-              onSelect={() =>
-                void setWorkspaceGroup(w.id, w.group === name ? null : name)
-              }
-            >
-              <span className="min-w-0 flex-1 truncate">{name}</span>
-              {w.group === name && (
-                <Check size={11} weight="bold" className="text-tyba-green" />
-              )}
-            </M.Item>
-          ))}
-          {groupNames.length > 0 && <M.Separator />}
+        <M.SubTrigger className="gap-2.5 text-[13px]">
+          <FolderSimple size={15} className="shrink-0" />
+          {t("menuColorGroup")}
+        </M.SubTrigger>
+        <M.SubContent className="w-[220px] p-2">
+          <div className="px-2.5 py-1.5 text-[11px] font-semibold uppercase tracking-[0.04em] text-tyba-text-faint">
+            {t("menuColor")}
+          </div>
+          <div className="grid grid-cols-6 gap-2 px-2.5 pb-2 pt-1">
+            <button
+              aria-label={t("noColor")}
+              title={t("noColor")}
+              onClick={() => void setWorkspaceColor(w.id, null)}
+              className={`size-[22px] rounded-[7px] bg-tyba-raised ${
+                !w.color
+                  ? "shadow-[0_0_0_2px_var(--tyba-paper-solid),0_0_0_4px_var(--tyba-blue)]"
+                  : "shadow-[inset_0_0_0_1px_var(--tyba-border-strong)]"
+              }`}
+            />
+            {SESSION_COLORS.map((c) => (
+              <button
+                key={c}
+                aria-label={c}
+                title={c}
+                onClick={() => void setWorkspaceColor(w.id, c)}
+                className={`size-[22px] rounded-[7px] ${
+                  w.color === c
+                    ? "shadow-[0_0_0_2px_var(--tyba-paper-solid),0_0_0_4px_var(--tyba-blue)]"
+                    : "shadow-[inset_0_0_0_1px_var(--tyba-line)]"
+                }`}
+                style={{ background: `var(--tyba-${c})` }}
+              />
+            ))}
+          </div>
+          <div className="px-2.5 py-1.5 text-[11px] font-semibold uppercase tracking-[0.04em] text-tyba-text-faint">
+            {t("menuMoveToGroup")}
+          </div>
+          {groupNames.map((name) => {
+            const color = groupColor(name);
+            return (
+              <M.Item
+                key={name}
+                className={`h-[34px] gap-2.5 text-[13px] ${
+                  w.group === name ? "tyba-pill-on font-semibold" : ""
+                }`}
+                onSelect={() =>
+                  void setWorkspaceGroup(w.id, w.group === name ? null : name)
+                }
+              >
+                <span
+                  aria-hidden
+                  className={`size-2 shrink-0 rounded-[3px] ${color ? "" : "bg-tyba-text-faint"}`}
+                  style={color ? { background: `var(--tyba-${color})` } : undefined}
+                />
+                <span className="min-w-0 flex-1 truncate">{name}</span>
+              </M.Item>
+            );
+          })}
           <M.Item
-            className="text-xs"
+            className="h-[34px] gap-2.5 text-[13px]"
             onSelect={() => setPrompt({ kind: "group", ws: w })}
           >
-            <Plus size={11} weight="bold" />
+            <Plus size={15} className="shrink-0" />
             {t("newGroup")}
           </M.Item>
         </M.SubContent>
       </M.Sub>
       {w.group && (
         <M.Item
-          className="text-xs"
+          className="gap-2.5 text-[13px]"
           onSelect={() => void setWorkspaceGroup(w.id, null)}
         >
-          {t("removeFromGroup")}
+          <ArrowBendUpLeft size={15} className="shrink-0" />
+          {t("menuLeaveGroup")}
         </M.Item>
       )}
       <M.Separator />
       {branch && (
-        <M.Item className="text-xs" onSelect={() => copyText(branch)}>
+        <M.Item className="gap-2.5 text-[13px]" onSelect={() => copyText(branch)}>
+          <Copy size={15} className="shrink-0" />
           {t("copyBranch")}
         </M.Item>
       )}
       {w.repo_root && (
         <M.Item
-          className="text-xs"
+          className="gap-2.5 text-[13px]"
           onSelect={() => copyText(w.repo_root as string)}
         >
-          {t("copyDir")}
+          <FolderSimple size={15} className="shrink-0" />
+          {t("menuCopyDir")}
         </M.Item>
       )}
-      {(branch || w.repo_root) && <M.Separator />}
-      <div className="flex items-center gap-1.5 px-2 py-1.5">
-        <button
-          aria-label={t("noColor")}
-          onClick={() => void setWorkspaceColor(w.id, null)}
-          className={`flex size-4 items-center justify-center rounded-full border text-tyba-text-faint ${
-            !w.color ? "border-tyba-text-muted" : "border-tyba-border-strong"
-          }`}
-        >
-          <Prohibit size={10} />
-        </button>
-        {SESSION_COLORS.map((c) => (
-          <button
-            key={c}
-            aria-label={c}
-            onClick={() => void setWorkspaceColor(w.id, c)}
-            className={`size-4 rounded-full border ${
-              w.color === c ? "border-tyba-text" : "border-transparent"
-            }`}
-            style={{ background: `var(--tyba-${c})` }}
-          />
-        ))}
-      </div>
-      <M.Separator />
       <M.Item
-        className="text-xs"
+        className="gap-2.5 text-[13px]"
         onSelect={() => toggleWorkspaceDetails(w.id)}
       >
+        {detailsFor(w.id) ? (
+          <EyeSlash size={15} className="shrink-0" />
+        ) : (
+          <Eye size={15} className="shrink-0" />
+        )}
         {detailsFor(w.id) ? t("detailsHide") : t("detailsShow")}
       </M.Item>
+      {worktreeSessionOf(w) && (
+        <M.Item
+          className="gap-2.5 text-[13px]"
+          onSelect={() => {
+            const target = worktreeSessionOf(w);
+            if (target) void openDiffContentTab(target.id).catch(() => {});
+          }}
+        >
+          <GitDiff size={15} className="shrink-0" />
+          {t("diffReviewAction")}
+        </M.Item>
+      )}
       <M.Separator />
       <M.Item
-        className="text-xs text-tyba-red focus:text-tyba-red"
+        className="gap-2.5 text-[13px] text-tyba-red focus:text-tyba-red"
         onSelect={() => void killWorkspace(w.id)}
       >
-        <X size={12} weight="bold" />
+        <Trash size={15} className="shrink-0" />
         {t("killSession")}
       </M.Item>
     </>
   );
+
+  /** O ponto de estado de um workspace (regra em `lib/sessionCard`): o do
+   *  ícone da sessão e, somado, o do cabeçalho do grupo. */
+  const workspaceDotOf = (w: Workspace) => {
+    if (isConfigWorkspace(w) || isWorktreesWorkspace(w)) return "idle" as const;
+    const sessionsOf = new Set(
+      w.tabs.flatMap((tab) => (tab.root ? leafSessions(tab.root) : [])),
+    );
+    return sessionDot({
+      approvals: approvals.filter((a) => sessionsOf.has(a.session_id)).length,
+      agentRank: workspaceAgentStatus(w)?.visual.rank ?? null,
+      commandRunning: workspaceCommand(w) != null,
+    });
+  };
 
   const renderWorkspace = (w: Workspace) => {
     const isActive = w.id === layout.active_workspace;
@@ -5410,8 +5609,6 @@ export default function App() {
     const runningCmd = isConfig || isWtView ? null : workspaceCommand(w);
     const hoverAgent = runner ?? agentFromCommand(runningCmd);
     const agentStatus = isConfig || isWtView ? null : workspaceAgentStatus(w);
-    // O estado é o ícone (`STATUS_GLYPH`); o texto ao lado diz só o que o
-    // ícone não diz: de quem é, a pergunta pendente, o motivo da falha.
     const agentLabel = agentStatus ? t(agentStatus.visual.labelKey) : null;
     const agentDetail = (() => {
       if (!agentStatus) return null;
@@ -5422,115 +5619,88 @@ export default function App() {
       if (status.state === "running" && runningCmd) return runningCmd;
       return hoverAgent ?? agentLabel;
     })();
-    // Cartão do mockup Proposta no visual (ativa sobe, ponto de estado à
-    // direita), com os dados de sempre: caminho/host, agente ou comando,
-    // branch, contadores do git e número de abas — ativa ou não. A regra do
-    // ponto mora em `lib/sessionCard`, testada.
+    // Linha de estado do quadro ("claude em andamento"): quem é e o que faz;
+    // a pergunta pendente ou o motivo da falha no lugar do estado quando há.
+    const agentLine = agentStatus
+      ? [
+          hoverAgent,
+          agentDetail && agentDetail !== hoverAgent ? agentDetail : agentLabel,
+        ]
+          .filter(Boolean)
+          .join(" ")
+      : null;
     const workspaceSessions = new Set(
       w.tabs.flatMap((tab) => (tab.root ? leafSessions(tab.root) : [])),
     );
     const ports = workspacePorts(sessionPorts, workspaceSessions);
     const portsChip = chipText(ports);
-    const dot = sessionDot({
-      approvals: approvals.filter((a) => workspaceSessions.has(a.session_id))
-        .length,
-      agentRank: agentStatus?.visual.rank ?? null,
-      commandRunning: runningCmd != null,
-    });
+    const dot = workspaceDotOf(w);
+    // O ponto do ícone (quadro: `sdot`): pedir alguém vence; depois o estado
+    // do agente; um comando rodando numa sessão sem agente.
+    const iconDot =
+      isConfig || isWtView
+        ? null
+        : dot === "attention"
+          ? SESSION_DOT_CLASS.attention
+          : agentStatus
+            ? agentStatus.visual.dotClass
+            : dot === "running"
+              ? SESSION_DOT_CLASS.running
+              : null;
     const workspaceButton = (
       <button
         key={w.id}
         onClick={() => void activateWorkspace(w.id)}
         style={
-          w.color
+          w.color && !isActive
             ? {
-                background: `color-mix(in srgb, var(--tyba-${w.color}) ${
-                  isActive ? 14 : 8
-                }%, transparent)`,
+                background: `color-mix(in srgb, var(--tyba-${w.color}) 8%, transparent)`,
               }
             : undefined
         }
-        // Ativa = o cartão que SOBE (mockup Proposta): `raised` com o contorno
-        // do tema e o filamento vertical no meio da aresta esquerda. Voltou
-        // como era na main (dono, 2026-11-02: "era perfeito").
-        className={`group relative flex shrink-0 items-center gap-2 overflow-hidden rounded-[6px] text-[13px] transition-colors ${
-          showDetails ? "h-[3.75rem]" : "h-[33px]"
-        } ${open ? "px-2.5" : "justify-center px-0"} ${
+        // Item do quadro Sidebar (`mk-sb-item ses`): ícone, nome e a linha de
+        // estado embaixo; o ativo é o cartão branco do Muriki.
+        className={`group relative flex shrink-0 gap-3 overflow-hidden rounded-[8px] text-[14px] transition-colors ${
+          open ? "items-start px-3 py-2" : "h-9 items-center justify-center px-0"
+        } ${
           isActive
-            ? `text-tyba-text ${w.color ? "" : "bg-tyba-raised shadow-[var(--tyba-raised-ring)]"}`
-            : "text-tyba-text-muted hover:bg-tyba-text/[.03] hover:text-tyba-text"
+            ? "tyba-pill-on font-semibold text-tyba-text"
+            : "text-tyba-text-muted hover:bg-tyba-raised/50 hover:text-tyba-text"
         }`}
       >
-        {isActive && (
-          // O fio pega só o meio da aresta: de ponta a ponta pesava mais que o
-          // próprio cartão.
-          <span
-            className="absolute left-0 top-1/2 h-6 w-0.5 -translate-y-1/2 rounded-r-full"
-            style={{
-              background: w.color
-                ? `var(--tyba-${w.color})`
-                : "var(--tyba-filament-v)",
-            }}
-          />
-        )}
-        <span className="relative shrink-0">
+        <span className={`relative inline-flex shrink-0 ${open ? "mt-px" : ""}`}>
           {isWtView ? (
-            <SquaresFour
-              size={16}
-              className={
-                isActive
-                  ? "shrink-0 text-tyba-text [filter:drop-shadow(0_0_6px_rgba(255,255,255,.2))]"
-                  : "shrink-0"
-              }
-            />
+            <SquaresFour size={18} className="shrink-0" />
           ) : isConfig ? (
-            <GearSix
-              size={16}
-              className={
-                isActive
-                  ? "shrink-0 text-tyba-text [filter:drop-shadow(0_0_6px_rgba(255,255,255,.2))]"
-                  : "shrink-0"
-              }
-            />
+            <GearSix size={18} className="shrink-0" />
           ) : w.kind === "docker" ? (
             <DockerIcon
-              size={16}
+              size={18}
               style={w.color ? { color: `var(--tyba-${w.color})` } : undefined}
-              className={
-                isActive
-                  ? `shrink-0 ${w.color ? "" : "text-tyba-cyan"} [filter:drop-shadow(0_0_6px_rgba(45,212,191,.35))]`
-                  : "shrink-0"
-              }
+              className={`shrink-0 ${isActive && !w.color ? "text-tyba-cyan" : ""}`}
             />
           ) : hoverAgent ? (
-            agentGlyph(hoverAgent)
+            agentGlyph(hoverAgent, 18)
           ) : (
-            <TerminalWindow
-              size={16}
+            <ShellGlyph
+              size={18}
               style={w.color ? { color: `var(--tyba-${w.color})` } : undefined}
-              className={
-                isActive
-                  ? `shrink-0 ${w.color ? "" : "text-tyba-green"} [filter:drop-shadow(0_0_6px_rgba(124,197,68,.35))]`
-                  : "shrink-0"
-              }
+              className={isActive && !w.color ? "text-tyba-text" : undefined}
             />
           )}
-          {agentStatus && (
+          {iconDot && (
             <span
-              aria-hidden
-              title={t(agentStatus.visual.labelKey)}
-              className={`absolute -right-0.5 -top-0.5 size-1.5 rounded-full ${agentStatus.visual.dotClass}`}
+              role="img"
+              aria-label={t(SESSION_DOT_LABEL_KEY[dot])}
+              title={agentLabel ?? t(SESSION_DOT_LABEL_KEY[dot])}
+              className={`absolute -right-[3px] -top-0.5 size-[7px] rounded-full shadow-[0_0_0_2px_var(--tyba-paper-solid)] ${iconDot}`}
             />
           )}
         </span>
         {open && (
           <>
-            <span className="flex min-w-0 flex-1 flex-col items-start gap-[3px]">
-              <span
-                className={`w-full truncate text-left leading-tight ${
-                  isConfig || isWtView ? "" : "text-[13px]"
-                }`}
-              >
+            <span className="flex min-w-0 flex-1 flex-col items-start">
+              <span className="w-full truncate text-left leading-[22px]">
                 {isConfig
                   ? t("settings")
                   : isWtView
@@ -5538,7 +5708,7 @@ export default function App() {
                     : displayName}
               </span>
               {showDetails && (
-                <span className="w-full truncate text-left font-mono text-[10px] leading-none text-tyba-text-faint">
+                <span className="w-full truncate text-left font-mono text-[10.5px] font-medium leading-[15px] text-tyba-text-faint">
                   {sshHost
                     ? sshHost
                     : displayDir
@@ -5546,48 +5716,31 @@ export default function App() {
                       : "~"}
                 </span>
               )}
-              {showDetails && (
-                <span className="flex w-full items-center gap-1.5">
-                  {agentStatus && agentDetail ? (
+              {!isConfig && !isWtView && (agentLine || runningCmd || branch || showDetails) && (
+                <span className="flex w-full min-w-0 items-center gap-1.5 font-mono text-[10.5px] font-medium leading-4">
+                  {agentStatus && agentLine ? (
                     <span
-                      className="flex min-w-0 items-center gap-1"
+                      className={`flex min-w-0 items-center gap-1.5 ${agentStatus.visual.textClass}`}
                       title={agentLabel ?? undefined}
                     >
-                      {(() => {
-                        const glyph = STATUS_GLYPH[statusGlyph(agentStatus.visual.labelKey)];
-                        const Icon = glyph.icon;
-                        return (
-                          <Icon
-                            size={11}
-                            weight={glyph.weight}
-                            aria-label={agentLabel ?? undefined}
-                            className={`shrink-0 ${glyph.className}`}
-                          />
-                        );
-                      })()}
                       <span
-                        className={`min-w-0 truncate font-mono text-[11px] leading-none ${agentStatus.visual.textClass}`}
-                      >
-                        {agentDetail}
-                      </span>
+                        aria-hidden
+                        className={`size-[7px] shrink-0 rounded-full ${agentStatus.visual.dotClass}`}
+                      />
+                      <span className="min-w-0 truncate">{agentLine}</span>
                     </span>
                   ) : runningCmd ? (
-                    <span className="min-w-0 truncate font-mono text-[11px] leading-none text-tyba-text-muted">
+                    <span className="min-w-0 truncate text-tyba-text-muted">
                       {runningCmd}
                     </span>
-                  ) : null}
-                  {/* A branch cede a linha quando há agente ou comando: os
-                      dois lado a lado truncavam e nenhum ficava legível. */}
-                  {branch && !agentDetail && !runningCmd && (
-                    <span
-                      title={branch}
-                      className="flex min-w-0 items-center gap-0.5 font-mono text-[11px] leading-none text-tyba-text-faint"
-                    >
-                      <GitBranch size={10} className="shrink-0" />
-                      <span className="truncate">{branch}</span>
+                  ) : branch ? (
+                    // A branch cede a linha quando há agente ou comando: os
+                    // dois lado a lado truncavam e nenhum ficava legível.
+                    <span title={branch} className="min-w-0 truncate text-tyba-text-muted">
+                      ⎇ {branch}
                     </span>
-                  )}
-                  {(gitStatus?.dirty || chips.remoteChanged != null) && (
+                  ) : null}
+                  {showDetails && (gitStatus?.dirty || chips.remoteChanged != null) && (
                     <span
                       title={
                         gitStatus?.dirty
@@ -5603,7 +5756,7 @@ export default function App() {
                         // O servidor responde só quantos arquivos mudaram
                         // (regra 24): o número sozinho é o que o `DiffStat`
                         // desenha quando não há linhas a mostrar.
-                        <span className="font-mono text-[11px] leading-none text-tyba-amber">
+                        <span className="leading-none text-tyba-amber">
                           {chips.remoteChanged}
                         </span>
                       )}
@@ -5611,10 +5764,10 @@ export default function App() {
                   )}
                   {/* As portas que os processos desta sessão abriram
                       (Serviços e portas), discretas no fim da linha. */}
-                  {portsChip && (
+                  {showDetails && portsChip && (
                     <span
                       title={t("servicesChip", { ports: ports.map((p) => `:${p}`).join(" ") })}
-                      className="ml-auto flex shrink-0 items-center gap-1 font-mono text-[10.5px] leading-none text-tyba-text-faint"
+                      className="ml-auto flex shrink-0 items-center gap-1 leading-none text-tyba-text-faint"
                     >
                       <span aria-hidden className="size-1 shrink-0 rounded-full bg-tyba-green-fill" />
                       {portsChip}
@@ -5623,23 +5776,15 @@ export default function App() {
                 </span>
               )}
             </span>
-            {!isConfig && !isWtView && w.tabs.length > 0 && (
+            {!isConfig && !isWtView && w.tabs.length > 1 && (
               <span
                 title={t("sessionPanes", { count: w.tabs.length })}
-                className="shrink-0 font-mono text-[10px] text-tyba-text-faint"
+                className={`mt-[3px] shrink-0 font-mono text-[10.5px] font-medium text-tyba-text-faint ${
+                  menuWorkspace === w.id ? "hidden" : "group-hover:hidden"
+                }`}
               >
                 {w.tabs.length}
               </span>
-            )}
-            {!isConfig && !isWtView && (
-              <span
-                role="img"
-                aria-label={t(SESSION_DOT_LABEL_KEY[dot])}
-                title={t(SESSION_DOT_LABEL_KEY[dot])}
-                className={`size-[7px] shrink-0 rounded-full ${SESSION_DOT_CLASS[dot]} ${
-                  menuWorkspace === w.id ? "hidden" : "group-hover:hidden"
-                }`}
-              />
             )}
             {!isConfig && (
             <DropdownMenu
@@ -5650,14 +5795,14 @@ export default function App() {
                   role="button"
                   aria-label={t("sessionOptions")}
                   onClick={(e) => e.stopPropagation()}
-                  className={`rounded-[3px] text-tyba-text-faint hover:text-tyba-text ${
+                  className={`mt-[3px] rounded-[3px] text-tyba-text-faint hover:text-tyba-text ${
                     menuWorkspace === w.id ? "" : "hidden group-hover:block"
                   }`}
                 >
-                  <DotsThree size={14} weight="bold" />
+                  <DotsThree size={16} weight="bold" />
                 </span>
               </DropdownMenuTrigger>
-              <DropdownMenuContent align="start" className="w-52">
+              <DropdownMenuContent align="start" className="w-[270px]">
                 {renderWorkspaceMenuItems(w, branch, DROPDOWN_MENU_PARTS)}
               </DropdownMenuContent>
             </DropdownMenu>
@@ -5678,7 +5823,7 @@ export default function App() {
             <ContextMenuTrigger asChild>
               <HoverCardTrigger asChild>{workspaceButton}</HoverCardTrigger>
             </ContextMenuTrigger>
-            <ContextMenuContent className="w-52">
+            <ContextMenuContent className="w-[270px]">
               {renderWorkspaceMenuItems(w, branch, CONTEXT_MENU_PARTS)}
             </ContextMenuContent>
           </ContextMenu>
@@ -5699,7 +5844,7 @@ export default function App() {
           )}
         </HoverCard>
         {sideDiff && (
-          <div className="group/diff flex h-7 shrink-0 items-center gap-2 rounded-[4px] pl-8 pr-2 text-[12px] text-tyba-text-faint transition-colors hover:bg-tyba-text/[.03] hover:text-tyba-text-muted">
+          <div className="group/diff flex h-7 shrink-0 items-center gap-2 rounded-[6px] pl-9 pr-2 text-[12px] text-tyba-text-faint transition-colors hover:bg-tyba-raised/50 hover:text-tyba-text-muted">
             <button
               onClick={() => void activateWorkspace(w.id)}
               className="flex h-full min-w-0 flex-1 items-center gap-1.5"
@@ -6396,7 +6541,7 @@ export default function App() {
           // Barra B do quadro PropostaClaro: seção de vidro na largura toda,
           // semáforos, marca, migalha, branch e, à direita, os ícones do painel.
           // Os semáforos nativos ficam dentro dela (`trafficLightPosition`).
-          className={`tyba-section tyba-bar flex h-10 shrink-0 items-center gap-3 pr-2.5 ${
+          className={`tyba-section tyba-bar flex h-10 shrink-0 items-center gap-2.5 pr-2.5 ${
             IS_MAC ? "pl-[84px]" : "pl-2.5"
           }`}
         >
@@ -6423,12 +6568,13 @@ export default function App() {
                 setOrbitOpen(false);
                 setMachineScreen(null);
               }}
-              className="tyba-pill-on flex h-[26px] shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full pl-2 pr-2.5 text-tyba-text"
+              // Pílula de modo do quadro Header: branca, fio fino, ícone azul.
+              className="flex h-[30px] shrink-0 items-center gap-2 whitespace-nowrap rounded-full border border-[var(--tyba-line)] bg-tyba-raised px-3 text-[13px] font-semibold text-tyba-text"
             >
               {orbitOpen ? (
-                <OrbitIcon size={13} className="text-tyba-violet" />
+                <OrbitIcon size={15} className="text-tyba-blue" />
               ) : (
-                <span className="font-mono text-tyba-green">❯</span>
+                <CaretRight size={15} className="text-tyba-blue" />
               )}
               {orbitOpen ? t("orbitView") : t("terminalView")}
             </button>
@@ -6468,7 +6614,7 @@ export default function App() {
             )}
           </nav>
           {activeChips.branch?.state === "known" && (
-            <span className="flex h-[22px] shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full bg-tyba-blue/[.10] pl-2 pr-[9px] text-[11.5px] font-medium text-tyba-blue">
+            <span className="flex h-6 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full bg-tyba-blue-tint px-2.5 text-[12px] font-semibold text-tyba-blue">
               <span aria-hidden className="size-1.5 rounded-full bg-current" />
               {activeChips.branch.label}
             </span>
@@ -6484,10 +6630,10 @@ export default function App() {
               // desabilitado dizendo onde funciona, em vez de não fazer nada.
               <>
                 <IconAction label={t("servicesTitle")} onClick={() => setMachineScreen("ports")}>
-                  <Plug size={16} />
+                  <Plug size={18} />
                 </IconAction>
                 <IconAction label={t("tunnelsTitle")} onClick={() => setMachineScreen("tunnels")}>
-                  <ArrowsLeftRight size={16} />
+                  <ArrowsLeftRight size={18} />
                 </IconAction>
                 {panelTabs
                   .filter((tab) => tab.kind !== "services")
@@ -6497,11 +6643,11 @@ export default function App() {
                       disabled
                       label={t("openInTerminalHint", { what: tab.label })}
                     >
-                      <PanelIcon kind={tab.kind} />
+                      <PanelIcon kind={tab.kind} size={18} />
                     </IconAction>
                   ))}
                 <IconAction disabled label={t("openInTerminalHint", { what: t("filesPanel") })}>
-                  <FolderOpen size={16} />
+                  <FolderSimple size={18} />
                 </IconAction>
               </>
             ) : (
@@ -6531,17 +6677,73 @@ export default function App() {
             {/* A pasta do header abre a tela de Arquivos da sessão (pedido do dono,
                 2026-10-14); "Abrir pasta do projeto" fica no menu, na paleta e no
                 atalho. */}
-            <IconAction
-              label={t("filesPanel")}
-              shortcut={bindings.files}
-              onClick={() => {
-                if (fileSessionId) void openFilesPanel(fileSessionId).catch(() => {});
-              }}
-            >
-              <FolderOpen size={16} />
-            </IconAction>
+            {fileSessionId && (
+              <IconAction
+                label={t("filesPanel")}
+                shortcut={bindings.files}
+                // Alterna (dono, 2026-11-19): com Arquivos aberto, o mesmo
+                // ícone fecha a tela.
+                onClick={() => {
+                  if (filesTarget && activeWorkspace) {
+                    void closeSideView(activeWorkspace.id).catch(() => {});
+                  } else {
+                    void openFilesPanel(fileSessionId).catch(() => {});
+                  }
+                }}
+              >
+                <FolderSimple size={18} />
+              </IconAction>
+            )}
             </>
             )}
+          </div>
+
+          {/* Fixos no header (dono, 2026-11-19): só o Inbox e o avatar. As
+              Configurações moram no menu do avatar; a barra lateral fica com
+              Nova sessão, Orbit, SSH, Sessões e Agentes. */}
+          <div className="flex items-center gap-1 pl-1">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={() => setInboxOpen((o) => !o)}
+                  aria-label={inboxBadge > 0 ? t("notifAria", { count: inboxBadge }) : t("inbox")}
+                  aria-pressed={inboxOpen}
+                  className={`relative size-[34px] rounded-[10px] text-tyba-text-muted hover:text-tyba-text ${
+                    inboxOpen ? "tyba-icon-on" : ""
+                  }`}
+                >
+                  <Tray size={18} />
+                  {inboxBadge > 0 && (
+                    <span className="absolute -right-0.5 -top-0.5 grid h-4 min-w-4 place-items-center rounded-full bg-tyba-amber-fill px-1 text-[10px] font-bold text-[color-mix(in_srgb,var(--tyba-amber-fill)_16%,black)]">
+                      {inboxBadge > 9 ? "9+" : inboxBadge}
+                    </span>
+                  )}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">{t("inbox")}</TooltipContent>
+            </Tooltip>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  aria-label={t("accountMenu")}
+                  className="grid size-[30px] place-items-center rounded-full bg-tyba-blue-tint text-[12px] font-bold text-tyba-blue outline-none focus-visible:[box-shadow:var(--tyba-focus-ring)]"
+                >
+                  {(accountName.trim()[0] ?? "?").toUpperCase()}
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-[220px]">
+                {accountName.trim() && (
+                  <div className="px-2 py-1.5 text-[13px] font-semibold text-tyba-text">{accountName.trim()}</div>
+                )}
+                <DropdownMenuItem onSelect={() => void openViewTab("settings").catch(() => {})}>
+                  <GearSix size={16} />
+                  <span className="flex-1">{t("settings")}</span>
+                  <span className="text-[12px] text-tyba-text-faint">{formatCombo(bindings.settings)}</span>
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
 
           <WindowControls />
@@ -6588,23 +6790,17 @@ export default function App() {
             </div>
           )}
           <>
-            {sidebar !== "hidden" && (
+            {sidebar !== "hidden" && !orbitOpen && (
                 <aside
-                  // `tyba-divide-r`: a sidebar nunca teve borda direita. Ela se
-                  // separava do terminal por um degrau de fundo — que existe no
-                  // `github-dark` e some no `tyba-dark`, onde `surface` e
-                  // `sunken` distam 5/255. E acima do terminal ela encosta na
-                  // faixa de abas, que é `surface` também: mesma cor, zero
-                  // separação, em TODO tema.
+                  // Barra lateral do quadro Sidebar (aprovada em 2026-11-15):
+                  // busca, Nova sessão/Orbit/Conexões SSH, Sessões por grupo,
+                  // Agentes em cartões e, no pé, Inbox e Configurações.
                   className="tyba-section flex shrink-0 flex-col overflow-hidden"
                   style={{ width: SIDEBAR_WIDTH[sidebar] }}
                 >
                   {open && (
-                    <label className="tyba-piece mx-2 mt-2 flex h-8 shrink-0 items-center gap-2 !rounded-[6px] px-2.5 focus-within:outline focus-within:outline-1 focus-within:outline-tyba-border-strong">
-                      <MagnifyingGlass
-                        size={12}
-                        className="shrink-0 text-tyba-text-faint"
-                      />
+                    <label className="mx-3 mt-3 flex h-10 shrink-0 items-center gap-2 rounded-[10px] bg-tyba-raised pl-4 pr-3 text-tyba-text-faint shadow-[0_0_0_1px_var(--tyba-line)] focus-within:shadow-[0_0_0_2px_var(--tyba-blue)]">
+                      <MagnifyingGlass size={16} className="shrink-0" />
                       <input
                         spellCheck={false}
                         autoCapitalize="off"
@@ -6612,328 +6808,210 @@ export default function App() {
                         value={sessionQuery}
                         onChange={(e) => setSessionQuery(e.target.value)}
                         placeholder={t("searchSessions")}
-                        className="w-full bg-transparent text-[12.5px] text-tyba-text outline-none placeholder:text-tyba-text-faint"
+                        className="w-full min-w-0 bg-transparent text-[14px] font-medium text-tyba-text outline-none placeholder:text-tyba-text-faint"
                       />
                     </label>
                   )}
-                  <div className="mt-1 flex shrink-0 flex-col gap-0.5 px-2">
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <Button
-                            variant="ghost"
-                            onClick={() => openNewSession()}
-                            aria-label={t("newSession")}
-                            className={`h-[33px] shrink-0 gap-2 rounded-[6px] text-[13px] font-medium text-tyba-text-muted hover:bg-tyba-text/[.03] hover:text-tyba-text ${
-                              open ? "justify-start px-2.5" : "justify-center px-0"
-                            }`}
-                          >
-                            <Plus size={14} className="shrink-0 text-tyba-text-faint" />
-                            {open && (
-                              <>
-                                <span className="flex-1 text-left">{t("newSession")}</span>
-                                <span className="text-[12px] text-tyba-text-faint">
-                                  {formatCombo(bindings.newSession)}
-                                </span>
-                              </>
-                            )}
-                          </Button>
-                        </TooltipTrigger>
-                        <TooltipContent
-                          side={open ? "bottom" : "right"}
-                          className="flex items-center gap-2"
-                        >
-                          {t("newSession")}
-                          <span className="font-mono text-tyba-text-faint">
-                            {formatCombo(bindings.newSession)}
-                          </span>
-                        </TooltipContent>
-                      </Tooltip>
-                      {/* Um item só para o Orbit (dono, 2026-11-02: "a lateral não
-                          pode estar poluída"); a volta para o Terminal mora na
-                          paleta do próprio Orbit. Aceso enquanto ele está aberto. */}
-                      <button
-                        aria-label={t("orbitView")}
-                        aria-pressed={orbitOpen}
-                        onClick={() => {
-                          // Indo para o Orbit, o terminal de baixo não fica com
-                          // o foco: as teclas cairiam num xterm escondido.
-                          if (!orbitOpen) (document.activeElement as HTMLElement | null)?.blur();
-                          setMachineScreen(null);
-                          setOrbitOpen((o) => !o);
-                        }}
-                        className={`flex h-[33px] shrink-0 items-center gap-2.5 rounded-[6px] text-[13px] font-medium ${
-                          orbitOpen
-                            ? "tyba-nav-on text-tyba-violet"
-                            : "text-tyba-text-muted hover:bg-tyba-text/[.03] hover:text-tyba-text"
-                        } ${open ? "px-2.5" : "justify-center px-0"}`}
-                      >
-                        <OrbitIcon
-                          size={14}
-                          className={`shrink-0 ${orbitOpen ? "text-tyba-violet" : "text-tyba-text-faint"}`}
-                        />
-                        {open && (
-                          <>
-                            <span className="flex-1 text-left text-tyba-text">{t("orbitView")}</span>
-                            <span className="font-mono text-[11px] text-tyba-text-faint">
-                              {formatCombo(bindings.toggleOrbit)}
-                            </span>
-                          </>
-                        )}
-                      </button>
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <Button
-                            variant="ghost"
-                            onClick={() =>
-                              void openViewTab("connections").catch(() => {})
-                            }
-                            aria-label={t("connectionsTitle")}
-                            className={`h-[33px] shrink-0 gap-2.5 rounded-[6px] text-[13px] font-medium ${
-                              open ? "justify-start px-2.5" : "justify-center px-0"
-                            } ${
-                              activeTab?.view === "connections"
-                                ? "tyba-nav-on text-tyba-cyan"
-                                : "text-tyba-text-muted hover:bg-tyba-text/[.03] hover:text-tyba-text"
-                            }`}
-                          >
-                            <HardDrives
-                              size={14}
-                              className={`shrink-0 ${activeTab?.view === "connections" ? "text-tyba-cyan" : "text-tyba-text-faint"}`}
-                            />
-                            {open && <span className="text-tyba-text">{t("connectionsTitle")}</span>}
-                          </Button>
-                        </TooltipTrigger>
-                        <TooltipContent side={open ? "bottom" : "right"}>
-                          {t("connectionsTitle")}
-                        </TooltipContent>
-                      </Tooltip>
+                  <div className={`flex shrink-0 flex-col gap-0.5 ${open ? "mt-1.5 px-3" : "mt-2 px-1"}`}>
+                    <SidebarItem
+                      open={open}
+                      icon={<Plus size={18} />}
+                      label={t("newSession")}
+                      kbd={formatCombo(bindings.newSession)}
+                      onClick={() => openNewSession()}
+                    />
+                    {/* Um item só para o Orbit (dono, 2026-11-02: "a lateral não
+                        pode estar poluída"); aceso enquanto ele está aberto. */}
+                    <SidebarItem
+                      open={open}
+                      active={orbitOpen}
+                      icon={<OrbitIcon size={18} />}
+                      label={t("orbitView")}
+                      kbd={formatCombo(bindings.toggleOrbit)}
+                      onClick={() => {
+                        // Indo para o Orbit, o terminal de baixo não fica com
+                        // o foco: as teclas cairiam num xterm escondido.
+                        if (!orbitOpen) (document.activeElement as HTMLElement | null)?.blur();
+                        setMachineScreen(null);
+                        setOrbitOpen((o) => !o);
+                      }}
+                    />
+                    <SidebarItem
+                      open={open}
+                      active={activeTab?.view === "connections"}
+                      icon={<Rows size={18} />}
+                      label={t("connectionsTitle")}
+                      onClick={() => void openViewTab("connections").catch(() => {})}
+                    />
                   </div>
+                  {/* Sessões e Agentes são duas áreas fixas (dono, 2026-11-19):
+                      cada uma com o seu título, o seu espaço e a sua rolagem,
+                      separadas por uma linha. "Sessões" aparece mesmo vazia,
+                      e toda sessão nova abre dentro dela. */}
+                  {open && (
+                    <span className="mx-3 shrink-0 px-3 pb-1.5 pt-4 text-[11px] font-semibold uppercase tracking-[0.04em] text-tyba-text-faint">
+                      {t("sessionsTitle")}
+                    </span>
+                  )}
                   <nav
-                    className="tyba-scroll-fade mt-2 flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto px-2 pb-2"
+                    className={`tyba-scroll-fade flex min-h-[96px] flex-[3] flex-col overflow-y-auto pb-2 ${
+                      open ? "px-3" : "mt-2 gap-0.5 px-1"
+                    }`}
                   >
-                    {groupedWorkspaces.groups.map(([name, list]) => (
-                      <div
-                        key={name}
-                        className="flex flex-col gap-0.5"
-                      >
-                        <span className="flex items-center gap-2 px-2.5 pt-3.5 pb-1.5">
+                    {open && sidebarGroups.length === 0 && (
+                      <span className="px-3 py-2 text-[12.5px] text-tyba-text-faint">
+                        {t("sidebarNoSessions")}
+                      </span>
+                    )}
+                    {sidebarGroups.map((g) => {
+                      // Fechada, a lateral é o trilho: só os ícones.
+                      if (!open) return g.list.map(renderWorkspace);
+                      const collapsed = !!collapsedGroups[g.key];
+                      const dots = g.list.map(workspaceDotOf);
+                      const live =
+                        g.kind === "ssh" &&
+                        g.list.some((w) =>
+                          w.tabs.some((tab) =>
+                            (tab.root ? leafSessions(tab.root) : []).some(
+                              (sid) => sessionById.get(sid)?.connection === "live",
+                            ),
+                          ),
+                        );
+                      const groupDot = dots.includes("attention")
+                        ? SESSION_DOT_CLASS.attention
+                        : dots.includes("running")
+                          ? SESSION_DOT_CLASS.running
+                          : live
+                            ? "bg-tyba-green-fill"
+                            : "bg-tyba-text-faint";
+                      const header = (
+                        <div className="mt-1.5 flex h-[26px] items-center gap-2 px-3 text-[12px] font-semibold text-tyba-text-muted">
                           <button
-                            aria-label={name}
-                            aria-expanded={!collapsedGroups[name]}
+                            aria-label={g.kind === "local" ? t("sidebarThisComputer") : g.label}
+                            aria-expanded={!collapsed}
                             onClick={() =>
                               setCollapsedGroups((prev) => ({
                                 ...prev,
-                                [name]: !prev[name],
+                                [g.key]: !prev[g.key],
                               }))
                             }
-                            className="flex min-w-0 items-center gap-1 text-tyba-text-faint transition-colors hover:text-tyba-text"
+                            className="flex min-w-0 flex-1 items-center gap-2 transition-colors hover:text-tyba-text"
                           >
-                            {collapsedGroups[name] ? (
-                              <CaretRight size={9} weight="bold" />
+                            {g.kind === "local" ? (
+                              <Monitor size={15} className="shrink-0" />
+                            ) : g.kind === "ssh" ? (
+                              <HardDrives size={15} className="shrink-0" />
                             ) : (
-                              <CaretDown size={9} weight="bold" />
+                              <span
+                                aria-hidden
+                                className={`size-2 shrink-0 rounded-[3px] ${g.color ? "" : "bg-tyba-text-faint"}`}
+                                style={g.color ? { background: `var(--tyba-${g.color})` } : undefined}
+                              />
                             )}
-                            <span className="truncate text-[11px] font-medium uppercase tracking-[0.06em]">
-                              {t("sessionsGroup", { name })}
+                            <span className="min-w-0 flex-1 truncate text-left">
+                              {g.kind === "local" ? t("sidebarThisComputer") : g.label}
                             </span>
                           </button>
-                          <span className="min-w-0 flex-1" />
                           <Tooltip>
                             <TooltipTrigger asChild>
                               <button
                                 aria-label={t("addToGroup")}
-                                onClick={() => newSessionInGroup(name)}
-                                className="rounded-[3px] text-tyba-text-faint transition-colors hover:text-tyba-text"
+                                onClick={() => {
+                                  if (g.kind === "local") openNewSession();
+                                  else if (g.kind === "ssh" && g.host) void connectToHost(g.host);
+                                  else newSessionInGroup(g.label);
+                                }}
+                                className="text-[15px] font-medium leading-none text-tyba-text-faint transition-colors hover:text-tyba-text"
                               >
-                                <Plus size={11} weight="bold" />
+                                +
                               </button>
                             </TooltipTrigger>
-                            <TooltipContent side="bottom">
-                              {t("addToGroup")}
-                            </TooltipContent>
+                            <TooltipContent side="bottom">{t("addToGroup")}</TooltipContent>
                           </Tooltip>
-                        </span>
-                        {!collapsedGroups[name] && list.map(renderWorkspace)}
-                      </div>
-                    ))}
-                    {open &&
-                      groupedWorkspaces.loose.some(
-                        (w) =>
-                          !isConfigWorkspace(w) &&
-                          !isWorktreesWorkspace(w) &&
-                          !isConnectionsWorkspace(w) &&
-                          !isStatsWorkspace(w) &&
-                          !isAgentBoardWorkspace(w),
-                      ) && (
-                      <span className="px-2.5 pt-3.5 pb-1.5 text-[11px] font-medium uppercase tracking-[0.06em] text-tyba-text-faint">
-                        {t("sessionsTitle")}
-                      </span>
-                    )}
-                    {groupedWorkspaces.loose
-                      .filter(
-                        (w) =>
-                          !isConfigWorkspace(w) &&
-                          !isWorktreesWorkspace(w) &&
-                          !isConnectionsWorkspace(w) &&
-                          !isStatsWorkspace(w) &&
-                          !isAgentBoardWorkspace(w),
-                      )
-                      .map(renderWorkspace)}
+                          <span aria-hidden className={`size-[7px] shrink-0 rounded-full ${groupDot}`} />
+                          <button
+                            aria-hidden
+                            tabIndex={-1}
+                            onClick={() =>
+                              setCollapsedGroups((prev) => ({
+                                ...prev,
+                                [g.key]: !prev[g.key],
+                              }))
+                            }
+                            className="text-tyba-text-faint transition-colors hover:text-tyba-text"
+                          >
+                            {collapsed ? <CaretRight size={13} /> : <CaretDown size={13} />}
+                          </button>
+                        </div>
+                      );
+                      if (collapsed) return <div key={g.key}>{header}</div>;
+                      // Grupo aberto: o contorno fino em volta (referência: herdr).
+                      return (
+                        <div
+                          key={g.key}
+                          className="mx-0.5 mb-1.5 mt-1 flex flex-col gap-[3px] rounded-[12px] bg-tyba-raised/35 px-2 pb-2 pt-1 shadow-[inset_0_0_0_1px_var(--tyba-line)]"
+                        >
+                          {header}
+                          {g.list.map(renderWorkspace)}
+                        </div>
+                      );
+                    })}
                   </nav>
-                  {/* Sem divisa: quem marca a fronteira de rolagem é o fade
-                      no `nav` acima. A linha aqui ficava 21px acima da borda da
-                      linha de comando — duas pilhas ancoradas embaixo, com
-                      alturas que não têm por que coincidir, então qualquer
-                      valor escolhido hoje quebra quando uma delas mudar.
-                      O fade resolve por deleção, e informa mais: ele só existe
-                      quando há conteúdo escondido acima. */}
-                  <div className="flex shrink-0 flex-col gap-0.5 px-2 pt-1 pb-2">
-                    {/* Inbox (quadro PropostaClaro): bandeja e contagem; abre a
-                        coluna encostada na lateral. */}
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <Button
-                          variant="ghost"
-                          aria-label={inboxBadge > 0 ? t("notifAria", { count: inboxBadge }) : t("inbox")}
-                          aria-pressed={inboxOpen}
-                          onClick={() => setInboxOpen((o) => !o)}
-                          className={`relative h-[33px] shrink-0 gap-2.5 rounded-[6px] text-[13px] font-medium ${
-                            open ? "justify-start px-2.5" : "justify-center px-0"
-                          } ${
-                            inboxOpen
-                              ? "tyba-nav-on text-tyba-blue"
-                              : "bg-tyba-text/[.05] text-tyba-text hover:bg-tyba-text/[.07]"
-                          }`}
-                        >
-                          <Tray size={16} className={`shrink-0 ${inboxOpen ? "text-tyba-blue" : ""}`} />
-                          {open && <span className="flex-1 text-left text-tyba-text">{t("inbox")}</span>}
-                          {inboxBadge > 0 && (
-                            <span
-                              className={
-                                open
-                                  ? "flex h-[22px] items-center gap-1.5 rounded-full bg-tyba-blue/[.10] pl-2 pr-[9px] text-[11.5px] font-medium text-tyba-blue before:size-1.5 before:rounded-full before:bg-current before:content-['']"
-                                  : "absolute right-1 top-1 size-1.5 rounded-full bg-tyba-blue"
-                              }
-                            >
-                              {open ? (inboxBadge > 9 ? "9+" : inboxBadge) : null}
-                            </span>
-                          )}
-                        </Button>
-                      </TooltipTrigger>
-                      <TooltipContent side={open ? "bottom" : "right"}>
-                        {t("inbox")}
-                      </TooltipContent>
-                    </Tooltip>
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <Button
-                          variant="ghost"
-                          onClick={() => void toggleAgentQueue().catch(() => {})}
-                          aria-label={t("agentsQueue")}
-                          // Peça de vidro (quadro): o painel Agentes é o que
-                          // flutua, então a entrada dele já tem a lente.
-                          className={`relative h-[33px] shrink-0 gap-2.5 rounded-[6px] text-[13px] font-medium ${
-                            open ? "justify-start px-2.5" : "justify-center px-0"
-                          } ${
-                            activeWorkspace?.side_view === "agent-queue" ||
-                            activeWorkspace?.side_view?.startsWith("agents:")
-                              ? "tyba-nav-on text-tyba-amber"
-                              : "tyba-piece text-tyba-text"
-                          }`}
-                        >
-                          <AgentIcon
-                            size={14}
-                            className={`shrink-0 ${
-                              activeWorkspace?.side_view === "agent-queue" ||
-                              activeWorkspace?.side_view?.startsWith("agents:")
-                                ? "text-tyba-amber"
-                                : "text-tyba-text-faint"
-                            }`}
-                          />
-                          {open && <span className="flex-1 text-left text-tyba-text">{t("agentsQueue")}</span>}
-                          {/* Pílula do mockup: conta APROVAÇÕES pendentes. Sem
-                              nenhuma, mas com agente pedindo alguém, cai no
-                              número de antes — a atenção não some da tela. */}
-                          {(approvals.length > 0 || agentsWaiting > 0) && (
-                            <span
-                              className={
-                                open
-                                  ? "ml-auto rounded-[4px] bg-tyba-amber-tint px-1.5 text-[11px] text-tyba-amber"
-                                  : "absolute right-1 top-1 size-1.5 rounded-full bg-tyba-amber-fill"
-                              }
-                            >
-                              {open
-                                ? approvals.length > 0
-                                  ? t("agentsApprovals", {
-                                      count: approvals.length,
-                                    })
-                                  : agentsWaiting
-                                : null}
-                            </span>
-                          )}
-                        </Button>
-                      </TooltipTrigger>
-                      <TooltipContent side={open ? "bottom" : "right"}>
+                  <div
+                    className={`flex min-h-[96px] flex-[2] flex-col overflow-hidden shadow-[inset_0_1px_0_var(--tyba-line)] ${
+                      open ? "mx-3" : "mx-1"
+                    }`}
+                  >
+                    {/* Agentes (quadro): o rótulo com o badge de quem espera é
+                        a entrada da fila; embaixo, um cartão por agente. */}
+                    {open ? (
+                      <button
+                        onClick={() => void toggleAgentQueue().catch(() => {})}
+                        aria-label={t("agentsQueue")}
+                        aria-pressed={agentQueueOpen}
+                        className={`flex items-center px-3 pb-1.5 pt-4 text-[11px] font-semibold uppercase tracking-[0.04em] transition-colors hover:text-tyba-text ${
+                          agentQueueOpen ? "text-tyba-blue" : "text-tyba-text-faint"
+                        }`}
+                      >
                         {t("agentsQueue")}
-                      </TooltipContent>
-                    </Tooltip>
-                    {agentRows.length > 0 && (
-                      <div className="mt-0.5 max-h-[40vh] min-h-0 overflow-y-auto">
-                        <AgentsSidebar
-                          rows={agentRows}
-                          open={open}
-                          onSelect={(sessionId, place) => {
-                            jumpToAgent(sessionId, place);
-                          }}
+                        {(approvals.length > 0 || agentsWaiting > 0) && (
+                          <span
+                            title={
+                              approvals.length > 0
+                                ? t("agentsApprovals", { count: approvals.length })
+                                : undefined
+                            }
+                            className="ml-auto flex"
+                          >
+                            <SidebarBadge count={approvals.length > 0 ? approvals.length : agentsWaiting} />
+                          </span>
+                        )}
+                      </button>
+                    ) : (
+                      <div className="mt-2">
+                        <SidebarItem
+                          open={false}
+                          active={agentQueueOpen}
+                          icon={<RobotIcon size={18} />}
+                          label={t("agentsQueue")}
+                          badge={approvals.length > 0 ? approvals.length : agentsWaiting}
+                          onClick={() => void toggleAgentQueue().catch(() => {})}
                         />
                       </div>
                     )}
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <Button
-                          variant="ghost"
-                          onClick={() => void openViewTab("settings").catch(() => {})}
-                          aria-label={t("settings")}
-                          className={`h-[33px] shrink-0 gap-2.5 rounded-[6px] text-[13px] font-medium ${
-                            open ? "justify-start px-2.5" : "justify-center px-0"
-                          } ${
-                            activeTab?.view === "settings"
-                              ? "tyba-nav-on text-tyba-green"
-                              : "text-tyba-text-muted hover:bg-tyba-text/[.03] hover:text-tyba-text"
-                          }`}
-                        >
-                          <GearSix
-                            size={16}
-                            className={`shrink-0 ${activeTab?.view === "settings" ? "text-tyba-green" : ""}`}
-                          />
-                          {open && (
-                            <>
-                              <span className="flex-1 text-left text-tyba-text">{t("settings")}</span>
-                              <span className="text-[12px] text-tyba-text-faint">
-                                {formatCombo(bindings.settings)}
-                              </span>
-                            </>
-                          )}
-                        </Button>
-                      </TooltipTrigger>
-                      {!open && (
-                        <TooltipContent side="right">{t("settings")}</TooltipContent>
-                      )}
-                    </Tooltip>
+                    <div className="tyba-scroll-fade min-h-0 flex-1 overflow-y-auto pb-2">
+                      <AgentsSidebar
+                        rows={agentRows}
+                        open={open}
+                        subagents={subagentsBySession}
+                        onSelect={(sessionId, place) => {
+                          jumpToAgent(sessionId, place);
+                        }}
+                      />
+                    </div>
                   </div>
                 </aside>
               )}
-
-              <ErrorBoundary region="notificações">
-                <NotificationsInbox
-                  sessions={sessions}
-                  approvals={approvals}
-                  open={inboxOpen}
-                  onOpenChange={setInboxOpen}
-                  onGoToSession={goToSession}
-                  onBadgeChange={setInboxBadge}
-                />
-              </ErrorBoundary>
 
               <main ref={mainAreaRef} className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden">
                 {gitScreenSession && activeWorkspace && (
@@ -7591,6 +7669,19 @@ export default function App() {
                   </>
                 )}
               </main>
+
+              {/* O Inbox abre pela direita, do lado do ícone dele no header
+                  (dono, 2026-11-19). */}
+              <ErrorBoundary region="notificações">
+                <NotificationsInbox
+                  sessions={sessions}
+                  approvals={approvals}
+                  open={inboxOpen}
+                  onOpenChange={setInboxOpen}
+                  onGoToSession={goToSession}
+                  onBadgeChange={setInboxBadge}
+                />
+              </ErrorBoundary>
 
               <ShortcutsPanel
                 open={shortcutsOpen}

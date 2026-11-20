@@ -4,12 +4,11 @@ import { useTranslation } from "react-i18next";
 import {
   CaretDown,
   CaretUp,
-  Check,
   DotsSixVertical,
   Pause,
   Play,
   PlusMinus,
-  Queue,
+  Rows,
   Trash,
   X,
 } from "@phosphor-icons/react";
@@ -48,10 +47,9 @@ import { drawerBox, type DrawerBox } from "../lib/appFooter";
 import { handoffSource, requestHandoff } from "../lib/handoff";
 import { queueIndicator, reorderIds, slotAt, type QueueTone } from "../lib/promptQueue";
 import { toastError } from "../lib/toast";
-import { AgentsPanel } from "./AgentsPanel";
-import { AgentIcon } from "./icons/AgentIcon";
+import { AgentsPanel, RobotIcon } from "./AgentsPanel";
 import { PLATE, PLATE_FLOAT, PLATE_LINE } from "./plate";
-import { TurnPanel } from "./TurnPanel";
+import { GLASS_BTN, TurnPanel } from "./TurnPanel";
 import { usePromptQueue } from "./usePromptQueue";
 
 interface Props {
@@ -65,24 +63,25 @@ interface Props {
   /** O binário que recebe a fila (`claude`, `codex`). */
   agentName: string;
   orchestratorTitle: string | null;
+  /** Não entra mais na gaveta: o agente principal usa o robô (quadro Agentes). */
   runner: AgentRunner | null;
   /** Subagente com o detalhe aberto na lateral (4E). */
   selectedSubagent: string | null;
   onSelectSubagent: (agentId: string) => void;
 }
 
+// Quadro Agentes (g6-state): "Envia quando o turno terminar" em verde sobre a
+// tinta azul; as pausas seguem na cor do motivo.
 const TONE: Record<QueueTone, string> = {
-  send: "text-tyba-green bg-tyba-green-tint",
+  send: "text-tyba-green bg-tyba-blue-tint",
   approval: "text-tyba-amber bg-tyba-amber-tint",
   failed: "text-tyba-red bg-tyba-red-tint",
   stopped: "text-tyba-text-muted bg-tyba-neutral-tint",
 };
 
-const BTN =
-  "inline-flex h-6 items-center gap-1.5 rounded-[6px] px-[9px] text-[11.5px] whitespace-nowrap disabled:pointer-events-none disabled:opacity-50";
-
+/** Botão fantasma só de ícone do quadro (limpar, recolher). */
 const VBTN =
-  "inline-flex size-6 shrink-0 items-center justify-center rounded-[5px] text-tyba-text-faint hover:text-tyba-text disabled:pointer-events-none disabled:opacity-50";
+  "inline-flex size-[34px] shrink-0 items-center justify-center rounded-[10px] text-tyba-text-muted outline-none hover:bg-tyba-hover hover:text-tyba-text focus-visible:[box-shadow:var(--tyba-focus-ring)] disabled:pointer-events-none disabled:opacity-45";
 
 /**
  * A gaveta Fila/Agentes do pane ativo (conteúdo de GavetaFilaAgentes 4A′–4E;
@@ -189,27 +188,27 @@ export function PromptQueue({
       title={t("agentsDrawerCollapse")}
       className={VBTN}
     >
-      <CaretDown size={14} />
+      <CaretDown size={16} />
     </button>
   );
 
   const pauseButton = paused ? (
     <button
       type="button"
-      className={`${BTN} text-tyba-text shadow-[inset_0_0_0_1px_var(--tyba-border-field)]`}
+      className={GLASS_BTN}
       onClick={() => void promptQueueResume(sessionId).catch(fail)}
     >
-      <Play size={11} />
+      <Play size={16} className="shrink-0" />
       {t("promptQueueResume")}
     </button>
   ) : (
     <button
       type="button"
       disabled={prompts.length === 0}
-      className={`${BTN} text-tyba-text shadow-[inset_0_0_0_1px_var(--tyba-border-field)]`}
+      className={GLASS_BTN}
       onClick={() => void promptQueuePause(sessionId).catch(fail)}
     >
-      <Pause size={11} />
+      <Pause size={16} className="shrink-0" />
       {t("promptQueuePause")}
     </button>
   );
@@ -244,66 +243,46 @@ export function PromptQueue({
         }
       }}
     >
+      {/* Quadro Agentes (g4-qh): as abas no segmento; na Fila, Pausar e
+          limpar; nas outras, recolher. */}
       <div className="flex items-center gap-2 px-3 pb-2 pt-2.5">
-        {hasSubagents || turn ? (
-          <>
-            <DrawerTabs
-              tab={tab}
-              queueCount={prompts.length}
-              agents={progress}
-              turnCount={turn ? turnTabCount(turn) : undefined}
-              pending={pending}
-              compact={box.box.compact}
-              onTab={setTab}
-            />
-            <span className="flex-1" />
-            {tab === "queue" && (
-              <>
-                {pauseButton}
-                <button
-                  type="button"
-                  disabled={clearDisabled}
-                  aria-label={t("promptQueueClear")}
-                  title={t("promptQueueClear")}
-                  className={VBTN}
-                  onClick={clear}
-                >
-                  <Trash size={12} />
-                </button>
-              </>
-            )}
-          </>
-        ) : (
-          <>
-            <Queue size={15} className="shrink-0 text-tyba-violet" />
-            <span className="text-[13px] font-medium text-tyba-text">
-              {t("promptQueueTitle")}
-            </span>
-            <span className="text-[11.5px] text-tyba-text-faint">
-              {prompts.length}
-            </span>
-            <span className="flex-1" />
+        <DrawerTabs
+          tab={tab}
+          queueCount={prompts.length}
+          agents={hasSubagents ? progress : null}
+          turnCount={turn ? turnTabCount(turn) : undefined}
+          pending={pending}
+          // Na Fila, Pausar e limpar dividem a linha: com as três abas os
+          // rótulos não cabem nos 430px, e as abas ficam só com ícone e número
+          // (o nome no tooltip), como na gaveta estreita.
+          compact={box.box.compact || (tab === "queue" && hasSubagents && turn !== null)}
+          onTab={setTab}
+        />
+        <span className="flex-1" />
+        {tab === "queue" ? (
+          <span className="flex shrink-0 gap-1">
             {pauseButton}
             <button
               type="button"
               disabled={clearDisabled}
-              className={`${BTN} text-tyba-text-muted hover:text-tyba-text`}
+              aria-label={t("promptQueueClear")}
+              title={t("promptQueueClear")}
+              className={VBTN}
               onClick={clear}
             >
-              <Trash size={12} />
-              {t("promptQueueClear")}
+              <Trash size={16} />
             </button>
-          </>
+          </span>
+        ) : (
+          collapseButton
         )}
-        {collapseButton}
       </div>
       {tab === "agents" ? (
         <AgentsPanel
           session={session}
           snapshot={snapshot}
           approvals={approvals}
-          orchestratorTitle={orchestratorTitle}
-          runner={runner}
+          orchestratorTitle={orchestratorTitle ?? agentName}
           selectedId={selectedSubagent}
           onSelect={onSelectSubagent}
         />
@@ -321,10 +300,10 @@ export function PromptQueue({
       ) : (
         <>
           <div
-            className={`mx-3 mb-2 flex items-center gap-2 rounded-[6px] px-2.5 py-[7px] text-[12px] ${TONE[indicator.tone]}`}
+            className={`mx-2.5 mb-1 mt-0.5 flex items-center gap-2 rounded-[10px] px-3 py-[9px] text-[12.5px] font-semibold ${TONE[indicator.tone]}`}
           >
             {indicator.tone === "send" ? (
-              <span className="size-[7px] shrink-0 rounded-full bg-tyba-green" />
+              <span className="size-[7px] shrink-0 rounded-full bg-tyba-green-fill" />
             ) : (
               <Pause size={13} className="shrink-0" />
             )}
@@ -333,13 +312,13 @@ export function PromptQueue({
               <button
                 type="button"
                 onClick={() => setTab("agents")}
-                className="ml-auto shrink-0 whitespace-nowrap text-[11px] text-tyba-amber underline underline-offset-2"
+                className="ml-auto shrink-0 whitespace-nowrap text-[11px] font-normal text-tyba-amber underline underline-offset-2"
               >
                 {t("agentsDrawerSeeAgents")}
               </button>
             ) : (
               indicator.detail && (
-                <span className="ml-auto min-w-0 truncate text-[11px] text-tyba-text-muted">
+                <span className="ml-auto min-w-0 truncate text-[11px] font-normal text-tyba-text-muted">
                   {"text" in indicator.detail
                     ? indicator.detail.text
                     : t(indicator.detail.key, indicator.detail.params)}
@@ -348,11 +327,11 @@ export function PromptQueue({
             )}
           </div>
           {prompts.length === 0 ? (
-            <p className="mx-3 px-0.5 pb-1 pt-2.5 text-[12px] leading-[18px] text-tyba-text-faint">
+            <p className="mx-3.5 mb-2.5 mt-1 text-[12.5px] leading-[19px] text-tyba-text-muted">
               {t("promptQueueEmpty", { agent: agentName })}
             </p>
           ) : (
-            <div className="flex max-h-[40vh] flex-col gap-px overflow-y-auto px-1.5">
+            <div className="mt-1 flex max-h-[40vh] flex-col gap-px overflow-y-auto px-1.5 pb-1.5">
               {prompts.map((p, i) => [
                 dropLine(i),
                 <div
@@ -412,27 +391,31 @@ export function PromptQueue({
               {dropLine(prompts.length)}
             </div>
           )}
-          <div className="mt-1.5 flex items-center gap-2 px-3 pb-3 pt-2.5 shadow-[inset_0_1px_0_var(--tyba-border-soft)]">
-            <textarea
-              rows={1}
-              // O que sai daqui vai para o agente como foi escrito.
-              spellCheck={false}
-              autoCapitalize="off"
-              autoCorrect="off"
-              value={draft}
-              placeholder={t("promptQueueAdd")}
-              onChange={(e) => setDraft(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-                  e.preventDefault();
-                  add();
-                }
-              }}
-              className="h-[30px] min-w-0 flex-1 resize-none rounded-[5px] bg-[color-mix(in_srgb,var(--tyba-text)_2%,transparent)] px-[9px] py-[6px] text-[12px] leading-[18px] text-tyba-text outline-none shadow-[inset_0_0_0_1px_var(--tyba-border)] placeholder:text-tyba-text-ghost"
-            />
-            <kbd className="rounded-[4px] px-[5px] py-px text-[10.5px] text-tyba-text-faint shadow-[inset_0_0_0_1px_var(--tyba-border-field)]">
-              ⌘⏎
-            </kbd>
+          {/* Quadro Agentes (g6-foot): o campo do Muriki, com o atalho dentro. */}
+          <div className="px-3 pb-3 pt-2.5 shadow-[inset_0_1px_0_var(--tyba-line)]">
+            <div className="flex h-10 items-center gap-2 rounded-[10px] bg-[var(--tyba-glass-piece)] pl-4 pr-3 shadow-[0_0_0_1px_var(--tyba-line)] focus-within:[box-shadow:var(--tyba-focus-ring)]">
+              <textarea
+                rows={1}
+                // O que sai daqui vai para o agente como foi escrito.
+                spellCheck={false}
+                autoCapitalize="off"
+                autoCorrect="off"
+                value={draft}
+                aria-label={t("promptQueueAdd")}
+                placeholder={t("promptQueueAdd")}
+                onChange={(e) => setDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                    e.preventDefault();
+                    add();
+                  }
+                }}
+                className="h-5 min-w-0 flex-1 resize-none bg-transparent text-[14px] font-medium leading-5 text-tyba-text outline-none placeholder:text-tyba-text-faint"
+              />
+              <kbd className="min-w-[18px] rounded-[4px] bg-[color-mix(in_srgb,var(--tyba-text)_6%,transparent)] px-1.5 text-center font-mono text-[11px] font-medium leading-[18px] text-tyba-text-faint">
+                ⌘⏎
+              </kbd>
+            </div>
           </div>
         </>
       )}
@@ -523,18 +506,16 @@ function DrawerTabs({
   onTab: (tab: DrawerTab) => void;
 }) {
   const { t } = useTranslation();
+  // Quadro Agentes (g4-seg): segmento em pílula, a placa branca no escolhido.
   const item = (on: boolean) =>
-    `flex h-[26px] items-center whitespace-nowrap rounded-[5px] text-[12px] ${
-      compact ? "gap-[5px] px-2" : "gap-1.5 px-2.5"
-    } ${on ? "tyba-pill-on text-tyba-text" : "text-tyba-text-faint hover:text-tyba-text-muted"}`;
+    `flex h-7 min-w-0 items-center whitespace-nowrap rounded-full text-[12px] font-semibold transition-colors focus-visible:outline-none focus-visible:[box-shadow:var(--tyba-focus-ring)] ${
+      compact ? "gap-[5px] px-2.5" : "gap-1.5 px-3"
+    } ${on ? "tyba-pill-on text-tyba-text" : "text-tyba-text-muted hover:text-tyba-text"}`;
   const queueName = `${t("agentsDrawerQueue")} · ${queueCount}`;
   const agentsName = agents && `${t("agentsTitle")} · ${agents.done}/${agents.total}`;
   const turnName = `${t("pillTurn")} · ${turnCount ?? "–"}`;
   return (
-    <div
-      role="tablist"
-      className="flex gap-0.5 rounded-[7px] bg-[color-mix(in_srgb,var(--tyba-text)_5%,transparent)] p-0.5"
-    >
+    <div role="tablist" className="tyba-segment min-w-0 rounded-full! p-1!">
       <button
         type="button"
         role="tab"
@@ -544,9 +525,13 @@ function DrawerTabs({
         className={item(tab === "queue")}
         onClick={() => onTab("queue")}
       >
-        <Queue size={13} className="shrink-0 text-tyba-violet" />
-        {!compact && t("agentsDrawerQueue")}
-        <span className="text-[11px] text-tyba-text-faint">{queueCount}</span>
+        <Rows size={15} className="shrink-0" />
+        {compact ? queueCount : (
+          <>
+            <span className="truncate">{t("agentsDrawerQueue")}</span>
+            <span className="shrink-0">· {queueCount}</span>
+          </>
+        )}
       </button>
       {agents && (
         <button
@@ -558,11 +543,19 @@ function DrawerTabs({
           className={item(tab === "agents")}
           onClick={() => onTab("agents")}
         >
-          <AgentIcon size={13} className="shrink-0 text-tyba-amber" />
-          {!compact && t("agentsTitle")}
-          <span className="font-mono text-[11px] text-tyba-text-faint">
-            {agents.done}/{agents.total}
-          </span>
+          <RobotIcon size={15} />
+          {compact ? (
+            <span className="font-mono">
+              {agents.done}/{agents.total}
+            </span>
+          ) : (
+            <>
+              <span className="truncate">{t("agentsTitle")}</span>
+              <span className="shrink-0">
+                · {agents.done}/{agents.total}
+              </span>
+            </>
+          )}
           {pending > 0 && (
             <span
               className="rounded-full bg-tyba-amber-tint px-1.5 font-mono text-[10px] leading-4 text-tyba-amber"
@@ -583,11 +576,13 @@ function DrawerTabs({
           className={item(tab === "turn")}
           onClick={() => onTab("turn")}
         >
-          <PlusMinus size={13} className="shrink-0 text-tyba-cyan" />
-          {!compact && t("pillTurn")}
-          <span className="font-mono text-[11px] text-tyba-text-faint">
-            {turnCount ?? "–"}
-          </span>
+          <PlusMinus size={15} className="shrink-0" />
+          {compact ? (turnCount ?? "–") : (
+            <>
+              <span className="truncate">{t("pillTurn")}</span>
+              <span className="shrink-0">· {turnCount ?? "–"}</span>
+            </>
+          )}
         </button>
       )}
     </div>
@@ -597,16 +592,12 @@ function DrawerTabs({
 const DOT = "size-[6px] shrink-0 rounded-full";
 
 /**
- * A pílula da gaveta, chip do rodapé do app (quadro Pílulas, R1–R5): 18 px,
- * sem placa de vidro. Sempre "Fila · N"; com subagentes, "Agentes x/y" e o
- * estado da rodada. Pede você: contorno inteiro âmbar. A seta diz para onde a
- * gaveta vai; aberta, a pílula fica marcada. Compacta (degrau 6 da escada):
- * só ícones e números, o texto inteiro no tooltip e no `aria-label` — o estado
- * (cor, contorno, número) nunca sai.
- *
- * Turno terminado (quadro Pílulas de ResumoDoTurno): terceiro trecho,
- * "Turno · N arquivos +a −d", e o estado dos agentes encolhe para o ícone.
- * Falha: trecho vermelho, sem contorno.
+ * A pílula da gaveta, chip do rodapé do app (quadro Agentes, g3-pill): pílula
+ * neutra "Fila · N | Agentes x/y | ± Turno estado ⌄". O estado da rodada
+ * fica no ponto ao lado da contagem; pede você: contorno inteiro amarelo.
+ * Aberta, a placa do selecionado. Compacta (degrau 6 da escada): só ícones e
+ * números, o texto inteiro no tooltip e no `aria-label` — o estado (cor,
+ * contorno, número) nunca sai. Turno que falhou: trecho vermelho.
  */
 export function DrawerPill({
   queueCount,
@@ -644,17 +635,11 @@ export function DrawerPill({
   ]
     .filter(Boolean)
     .join(" · ");
-  // Com o trecho do turno, o estado dos agentes fica só no ícone.
-  const stateCompact = compact || turn !== null;
   const turnFailed = turn?.outcome === "failed";
-  const ring = "inset 0 0 0 1px color-mix(in srgb, var(--tyba-amber-fill) 80%, transparent)";
-  const shadow = open
-    ? attn
-      ? `var(--tyba-pill-on), ${ring}`
-      : "var(--tyba-pill-on)"
-    : attn
-      ? ring
-      : undefined;
+  const ring = "inset 0 0 0 1.5px var(--tyba-amber-fill)";
+  const shadow = open ? (attn ? `var(--tyba-pill-on), ${ring}` : undefined) : attn ? ring : undefined;
+  const sep = <span className="h-3 w-px shrink-0 bg-[var(--tyba-line)]" />;
+  const em = "font-mono font-normal text-tyba-text-faint";
   return (
     <button
       type="button"
@@ -662,100 +647,72 @@ export function DrawerPill({
       aria-expanded={open}
       aria-label={label}
       title={label}
-      className={`inline-flex h-[18px] shrink-0 items-center gap-1.5 whitespace-nowrap rounded-[4px] px-[7px] transition-colors ${
+      className={`inline-flex h-5 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full px-2.5 font-semibold transition-colors ${
         open
-          ? "bg-[color-mix(in_srgb,var(--tyba-text)_9%,transparent)] text-tyba-text"
-          : "text-tyba-text-muted hover:bg-tyba-text/[.06]"
+          ? "tyba-pill-on text-tyba-text"
+          : "bg-[color-mix(in_srgb,var(--tyba-text)_5%,transparent)] text-tyba-text-muted hover:text-tyba-text"
       }`}
       style={shadow ? { boxShadow: shadow } : undefined}
     >
-      <Queue size={12} className="shrink-0 text-tyba-violet" />
-      <span className={`text-tyba-text ${compact ? "font-mono" : ""}`}>
+      <Rows size={12} className="shrink-0" />
+      <span className={compact ? "font-mono" : ""}>
         {compact ? queueCount : t("promptQueueButton", { count: queueCount })}
       </span>
       {agents && (
         <>
-          <span className="h-2.5 w-px shrink-0 bg-tyba-border-strong" />
-          <AgentIcon size={12} className="shrink-0 text-tyba-amber" />
-          {compact ? (
-            <span className="font-mono">
-              {agents.done}/{agents.total}
-            </span>
-          ) : (
-            <span className="text-tyba-text">
-              {t("agentsTitle")}{" "}
-              <span className="font-mono text-tyba-text-muted">
-                {agents.done}/{agents.total}
-              </span>
-            </span>
-          )}
+          {sep}
+          {compact ? <RobotIcon size={12} /> : <span>{t("agentsTitle")}</span>}
+          <span className={em}>
+            {agents.done}/{agents.total}
+          </span>
           {state?.kind === "run" && (
-            <span className="inline-flex items-center gap-[5px] text-tyba-green">
-              <span className={`${DOT} bg-tyba-green-fill [box-shadow:var(--tyba-glow-green)]`} />
-              {!stateCompact && stateText}
-            </span>
-          )}
-          {state?.kind === "ok" && (
-            <span className="inline-flex items-center gap-[5px] text-tyba-green">
-              <Check size={11} />
-              {!stateCompact && stateText}
-            </span>
+            <span className={`${DOT} bg-tyba-green-fill [box-shadow:var(--tyba-glow-green)]`} />
           )}
           {state?.kind === "attn" && (
             <span className="inline-flex items-center gap-[5px] text-tyba-amber">
               <span className={`${DOT} bg-tyba-amber-fill`} />
-              {stateCompact ? <span className="font-mono">{state.count}</span> : stateText}
+              <span className="font-mono">{state.count}</span>
             </span>
           )}
           {state?.kind === "fail" && (
             <span className="inline-flex items-center gap-[5px] text-tyba-red">
               <span className={`${DOT} bg-tyba-red-fill`} />
-              {stateCompact ? <span className="font-mono">{state.count}</span> : stateText}
+              <span className="font-mono">{state.count}</span>
             </span>
           )}
         </>
       )}
       {turn && (
         <>
-          <span className="h-2.5 w-px shrink-0 bg-tyba-border-strong" />
-          <PlusMinus
-            size={12}
-            className={`shrink-0 ${turnFailed ? "text-tyba-red" : "text-tyba-cyan"}`}
-          />
+          {sep}
+          <span className={turnFailed ? "text-tyba-red" : ""}>
+            ± {compact ? "" : pillTurnHead(turn, t)}
+          </span>
           {compact ? (
             pillTurnCount(turn) !== null && (
-              <span className={`font-mono ${turnFailed ? "text-tyba-red" : ""}`}>
+              <span className={`${em} ${turnFailed ? "text-tyba-red" : ""}`}>
                 {pillTurnCount(turn)}
               </span>
             )
           ) : (
             <>
-              <span className={turnFailed ? "text-tyba-red" : "text-tyba-text"}>
-                {pillTurnHead(turn, t)}
-              </span>
               {turn.body.kind === "counts" && (
                 <>
-                  <span className="font-mono text-tyba-text-muted">
-                    {t("diffFilesSummary", { count: turn.body.files })}
-                  </span>
-                  <span className="inline-flex gap-1 whitespace-nowrap font-mono tabular-nums">
+                  <span className={em}>{t("diffFilesSummary", { count: turn.body.files })}</span>
+                  <span className="inline-flex gap-1 whitespace-nowrap font-mono font-normal tabular-nums">
                     <span className="text-tyba-green">+{turn.body.insertions}</span>
                     <span className="text-tyba-red">−{turn.body.deletions}</span>
                   </span>
                 </>
               )}
-              {turn.body.kind === "none" && (
-                <span className="text-tyba-text-faint">{t("pillTurnNoChanges")}</span>
-              )}
-              {turn.body.kind === "no_repo" && (
-                <span className="text-tyba-text-faint">{t("pillTurnNoGit")}</span>
-              )}
+              {turn.body.kind === "none" && <span className={em}>{t("pillTurnNoChanges")}</span>}
+              {turn.body.kind === "no_repo" && <span className={em}>{t("pillTurnNoGit")}</span>}
             </>
           )}
         </>
       )}
-      <span className="-ml-px flex text-tyba-text-faint">
-        {open ? <CaretDown size={10} /> : <CaretUp size={10} />}
+      <span className="flex text-tyba-text-faint">
+        {open ? <CaretDown size={11} /> : <CaretUp size={11} />}
       </span>
     </button>
   );

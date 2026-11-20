@@ -88,7 +88,7 @@ describe("TurnPanel: Passar para… (H1)", () => {
   test("o rodapé desde HH:MM fica inteiro e a linha quebra", () => {
     const html = panel(false);
     expect(html).toContain("flex-wrap");
-    expect(html).toMatch(/whitespace-nowrap text-\[11px\] text-tyba-text-faint">turnSince/);
+    expect(html).toMatch(/whitespace-nowrap font-mono text-\[11.5px\] text-tyba-text-faint">turnSince/);
   });
 });
 

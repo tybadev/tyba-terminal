@@ -2,16 +2,12 @@ import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
 
 import {
-  DEFAULT_AGENT_ROWS,
   disambiguators,
   needsYou,
   tokenValues,
-  visibleRows,
-  type AgentToken,
-  type AgentTokenValues,
 } from "../lib/agentsSidebar";
 import type { AgentRow } from "../lib/agentsBoard";
-import type { SessionId } from "../lib/ipc";
+import type { SessionId, SubagentSnapshot } from "../lib/ipc";
 import type { SessionPlace } from "../lib/agentsBoard";
 
 interface Props {
@@ -19,117 +15,185 @@ interface Props {
   /** Barra lateral aberta. Fechada, sobra o trilho: só os pontos. */
   open: boolean;
   onSelect: (sessionId: SessionId, place: SessionPlace) => void;
-}
-
-function Token({
-  token,
-  values,
-  row,
-}: {
-  token: AgentToken;
-  values: AgentTokenValues;
-  row: AgentRow;
-}) {
-  switch (token) {
-    case "state_icon":
-      return (
-        <span
-          className={`size-1.5 shrink-0 rounded-full ${row.visual.dotClass}`}
-          aria-hidden
-        />
-      );
-    case "workspace":
-      return (
-        <span className="min-w-0 truncate text-[12px] text-tyba-text">
-          {values.workspace}
-        </span>
-      );
-    case "state_text":
-      return (
-        <span className={`shrink-0 text-[10px] ${row.visual.textClass}`}>
-          {values.state_text}
-        </span>
-      );
-    case "agent":
-      return values.agent ? (
-        <span className="shrink-0 font-mono text-[10px] text-tyba-text-faint">
-          {values.agent}
-        </span>
-      ) : null;
-    case "detail":
-      return values.detail ? (
-        <span className="min-w-0 truncate text-[10px] text-tyba-text-muted">
-          {values.detail}
-        </span>
-      ) : null;
-  }
+  /** Subagentes de cada sessão, para a linha "↳ tipo: o que faz". */
+  subagents?: Map<SessionId, SubagentSnapshot>;
 }
 
 /**
- * A frota, sempre visível — o painel de agentes do herdr, na língua do TYBA.
+ * O robô de agente (decisão do dono, 2026-11-15: o do `bemmedical-rpa-platform`,
+ * "esse mesmo, não tem problema que foge do Phosphor"), com o piscar de olho.
+ * As cores são do desenho, não do tema: é ilustração, como a logo do Claude.
+ */
+export function RobotIcon({ size = 16 }: { size?: number }) {
+  const still =
+    typeof window !== "undefined" &&
+    window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+  const eye = (x: number) => (
+    <rect x={x} y="35" width="12" height="16" rx="6" fill="#2A2275">
+      {!still && (
+        <>
+          <animate
+            attributeName="height"
+            values="16;16;2;16"
+            keyTimes="0;0.92;0.95;1"
+            dur="3.4s"
+            repeatCount="indefinite"
+          />
+          <animate
+            attributeName="y"
+            values="35;35;42;35"
+            keyTimes="0;0.92;0.95;1"
+            dur="3.4s"
+            repeatCount="indefinite"
+          />
+        </>
+      )}
+    </rect>
+  );
+  return (
+    <svg
+      viewBox="4 -8 76 92"
+      width={size}
+      height={size}
+      aria-hidden
+      className="shrink-0"
+    >
+      <rect x="39" y="0" width="6" height="14" rx="3" fill="#A08AF5" />
+      <circle cx="42" cy="2" r="8" fill="#A08AF5" />
+      <rect x="6" y="14" width="72" height="58" rx="20" fill="#E6E1F7" />
+      {eye(23)}
+      {eye(49)}
+      <rect x="22" y="74" width="40" height="8" rx="4" fill="#574898" />
+    </svg>
+  );
+}
+
+/** Nome do agente como o quadro escreve: "Claude Code", "Codex". */
+function agentName(row: AgentRow): string | null {
+  const raw = (() => {
+    if (row.observed) return row.observed.agent;
+    const kind = row.session.kind;
+    if (kind.type !== "agent") return null;
+    if (kind.runner === "claude_code") return "claude";
+    if (kind.runner === "codex") return "codex";
+    return kind.runner.custom;
+  })();
+  if (raw === "claude") return "Claude Code";
+  if (raw === "codex") return "Codex";
+  return raw;
+}
+
+/** "há 40s", "há 12 min": só de um instante que o core mandou. */
+function ago(ms: number, now: number): string {
+  const s = Math.max(0, Math.round((now - ms) / 1000));
+  if (s < 60) return `${s}s`;
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m} min`;
+  return `${Math.round(m / 60)} h`;
+}
+
+const capitalize = (text: string) =>
+  text ? text[0].toUpperCase() + text.slice(1) : text;
+
+/**
+ * A frota, sempre visível — o painel de agentes do herdr, na língua do TYBA,
+ * no cartão do quadro aprovado (Sidebar, 2026-11-15): estado e tempo em cima,
+ * robô + agente · sessão, o que ele faz e os subagentes. Quem precisa de você
+ * é o cartão branco com contorno amarelo.
  *
  * Mostra **todos** os agentes, não só quem espera: a visão de frota é o que
- * responde "o que está acontecendo agora", e esconder quem trabalha faz a
- * seção piscar de existência a cada turno. Quem precisa de você leva **marca**,
- * que é o que separa informação de pedido.
- *
- * O nome do workspace aparece aqui e na lista de espaços acima, e isso não é
- * repetição: lá ele vem com branch e git, aqui com o agente e o estado. É
- * coordenada, não conteúdo — mesma razão pela qual um caminho de arquivo
- * aparece na árvore e no resultado da busca.
- *
- * A seção inteira desaparece quando não há agente nenhum: espaço permanente
- * para lista vazia é o que faz barra lateral virar depósito.
+ * responde "o que está acontecendo agora". A seção inteira desaparece quando
+ * não há agente nenhum.
  */
-export function AgentsSidebar({ rows, open, onSelect }: Props) {
+export function AgentsSidebar({ rows, open, onSelect, subagents }: Props) {
   const { t } = useTranslation();
   // Calculado sobre a lista inteira, e não por linha: saber se uma linha é
   // ambígua exige olhar as outras.
   const marcas = useMemo(() => disambiguators(rows), [rows]);
   if (rows.length === 0) return null;
+  const now = Date.now();
 
   return (
-    /* Sem cabeçalho próprio: o botão "Agentes" logo acima é o título desta
-       seção, e ele já carrega o contador de quem espera. Repetir a palavra a
-       oito pixels de distância seria ruído. */
-    <section className="flex shrink-0 flex-col">
+    <section className={`flex shrink-0 flex-col ${open ? "gap-1.5 px-0.5" : "gap-0.5"}`}>
       {rows.map((row) => {
         const values = tokenValues(row, t, marcas.get(row.session.id) ?? null);
         const marca = needsYou(row);
+        if (!open) {
+          /* No trilho fechado sobra o ponto: nome truncado em duas letras
+             não identifica ninguém, e a cor já diz o que importa. */
+          return (
+            <button
+              key={row.session.id}
+              type="button"
+              onClick={() => onSelect(row.session.id, row.place)}
+              aria-label={`${values.workspace} — ${values.state_text}`}
+              className="flex h-6 shrink-0 items-center justify-center rounded-[6px] hover:bg-tyba-text/[.05]"
+            >
+              <span
+                className={`size-1.5 rounded-full ${row.visual.dotClass}`}
+                aria-hidden
+              />
+            </button>
+          );
+        }
+        const status = row.session.status;
+        const turn = row.session.last_turn;
+        // Tempo só do que o core mediu: o fim do último turno, com o agente
+        // parado. Rodando, o começo do turno aberto não chega — sem tempo.
+        const time =
+          status.state !== "running" && turn
+            ? t("agentAgo", { time: ago(turn.ended_at_ms, now) })
+            : null;
+        const name = agentName(row);
+        const detail = values.detail ?? row.session.status_note ?? null;
+        const subs = (subagents?.get(row.session.id)?.subagents ?? []).filter(
+          (s) => s.status !== "done",
+        );
         return (
           <button
             key={row.session.id}
             type="button"
             onClick={() => onSelect(row.session.id, row.place)}
             aria-label={`${values.workspace} — ${values.state_text}`}
-            className={`group relative flex shrink-0 flex-col gap-0.5 rounded-[4px] py-1 text-left transition-colors ${
-              open ? "px-2" : "items-center px-0"
-            } ${marca ? "bg-tyba-amber/[.08] hover:bg-tyba-amber/[.12]" : "hover:bg-tyba-text/[.05]"}`}
+            className={`flex shrink-0 flex-col gap-1 rounded-[10px] px-3 py-2.5 text-left transition-colors ${
+              marca
+                ? "tyba-pill-on outline outline-[1.5px] -outline-offset-[1.5px] outline-tyba-amber-fill"
+                : "bg-tyba-raised/60 shadow-[inset_0_0_0_1px_var(--tyba-line)] hover:bg-tyba-raised/80"
+            }`}
           >
-            {open ? (
-              visibleRows(DEFAULT_AGENT_ROWS, values).map((tokens, i) => (
-                <span
-                  key={i}
-                  className="flex min-w-0 items-center gap-1.5 leading-none"
-                >
-                  {tokens.map((token) => (
-                    <Token
-                      key={token}
-                      token={token}
-                      values={values}
-                      row={row}
-                    />
-                  ))}
-                </span>
-              ))
-            ) : (
-              /* No trilho fechado sobra o ponto: nome truncado em duas letras
-                 não identifica ninguém, e a cor já diz o que importa. */
+            <span
+              className={`flex min-w-0 items-center gap-1.5 text-[11.5px] font-semibold ${
+                marca ? "text-tyba-amber" : row.visual.textClass
+              }`}
+            >
               <span
-                className={`size-1.5 rounded-full ${row.visual.dotClass}`}
                 aria-hidden
+                className={`size-[7px] shrink-0 rounded-full ${row.visual.dotClass}`}
               />
+              <span className="min-w-0 truncate">
+                {marca ? t("agentNeedsYou") : capitalize(values.state_text)}
+                {time && ` · ${time}`}
+              </span>
+            </span>
+            <span className="flex min-w-0 items-center gap-1.5 text-[13px] font-semibold text-tyba-text">
+              <RobotIcon />
+              <span className="min-w-0 truncate">
+                {name ? `${name} · ${values.workspace}` : values.workspace}
+              </span>
+            </span>
+            {detail && (
+              <span className="min-w-0 truncate font-mono text-[10.5px] leading-[15px] text-tyba-text-muted">
+                {detail}
+              </span>
             )}
+            {subs.slice(0, 2).map((s, i) => (
+              <span
+                key={s.agent_id ?? i}
+                className="min-w-0 truncate border-l border-[var(--tyba-line)] pl-2 font-mono text-[10.5px] leading-[15px] text-tyba-text-muted"
+              >
+                ↳ {s.agent_type}: {s.description}
+              </span>
+            ))}
           </button>
         );
       })}

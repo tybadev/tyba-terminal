@@ -258,10 +258,13 @@ export const EDGE_COLOR: Record<EdgeKind, string> = {
   memory: "var(--tyba-violet)",
 };
 
-/** Cor do texto e do ponto de cada estado (quadro: rodando verde, aguardando âmbar). */
+/**
+ * Cor do texto e do ponto de cada estado: rodando na cor primária (azul no
+ * Muriki, o verde de sempre no escuro do TYBA), aguardando âmbar.
+ */
 export const STATUS_TONE: Record<NodeStatus, { text: string; dot: string }> = {
   waiting: { text: "text-tyba-amber", dot: "border-[1.5px] border-tyba-amber" },
-  running: { text: "text-tyba-green", dot: "bg-tyba-green animate-pulse" },
+  running: { text: "text-[var(--tyba-primary)]", dot: "bg-[var(--tyba-primary)] animate-pulse" },
   done: { text: "text-tyba-text-muted", dot: "bg-tyba-green" },
   failed: { text: "text-tyba-red", dot: "bg-tyba-red" },
   skipped: { text: "text-tyba-text-faint", dot: "border-[1.5px] border-tyba-text-faint" },
@@ -294,31 +297,33 @@ export function NodeStatusBadge({ nodeId, nodeRun }: { nodeId: string; nodeRun: 
 
 /**
  * Cor da porta de saída: a do que o nó produz primeiro (a saída principal).
- * Centro na ponta direita da cápsula (inset de 14px, `right-3.5`), para a
- * ligação sair dela e não do vazio ao lado.
+ * Na borda direita da janela, no meio (quadro Orbit, 2026-11-15), com o
+ * aro da folha em volta.
  */
 const portStyle = (color: string) => ({
-  width: 16,
-  height: 16,
-  right: 6,
-  top: 12,
+  width: 12,
+  height: 12,
+  right: -6,
+  top: "50%",
+  marginTop: -6,
   borderRadius: "50%",
-  border: "3px solid var(--orbit-canvas, var(--tyba-bg))",
+  border: "2px solid var(--tyba-surface)",
+  boxShadow: "0 0 0 1px var(--tyba-line)",
   background: color,
   transform: "none",
-  // Acima da cápsula (`z-[1]`), que agora fica embaixo da bolinha.
   zIndex: 2,
 });
 
 /**
  * A entrada não aparece: o nó inteiro é alvo, e ela só ancora a ligação —
- * na ponta esquerda da cápsula (`left-3.5`), onde a linha encosta.
+ * na borda esquerda, no meio, de frente para a porta de quem liga.
  */
 const inStyle = {
-  width: 16,
-  height: 16,
-  left: 6,
-  top: 12,
+  width: 12,
+  height: 12,
+  left: -6,
+  top: "50%",
+  marginTop: -6,
   opacity: 0,
   border: 0,
   transform: "none",
@@ -328,14 +333,16 @@ const inStyle = {
 type FrameRing = RingState | "user";
 
 /** Estado do anel → traço (quadro OrbitCardsD). */
+// Quadro Orbit (2026-11-15): aro fino na cor primária (azul no Muriki,
+// verde no escuro do TYBA), claro parado e cheio no ar; amarelo esperando.
 const RING_STROKE: Record<FrameRing, { stroke: string; dash?: string }> = {
-  idle: { stroke: "color-mix(in srgb, var(--tyba-text) 10%, transparent)" },
-  working: { stroke: "color-mix(in srgb, var(--tyba-text) 8%, transparent)" },
-  live: { stroke: "var(--tyba-green)" },
-  done: { stroke: "var(--tyba-green)" },
+  idle: { stroke: "color-mix(in srgb, var(--tyba-primary) 18%, transparent)" },
+  working: { stroke: "color-mix(in srgb, var(--tyba-primary) 18%, transparent)" },
+  live: { stroke: "var(--tyba-primary)" },
+  done: { stroke: "var(--tyba-primary)" },
   waiting: { stroke: "color-mix(in srgb, var(--tyba-text) 18%, transparent)", dash: "3 3" },
   owner: { stroke: "var(--tyba-text-inverse)", dash: "4 3" },
-  you: { stroke: "var(--tyba-amber)" },
+  you: { stroke: "var(--tyba-amber-fill)" },
   failed: { stroke: "var(--tyba-red)" },
   user: { stroke: "var(--tyba-cyan)" },
 };
@@ -358,45 +365,34 @@ export function NodeRing({
   const owner = state === "owner";
   return (
     <span
-      className={`relative flex size-[30px] shrink-0 items-center justify-center ${
+      className={`relative flex size-8 shrink-0 items-center justify-center ${
         owner ? "text-tyba-amber" : tone
       }`}
     >
-      <svg width="30" height="30" viewBox="0 0 30 30" aria-hidden className="absolute inset-0">
+      <svg width="32" height="32" viewBox="0 0 32 32" aria-hidden className="absolute inset-0">
         <circle
-          cx="15"
-          cy="15"
-          r="12"
-          style={{
-            fill: owner
-              ? "var(--tyba-text-inverse)"
-              : "color-mix(in srgb, currentColor 12%, var(--tyba-sunken))",
-          }}
+          cx="16"
+          cy="16"
+          r="15"
+          style={{ fill: owner ? "var(--tyba-text-inverse)" : "transparent" }}
           stroke={ring.stroke}
-          strokeWidth="2.5"
+          strokeWidth="2"
           strokeDasharray={ring.dash}
         />
       </svg>
       {state === "working" && (
         <svg
-          width="30"
-          height="30"
-          viewBox="0 0 30 30"
+          width="32"
+          height="32"
+          viewBox="0 0 32 32"
           aria-hidden
           className="absolute inset-0 animate-[spin_1.6s_linear_infinite] motion-reduce:animate-none"
         >
           <path
-            d="M15 3 A12 12 0 0 1 27 15"
+            d="M16 1 A15 15 0 0 1 31 16"
             fill="none"
-            stroke="var(--tyba-green)"
-            strokeWidth="2.5"
-            strokeLinecap="round"
-          />
-          <path
-            d="M27 15 A12 12 0 0 1 19 26.3"
-            fill="none"
-            stroke="var(--tyba-cyan)"
-            strokeWidth="2.5"
+            stroke="var(--tyba-primary)"
+            strokeWidth="2"
             strokeLinecap="round"
           />
         </svg>
@@ -424,7 +420,11 @@ function CapsuleStatus({ nodeId, nodeRun }: { nodeId: string; nodeRun: NodeRun }
   if (nodeRun.status === "running" && !nodeRun.orchestrating) {
     // No ar, quem fala é a porta (a ação do nó) e o anel verde.
     if (nodeRun.url) return null;
-    return <Elapsed nodeRun={nodeRun} className="shrink-0 text-[11.5px] text-tyba-green" />;
+    return (
+      <LiveChip>
+        <Elapsed nodeRun={nodeRun} />
+      </LiveChip>
+    );
   }
   const label = run ? nodeStatusLabel(graph, run, nodeId) : null;
   if (!label) return null;
@@ -441,22 +441,39 @@ function CapsuleStatus({ nodeId, nodeRun }: { nodeId: string; nodeRun: NodeRun }
   );
 }
 
+/** Chip da cápsula (quadro Orbit): pílula de 24 com o ponto que pulsa. */
+const chipClass =
+  "inline-flex h-6 shrink-0 items-center gap-1.5 rounded-full px-2.5 font-sans text-[11.5px] font-semibold whitespace-nowrap";
+const chipDot = "size-[7px] shrink-0 rounded-full animate-pulse motion-reduce:animate-none";
+
+/** "ao vivo" (ou o tempo rodando): o chip na cor primária. */
+export function LiveChip({ children }: { children: ReactNode }) {
+  return (
+    <span
+      className={`${chipClass} bg-[color-mix(in_srgb,var(--tyba-primary)_12%,transparent)] text-[var(--tyba-primary)]`}
+    >
+      <i className={`${chipDot} bg-[var(--tyba-primary)]`} />
+      {children}
+    </span>
+  );
+}
+
 /**
- * "esperando você · permissão" e há quanto tempo, no cabeçalho (quadro
- * OrbitEsperando). Sem botão: a resposta é no prompt do agente.
+ * "esperando você · há 40 s", em amarelo, no cabeçalho (quadro Orbit); o
+ * motivo (permissão) fica no título. Sem botão: a resposta é no prompt do
+ * agente.
  */
 function WaitingYouChip({ waiting }: { waiting: WaitingYou }) {
   const { t } = useTranslation();
   const now = useClock();
   return (
-    <>
-      <span className="shrink-0 rounded-full bg-tyba-amber/14 px-[9px] py-[2px] text-[11.5px] whitespace-nowrap text-tyba-amber">
-        {t("orbitWaitingYou", { reason: t(`orbitWaitReason_${waiting.reason}`) })}
-      </span>
-      <span className="shrink-0 text-[11.5px] whitespace-nowrap text-tyba-text-muted">
-        {waitedFor(now - waiting.since)}
-      </span>
-    </>
+    <span
+      title={t("orbitWaitingYou", { reason: t(`orbitWaitReason_${waiting.reason}`) })}
+      className={`${chipClass} bg-tyba-amber-tint text-tyba-amber`}
+    >
+      <i className={`${chipDot} bg-tyba-amber-fill`} />
+      {t("orbitWaitingYouFor", { time: waitedFor(now - waiting.since) })}
+    </span>
   );
 }
 
@@ -1138,12 +1155,8 @@ export function NodeFrame({
                 ? "border-tyba-red/60"
                 : inUse
                   ? "border-tyba-cyan/60"
-                  : "border-[color-mix(in_srgb,var(--tyba-text)_10%,transparent)] group-hover:border-[color-mix(in_srgb,var(--tyba-text)_18%,transparent)]"
-      } ${
-        paper
-          ? "bg-[color-mix(in_srgb,var(--tyba-violet)_7%,var(--tyba-surface))]"
-          : "bg-[color-mix(in_srgb,var(--tyba-text)_5%,var(--tyba-surface))]"
-      }`;
+                  : "border-[var(--tyba-line)] group-hover:border-[color-mix(in_srgb,var(--tyba-text)_18%,transparent)]"
+      } bg-[var(--tyba-glass-section)] backdrop-blur-[28px] backdrop-saturate-150`;
   const win = dropKind
     ? "border-tyba-violet shadow-[0_0_0_4px_color-mix(in_srgb,var(--tyba-violet)_22%,transparent)]"
     : asking
@@ -1151,22 +1164,20 @@ export function NodeFrame({
       : dragging
         ? "border-tyba-border shadow-[0_30px_70px_rgba(0,0,0,0.75)]"
         : selected || resizing
-          ? "border-tyba-violet shadow-[0_0_0_1px_var(--tyba-violet)]"
-          : request
-            ? "border-tyba-amber/40"
-            : waiting
-              ? "border-tyba-amber/45"
+          ? "border-[var(--tyba-primary)] shadow-[0_0_0_0.5px_var(--tyba-primary),var(--tyba-shadow-md)]"
+          : request || waiting
+            ? "border-tyba-amber-fill shadow-[0_0_0_0.5px_var(--tyba-amber-fill),var(--tyba-shadow-md)]"
               : created
               ? "border-dashed border-tyba-violet/50"
               : failed
                 ? "border-tyba-red/35"
                 : inUse
                   ? "border-tyba-cyan/50"
-                  : "border-tyba-border group-hover:border-tyba-text/[.16]";
+                  : "border-[var(--tyba-line)] shadow-[var(--tyba-shadow-sm)] group-hover:border-tyba-text/[.16]";
 
   return (
     <div
-      className={`group relative flex h-full w-full flex-col pt-5 font-mono text-tyba-text ${
+      className={`group relative flex h-full w-full flex-col pt-[22px] font-mono text-tyba-text ${
         dragging ? "rotate-[-0.6deg]" : ""
       }`}
     >
@@ -1195,10 +1206,10 @@ export function NodeFrame({
       )}
       {/* A cápsula inteira arrasta (menos os botões); o corpo é para usar. */}
       <div
-        className={`absolute top-0 right-3.5 left-3.5 z-[1] flex h-10 items-center gap-2.5 rounded-full border pr-2.5 pl-1.5 ${
+        className={`absolute top-0 right-3 left-3 z-[1] flex h-11 items-center gap-2 rounded-full border px-1.5 ${
           dragging
             ? "cursor-grabbing shadow-[0_22px_50px_rgba(0,0,0,0.7)]"
-            : "cursor-grab shadow-[var(--tyba-shadow-md)]"
+            : "cursor-grab [box-shadow:var(--tyba-plate-shadow,var(--tyba-edge),var(--tyba-shadow-lg))]"
         } ${capsule}`}
         title={request ? request.command : undefined}
         onDoubleClick={(e) => {
@@ -1299,10 +1310,10 @@ export function NodeFrame({
         )}
       </div>
       <div
-        className={`nodrag relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-[16px] border pt-6 ${
+        className={`nodrag relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-[14px] border pt-[26px] ${
           paper
             ? "bg-[color-mix(in_srgb,var(--tyba-violet)_4%,var(--tyba-surface))]"
-            : "bg-tyba-sunken"
+            : "bg-tyba-surface"
         } ${win}`}
       >
         {children}

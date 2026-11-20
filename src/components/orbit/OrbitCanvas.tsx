@@ -116,6 +116,8 @@ import {
 } from "./nodes/NodeFrame";
 import { NodeFocus } from "./nodes/NodeFocus";
 import { NodePalette, PALETTE_H, PALETTE_W } from "./NodePalette";
+import { OrbitToolbar } from "./OrbitToolbar";
+import { NODE_TOOL_ENTRY, linkPair, toolKey, type OrbitTool, type PointerTool } from "./toolbar";
 import { NoteNode } from "./nodes/NoteNode";
 import { ProcessNode } from "./nodes/ProcessNode";
 import { ServiceNode } from "./nodes/ServiceNode";
@@ -247,7 +249,7 @@ function OrbitEdgeView({
         path={path}
         style={{
           stroke: selected
-            ? "var(--tyba-violet)"
+            ? "var(--tyba-primary)"
             : kind === "context"
               ? "color-mix(in srgb, var(--tyba-violet) 70%, transparent)"
               : kind === "url" ||
@@ -256,8 +258,8 @@ function OrbitEdgeView({
                   kind === "talk" ||
                   kind === "memory"
                 ? EDGE_COLOR[kind]
-                : "color-mix(in srgb, var(--tyba-text) 36%, transparent)",
-          strokeWidth: selected ? 2.4 : 1.6,
+                : "color-mix(in srgb, var(--tyba-text) 30%, transparent)",
+          strokeWidth: selected ? 2 : 1.5,
           strokeDasharray: pending ? "3 6" : undefined,
         }}
       />
@@ -316,14 +318,12 @@ function EdgeLabel({ id, kind, color }: { id: string; kind: EdgeKind; color: str
       )}
     </>
   );
+  // Quadro Orbit: pílula branca de fio fino; a cor do tipo fica no ponto.
   const pillClass =
-    "flex items-center gap-1.5 rounded-[4px] border bg-tyba-raised px-1.5 text-[11px] leading-[18px] text-tyba-text shadow-[var(--tyba-shadow-md)]";
-  const border = { borderColor: `color-mix(in srgb, ${color} 60%, transparent)` };
+    "flex items-center gap-1.5 rounded-full border border-[var(--tyba-line)] bg-tyba-surface px-2 font-sans text-[11px] leading-[18px] font-semibold text-tyba-text-muted";
   if (options.length === 0) {
     return (
-      <span className={pillClass} style={border}>
-        {pill}
-      </span>
+      <span className={pillClass}>{pill}</span>
     );
   }
   return (
@@ -333,7 +333,6 @@ function EdgeLabel({ id, kind, color }: { id: string; kind: EdgeKind; color: str
           type="button"
           aria-label={t("orbitEdgeMenu", { kind: t(`orbitEdge_${kind}`) })}
           className={`${pillClass} hover:bg-tyba-overlay`}
-          style={border}
         >
           {pill}
           <CaretDown size={9} weight="bold" className="text-tyba-text-faint" />
@@ -918,17 +917,21 @@ export function OrbitCanvas({
   const occupied = useCallback(() => shownNodes.map(nodeRect), [shownNodes]);
 
   const pick = (entry: PaletteEntry) => {
-    if (!palette) return;
+    if (palette) place(entry, palette);
+  };
+
+  /** Cria o nó da entrada onde `at` diz (paleta ou ferramenta da barra). */
+  const place = (entry: PaletteEntry, at: PaletteAt) => {
     const node = newNode(crypto.randomUUID(), entry.title, structuredClone(entry.kind), {
       x: 0,
       y: 0,
     });
-    const selected = palette.near ? nodes.find((n) => n.selected) : undefined;
+    const selected = at.near ? nodes.find((n) => n.selected) : undefined;
     const want = selected
       ? rightOf(nodeRect(selected), 80)
-      : palette.from
-        ? { x: palette.flow.x, y: palette.flow.y - 40 }
-        : { x: palette.flow.x - node.size.w / 2, y: palette.flow.y - 20 };
+      : at.from
+        ? { x: at.flow.x, y: at.flow.y - 40 }
+        : { x: at.flow.x - node.size.w / 2, y: at.flow.y - 20 };
     node.position = freeSpot(want, node.size, occupied());
     if (node.kind.type === "terminal") {
       setPalette(null);
@@ -937,11 +940,44 @@ export function OrbitCanvas({
     }
     if (entry.group === "folder" && "dir" in entry.kind) rememberDir(entry.kind.dir);
     setNodes((ns) => [...ns.map((n) => ({ ...n, selected: false })), flowNodeOf(node, true)]);
-    if (palette.from) {
-      const made = pickConnection([...model.nodes, node], model.edges, byId, palette.from, node.id);
-      if ("kind" in made) link(palette.from, node.id, made.kind);
+    if (at.from) {
+      const made = pickConnection([...model.nodes, node], model.edges, byId, at.from, node.id);
+      if ("kind" in made) link(at.from, node.id, made.kind);
     }
     setPalette(null);
+  };
+
+  // ---------------------------------------------------------- ferramentas
+
+  // Quadro Orbit: Selecionar (o de sempre) ou Mover (arrastar só move o canvas).
+  const [pointerTool, setPointerTool] = useState<PointerTool>("cursor");
+  const pair = linkPair(nodes.filter((n) => n.selected));
+
+  const applyTool = (tool: OrbitTool) => {
+    if (tool === "cursor" || tool === "hand") {
+      setPointerTool(tool);
+      return;
+    }
+    if (tool === "link") {
+      if (!pair) return;
+      const made = pickConnection(model.nodes, model.edges, byId, pair.from, pair.to);
+      if ("problem" in made) {
+        if (made.problem !== "self") toastError(t(`orbitConnection_${made.problem}`));
+        return;
+      }
+      link(pair.from, pair.to, made.kind);
+      return;
+    }
+    const entry = entries.find((e) => e.id === NODE_TOOL_ENTRY[tool]);
+    const rect = wrapper.current?.getBoundingClientRect();
+    if (!entry || !rect) return;
+    // O nó nasce no centro da vista, num espaço livre.
+    place(entry, {
+      screen: { x: 0, y: 0 },
+      flow: screenToFlowPosition({ x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }),
+      from: null,
+      near: false,
+    });
   };
 
   // Soltar a ligação em qualquer ponto do nó liga nele: o xyflow só informa
@@ -1011,7 +1047,8 @@ export function OrbitCanvas({
   const onKey = (e: KeyboardEvent) => {
     if (e.defaultPrevented || palette || focusNode || asking) return;
     const action = canvasKey(e, IS_MAC);
-    if (!action) return;
+    const tool = action ? null : toolKey(e);
+    if (!action && !tool) return;
     if (keyOwnedElsewhere(document.activeElement) || keyOwnedElsewhere(e.target as Element)) {
       return;
     }
@@ -1020,6 +1057,12 @@ export function OrbitCanvas({
     const screen = wrapper.current?.closest("[data-graph-screen]");
     if (active && active !== document.body && !screen?.contains(active)) return;
     // Texto destacado na página (uma nota, um painel): ⌘C é dele.
+    if (tool) {
+      e.preventDefault();
+      e.stopPropagation();
+      if (!e.repeat) applyTool(tool);
+      return;
+    }
     const text = window.getSelection();
     if (action === "copy" && text && !text.isCollapsed) return;
     // Enter num botão ou link é dele; sem um nó com terminal, também não é do canvas.
@@ -1168,6 +1211,10 @@ export function OrbitCanvas({
             deleteKeyCode={["Backspace", "Delete"]}
             // Dois dedos movem o canvas; ⌘ + roda (ou pinça) dá zoom (canvas-9).
             panOnScroll
+            // Mover: arrastar em qualquer lugar move o canvas, sem pegar nó.
+            nodesDraggable={pointerTool === "cursor"}
+            elementsSelectable={pointerTool === "cursor"}
+            className={pointerTool === "hand" ? "[&_.react-flow__pane]:cursor-grab" : undefined}
             zoomOnPinch
             zoomActivationKeyCode={IS_MAC ? "Meta" : "Control"}
             zoomOnDoubleClick={false}
@@ -1204,6 +1251,8 @@ export function OrbitCanvas({
             />
             {showMinimap && (
               <MiniMap<CanvasNode>
+                // Acima do zoom, que flutua no canto de baixo (quadro Orbit).
+                className="!mb-[72px]"
                 pannable
                 zoomable
                 bgColor="var(--tyba-surface)"
@@ -1234,14 +1283,10 @@ export function OrbitCanvas({
                 </p>
               </Panel>
             )}
-            <Panel position="bottom-left">
-              <p className="font-mono text-[11.5px] text-tyba-text-faint">
-                {t("graphHint", { mod: modKey })}
-              </p>
-            </Panel>
           </ReactFlow>
         </EdgeActionsContext.Provider>
       </NodeDeleteContext.Provider>
+      <OrbitToolbar pointer={pointerTool} canLink={pair !== null} onTool={applyTool} />
       {palette && (
         <NodePalette
           at={palette.screen}
