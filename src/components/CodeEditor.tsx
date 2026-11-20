@@ -24,6 +24,7 @@ import {
   highlightActiveLineGutter,
   keymap,
   lineNumbers,
+  scrollPastEnd,
 } from "@codemirror/view";
 import {
   bracketMatching,
@@ -215,6 +216,9 @@ export const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEdito
         markersField,
         diffGutter,
         lineNumbers(),
+        // Como no VS Code: dá para rolar o fim do arquivo até o topo (quadro
+        // Files: as linhas 40–55 de um arquivo de 55 linhas, espaço embaixo).
+        scrollPastEnd(),
         EditorState.readOnly.of(!!readOnly),
         EditorView.editable.of(!readOnly),
         highlightActiveLineGutter(),

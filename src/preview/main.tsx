@@ -11,13 +11,17 @@ const params = new URLSearchParams(location.search);
 const screen = params.get("screen") ?? "main";
 setup(SCENARIO_SETUP[screen] ?? {});
 state.theme = params.get("theme") === "light" ? "light" : "dark";
+{
+  const f = params.get("font");
+  state.font = f === "grotesk" || f === "mono" ? f : null;
+}
 // O tema lê o modo salvo antes de perguntar ao core: começa limpo.
 localStorage.clear();
 // A Aparência do quadro está no Sistema (dois terminais, claro e escuro).
 if (screen === "settings-appearance") state.mode = "system";
 localStorage.setItem("tyba.theme", state.mode ?? state.theme);
 localStorage.setItem("tyba.theme.migrated", "1");
-localStorage.setItem("tyba.font", "grotesk");
+if (state.font) localStorage.setItem("tyba.font", state.font);
 
 mockWindows("main");
 mockIPC((cmd, args) => handle(cmd, args as Record<string, unknown>), {

@@ -24,6 +24,10 @@ describe("isErrorLine", () => {
     expect(isErrorLine("exit code 0")).toBe(false);
     expect(isErrorLine("errorHandler.ts compilado")).toBe(false);
   });
+  test("pânico do Rust (\"panicked at\") é erro", () => {
+    expect(isErrorLine("thread 'x' panicked at src/a.rs:1:2:")).toBe(true);
+    expect(isErrorLine("panic_handler.rs compilado")).toBe(false);
+  });
   test("contagem zero e continue-on-error não são erro", () => {
     expect(isErrorLine("test result: ok. 12 passed; 0 failed; 0 ignored")).toBe(false);
     expect(isErrorLine(" 12 pass 0 fail")).toBe(false);

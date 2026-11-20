@@ -168,7 +168,24 @@ export function AgentsSidebar({ rows, open, onSelect, subagents }: Props) {
               ? t("agentAgo", { time: ago(turn.ended_at_ms, now) })
               : null;
         const name = agentName(row);
-        const detail = values.detail ?? row.session.status_note ?? null;
+        // Quadro Sidebar: "quer rodar bun run test" quando pede permissão;
+        // rodando, o que ele faz e o saldo de linhas ("editando handoff.rs ·
+        // +18 −4"), só do que o core mandou.
+        const usage = row.session.agent_usage;
+        const lines =
+          status.state === "running" && (usage?.lines_added || usage?.lines_removed)
+            ? `+${usage?.lines_added ?? 0} −${usage?.lines_removed ?? 0}`
+            : null;
+        const asks =
+          status.state === "awaiting_input" && status.reason !== "reply" && status.hint
+            ? t("agentWantsToRun", { command: status.hint })
+            : null;
+        const detail =
+          asks ??
+          ([values.detail ?? row.session.status_note, lines].filter(Boolean).join(" · ") ||
+            null);
+        const stateText =
+          row.visual.labelKey === "sessionInProgress" ? t("sidebarRunning") : values.state_text;
         const subs = (subagents?.get(row.session.id)?.subagents ?? []).filter(
           (s) => s.status !== "done",
         );
@@ -194,7 +211,7 @@ export function AgentsSidebar({ rows, open, onSelect, subagents }: Props) {
                 className={`size-[7px] shrink-0 rounded-full ${row.visual.dotClass}`}
               />
               <span className="min-w-0 truncate">
-                {marca ? t("agentNeedsYou") : capitalize(values.state_text)}
+                {marca ? t("agentNeedsYou") : capitalize(stateText)}
                 {time && ` · ${time}`}
               </span>
             </span>

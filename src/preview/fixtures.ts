@@ -36,6 +36,11 @@ export const ID = {
   claudeApi: "00000000-0000-4000-8000-0000000000a7",
   server: "00000000-0000-4000-8000-0000000000a8",
   claudeSplit: "00000000-0000-4000-8000-0000000000a9",
+  prod: "00000000-0000-4000-8000-0000000000b1",
+  staging: "00000000-0000-4000-8000-0000000000b2",
+  zsh3: "00000000-0000-4000-8000-0000000000b3",
+  zsh4: "00000000-0000-4000-8000-0000000000b4",
+  zsh5: "00000000-0000-4000-8000-0000000000b5",
 } as const;
 
 export const REPO = {
@@ -106,6 +111,24 @@ export const SESSIONS: Session[] = [
     title: "notas",
     repo_root: REPO.notas,
     status: { state: "idle", summary: "atualizou v2.md (3 seções)" },
+    // "Pronto · há 12 min" do quadro Sidebar.
+    last_turn: {
+      seq: 2,
+      outcome: "completed",
+      failure: null,
+      started_at_ms: NOW - 780_000,
+      ended_at_ms: NOW - 720_000,
+      duration_ms: 60_000,
+      prompt: null,
+      diff: "ok",
+      files: [],
+      files_total: 1,
+      insertions: 12,
+      deletions: 3,
+      commits: 0,
+      cost_usd: 0.1,
+      tokens: 2_000,
+    },
   }),
   session({
     id: ID.tyba,
@@ -116,6 +139,7 @@ export const SESSIONS: Session[] = [
     turn_open: true,
     turn_started_at_ms: NOW - 134_000,
     subagents_working: false,
+    status_note: "editando handoff.rs",
     agent_usage: { lines_added: 18, lines_removed: 4 },
   }),
   session({
@@ -133,7 +157,25 @@ export const SESSIONS: Session[] = [
     agent_model: "Opus 5.5",
     turn_open: true,
     turn_started_at_ms: NOW - 29_000,
-    subagents_working: true,
+    // Quadro Agents: "em andamento" e a aba "Turno · 3" (o turno anterior).
+    subagents_working: false,
+    last_turn: {
+      seq: 2,
+      outcome: "completed",
+      failure: null,
+      started_at_ms: NOW - 400_000,
+      ended_at_ms: NOW - 300_000,
+      duration_ms: 100_000,
+      prompt: null,
+      diff: "ok",
+      files: [],
+      files_total: 3,
+      insertions: 42,
+      deletions: 7,
+      commits: 0,
+      cost_usd: 0.4,
+      tokens: 12_000,
+    },
     agent_usage: { model: "Opus 5.5", context_pct: 7, tokens_in: 66_000, cost_usd: 1.05, duration_ms: 29_000 },
   }),
   session({
@@ -145,6 +187,13 @@ export const SESSIONS: Session[] = [
     turn_open: true,
     turn_started_at_ms: NOW - 72_000,
   }),
+  // As SSH do quadro Sidebar (prod-01 e staging, conectadas).
+  session({ id: ID.prod, kind: { type: "ssh", host_id: "host-prod" }, title: "prod-01", connection: "live" }),
+  session({ id: ID.staging, kind: { type: "ssh", host_id: "host-staging" }, title: "staging", connection: "live" }),
+  // As três abas a mais do `+3` do quadro Header.
+  ...[ID.zsh3, ID.zsh4, ID.zsh5].map((id) =>
+    session({ id, kind: { type: "shell" }, title: "zsh", repo_root: REPO.api }),
+  ),
   session({
     id: ID.server,
     kind: { type: "shell" },
@@ -196,33 +245,41 @@ function workspace(name: string, sessionId: string, repo: string | null, extra: 
 export function initialLayout(): LayoutState {
   return {
     workspaces: [
-      // As quatro abas "api" do quadro Header: codex, zsh, claude e o split.
+      // As abas "api" do quadro Header: quatro à vista (codex, claude, o
+      // split e o zsh, ativo) e três no `+3`.
       {
         ...workspace("api", ID.api, REPO.api, [
-          tab("tab-api-shell", leaf("pane-api-shell", ID.dev)),
           tab("tab-api-claude", leaf("pane-api-claude", ID.claudeApi)),
           tab("tab-api-split", {
             type: "split",
             id: "split-api",
-            split: "h",
+            split: "v",
             ratio: 0.5,
             first: { type: "leaf", id: "pane-split-a", session_id: ID.claudeSplit },
             second: { type: "leaf", id: "pane-split-b", session_id: ID.server },
           }),
+          tab("tab-api-shell", leaf("pane-api-shell", ID.dev)),
+          tab("tab-api-z3", leaf("pane-api-z3", ID.zsh3)),
+          tab("tab-api-z4", leaf("pane-api-z4", ID.zsh4)),
+          tab("tab-api-z5", leaf("pane-api-z5", ID.zsh5)),
         ]),
         active_tab: "tab-api-shell",
       },
       workspace("core", ID.core, REPO.core),
       workspace("site", ID.site, REPO.site),
-      workspace("notas", ID.notas, REPO.notas),
-      workspace("tyba-terminal", ID.tyba, REPO.tyba),
+      workspace("prod-01", ID.prod, null),
+      workspace("staging", ID.staging, null),
+      // Os agentes notas e tyba-terminal do quadro moram no grupo Clientes
+      // (fechado na barra), para "Este computador" ficar com api, core e site.
+      { ...workspace("notas", ID.notas, REPO.notas), group: "Clientes" },
+      { ...workspace("tyba-terminal", ID.tyba, REPO.tyba), group: "Clientes" },
     ],
     active_workspace: "ws-api",
   };
 }
 
 export const HOST_GROUPS: HostGroup[] = [
-  { id: "grp-clientes", name: "Clientes", color: null, notes: null, position: 0, created_at: ISO },
+  { id: "grp-clientes", name: "Clientes", color: "amber", notes: null, position: 0, created_at: ISO },
 ];
 
 function host(id: string, alias: string, hostname: string, position: number, group: string | null): Host {
@@ -396,9 +453,36 @@ export const TURN_HANDOFF: TurnDigest = {
 
 // --- terminal --------------------------------------------------------------
 
-const plain = (text: string) => ({ text, runs: [] });
+type Seg = string | [string, number];
 
-function block(id: number, sessionId: string, command: string, exitCode: number, ms: number, lines: string[]): Block {
+/** Linha da saída com as cores ANSI que o programa pintou (`[texto, índice]`). */
+function line(segs: Seg | Seg[]): Block["lines"][number] {
+  const list = Array.isArray(segs) && typeof segs[1] !== "number" ? (segs as Seg[]) : [segs as Seg];
+  let text = "";
+  const runs: Block["lines"][number]["runs"] = [];
+  for (const seg of list) {
+    const [part, idx] = typeof seg === "string" ? [seg, null] : seg;
+    if (idx !== null) {
+      runs.push({
+        start: text.length,
+        end: text.length + part.length,
+        fg: { kind: "idx", value: idx },
+        bg: { kind: "default" },
+        bold: false,
+        italic: false,
+        underline: false,
+      });
+    }
+    text += part;
+  }
+  return { text, runs };
+}
+
+const GREEN = 2;
+const RED = 1;
+const GRAY = 8;
+
+function block(id: number, sessionId: string, command: string, exitCode: number, ms: number, lines: (Seg | Seg[])[]): Block {
   const finished = NOW - 60_000 * (5 - id);
   return {
     id,
@@ -407,7 +491,7 @@ function block(id: number, sessionId: string, command: string, exitCode: number,
     exitCode,
     startedAtMs: finished - ms,
     finishedAtMs: finished,
-    lines: lines.map(plain),
+    lines: lines.map(line),
     truncated: 0,
     cwd: REPO.api,
     altScreen: false,
@@ -417,15 +501,17 @@ function block(id: number, sessionId: string, command: string, exitCode: number,
 /** Blocos do quadro Shell (zsh em api) e do Shell dividido (o servidor). */
 export const BLOCKS: Record<string, Block[]> = {
   [ID.dev]: [
+    // As cores do quadro Shell: M/A em verde, o resumo em cinza, falha em
+    // vermelho.
     block(1, ID.dev, "git status --short", 0, 100, [
-      " M src/billing/billing.service.ts",
-      "A  src/billing/invoice.test.ts",
+      [["M", GREEN], "  src/billing/billing.service.ts"],
+      [["A", GREEN], "  src/billing/invoice.test.ts"],
     ]),
     block(2, ID.dev, "bun run test", 1, 4_200, [
-      "bun test v1.2 · 42 testes",
-      "✗ invoice › calcula o total com desconto",
-      "  esperado 90, recebido 100",
-      "41 passaram · 1 falhou",
+      ["bun test v1.2 · 42 testes", GRAY],
+      [["✗", RED], " invoice › calcula o total com desconto"],
+      ["  esperado 90, recebido 100", GRAY],
+      [["41 passaram", GREEN], " · ", ["1 falhou", RED]],
     ]),
   ],
   [ID.server]: [
@@ -446,22 +532,24 @@ export const BLOCKS: Record<string, Block[]> = {
 const ESC = "\x1b[";
 const dim = (t: string) => `${ESC}2m${t}${ESC}0m`;
 const bold = (t: string) => `${ESC}1m${t}${ESC}0m`;
+const gray = (t: string) => `${ESC}90m${t}${ESC}0m`;
 const orange = (t: string) => `${ESC}38;2;217;119;87m${t}${ESC}0m`;
 const nl = (lines: string[]) => lines.join("\r\n") + "\r\n";
 
 /** O que a tela do agente mostra (o PTY), copiado dos quadros. */
 export const SCREENS: Record<string, string> = {
+  // As cores do quadro Agents: o ● da ferramenta azul, o texto em negrito e
+  // a árvore e a espera em cinza.
   [ID.claudeApi]: nl([
-    dim("❯ rode subagentes com ls -la e for 1 até 10 e ai sleep de 2 no final"),
+    "❯ rode subagentes com ls -la e for 1 até 10 e ai sleep de 2 no final",
+    `${ESC}34m●${ESC}0m ${bold("3 background agents launched")}`,
+    gray("├ Run ls -la"),
+    gray("├ Run for loop 1 to 10"),
+    gray("└ Run sleep 2"),
     "",
-    `${orange("●")} 3 background agents launched`,
-    dim("  ├ Run ls -la"),
-    dim("  ├ Run for loop 1 to 10"),
-    dim("  └ Run sleep 2"),
+    `● ${bold("Iniciei 3 subagentes em paralelo, um para cada comando.")}`,
     "",
-    `${orange("●")} Iniciei 3 subagentes em paralelo, um para cada comando.`,
-    "",
-    orange("✻ Waiting for 3 background agents to finish"),
+    gray("✻ Waiting for 3 background agents to finish"),
   ]),
   [ID.claudeSplit]: nl([
     `${orange("●")} O desconto é aplicado depois do imposto. Vou corrigir a ordem.`,
@@ -486,7 +574,6 @@ export const SCREENS: Record<string, string> = {
   ]),
   [ID.notas]: nl([`${orange("●")} Atualizei v2.md (3 seções).`]),
   [ID.server]: nl([
-    `${ESC}32m❯${ESC}0m bun run dev`,
     "Listening on http://localhost:3000",
     dim("GET /health 200 · 2 ms"),
     dim("GET /invoices 200 · 14 ms"),
@@ -510,3 +597,11 @@ SCREENS["orbit-rev"] = nl([
   "",
   `Rodar ${bold("bun run test")}? · responda no prompt do agente`,
 ]);
+// Quadro Shell: o claude digitado no zsh, rodando há 1m 12s, embaixo dos blocos.
+SCREENS[ID.dev] = SCREENS[ID.claudeSplit].split("\r\n").slice(0, 3).join("\r\n") + "\r\n";
+
+/** Comando em execução por sessão (o `session://command` do core). */
+export const RUNNING: Record<string, { command: string; startedAtMs: number }> = {
+  [ID.dev]: { command: "claude", startedAtMs: NOW - 72_000 },
+  [ID.server]: { command: "bun run dev", startedAtMs: NOW - 720_000 },
+};

@@ -4,12 +4,14 @@ import { ArrowRight, CheckCircle, Warning, XCircle } from "@phosphor-icons/react
 
 import { askingText, visibleAsk } from "@/lib/asking";
 
+import { Banner } from "@/components/ui/banner";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { PLATE, PLATE_FLOAT, PLATE_LINE } from "@/components/plate";
 import {
   Toast,
   ToastAction,
+  ToastClose,
   ToastDescription,
   ToastProvider,
   ToastTitle,
@@ -17,13 +19,13 @@ import {
 } from "@/components/ui/toast";
 import {
   OPEN_LATEST_SESSION_COMBO,
-  comboKeys,
   comboOf,
 } from "@/lib/keys";
 import { RISK_DOT, RISK_LABEL, approvalActions, decideApproval } from "@/lib/notifications";
 import { toastIsPointerOnly } from "@/lib/approvalPanel";
 import {
   agentAsks,
+  agentsDrawerTab,
   dismissAsk,
   focusSession,
   onAgentAsks,
@@ -663,45 +665,51 @@ export function NotificationToaster({
       ))}
       {ask && (
         <Toast
-          className={TOAST_PLATE}
+          className={`${TOAST_PLATE} overflow-hidden rounded-[10px] p-0`}
           key={`asking:${ask.session_id}`}
           onOpenChange={(nextOpen) => {
             if (!nextOpen) void dismissAsk(ask.session_id).catch(() => {});
           }}
         >
-          {/* Sem atalho de teclado e sem clique no card inteiro: um Enter
-              ou um colar perdidos não podem cair no prompt do Claude. */}
-          <div className="flex items-start gap-2">
-            <Warning
-              aria-hidden="true"
-              size={16}
-              weight="fill"
-              className="mt-0.5 shrink-0 text-tyba-amber"
-            />
-            <div className="min-w-0 flex-1">
-              <ToastTitle>{askingText(ask, t)}</ToastTitle>
-              <ToastDescription>{t("askingHelp", { agent: ask.agent })}</ToastDescription>
-              <div className="mt-2 flex flex-wrap gap-2">
-                {/* Botão comum, não `ToastAction`: aquele fecha o toast, e
-                    fechar dispensa o pedido no core. "Ir" só troca de pane;
-                    quem dispensa é o X. */}
-                <Button
-                  size="sm"
-                  onClick={() => {
-                    void focusSession(ask.session_id).catch(() => {});
-                  }}
-                  className="h-6 rounded-[6px] px-2.5 text-[11px]"
-                >
-                  {t("askingGo")}
-                </Button>
-              </div>
-            </div>
-          </div>
+          {/* A faixa de aviso do quadro Main (`Banner` warning): "codex
+              precisa de você", o que ele quer rodar e "Abrir". Sem atalho e
+              sem clique no card inteiro: um Enter ou um colar perdidos não
+              podem cair no prompt do agente. */}
+          <Banner
+            tone="warning"
+            title={t("askingTitle", { agent: ask.agent.toLowerCase() })}
+            className="pr-2"
+            action={
+              // Botão comum, não `ToastAction`: aquele fecha o toast, e
+              // fechar dispensa o pedido no core. "Abrir" só troca de pane;
+              // quem dispensa é o X.
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  void focusSession(ask.session_id).catch(() => {});
+                }}
+              >
+                <ArrowRight aria-hidden="true" />
+                {t("askingGo")}
+              </Button>
+            }
+            close={<ToastClose className="static shrink-0" />}
+          >
+            {(() => {
+              const status = sessions.find((x) => x.id === ask.session_id)?.status;
+              const hint = status?.state === "awaiting_input" ? status.hint : null;
+              return hint
+                ? t("askingWantsToRun", { command: hint })
+                : [askingText(ask, t), t("askingHelp", { agent: ask.agent })].join(". ");
+            })()}
+          </Banner>
         </Toast>
       )}
       {outcomes.map((outcome) => {
         const session = sessions.find((s) => s.id === outcome.sessionId);
         const branch = session?.worktree?.branch ?? null;
+        const turn = session?.last_turn ?? null;
         return (
           <Toast
             className={TOAST_PLATE}
@@ -710,10 +718,10 @@ export function NotificationToaster({
               if (!nextOpen) dismissOutcome(outcome.key);
             }}
           >
-            {/* O card inteiro leva à sessão: o link embaixo é o alvo do
-                teclado, mas quem usa o mouse clica no card. */}
+            {/* Quadro Main (`mk-toast`): ícone, título e o resumo do turno,
+                "Ver diff" e o X na mesma linha. O card inteiro leva à sessão. */}
             <div
-              className="flex cursor-pointer items-start gap-2"
+              className="flex cursor-pointer items-center gap-3"
               onClick={(event) => {
                 if ((event.target as HTMLElement).closest("button")) return;
                 dismissOutcome(outcome.key);
@@ -722,19 +730,9 @@ export function NotificationToaster({
               }}
             >
               {outcome.kind === "failed" ? (
-                <XCircle
-                  aria-hidden="true"
-                  size={16}
-                  weight="fill"
-                  className="mt-0.5 shrink-0 text-tyba-red"
-                />
+                <XCircle aria-hidden="true" size={20} className="shrink-0 text-tyba-red" />
               ) : (
-                <CheckCircle
-                  aria-hidden="true"
-                  size={16}
-                  weight="fill"
-                  className="mt-0.5 shrink-0 text-tyba-green"
-                />
+                <CheckCircle aria-hidden="true" size={20} className="shrink-0 text-tyba-green" />
               )}
               <div className="min-w-0 flex-1">
                 <ToastTitle>
@@ -742,50 +740,33 @@ export function NotificationToaster({
                     ? t("sessionFailedTitle")
                     : t("sessionTurnEndedTitle")}
                 </ToastTitle>
-                <ToastDescription>
+                <ToastDescription className="truncate">
                   {outcome.kind === "failed" && outcome.reason ? (
-                    <code className="block truncate font-mono text-xs">
-                      {outcome.reason}
-                    </code>
+                    <code className="font-mono text-xs">{outcome.reason}</code>
+                  ) : turn && turn.files_total > 0 ? (
+                    `${t("diffFilesSummary", { count: turn.files_total })} · +${turn.insertions} −${turn.deletions}`
                   ) : (
-                    <span className="flex min-w-0 flex-col gap-0.5">
-                      {outcome.summary && (
-                        <span className="line-clamp-2 text-xs text-tyba-text-muted">
-                          {outcome.summary}
-                        </span>
-                      )}
-                      {branch && (
-                        <span className="truncate font-mono text-[11px] text-tyba-text-faint">
-                          {branch}
-                        </span>
-                      )}
-                    </span>
+                    (outcome.summary ?? branch ?? sessionTitle(outcome.sessionId))
                   )}
                 </ToastDescription>
-                <div className="flex items-center gap-2">
-                  <SessionDeepLink
-                    label={sessionTitle(outcome.sessionId)}
+              </div>
+              {outcome.kind !== "failed" && turn && turn.files_total > 0 && (
+                <ToastAction altText={t("toastSeeDiff")} asChild>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="shrink-0 text-tyba-blue hover:text-tyba-blue"
                     onClick={() => {
                       dismissOutcome(outcome.key);
-                      void sessionMarkSeen(outcome.sessionId).catch(() => {});
                       onGoToSession(outcome.sessionId);
+                      void agentsDrawerTab(outcome.sessionId, "turn").catch(() => {});
                     }}
-                  />
-                  <span
-                    aria-label={t("openSessionShortcut")}
-                    className="ml-auto flex shrink-0 items-center gap-0.5"
                   >
-                    {comboKeys(OPEN_LATEST_SESSION_COMBO).map((key) => (
-                      <kbd
-                        key={key}
-                        className="rounded-[3px] border border-tyba-border bg-tyba-sunken px-1 py-0.5 font-mono text-[10px] leading-none text-tyba-text-faint"
-                      >
-                        {key}
-                      </kbd>
-                    ))}
-                  </span>
-                </div>
-              </div>
+                    {t("toastSeeDiff")}
+                  </Button>
+                </ToastAction>
+              )}
+              <ToastClose className="static shrink-0" />
             </div>
           </Toast>
         );

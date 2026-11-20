@@ -1,7 +1,7 @@
 // Foto de uma tela do preview (`preview.html`) no Chrome headless, para
 // comparar pixel a pixel com o quadro.
 //
-//   bun scripts/preview-shot.ts <screen> <out.png> [W] [H] [--theme light|dark] [--log]
+//   bun scripts/preview-shot.ts <screen> <out.png> [W] [H] [--theme light|dark] [--font mono|grotesk] [--log]
 //
 // Usa o `vite dev` que já estiver na porta 1425; se não houver, sobe um e o
 // derruba no fim. `--log` imprime o console da página (comandos sem fixture).
@@ -24,12 +24,13 @@ const flag = (name: string) => {
   return value ?? null;
 };
 const theme = flag("--theme") ?? "light";
+const font = flag("--font");
 const logIdx = argv.indexOf("--log");
 const log = logIdx >= 0;
 if (log) argv.splice(logIdx, 1);
 const [screen, out, w = "1110", h = "700"] = argv;
 if (!screen || !out) {
-  console.error("uso: bun scripts/preview-shot.ts <screen> <out.png> [W] [H] [--theme light|dark] [--log]");
+  console.error("uso: bun scripts/preview-shot.ts <screen> <out.png> [W] [H] [--theme light|dark] [--font mono|grotesk] [--log]");
   process.exit(2);
 }
 
@@ -56,7 +57,7 @@ if (!(await up())) {
 }
 
 const profile = mkdtempSync(join(tmpdir(), "tyba-preview-"));
-const url = `${BASE}/preview.html?screen=${encodeURIComponent(screen)}&theme=${theme}`;
+const url = `${BASE}/preview.html?screen=${encodeURIComponent(screen)}&theme=${theme}${font ? `&font=${font}` : ""}`;
 const chrome = Bun.spawn(
   [
     CHROME,

@@ -677,6 +677,8 @@ export interface PrCheck {
 
 export interface PrReview {
   author: string;
+  /** Nome do perfil (só usuário tem): as iniciais do avatar. */
+  author_name: string | null;
   state: "approved" | "changes_requested" | "commented" | "dismissed" | "pending";
   submitted_at: string | null;
   body: string;
@@ -703,6 +705,8 @@ export interface PrDetail {
   url: string;
   state: PrState;
   author: string;
+  /** Nome do perfil do autor (só usuário tem): as iniciais do avatar. */
+  author_name: string | null;
   head: string;
   base: string;
   /** SHA do head quando o core buscou: o merge e a revisão só valem para ele. */

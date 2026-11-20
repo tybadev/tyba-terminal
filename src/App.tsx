@@ -31,6 +31,7 @@ import { homeDir } from "@tauri-apps/api/path";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { Button } from "@/components/ui/button";
+import { Loader } from "@/components/ui/loader";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -153,7 +154,7 @@ import { GitHistoryView } from "./components/GitHistoryView";
 import { DockerScreen } from "./components/DockerScreen";
 import { ServicesScreen } from "./components/ServicesScreen";
 import { HistoryPanel } from "./components/HistoryPanel";
-import { PanelIcon, SidePanelBar, type PanelTab } from "./components/SidePanelBar";
+import { HeaderPanelIcon, SidePanelBar, type PanelTab } from "./components/SidePanelBar";
 import {
   escClosesPanel,
   litPanel,
@@ -597,7 +598,7 @@ import {
 } from "./lib/termRegistry";
 import { HoverCard, HoverCardTrigger } from "@/components/ui/hover-card";
 import { Kbd, Shortcut } from "@/components/ui/kbd";
-import type { ShellBoot } from "./lib/loading";
+import { shellBootStep, type ShellBoot } from "./lib/loading";
 
 const EMPTY_LAYOUT: LayoutState = { workspaces: [], active_workspace: null };
 type MenuParts = {
@@ -798,7 +799,10 @@ const SIDEBAR_WIDTH: Record<SidebarMode, number> = {
 };
 
 /** Listras do header só no build de dev (ver o `<header>` do App). */
-const DEV_HEADER_STYLE: React.CSSProperties | undefined = import.meta.env.DEV
+// O preview do navegador (`preview.html`) fotografa a tela para comparar com
+// o quadro: sem as listras do dev.
+const DEV_HEADER_STYLE: React.CSSProperties | undefined =
+  import.meta.env.DEV && !location.pathname.endsWith("/preview.html")
   ? {
       backgroundImage:
         // Borda em degradê (desfocada), não corte seco: presente sem pesar.
@@ -921,7 +925,9 @@ export default function App() {
     () => new Map(),
   );
   const [sidebar, setSidebar] = useState<SidebarMode>("open");
-  const [detailsPref, setDetailsPref] = useState<DetailsPref>("on");
+  // Padrão do quadro Sidebar: nome e uma linha de estado, sem caminho nem
+  // contagem; os detalhes ligam nas Configurações ou por sessão.
+  const [detailsPref, setDetailsPref] = useState<DetailsPref>("off");
   const [detailOverrides, setDetailOverrides] = useState<
     Record<string, DetailsPref>
   >({});
@@ -5662,13 +5668,14 @@ export default function App() {
     const agentLabel = agentStatus ? t(agentStatus.visual.labelKey) : null;
     const agentDetail = (() => {
       if (!agentStatus) return null;
-      // Quadro: "claude rodando" — o nome já vem do `hoverAgent`; aqui o estado.
-      if (agentStatus.observed) return agentLabel;
+      // Quadro Sidebar: "codex espera você", "claude rodando" — o nome vem do
+      // `hoverAgent`, aqui só o estado; o que ele pede fica no cartão de
+      // Agentes e no hover.
       const status = agentStatus.session.status;
-      if (status.state === "awaiting_input" && status.hint) return status.hint;
+      if (status.state === "awaiting_input") return t("sessionAwaiting");
       if (status.state === "failed") return status.reason;
-      if (status.state === "running" && runningCmd) return runningCmd;
-      return hoverAgent ?? agentLabel;
+      if (agentStatus.visual.labelKey === "sessionInProgress") return t("sidebarRunning");
+      return agentLabel;
     })();
     // Linha de estado do quadro ("claude em andamento"): quem é e o que faz;
     // a pergunta pendente ou o motivo da falha no lugar do estado quando há.
@@ -5827,7 +5834,7 @@ export default function App() {
                 </span>
               )}
             </span>
-            {!isConfig && !isWtView && w.tabs.length > 1 && (
+            {showDetails && w.tabs.length > 1 && (
               <span
                 title={t("sessionPanes", { count: w.tabs.length })}
                 className={`mt-[3px] shrink-0 font-mono text-[10.5px] font-medium text-tyba-text-faint ${
@@ -6004,7 +6011,10 @@ export default function App() {
     const panePorts = chipText(sessionPorts[s.id] ?? []);
     const paneState = paneAgent
       ? paneVisual
-        ? t(paneVisual.labelKey)
+        ? // Quadro ShellSplit: "claude rodando · 1m 12s".
+          paneVisual.labelKey === "sessionInProgress"
+          ? t("sidebarRunning")
+          : t(paneVisual.labelKey)
         : null
       : [paneCommand, panePorts].filter(Boolean).join(" · ") || null;
     return (
@@ -6080,6 +6090,27 @@ export default function App() {
           <ContainerShellBanner containerId={s.kind.container_id} />
         )}
         <div className="tyba-pane-body relative min-h-0 flex-1">
+          {/* Sessão abrindo (o shell ainda não chegou ao prompt): o Loader do
+              quadro Main no meio do painel, com a etapa que o core mandou. */}
+          {!bare &&
+            s.kind.type !== "agent" &&
+            line?.state === "waiting" &&
+            promptModes[s.id] !== true &&
+            !isFinishedStatus(s.status) &&
+            (blocks[s.id]?.length ?? 0) === 0 && (
+              <div className="pointer-events-none absolute inset-0 z-20 grid place-items-center">
+                {(() => {
+                  const step = shellBootStep(
+                    shellBoots[s.id] ?? null,
+                    s.kind.type === "ssh"
+                      ? (sshHosts.find((h) => s.kind.type === "ssh" && h.id === s.kind.host_id)
+                          ?.alias ?? null)
+                      : null,
+                  );
+                  return <Loader label={t(step.key, step.params)} />;
+                })()}
+              </div>
+            )}
           {wrapNodeTerminal(nodeZoom, <TerminalView
             key={`${s.id}:${paneEpochs.get(s.id) ?? 0}`}
             sessionId={s.id}
@@ -6688,11 +6719,8 @@ export default function App() {
               // Pílula de modo do quadro Header: branca, fio fino, ícone azul.
               className="flex h-[30px] shrink-0 items-center gap-2 whitespace-nowrap rounded-full border border-[var(--tyba-line)] bg-tyba-raised px-3 text-[13px] font-semibold text-tyba-text"
             >
-              {orbitOpen ? (
-                <OrbitIcon size={15} className="text-tyba-blue" />
-              ) : (
-                <CaretRight size={15} className="text-tyba-blue" />
-              )}
+              {/* Na tinta do texto, como sai renderizado o quadro Header. */}
+              {orbitOpen ? <OrbitIcon size={15} /> : <CaretRight size={15} />}
               {orbitOpen ? t("orbitView") : t("terminalView")}
             </button>
             {/* Com as abas na barra, o nome da sessão sai da migalha: ele
@@ -6771,7 +6799,7 @@ export default function App() {
                           ),
                         })}
                       >
-                        <PanelIcon kind={kind} size={18} />
+                        <HeaderPanelIcon kind={kind} />
                       </IconAction>
                     ),
                 )}
@@ -7068,7 +7096,8 @@ export default function App() {
                                 [g.key]: !prev[g.key],
                               }))
                             }
-                            className="text-tyba-text-faint transition-colors hover:text-tyba-text"
+                            // A seta na tinta do título (`.gh2`), não apagada.
+                            className="transition-colors hover:text-tyba-text"
                           >
                             {collapsed ? <CaretRight size={13} /> : <CaretDown size={13} />}
                           </button>

@@ -4,7 +4,7 @@
 
 import { emit } from "@tauri-apps/api/event";
 
-import type { DrawerState, LayoutState, Workspace } from "../lib/ipc";
+import type { DrawerState, LayoutState, RepoSnapshot, Session, Workspace } from "../lib/ipc";
 import {
   BLOCKS,
   HOME,
@@ -13,6 +13,7 @@ import {
   HOST_GROUPS,
   HOSTS,
   NOTIFICATIONS,
+  RUNNING,
   SESSIONS,
   THEMES,
   initialLayout,
@@ -30,6 +31,7 @@ import {
   PR_PAGE,
   RUN_LOG,
   SUBAGENTS,
+  TURN_PANEL_GUTTER,
   TURN_PANEL_SRC,
   WORKFLOW_JOBS,
   WORKFLOW_RUNS,
@@ -43,8 +45,16 @@ export const state = {
   theme: "dark" as "dark" | "light",
   /** O modo salvo; "system" segue o `prefers-color-scheme` do navegador. */
   mode: null as "system" | null,
+  font: null as "mono" | "grotesk" | null,
   layout: initialLayout(),
   drawers: [] as DrawerState[],
+  /** A branch do repo api: a do quadro Header ("main") nas telas do shell;
+   *  a do PR nas do Git. */
+  branch: BRANCH,
+  /** Sessões cujo shell ainda não chegou ao prompt (o Loader do quadro Main). */
+  booting: [] as string[],
+  /** Repos a mais no `repo_snapshots`, só no cenário que pede. */
+  snapshots: [] as RepoSnapshot[],
 };
 
 function activeWorkspace(): Workspace {
@@ -80,6 +90,20 @@ const b64 = (text: string) => btoa(String.fromCharCode(...new TextEncoder().enco
 function attach(id: unknown): null {
   const text = SCREENS[String(id)];
   if (text) setTimeout(() => void emit(`pty://output/${String(id)}`, { data: b64(text) }), 50);
+  const running = RUNNING[String(id)];
+  if (running) {
+    setTimeout(
+      () =>
+        void emit(`session://command/${String(id)}`, {
+          command: running.command,
+          running: true,
+          agent_match: true,
+          continuation: false,
+          started_at_ms: running.startedAtMs,
+        }),
+      300,
+    );
+  }
   return null;
 }
 
@@ -93,19 +117,23 @@ const themeState = () => ({
   light: THEMES[1],
 });
 
+// O quadro mostra o Docker no header (o dono liga o ícone nas Configurações).
+const PREFS: Record<string, string> = { "pref.code.show_containers": "on" };
+const LSP_READY = { state: "ready", server: "typescript", diagnostics: 0, truncated: false };
+
 const handlers: Record<string, Handler> = {
   boot_snapshot: () => ({
     ready: true,
     bootFailure: null,
-    prefs: {},
+    prefs: PREFS,
     sessions: SESSIONS,
     layout: structuredClone(state.layout),
   }),
   boot_poll: () => ({ ready: true, bootFailure: null }),
   layout_state: () => ({ ready: true, value: structuredClone(state.layout) }),
   list_sessions: () => ({ ready: true, value: SESSIONS }),
-  // Os quadros usam a sans do Muriki: o preview liga a preferência "grotesk".
-  get_pref: ({ key }) => (key === "pref.ui_font" ? "grotesk" : null),
+  get_pref: ({ key }) =>
+    key === "pref.ui_font" && state.font ? state.font : (PREFS[String(key)] ?? null),
   set_pref: () => null,
   get_theme_state: themeState,
   list_themes: () => THEMES,
@@ -149,22 +177,33 @@ const handlers: Record<string, Handler> = {
     {
       ahead: 2,
       behind: 0,
-      upstream: `origin/${BRANCH}`,
+      upstream: `origin/${state.branch}`,
       root: REPO_API,
-      branch: BRANCH,
+      branch: state.branch,
       status: { dirty: true, changed: 4, insertions: 42, deletions: 7 },
     },
+    // core e site limpos na main (o "⎇ main" do site no quadro Sidebar).
+    ...[ID.core, ID.site].map((id) => ({
+      ahead: 0,
+      behind: 0,
+      upstream: "origin/main",
+      root: SESSIONS.find((x) => x.id === id)?.repo_root ?? "",
+      branch: "main",
+      status: { dirty: false, changed: 0, insertions: 0, deletions: 0 },
+    })),
+    ...state.snapshots,
   ],
-  services_session_ports: () => ({}),
+  // O `bun run dev` do Shell dividido escuta na 3000.
+  services_session_ports: () => ({ [ID.server]: [3000] }),
   "plugin:path|resolve_directory": () => HOME,
   attach_session: ({ id }) => attach(id),
   resize_session: () => null,
   session_mark_seen: () => null,
   session_blocks: ({ id }) => BLOCKS[String(id)] ?? [],
-  session_prompt_mode: ({ id }) => isShell(id),
+  session_prompt_mode: ({ id }) => isShell(id) && !state.booting.includes(String(id)),
   session_hook_expected: ({ id }) => isShell(id),
   session_shell_boot: ({ id }) =>
-    isShell(id) ? { shell: "zsh", rc: "~/.zshrc", started_at_ms: Date.now() - 600_000 } : null,
+    isShell(id) && !state.booting.includes(String(id)) ? { shell: "zsh", rc: "~/.zshrc", started_at_ms: Date.now() - 600_000 } : null,
   session_cwd: ({ id }) => {
     const s = SESSIONS.find((x) => x.id === id);
     return s?.repo_root ? { cwd: s.repo_root, canonical: s.repo_root } : null;
@@ -215,13 +254,16 @@ const handlers: Record<string, Handler> = {
   files_watch_dir: () => null,
   files_unwatch_dir: () => null,
   files_decorations: () => DECORATIONS,
-  files_gutter: () => [],
+  files_gutter: ({ path }) => (String(path).endsWith("TurnPanel.tsx") ? TURN_PANEL_GUTTER : []),
   files_edit_begin: ({ path }) => ({ text: String(path).endsWith(".tsx") ? TURN_PANEL_SRC : "", hash: "preview" }),
-  lsp_status: () => ({ state: "ready", server: "typescript", diagnostics: 0, truncated: false }),
-  lsp_open: () => null,
+  lsp_status: () => LSP_READY,
+  lsp_open: () => LSP_READY,
+  lsp_symbol_path: ({ line }) => (Number(line) >= 39 ? ["TurnPanel"] : []),
+  lsp_code_actions: () => [],
   lsp_open_doc: () => null,
   lsp_close_doc: () => null,
   lsp_did_change: () => null,
+  lsp_change: () => null,
   files_read: () => ({
     kind: "text",
     text: TURN_PANEL_SRC,
@@ -297,7 +339,19 @@ export function setup(opts: {
   tab?: string;
   drawer?: DrawerState;
   files?: Workspace["screens"]["files"];
+  branch?: string;
+  booting?: string[];
+  /** Campos a mais em sessões só deste cenário (as outras telas não mudam). */
+  sessions?: Record<string, Partial<Session>>;
+  snapshots?: RepoSnapshot[];
 }): void {
+  if (opts.booting) state.booting = opts.booting;
+  if (opts.branch) state.branch = opts.branch;
+  if (opts.snapshots) state.snapshots = opts.snapshots;
+  for (const [id, patch] of Object.entries(opts.sessions ?? {})) {
+    const target = SESSIONS.find((x) => x.id === id);
+    if (target) Object.assign(target, patch);
+  }
   if (opts.workspace) state.layout.active_workspace = opts.workspace;
   if (opts.tab) activeWorkspace().active_tab = opts.tab;
   if (opts.files) activeWorkspace().screens.files = opts.files;

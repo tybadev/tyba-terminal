@@ -2080,10 +2080,12 @@ html {
   --tyba-settings-bg: radial-gradient(60% 40% at 20% 10%, rgba(17, 82, 210, 0.06), transparent 70%), #f4f6fb;
   --tyba-spec-edge: rgba(10, 24, 48, 0.1);
 }
-/* No claro a sans do cromo é a do Muriki (Plus Jakarta Sans), mas só quando
-   a preferência pede sans: "Fonte da interface: mono" vale também no claro
-   (dono, 2026-11-02). */
-[data-theme='light'][data-font='grotesk']:not([data-imported]) {
+/* No claro a sans do cromo é a do Muriki (Plus Jakarta Sans): quando a
+   preferência pede sans e, sem preferência salva, por padrão (o quadro).
+   "Fonte da interface: mono" escolhida vale também no claro (dono,
+   2026-11-02). No escuro, sem preferência, segue a mono de sempre. */
+[data-theme='light'][data-font='grotesk']:not([data-imported]),
+[data-theme='light'][data-font='auto']:not([data-imported]) {
   --tyba-font-ui: 'Plus Jakarta Sans', ui-sans-serif, system-ui, -apple-system, sans-serif;
 }
 [data-theme='light']:not([data-imported]) .tyba-aurora {
@@ -2242,4 +2244,19 @@ html {
     -webkit-backdrop-filter: none;
     backdrop-filter: none;
   }
+}
+
+/* A gota do Loader do Muriki (`mk-slide`): atravessa o trilho e some do
+   outro lado. Parada no meio em movimento reduzido. */
+.tyba-loader-drop {
+  left: 2px;
+  animation: tyba-loader-slide 1.6s cubic-bezier(.65, 0, .35, 1) infinite;
+}
+@keyframes tyba-loader-slide {
+  0% { left: -56px; }
+  50% { left: calc(100% - 56px); width: 72px; }
+  100% { left: 100%; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tyba-loader-drop { animation: none; left: calc(50% - 28px); }
 }

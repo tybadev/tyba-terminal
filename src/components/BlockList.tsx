@@ -1085,7 +1085,9 @@ export const BlockList = memo(function BlockList({
             do mesmo jeito (ver o efeito de reancorar). */}
         <div className="flex min-h-full flex-col justify-end">
           {swapMark && <SshSwapMark mark={swapMark} />}
-          {opened && (
+          {/* Só no painel ainda vazio: com blocos, o quadro Shell começa
+              direto no primeiro comando. */}
+          {opened && blocks.length === 0 && (
             <SessionOpened
               cwd={opened.cwd}
               at={opened.atMs}
