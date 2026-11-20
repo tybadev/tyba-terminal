@@ -177,9 +177,64 @@ pub fn asking_body(agent: &str, project: Option<&str>, branch: Option<&str>) -> 
     body
 }
 
+/// Por quanto tempo o clique num aviso ainda leva à sessão dele.
+pub const CLICK_TARGET_TTL: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+/// A sessão do último aviso do sistema mostrado com o TYBA fora de foco.
+///
+/// O plugin de notificação não avisa o clique no desktop; clicar no aviso só
+/// traz o app para a frente. Então a primeira vez que a janela ganha foco
+/// depois do aviso conta como o clique nele (uma vez só, e só dentro de
+/// [`CLICK_TARGET_TTL`]): quem decide se há aonde ir é quem consome.
+#[derive(Debug, Default)]
+pub struct ClickTarget(parking_lot::Mutex<Option<(crate::session::SessionId, std::time::Instant)>>);
+
+impl ClickTarget {
+    /// Saiu um aviso da sessão `id` com a janela fora de foco.
+    pub fn shown(&self, id: crate::session::SessionId, at: std::time::Instant) {
+        *self.0.lock() = Some((id, at));
+    }
+
+    /// A janela ganhou foco: a sessão do aviso, se ainda vale. Esvazia sempre.
+    pub fn take(&self, now: std::time::Instant) -> Option<crate::session::SessionId> {
+        let (id, at) = self.0.lock().take()?;
+        (now.saturating_duration_since(at) <= CLICK_TARGET_TTL).then_some(id)
+    }
+}
+
+/// O alvo do clique do app (um só, como a janela).
+pub fn click_target() -> &'static ClickTarget {
+    static TARGET: std::sync::OnceLock<ClickTarget> = std::sync::OnceLock::new();
+    TARGET.get_or_init(ClickTarget::default)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn click_target_is_the_last_notice_once_and_while_fresh() {
+        use std::time::{Duration, Instant};
+        let target = ClickTarget::default();
+        let t0 = Instant::now();
+        assert_eq!(target.take(t0), None);
+        let (a, b) = (
+            crate::session::SessionId::new_v4(),
+            crate::session::SessionId::new_v4(),
+        );
+        target.shown(a, t0);
+        target.shown(b, t0);
+        assert_eq!(target.take(t0 + Duration::from_secs(5)), Some(b));
+        // Uma vez só: o foco seguinte não volta à sessão.
+        assert_eq!(target.take(t0 + Duration::from_secs(6)), None);
+        // Velho: o foco já não é o clique no aviso, e esvazia igual.
+        target.shown(a, t0);
+        assert_eq!(
+            target.take(t0 + CLICK_TARGET_TTL + Duration::from_secs(1)),
+            None
+        );
+        assert_eq!(target.take(t0), None);
+    }
 
     #[test]
     fn pedido_diz_quem_projeto_e_branch() {

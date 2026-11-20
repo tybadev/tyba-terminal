@@ -932,6 +932,12 @@ impl SessionManager {
         cmd.env("COLORTERM", "truecolor");
         cmd.env("TYBA", "1");
         cmd.env("TYBA_SESSION_ID", id.to_string());
+        // Contrato da CLI (`tyba capture $TYBA_PANE`): o pane é a sessão do
+        // core — um PTY por pane. O workspace NÃO vai no env: o pane entra no
+        // layout depois do spawn e a aba pode mudar de lugar; `tyba ls` diz
+        // onde ele está agora.
+        cmd.env("TYBA_SESSION", id.to_string());
+        cmd.env("TYBA_PANE", id.to_string());
         // O shim de agente no rc precisa saber QUEM chamar. Sem isto ele não
         // tem binário para invocar e se desliga sozinho — que é a falha aberta
         // funcionando, mas também a feature inteira desligada em silêncio.
@@ -1995,6 +2001,9 @@ pub(crate) const TYBA_CLAUDE_WRAPPER: &str = include_str!("tyba-claude-wrapper.s
 /// O wrapper `codex` do pane: vai para `tyba _codex` (ver `agent::codex_shim`).
 #[cfg(unix)]
 pub(crate) const TYBA_CODEX_WRAPPER: &str = include_str!("tyba-codex-wrapper.sh");
+/// O `tyba` do pane: repassa para `tyba _cli` (ver [`crate::cli`]).
+#[cfg(unix)]
+pub(crate) const TYBA_CLI_WRAPPER: &str = include_str!("tyba-cli-wrapper.sh");
 
 /// Diretório com o wrapper `claude` do TYBA (M6-A do claude-monitor), que o
 /// rc põe na frente do PATH do pane. Privado (0700, do usuário, verificado
@@ -2061,6 +2070,8 @@ fn write_agent_wrapper() -> std::io::Result<PathBuf> {
     std::fs::set_permissions(dir.join("claude"), std::fs::Permissions::from_mode(0o700))?;
     write_private(&dir, "codex", TYBA_CODEX_WRAPPER)?;
     std::fs::set_permissions(dir.join("codex"), std::fs::Permissions::from_mode(0o700))?;
+    write_private(&dir, "tyba", TYBA_CLI_WRAPPER)?;
+    std::fs::set_permissions(dir.join("tyba"), std::fs::Permissions::from_mode(0o700))?;
     Ok(dir)
 }
 
