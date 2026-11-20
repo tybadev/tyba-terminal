@@ -98,7 +98,8 @@ const handlers: Record<string, Handler> = {
   boot_poll: () => ({ ready: true, bootFailure: null }),
   layout_state: () => ({ ready: true, value: structuredClone(state.layout) }),
   list_sessions: () => ({ ready: true, value: SESSIONS }),
-  get_pref: () => null,
+  // Os quadros usam a sans do Muriki: o preview liga a preferência "grotesk".
+  get_pref: ({ key }) => (key === "pref.ui_font" ? "grotesk" : null),
   set_pref: () => null,
   get_theme_state: themeState,
   list_themes: () => THEMES,

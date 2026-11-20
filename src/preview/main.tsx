@@ -15,6 +15,7 @@ state.theme = params.get("theme") === "light" ? "light" : "dark";
 localStorage.clear();
 localStorage.setItem("tyba.theme", state.theme);
 localStorage.setItem("tyba.theme.migrated", "1");
+localStorage.setItem("tyba.font", "grotesk");
 
 mockWindows("main");
 mockIPC((cmd, args) => handle(cmd, args as Record<string, unknown>), {

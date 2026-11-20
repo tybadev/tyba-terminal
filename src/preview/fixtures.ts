@@ -16,6 +16,11 @@ import type {
 } from "../lib/ipc";
 
 const NOW = Date.now();
+const today = (h: number, m: number) => {
+  const d = new Date(NOW);
+  d.setHours(h, m, 0, 0);
+  return d.getTime();
+};
 const ISO = new Date(NOW - 3_600_000).toISOString();
 
 export const HOME = "~";
@@ -70,6 +75,24 @@ export const SESSIONS: Session[] = [
     agent_model: "Opus 5.5",
     turn_open: true,
     turn_started_at_ms: NOW - 72_000,
+    // O turno das 14:02 da Inbox (quadro: "Ver diff" nele).
+    last_turn: {
+      seq: 4,
+      outcome: "completed",
+      failure: null,
+      started_at_ms: today(14, 2) - 95_000,
+      ended_at_ms: today(14, 2),
+      duration_ms: 95_000,
+      prompt: "Corrige a ordem do desconto no billing",
+      diff: "ok",
+      files: [],
+      files_total: 3,
+      insertions: 42,
+      deletions: 7,
+      commits: 0,
+      cost_usd: 0.62,
+      tokens: null,
+    },
   }),
   session({
     id: ID.site,
@@ -279,12 +302,6 @@ function note(over: Partial<NotificationEntry> & Pick<NotificationEntry, "id" | 
   };
 }
 
-const today = (h: number, m: number) => {
-  const d = new Date(NOW);
-  d.setHours(h, m, 0, 0);
-  return d.getTime();
-};
-
 export const NOTIFICATIONS: NotificationEntry[] = [
   note({
     id: 5,
@@ -293,6 +310,7 @@ export const NOTIFICATIONS: NotificationEntry[] = [
     at_ms: NOW - 40_000,
     pending: true,
     command: "bun run test",
+    read: true,
   }),
   note({
     id: 4,
@@ -321,7 +339,6 @@ export const NOTIFICATIONS: NotificationEntry[] = [
     session_title: "core",
     agent: "claude",
     usage: { window: "five_hour", pct: 85, resets_at: Math.floor(today(16, 0) / 1000) },
-    read: true,
   }),
   note({
     id: 1,
