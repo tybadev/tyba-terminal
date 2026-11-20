@@ -1481,6 +1481,15 @@ samp {
   background: var(--tyba-text-faint);
   box-shadow: none;
 }
+/* Meta do item da paleta (quadro Main, `.mk-cmd-item .mk-meta`): no claro,
+   sans 12px muted logo depois do rótulo, não mono colado à direita. */
+[data-theme='light']:not([data-imported]) .tyba-cmd-meta {
+  margin-left: 0;
+  font-family: var(--tyba-font-ui);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--tyba-text-muted);
+}
 /* Lateral vazia (quadro SidebarVazia, `.vz`): a caixa tracejada. */
 .tyba-vz {
   border: 1px dashed color-mix(in srgb, var(--tyba-text) 12%, transparent);
