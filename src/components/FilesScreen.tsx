@@ -12,6 +12,7 @@ import {
 
 import "./gitScreen.css";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import i18n from "../i18n";
 import { ComposeFileTab } from "./ComposeFileTab";
 import { EditorTab } from "./EditorTab";
@@ -112,27 +113,23 @@ function SearchColumn({ session, onOpen }: { session: Session; onOpen: (rel: str
     <div className="flex min-h-0 flex-1 flex-col">
       {/* 37px com o fio, igual à faixa de abas do editor (linhas alinhadas). */}
       <div className="flex h-[37px] shrink-0 items-center border-b border-[var(--tyba-line)] px-2">
-        <label className="flex h-7 min-w-0 flex-1 items-center gap-2 rounded-[8px] border border-tyba-border-field bg-tyba-sunken pl-2.5 pr-2 text-[12.5px] text-tyba-text-faint">
-          <MagnifyingGlass size={13} className={`shrink-0 ${busy ? "animate-pulse" : ""}`} />
-          <input
-            type="text"
-            autoFocus
-            spellCheck={false}
-            autoCapitalize="off"
-            autoCorrect="off"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Escape" && query) {
-                e.preventDefault();
-                setQuery("");
-              }
-            }}
-            placeholder={t("filesScreenSearchPlaceholder")}
-            aria-label={t("filesScreenSearchPlaceholder")}
-            className="min-w-0 flex-1 bg-transparent text-tyba-text outline-none placeholder:text-tyba-text-faint"
-          />
-        </label>
+        {/* O mesmo Input do filtro da árvore (quadro Arquivos: 28px, raio 8). */}
+        <Input
+          icon={<MagnifyingGlass size={13} className={busy ? "animate-pulse" : undefined} />}
+          className="h-7 flex-1 rounded-[8px] pr-2 pl-2.5 text-[12.5px]"
+          type="text"
+          autoFocus
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Escape" && query) {
+              e.preventDefault();
+              setQuery("");
+            }
+          }}
+          placeholder={t("filesScreenSearchPlaceholder")}
+          aria-label={t("filesScreenSearchPlaceholder")}
+        />
       </div>
       <div className="min-h-0 flex-1 overflow-auto px-1.5 py-2 text-[12px]">
         {error ? (
