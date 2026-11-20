@@ -24,6 +24,7 @@ import {
   DECORATIONS,
   HANDOFF_TARGETS,
   ORBIT_GRAPH,
+  PANEL_USAGE,
   PR_DETAIL,
   PR_PAGE,
   RUN_LOG,
@@ -212,7 +213,7 @@ const handlers: Record<string, Handler> = {
   docker_compose_runs: () => ({}),
   docker_logs_start: () => ({ lines: CONTAINER_LOG, following: false }),
   docker_logs_stop: () => null,
-  docker_panel_usage: () => ({ usage: [], exits: [] }),
+  docker_panel_usage: () => PANEL_USAGE,
   docker_container_detail: ({ containerId }) => {
     const c = CONTAINERS.find((x) => x.id === containerId) ?? CONTAINERS[0];
     return { id: c.id, name: c.name, image: c.image, state: c.state, started_at: null, workdir: null, mounts: [], ports: [] };

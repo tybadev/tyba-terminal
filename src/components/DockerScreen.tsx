@@ -24,7 +24,6 @@ import { ContainerLogsView } from "./ContainerLogsView";
 import { ContainerShellBanner, ContainerStrip } from "./ContainerStrip";
 import { DockerComposeSection } from "./DockerComposeSection";
 import { DockerLoading } from "./DockerLoading";
-import { PanelIcon } from "./SidePanelBar";
 import { TerminalView } from "./TerminalView";
 import { requestConfirm } from "../lib/confirm";
 import { rememberContainerName } from "../lib/contentTabs";
@@ -37,7 +36,7 @@ import {
   exitedAgoMs,
   formatBytes,
   formatCpu,
-  groupContainers,
+  matchesQuery,
   healthOf,
   loadContainers,
   portList,
@@ -484,12 +483,12 @@ export function DockerScreen({
     };
   }, [hasList, exitedKey, host]);
 
-  // Ordem do painel antigo: o projeto do repo primeiro, rodando antes.
-  const ordered = useMemo(
-    () =>
-      groupContainers(list ?? [], query).flatMap((g) => [...g.running, ...g.stopped, ...g.old]),
-    [list, query],
-  );
+  // Quadro Docker: a ordem do `docker ps -a` (a do core), com o projeto do
+  // repo primeiro; rodando e parado não se separam.
+  const ordered = useMemo(() => {
+    const shown = (list ?? []).filter((c) => matchesQuery(c, query));
+    return [...shown.filter((c) => c.in_repo), ...shown.filter((c) => !c.in_repo)];
+  }, [list, query]);
   const counts = containerCounts(list ?? []);
   const repoProject = useMemo(
     () => (list ?? []).find((c) => c.in_repo)?.compose_project ?? null,
@@ -585,7 +584,7 @@ export function DockerScreen({
         onClick={() => pick(c.id)}
         title={`${c.name}\n${image.full}\n${c.status}`}
         // Escolhido = fundo elevado com contorno inteiro; nunca barra lateral.
-        className={`flex w-full flex-col gap-[3px] rounded-[10px] px-3 py-2.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-tyba-blue ${
+        className={`flex w-full flex-col gap-[3px] rounded-[10px] px-3 py-2.5 text-left leading-[normal] outline-none focus-visible:ring-2 focus-visible:ring-tyba-blue ${
           on
             ? "tyba-pill-on"
             : "hover:bg-tyba-text/[.03]"
@@ -748,7 +747,8 @@ export function DockerScreen({
           </div>
         ) : (
           <div className="flex h-[46px] shrink-0 items-center gap-2.5 tyba-divide-b bg-[var(--tyba-panel-bg)] px-[18px] text-[12.5px]">
-            <PanelIcon kind="docker" size={16} className="shrink-0 text-tyba-blue" />
+            {/* Quadro Docker: o cubo, o mesmo do trilho. */}
+            <Cube size={16} className="shrink-0 text-tyba-blue" />
             <span className="shrink-0 text-[15px] font-bold tracking-[-0.01em] text-tyba-text">
               {t("sidePanelDocker")}
             </span>

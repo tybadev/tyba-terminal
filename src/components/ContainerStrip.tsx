@@ -49,6 +49,7 @@ const STATS_EVERY_MS = 5_000;
 /** Abaixo desta largura, as ações secundárias vão para o menu "⋯": botão
  *  cortado no meio é pior que um clique a mais. Parar fica sempre à vista. */
 const COMPACT_BELOW_PX = 760;
+const COMPACT_IN_SCREEN_PX = 480;
 
 /**
  * Faixa de contexto sob a barra de abas de uma aba de container: quem é, em
@@ -68,11 +69,12 @@ export function ContainerStrip({ containerId, current, host, onRestarted, inScre
     const el = rootRef.current;
     if (!el) return;
     const ro = new ResizeObserver(([entry]) =>
-      setCompact(entry.contentRect.width < COMPACT_BELOW_PX),
+      // Na tela Docker só sobra Reiniciar (quadro: à vista ao lado de Parar).
+      setCompact(entry.contentRect.width < (inScreen ? COMPACT_IN_SCREEN_PX : COMPACT_BELOW_PX)),
     );
     ro.observe(el);
     return () => ro.disconnect();
-  }, []);
+  }, [inScreen]);
 
   const loadDetail = useCallback(() => {
     void dockerContainerDetail(containerId, host)

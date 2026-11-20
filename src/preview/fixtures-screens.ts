@@ -343,7 +343,15 @@ export function TurnPanel({ turn, onHandoff }: Props) {
 
 // --- Docker -----------------------------------------------------------------
 
-function container(id: string, name: string, image: string, state: string, status: string, ports = ""): ContainerInfo {
+function container(
+  id: string,
+  name: string,
+  image: string,
+  state: string,
+  status: string,
+  ports = "",
+  service = name,
+): ContainerInfo {
   return {
     id,
     name,
@@ -353,7 +361,7 @@ function container(id: string, name: string, image: string, state: string, statu
     ports,
     compose_project: "api",
     compose_working_dir: REPO.api,
-    service: name,
+    service,
     config_files: `${REPO.api}/docker-compose.yml`,
     working_dir_status: "ok",
     compose_file_status: "ok",
@@ -362,13 +370,26 @@ function container(id: string, name: string, image: string, state: string, statu
 }
 
 export const CONTAINERS: ContainerInfo[] = [
-  container("c-postgres18", "muriki_postgres", "muriki-postgres:18", "exited", "Exited (0) 5 days ago"),
+  container("c-postgres18", "muriki_postgres", "muriki-postgres:18", "exited", "Exited (0) 5 days ago", "", "postgres"),
   container("c-redis", "redis", "redis:7-alpine", "exited", "Exited (0) 5 days ago"),
   container("c-postgres", "postgres", "postgres:16", "running", "Up 34 hours (healthy)", "0.0.0.0:7432->5432/tcp"),
   container("c-greenmail", "greenmail", "greenmail/standalone", "exited", "Exited (255) 5 weeks ago"),
   container("c-n8n", "n8n", "n8nio/n8n", "exited", "Exited (255) 5 weeks ago"),
   container("c-rabbit", "rabbitmq", "rabbitmq:3.13-management", "exited", "Exited (0) 9 days ago"),
+  // O resto dos 25 do quadro ("4 rodando · 21 parados"), abaixo da dobra.
+  ...["minio", "mailpit", "keycloak"].map((n) =>
+    container(`c-${n}`, n, `${n}:latest`, "running", "Up 2 days"),
+  ),
+  ...Array.from({ length: 16 }, (_, i) =>
+    container(`c-job${i}`, `job-${i + 1}`, "alpine:3.20", "exited", "Exited (0) 6 weeks ago"),
+  ),
 ];
+
+/** RAM do postgres rodando (quadro: "saudável · RAM 63 MB · há 34 h"). */
+export const PANEL_USAGE = {
+  usage: [{ id: "c-postgres", cpu_percent: 0.4, mem_bytes: 63 * 1024 * 1024 }],
+  exits: [],
+};
 
 const PG_LOG: [string, string, boolean][] = [
   ["04:28:36", '[1] LOG:  background worker "logical replication launcher" (PID 36) exited with code 1', false],
@@ -382,10 +403,17 @@ const PG_LOG: [string, string, boolean][] = [
   ["13:39:37", "[1] LOG:  database system is shut down", false],
 ];
 
+function clockToday(clock: string): number {
+  const [h, m, sec] = clock.split(":").map(Number);
+  const d = new Date(NOW);
+  d.setHours(h, m, sec, 0);
+  return d.getTime();
+}
+
 export const CONTAINER_LOG: LogLine[] = PG_LOG.map(([ts, text, error], seq) => ({
   seq,
   ts,
-  ts_ms: null,
+  ts_ms: clockToday(ts),
   level: error ? "error" : "info",
   continuation: false,
   stderr: error,
