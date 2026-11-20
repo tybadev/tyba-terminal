@@ -258,8 +258,10 @@ mod tests {
         let mut env = HashMap::new();
         env.insert("CLAUDE_CONFIG_DIR".to_string(), "/tmp/xyz".to_string());
 
+        // Folga de teste: o runner do Ubuntu na CI passou dos 3 s de produção
+        // só para subir o `sh` (visto no #443). O que se mede aqui é o env.
         let (stdout, exit) =
-            run_status_json(&bin, &env, dir.path(), Duration::from_secs(3)).unwrap();
+            run_status_json(&bin, &env, dir.path(), Duration::from_secs(15)).unwrap();
         assert_eq!(exit, Some(0));
         assert!(stdout.contains(r#""cfg": "/tmp/xyz""#), "{stdout}");
         assert!(stdout.contains(r#""home_leaked": "no""#), "{stdout}");
