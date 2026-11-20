@@ -9,6 +9,22 @@ pub fn last_assistant_text(path: &Path, max_chars: usize) -> Option<String> {
     })
 }
 
+/// Como [`last_assistant_text`], mas sem colapsar as quebras de linha: a
+/// fala do handoff vai citada linha a linha. Redigida antes do corte, cortada
+/// em `max_chars` sem reticências (quem chama decide como marcar o corte).
+pub fn last_assistant_text_lines(path: &Path, max_chars: usize) -> Option<String> {
+    last_text_with(
+        path,
+        |entry| assistant_text(entry).or_else(|| codex_agent_text(entry)),
+        |text| {
+            crate::session::redact::redact(&text)
+                .chars()
+                .take(max_chars)
+                .collect()
+        },
+    )
+}
+
 /// O último prompt que o usuário escreveu, redigido e cortado. Só para o
 /// título do aviso do SO: nunca vai para o SQLite.
 pub fn last_user_prompt(path: &Path, max_chars: usize) -> Option<String> {
@@ -21,6 +37,16 @@ fn last_text(
     path: &Path,
     max_chars: usize,
     pick: impl Fn(&serde_json::Value) -> Option<String>,
+) -> Option<String> {
+    last_text_with(path, pick, |text| {
+        truncate_chars(&redacted_collapsed(&text), max_chars)
+    })
+}
+
+fn last_text_with(
+    path: &Path,
+    pick: impl Fn(&serde_json::Value) -> Option<String>,
+    finish: impl Fn(String) -> String,
 ) -> Option<String> {
     let mut file = std::fs::File::open(path).ok()?;
     let len = file.metadata().ok()?.len();
@@ -37,7 +63,7 @@ fn last_text(
         .rev()
         .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
         .find_map(|entry| pick(&entry))
-        .map(|text| truncate_chars(&redacted_collapsed(&text), max_chars))
+        .map(finish)
         .filter(|text| !text.is_empty())
 }
 

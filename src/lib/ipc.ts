@@ -1138,6 +1138,42 @@ export const userConfigPath = () => invoke<string | null>("user_config_path");
 export const createSession = (opts: CreateSessionOpts) =>
   invoke<Session>("create_session", { opts });
 
+/** Handoff entre agentes: para quem a sessão pode passar o trabalho. */
+export type HandoffAgent = "claude" | "codex" | "gemini";
+
+export interface HandoffTarget {
+  agent: HandoffAgent;
+  label: string;
+  available: boolean;
+  /** Por que não dá (ex.: "sem suporte ainda"); `null` quando dá. */
+  reason: string | null;
+}
+
+/** O texto exato que vai como primeiro prompt, montado e redigido no core. */
+export interface HandoffPreview {
+  /** Tudo, exatamente como vai. */
+  text: string;
+  /** O texto sem o bloco da nota: o que a folha desenha. */
+  body: string;
+  /** A nota exatamente como vai (redigida, cortada, sem invisíveis); "" se vazia. */
+  note: string;
+  /** Quantos trechos o core redigiu. */
+  redacted: number;
+  folder: string;
+  target_label: string;
+}
+
+export const handoffTargets = (id: SessionId) =>
+  invoke<HandoffTarget[]>("handoff_targets", { id });
+
+/** Só o agente e a nota saem daqui; o texto é sempre do core. */
+export const sessionHandoffPreview = (id: SessionId, target: HandoffAgent, note: string) =>
+  invoke<HandoffPreview>("session_handoff_preview", { id, target, note });
+
+/** O core remonta e redige o texto de novo e abre a sessão nova. */
+export const sessionHandoffOpen = (id: SessionId, target: HandoffAgent, note: string) =>
+  invoke<Session>("session_handoff_open", { id, target, note });
+
 export const writeToSession = (id: SessionId, data: string) =>
   invoke<void>("write_to_session", { id, data: encodeBase64(data) });
 
@@ -1847,10 +1883,6 @@ export const dockerScreenShow = (workspace: WorkspaceId, container: string, pane
 /** O shell (`docker exec`) que mora na tela de Docker: devolve a sessão dele. */
 export const dockerScreenShell = (containerId: string, host?: string | null) =>
   invoke<SessionId>("docker_screen_shell", { containerId, host: host ?? null });
-
-/** Os logs (`docker logs -f`) da tela de Docker em sessão SSH: sessão de terminal sem aba. */
-export const dockerScreenLogs = (containerId: string, host?: string | null) =>
-  invoke<SessionId>("docker_screen_logs", { containerId, host: host ?? null });
 
 export interface ImageInfo {
   id: string;
@@ -3661,8 +3693,8 @@ export interface LogsSnapshot {
   following: boolean;
 }
 
-export const dockerLogsStart = (containerId: string) =>
-  invoke<LogsSnapshot>("docker_logs_start", { containerId });
+export const dockerLogsStart = (containerId: string, host?: string | null) =>
+  invoke<LogsSnapshot>("docker_logs_start", { containerId, host: host ?? null });
 
 export const onDockerLogs = (
   containerId: string,
@@ -3727,11 +3759,11 @@ export interface ContainerFsFile {
   binary: boolean;
 }
 
-export const dockerFsList = (containerId: string, path: string) =>
-  invoke<ContainerFsEntry[]>("docker_fs_list", { containerId, path });
+export const dockerFsList = (containerId: string, path: string, host?: string | null) =>
+  invoke<ContainerFsEntry[]>("docker_fs_list", { containerId, path, host: host ?? null });
 
-export const dockerFsRead = (containerId: string, path: string) =>
-  invoke<ContainerFsFile>("docker_fs_read", { containerId, path });
+export const dockerFsRead = (containerId: string, path: string, host?: string | null) =>
+  invoke<ContainerFsFile>("docker_fs_read", { containerId, path, host: host ?? null });
 
 /** Texto com segredos mascarados pelo core (#10), para copiar. */
 export const exportRedacted = (lines: string[]) =>

@@ -282,7 +282,7 @@ impl PaneNode {
         }
     }
 
-    fn leaf_sessions(&self, out: &mut Vec<SessionId>) {
+    pub(crate) fn leaf_sessions(&self, out: &mut Vec<SessionId>) {
         match self {
             PaneNode::Leaf { session_id, .. } => out.push(*session_id),
             PaneNode::AgentViewer { .. } => {}
