@@ -1137,6 +1137,20 @@ export const previewNotifySound = (name: string) =>
 
 /** Ajustes do Sistema → Notificações (macOS). */
 export const openNotificationSettings = () => invoke<void>("open_notification_settings");
+/** Se o sistema deixa o TYBA avisar; `null` fora do macOS. */
+export type NotifyPermission = "granted" | "denied" | "not_determined";
+export const notificationPermission = () =>
+  invoke<NotifyPermission | null>("notification_permission");
+
+/** Um `.tyba/config.toml` aprovado (Segurança → "Ver aprovados"). */
+export interface ApprovedRepoConfig {
+  repo_root: string;
+  decided_at: string;
+  /** O arquivo de hoje é o aprovado. */
+  current: boolean;
+}
+export const listApprovedConfigs = () => invoke<ApprovedRepoConfig[]>("list_approved_configs");
+
 /** Um aviso do sistema de teste (Configurações → Notificações). */
 export const testNotification = (title: string, body: string) =>
   invoke<void>("test_notification", { title, body });

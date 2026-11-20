@@ -102,6 +102,10 @@ import {
   dockerAvailable,
   openNotificationSettings,
   testNotification,
+  notificationPermission,
+  listApprovedConfigs,
+  type ApprovedRepoConfig,
+  type NotifyPermission,
   previewNotifySound,
   updateCheck,
 } from "../lib/ipc";
@@ -193,7 +197,15 @@ const SECURITY_RULES = ["cfgRuleMain", "cfgRuleSecrets", "cfgRuleKill"];
  * ninguém procurar um interruptor que não existe; o agente roda livre.
  */
 function SecuritySection() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  // Quem aprovou qual `.tyba/config.toml` (o core guarda o consentimento).
+  const [approved, setApproved] = useState<ApprovedRepoConfig[] | null>(null);
+  const [showApproved, setShowApproved] = useState(false);
+  useEffect(() => {
+    void listApprovedConfigs()
+      .then(setApproved)
+      .catch(() => {});
+  }, []);
   return (
     <>
       <SettingGroup title={t("cfgGroupAlways")}>
@@ -208,12 +220,38 @@ function SecuritySection() {
         <SettingLine
           label={t("cfgRepoConfig")}
           hint={
-            <Trans
-              i18nKey="cfgRepoConfigHint"
-              components={{ file: <span className="font-mono text-[12.5px] text-tyba-text" /> }}
-            />
+            <>
+              <Trans
+                i18nKey="cfgRepoConfigHint"
+                components={{ file: <span className="font-mono text-[12.5px] text-tyba-text" /> }}
+              />
+              {approved && <> {t("cfgRepoApproved", { count: approved.length, n: spelled(approved.length, i18n.language) })}</>}
+            </>
           }
-        />
+          below={
+            showApproved && approved ? (
+              <ul className="flex flex-col gap-1 text-[12.5px]">
+                {approved.length === 0 && <li className="text-tyba-text-faint">{t("cfgRepoApprovedNone")}</li>}
+                {approved.map((c) => (
+                  <li key={c.repo_root} className="flex items-baseline gap-3">
+                    <span className="min-w-0 truncate font-mono text-tyba-text" title={c.repo_root}>
+                      {homeShort(c.repo_root)}
+                    </span>
+                    <span className="ml-auto shrink-0 text-tyba-text-faint">
+                      {c.current
+                        ? t("cfgRepoApprovedAt", { date: new Date(c.decided_at).toLocaleDateString(i18n.language) })
+                        : t("cfgRepoApprovedChanged")}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            ) : undefined
+          }
+        >
+          <SettingButton onClick={() => setShowApproved((v) => !v)} aria-expanded={showApproved}>
+            {showApproved ? t("cfgRepoApprovedHide") : t("cfgRepoApprovedShow")}
+          </SettingButton>
+        </SettingLine>
       </SettingGroup>
     </>
   );
@@ -264,6 +302,16 @@ const searchKeys = (): Record<Section, string[]> => ({
   shortcuts: Object.values(ACTION_LABEL_KEYS),
   about: ["version", "aboutDiagnostics", "aboutDocs", "aboutWhatChanged"],
 });
+
+/** Quadro: "Dois aprovados." — o número por extenso até dez. */
+const SPELLED: Record<string, string[]> = {
+  pt: ["nenhum", "um", "dois", "três", "quatro", "cinco", "seis", "sete", "oito", "nove", "dez"],
+  en: ["none", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"],
+};
+function spelled(n: number, language: string): string {
+  const word = (SPELLED[language.split("-")[0]] ?? SPELLED.en)[n] ?? String(n);
+  return word.charAt(0).toUpperCase() + word.slice(1);
+}
 
 /** `/Users/x/.tyba/config.toml` → `~/.tyba/config.toml`. */
 function homeShort(path: string): string {
@@ -445,6 +493,13 @@ const MAC_SOUNDS = ["Ping", "Glass", "Submarine", "Hero", "Funk", "Blow"];
  */
 function NotifyPrefs() {
   const { t } = useTranslation();
+  // "Permitidos": o que o sistema diz agora (o core pergunta ao macOS).
+  const [permission, setPermission] = useState<NotifyPermission | null>(null);
+  useEffect(() => {
+    void notificationPermission()
+      .then(setPermission)
+      .catch(() => {});
+  }, []);
   // O estado nasce nos defaults de fábrica, e não vazio: entre a montagem e a
   // resposta do `getPref` a linha já aparece, e uma espécie que nasce desligada
   // não pode piscar ligada nesse intervalo.
@@ -532,7 +587,10 @@ function NotifyPrefs() {
       )}
       {IS_MAC && (
         <SettingGroup title={t("cfgGroupOutside")}>
-          <SettingLine label={t("cfgMacos")} hint={t("cfgMacosHint")}>
+          <SettingLine
+            label={t("cfgMacos")}
+            hint={permission ? `${t(`notifyPerm_${permission}`)} ${t("cfgMacosHint")}` : t("cfgMacosHint")}
+          >
             <SettingButton
               tone="ghost"
               icon={<Bell size={16} />}
