@@ -7,6 +7,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
+import { uiScaleFactor } from "../uiScale";
+
 export interface BrowserRect {
   x: number;
   y: number;
@@ -250,7 +252,21 @@ export const browserView = (
   clip: BrowserRect | null,
   zoom: number,
   center: [number, number] | null,
-) => invoke<void>("orbit_browser_view", { graphId, nodeId, rect, clip, zoom, center });
+) => {
+  // Com a escala da interface o webview tem zoom: o px do DOM vale `k` px da
+  // janela, e a view nativa é posta em px da janela.
+  const k = uiScaleFactor();
+  const px = (r: BrowserRect | null) =>
+    r && { x: r.x * k, y: r.y * k, w: r.w * k, h: r.h * k };
+  return invoke<void>("orbit_browser_view", {
+    graphId,
+    nodeId,
+    rect: px(rect),
+    clip: px(clip),
+    zoom: zoom * k,
+    center: center && [center[0] * k, center[1] * k],
+  });
+};
 
 export const browserBack = (graphId: string, nodeId: string) =>
   invoke<void>("orbit_browser_back", { graphId, nodeId });

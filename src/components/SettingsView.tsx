@@ -66,6 +66,14 @@ import {
   type UiFont,
 } from "../font";
 import {
+  getUiScale,
+  onUiScaleChange,
+  parseUiScale,
+  setUiScale,
+  UI_SCALES,
+  type UiScale,
+} from "../uiScale";
+import {
   getEffectiveBase,
   getThemeMode,
   onEffectiveBaseChange,
@@ -202,6 +210,7 @@ const searchKeys = (): Record<Section, string[]> => ({
     "settingsThemes",
     "cfgFont",
     "cfgSize",
+    "cfgUiScale",
     "cfgCollapse",
     "cfgGitStatus",
     "sidebarDetails",
@@ -887,9 +896,11 @@ export function SettingsView({
   const [defaultDir, setDefaultDir] = useState("");
   const [fontSize, setFontSize] = useState(13);
   const [uiFont, setUiFontState] = useState<UiFont>(getUiFont);
+  const [uiScale, setUiScaleState] = useState<UiScale>(getUiScale);
   const [effBase, setEffBase] = useState(getEffectiveBase);
 
   useEffect(() => onUiFontChange(setUiFontState), []);
+  useEffect(() => onUiScaleChange(setUiScaleState), []);
   // O tamanho pode mudar por fora (edição do ~/.tyba/config.toml).
   useEffect(() => {
     const sync = () => setFontSize(getDefaultFontSize());
@@ -1125,6 +1136,14 @@ export function SettingsView({
                     options={sizeOptions}
                     value={String(fontSize)}
                     onChange={(v) => changeFontSize(Number(v))}
+                  />
+                </SettingLine>
+                <SettingLine label={t("cfgUiScale")} hint={t("cfgUiScaleHint")}>
+                  <SettingSegment
+                    label={t("cfgUiScale")}
+                    options={UI_SCALES.map((s) => ({ value: String(s), label: `${s}%` }))}
+                    value={String(uiScale)}
+                    onChange={(v) => setUiScale(parseUiScale(v))}
                   />
                 </SettingLine>
               </SettingGroup>

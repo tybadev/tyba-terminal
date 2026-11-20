@@ -19,6 +19,8 @@ pub const KEY_THEME_LIGHT: &str = "theme.slot.light";
 pub const KEY_UI_FONT: &str = "pref.ui_font";
 pub const KEY_FONT_SIZE: &str = "pref.code.font_size";
 pub const KEY_BINDINGS: &str = "pref.keybindings";
+/// Escala da interface em % (o front aceita 100, 110 e 125; fora disso, 100).
+pub const KEY_UI_SCALE: &str = "pref.ui_scale";
 /// Não tem par no SQLite: nasceu no arquivo. Lida por
 /// [`super::ConfigManager::app_icon`].
 pub const KEY_APP_ICON: &str = "appearance.app_icon";
@@ -88,6 +90,12 @@ pub const FIELDS: &[Field] = &[
         key: KEY_APP_ICON,
         kind: Kind::Enum(APP_ICONS),
     },
+    Field {
+        section: "appearance",
+        name: "ui_scale",
+        key: KEY_UI_SCALE,
+        kind: Kind::Int(100, 125),
+    },
 ];
 
 pub const SECTION_BINDINGS: &str = "keybindings";
@@ -104,6 +112,7 @@ pub const FILE_KEYS: &[&str] = &[
     KEY_FONT_SIZE,
     KEY_BINDINGS,
     KEY_APP_ICON,
+    KEY_UI_SCALE,
 ];
 
 /// Espelho de `KEY_ACTIONS` em `src/lib/keys.ts` — o teste
@@ -611,6 +620,15 @@ mod tests {
         assert!(ok("[font]\nterminal_size = 21").values.is_empty());
         assert!(ok("[font]\nterminal_size = 13.5").values.is_empty());
         assert!(ok("[font]\nterminal_size = \"13\"").values.is_empty());
+    }
+
+    #[test]
+    fn ui_scale_is_an_int_from_100_to_125() {
+        assert_eq!(ok("[appearance]\nui_scale = 110").values[KEY_UI_SCALE], "110");
+        assert_eq!(ok("[appearance]\nui_scale = 125").values[KEY_UI_SCALE], "125");
+        assert!(ok("[appearance]\nui_scale = 90").values.is_empty());
+        assert!(ok("[appearance]\nui_scale = 150").values.is_empty());
+        assert!(ok("[appearance]\nui_scale = \"110\"").values.is_empty());
     }
 
     #[test]
