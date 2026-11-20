@@ -65,6 +65,8 @@ export const SESSIONS: Session[] = [
     repo_root: REPO.api,
     status: { state: "awaiting_input", hint: "bun run test", reason: "native_prompt" },
     attention: true,
+    // "Precisa de você · há 40s" do quadro Sidebar.
+    waiting_since_ms: NOW - 40_000,
   }),
   session({
     id: ID.core,
