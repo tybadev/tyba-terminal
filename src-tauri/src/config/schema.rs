@@ -624,8 +624,14 @@ mod tests {
 
     #[test]
     fn ui_scale_is_an_int_from_100_to_125() {
-        assert_eq!(ok("[appearance]\nui_scale = 110").values[KEY_UI_SCALE], "110");
-        assert_eq!(ok("[appearance]\nui_scale = 125").values[KEY_UI_SCALE], "125");
+        assert_eq!(
+            ok("[appearance]\nui_scale = 110").values[KEY_UI_SCALE],
+            "110"
+        );
+        assert_eq!(
+            ok("[appearance]\nui_scale = 125").values[KEY_UI_SCALE],
+            "125"
+        );
         assert!(ok("[appearance]\nui_scale = 90").values.is_empty());
         assert!(ok("[appearance]\nui_scale = 150").values.is_empty());
         assert!(ok("[appearance]\nui_scale = \"110\"").values.is_empty());
