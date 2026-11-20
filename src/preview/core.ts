@@ -154,6 +154,12 @@ const handlers: Record<string, Handler> = {
   list_launch_configs: () => [],
   command_history_total: () => 0,
   scan_shell_history_sources: () => [],
+  // Quadro SettingsSpecimen: "Permitidos." e "Dois aprovados."
+  notification_permission: () => "granted",
+  list_approved_configs: () => [
+    { repo_root: "~/projetos/api", decided_at: "2026-11-02T14:00:00Z", current: true },
+    { repo_root: "~/projetos/site", decided_at: "2026-10-20T09:30:00Z", current: true },
+  ],
   claude_plugin_status: () => ({ available: true, installed: true, blocked: null }),
   ssh_typed_prefs: () => ({ detect: true, mode: "ask", denied: [] }),
   app_build_info: () => ({
