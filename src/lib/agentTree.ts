@@ -181,8 +181,8 @@ export function roundAge(
 
 export const LIGHT_CLASS: Record<AgentLight, string> = {
   running:
-    "bg-tyba-green-fill [box-shadow:var(--tyba-glow-green)] motion-safe:animate-pulse",
-  starting: "bg-tyba-amber-fill motion-safe:animate-pulse",
+    "bg-tyba-green-fill [box-shadow:var(--tyba-glow-green)] tyba-pulse",
+  starting: "bg-tyba-amber-fill tyba-pulse",
   awaiting: "bg-tyba-amber-fill",
   done: "bg-tyba-text-faint",
   failed: "bg-tyba-red-fill",

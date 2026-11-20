@@ -6,7 +6,7 @@ import {
   needsYou,
   tokenValues,
 } from "../lib/agentsSidebar";
-import type { AgentRow } from "../lib/agentsBoard";
+import { agentLabelOf, type AgentRow } from "../lib/agentsBoard";
 import { formatElapsed } from "../lib/agentTree";
 import { turnElapsedMs } from "../lib/sessionStatus";
 import { useNow } from "./ui/loading";
@@ -74,7 +74,7 @@ export function RobotIcon({ size = 16 }: { size?: number }) {
 /** Nome do agente como o quadro escreve: "Claude Code", "Codex". */
 function agentName(row: AgentRow): string | null {
   const raw = (() => {
-    if (row.observed) return row.observed.agent;
+    if (row.observed) return agentLabelOf(row.observed.agent);
     const kind = row.session.kind;
     if (kind.type !== "agent") return null;
     if (kind.runner === "claude_code") return "claude";

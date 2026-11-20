@@ -8,6 +8,7 @@ import { cn } from "@/lib/utils"
 // clique. default = primário líquido; outline/secondary = vidro (branco, fio
 // fino, sombra do knob); ghost = transparente; destructive = vidro com o
 // texto em vermelho. As cores vêm dos tokens `--tyba-control-*`/`--primary`.
+// Tamanho padrão = `mk-btn` (40px, ícone 18px); sm = `mk-btn-sm` (34px).
 const buttonVariants = cva(
   "inline-flex shrink-0 items-center justify-center gap-2 rounded-[10px] border border-transparent text-sm font-semibold whitespace-nowrap transition-[transform,background-color,box-shadow,color] duration-150 outline-none active:scale-[.98] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:pointer-events-none disabled:opacity-45 aria-invalid:outline-2 aria-invalid:outline-destructive [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
   {
@@ -26,11 +27,11 @@ const buttonVariants = cva(
         link: "text-primary underline-offset-4 hover:underline",
       },
       size: {
-        default: "h-9 px-4 has-[>svg]:px-3.5",
+        default: "h-10 px-5 has-[>svg]:px-4 [&_svg:not([class*='size-'])]:size-[18px]",
         xs: "h-6 gap-1 rounded-[8px] px-2 text-xs has-[>svg]:px-1.5 [&_svg:not([class*='size-'])]:size-3",
         sm: "h-[34px] gap-1.5 px-3.5 text-[13px] has-[>svg]:px-3",
         lg: "h-10 px-5 has-[>svg]:px-4 [&_svg:not([class*='size-'])]:size-[18px]",
-        icon: "size-9",
+        icon: "size-10 [&_svg:not([class*='size-'])]:size-[18px]",
         "icon-xs": "size-6 rounded-[8px] [&_svg:not([class*='size-'])]:size-3",
         "icon-sm": "size-[34px]",
         "icon-lg": "size-10 [&_svg:not([class*='size-'])]:size-[18px]",

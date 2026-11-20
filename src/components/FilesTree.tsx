@@ -44,6 +44,7 @@ import { isSensitivePath } from "@/lib/sensitivePaths";
 import { toastError } from "@/lib/toast";
 import { translateError } from "@/lib/errors";
 import { LspStatusChip, useLspStatus } from "./LspStatusUi";
+import { Input } from "./ui/input";
 import { LoadingState } from "./ui/loading";
 import { compactPath } from "@/lib/workspaceCwd";
 
@@ -528,27 +529,23 @@ export function FilesTree({
           com o fio de baixo (border-box), a altura da faixa de abas do editor:
           as duas linhas caem no mesmo y. */}
       <div className="flex h-[37px] shrink-0 items-center gap-1.5 border-b border-[var(--tyba-line)] px-2">
-        <label className="flex h-7 min-w-0 flex-1 items-center gap-2 rounded-[8px] border border-tyba-border-field bg-tyba-sunken pl-2.5 pr-2 text-[12.5px] text-tyba-text-faint">
-          <MagnifyingGlass size={13} className="shrink-0" />
-          <input
-            type="text"
-            spellCheck={false}
-            autoCapitalize="off"
-            autoCorrect="off"
-            value={treeQuery}
-            onChange={(e) => setTreeQuery(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Escape" && treeQuery) {
-                e.preventDefault();
-                setTreeQuery("");
-              }
-            }}
-            placeholder={t("filesScreenFilter")}
-            aria-label={t("filesScreenFilter")}
-            className="min-w-0 flex-1 bg-transparent text-tyba-text outline-none placeholder:text-tyba-text-faint"
-          />
-          {finderShortcut && <span className="shrink-0">{finderShortcut}</span>}
-        </label>
+        {/* Quadro Arquivos: o Input do Muriki com 28px, raio 8 e 0 8 0 10. */}
+        <Input
+          icon={<MagnifyingGlass size={13} />}
+          kbd={finderShortcut || undefined}
+          className="h-7 flex-1 rounded-[8px] pr-2 pl-2.5 text-[12.5px]"
+          type="text"
+          value={treeQuery}
+          onChange={(e) => setTreeQuery(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Escape" && treeQuery) {
+              e.preventDefault();
+              setTreeQuery("");
+            }
+          }}
+          placeholder={t("filesScreenFilter")}
+          aria-label={t("filesScreenFilter")}
+        />
         {remote && (
           <button
             onClick={() => void doRefresh()}

@@ -1,6 +1,7 @@
 import { useTranslation } from "react-i18next";
 import { ArrowLineRight, Check, Folder, GitBranch, Minus, Pause } from "@phosphor-icons/react";
 
+import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 import {
@@ -14,10 +15,6 @@ import {
 import { hasTurnDiff, openGitScreen } from "../lib/gitScreen";
 import { agentsDrawerCollapse, type FileStatus, type SessionId, type TurnDigest } from "../lib/ipc";
 import { useNow } from "./ui/loading";
-
-/** Botão de vidro pequeno do quadro (Pausar, Ver diff do turno). */
-export const GLASS_BTN =
-  "inline-flex h-[34px] shrink-0 items-center gap-2 rounded-[10px] bg-[var(--tyba-glass-piece)] px-3.5 text-[13px] font-semibold whitespace-nowrap text-tyba-text shadow-[inset_0_0_0_1px_var(--tyba-line)] outline-none hover:bg-tyba-hover focus-visible:[box-shadow:var(--tyba-focus-ring)] disabled:pointer-events-none disabled:opacity-45";
 
 // Quadro Agentes (g6-box): caixa clara com fio; a cor do estado fica no
 // ícone (e no texto, quando o turno falhou).
@@ -211,29 +208,29 @@ export function TurnPanel({
         }`}
       >
         {canDiff && (
-          <button type="button" onClick={() => seeDiff(null)} className={GLASS_BTN}>
+          <Button onClick={() => seeDiff(null)} variant="outline" size="sm">
             <GitBranch size={15} />
             {t("turnSeeDiff")}
-          </button>
+          </Button>
         )}
         {!onHandoff ? null : turnOpen ? (
           <Tooltip>
             <TooltipTrigger asChild>
               {/* Botão desligado não recebe hover: a dica mora no invólucro. */}
               <span tabIndex={0} className="inline-flex">
-                <button type="button" disabled className={GLASS_BTN}>
+                <Button disabled variant="outline" size="sm">
                   <ArrowLineRight size={15} />
                   {t("handoffPassTo")}
-                </button>
+                </Button>
               </span>
             </TooltipTrigger>
             <TooltipContent side="top">{t("handoffWaitTurn")}</TooltipContent>
           </Tooltip>
         ) : (
-          <button type="button" onClick={onHandoff} className={GLASS_BTN}>
+          <Button onClick={onHandoff} variant="outline" size="sm">
             <ArrowLineRight size={15} />
             {t("handoffPassTo")}
-          </button>
+          </Button>
         )}
         <span className="flex-1" />
         <span className="whitespace-nowrap font-mono text-[11.5px] text-tyba-text-faint">

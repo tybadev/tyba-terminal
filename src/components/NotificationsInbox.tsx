@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { ArrowRight, Check, Clock, GithubLogo, WarningCircle, X, type Icon } from "@phosphor-icons/react";
 
 import { Button } from "@/components/ui/button";
+import { SegmentedControl } from "@/components/ui/segmented";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -500,22 +501,12 @@ export function NotificationsInbox({
           </div>
 
           <div className="shrink-0 px-4 pb-1">
-            <div role="tablist" aria-label={t("notifFilter")} className="tyba-segment w-fit rounded-full! p-1!">
-              {FILTERS.map((f) => (
-                <button
-                  key={f.key}
-                  type="button"
-                  role="tab"
-                  aria-selected={filter === f.key}
-                  onClick={() => setFilter(f.key)}
-                  className={`flex h-[30px] items-center rounded-full px-4 text-[13px] font-semibold whitespace-nowrap transition-colors focus-visible:outline-none focus-visible:[box-shadow:var(--tyba-focus-ring)] ${
-                    filter === f.key ? "tyba-pill-on text-tyba-text" : "text-tyba-text-muted hover:text-tyba-text"
-                  }`}
-                >
-                  {t(f.label)}
-                </button>
-              ))}
-            </div>
+            <SegmentedControl
+              aria-label={t("notifFilter")}
+              value={filter}
+              onChange={setFilter}
+              options={FILTERS.map((f) => ({ value: f.key, label: t(f.label) }))}
+            />
           </div>
 
           <div className="min-h-0 flex-1 overflow-y-auto pb-3">

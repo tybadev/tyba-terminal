@@ -68,6 +68,8 @@ terminal_size = 13
 # Ícone do app: blackout, aurora, filamento, assinatura, fosforo, violeta,
 # grafite ou papel
 app_icon = "blackout"
+# Escala da interface, em %: 100, 110 ou 125
+# ui_scale = 100
 
 # Atalhos: ação = "modificadores+tecla", com meta, ctrl, alt e shift.
 # Ex.: paletteActions = "meta+p". O que não estiver aqui usa o padrão.

@@ -14,6 +14,7 @@ import "./styles.css";
 import "./i18n";
 import "./theme";
 import "./font";
+import { initUiScale } from "./uiScale";
 import App from "./App";
 import { SPLASH_DONE_EVENT } from "./lib/startup";
 
@@ -31,6 +32,8 @@ document.addEventListener("contextmenu", (event) => {
   }
   event.preventDefault();
 });
+
+initUiScale();
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>

@@ -27,6 +27,7 @@ import {
   X,
 } from "@phosphor-icons/react";
 
+import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -43,7 +44,15 @@ import {
 import { fileLinksEnabled, setFileLinksEnabled } from "../lib/fileLinks";
 import { ThemePicker } from "./settings/ThemePicker";
 import { IS_MAC } from "@/lib/platform";
-import { NOTIFY_KINDS, notifyEnabled } from "@/lib/notifyPrefs";
+import {
+  DEFAULT_SOUNDS,
+  NOTIFY_KINDS,
+  notifyEnabled,
+  soundChoice,
+  soundsFor,
+  type SoundByKind,
+  type SoundWhen,
+} from "@/lib/notifyPrefs";
 import { ClaudePluginSetting } from "./ClaudePluginSetting";
 import { SshSection } from "./settings/SshSection";
 import { AppIconPicker } from "./AppIconPicker";
@@ -56,6 +65,14 @@ import {
   UI_FONTS,
   type UiFont,
 } from "../font";
+import {
+  getUiScale,
+  onUiScaleChange,
+  parseUiScale,
+  setUiScale,
+  UI_SCALES,
+  type UiScale,
+} from "../uiScale";
 import {
   getEffectiveBase,
   getThemeMode,
@@ -105,7 +122,11 @@ import { toastError } from "../lib/toast";
 import { FONT_SIZE_EVENT, getDefaultFontSize, setDefaultFontSize } from "./TerminalView";
 import { ShellSettings } from "./ShellSettings";
 import { ToolbarChipsEditor } from "./ToolbarChipsEditor";
-import type { RichInputPref } from "../lib/richInput";
+import {
+  agentCommandsFromRegex,
+  agentRegexFromCommands,
+  type RichInputPref,
+} from "../lib/richInput";
 import { DEFAULT_TOOLBAR, type ToolbarPref } from "../lib/repoSnapshots";
 import { parseStartupMode } from "../lib/startup";
 
@@ -189,6 +210,7 @@ const searchKeys = (): Record<Section, string[]> => ({
     "settingsThemes",
     "cfgFont",
     "cfgSize",
+    "cfgUiScale",
     "cfgCollapse",
     "cfgGitStatus",
     "sidebarDetails",
@@ -215,7 +237,7 @@ const searchKeys = (): Record<Section, string[]> => ({
     "cfgReviewer",
     "cfgGroupLaunch",
   ],
-  notifications: [...NOTIFY_KINDS.map((k) => NOTIFY_LABELS[k.id] ?? k.label), "cfgMacos"],
+  notifications: [...NOTIFY_KINDS.map((k) => NOTIFY_LABELS[k.id] ?? k.label), "cfgSoundWhen", "cfgSoundWhich", "cfgMacos"],
   integrations: ["cfgClaudeCode", "cfgDocker", "cfgGroupSsh", "sshTypedDetect", "sshTypedWhen", "cfgEditor", "cfgFileLinks"],
   security: [...SECURITY_RULES, "cfgRuleFree", "cfgRepoConfig"],
   shortcuts: Object.values(ACTION_LABEL_KEYS),
@@ -377,12 +399,12 @@ const NOTIFY_LABELS: Record<string, string> = {
   done: "cfgNotifyDone",
 };
 
-/** Nome curto da espécie na linha de som. */
-const NOTIFY_SOUND_LABELS: Record<string, string> = {
-  request: "cfgSoundRequest",
-  done: "cfgSoundDone",
-  observedRequest: "cfgSoundObserved",
-};
+/** "Quando tocar" do quadro. */
+const SOUND_WHEN: { value: SoundWhen; label: string }[] = [
+  { value: "off", label: "cfgSoundNever" },
+  { value: "need", label: "cfgSoundOnRequests" },
+  { value: "all", label: "cfgSoundAlways" },
+];
 
 /** Os três tamanhos do quadro; outro valor (do config.toml) aparece como px. */
 const TEXT_SIZES = [
@@ -434,7 +456,7 @@ function NotifyPrefs() {
   const [enabled, setEnabled] = useState<Record<string, boolean>>(() =>
     Object.fromEntries(NOTIFY_KINDS.map((k) => [k.id, k.defaultEnabled])),
   );
-  const [sound, setSound] = useState<Record<string, string>>({});
+  const [sounds, setSounds] = useState<SoundByKind>(DEFAULT_SOUNDS);
 
   useEffect(() => {
     for (const kind of NOTIFY_KINDS) {
@@ -450,13 +472,22 @@ function NotifyPrefs() {
         .then((v) =>
           // Ausente é "nunca escolhi": a UI mostra o som de fábrica, que é o
           // que o core vai tocar.
-          setSound((prev) => ({ ...prev, [kind.id]: v ?? kind.defaultSound })),
+          setSounds((prev) => ({ ...prev, [kind.id]: v ?? kind.defaultSound })),
         )
         .catch(() => {});
     }
   }, []);
 
-  const withSound = NOTIFY_KINDS.filter((kind) => enabled[kind.id]);
+  // Quadro: um par só ("Quando tocar" + "Qual som"), gravado no som de cada
+  // espécie, que é o que o core lê.
+  const choice = soundChoice(sounds);
+  const saveSounds = (when: SoundWhen, sound: string) => {
+    const next = soundsFor(when, sound);
+    setSounds(next);
+    for (const kind of NOTIFY_KINDS) {
+      void setPref(kind.soundKey, next[kind.id]).catch(() => {});
+    }
+  };
 
   return (
     <>
@@ -477,36 +508,31 @@ function NotifyPrefs() {
           );
         })}
       </SettingGroup>
-      {IS_MAC && withSound.length > 0 && (
+      {IS_MAC && (
         <SettingGroup title={t("cfgGroupSound")}>
-          {withSound.map((kind) => {
-            const current = sound[kind.id] ?? kind.defaultSound;
-            return (
-              <SettingLine key={kind.id} label={t(NOTIFY_SOUND_LABELS[kind.id] ?? kind.label)}>
-                {current && (
-                  <SettingButton
-                    tone="ghost"
-                    icon={<Play size={16} />}
-                    onClick={() => void previewNotifySound(current).catch(() => {})}
-                  >
-                    {t("cfgListen")}
-                  </SettingButton>
-                )}
-                <Select
-                  value={current}
-                  onChange={(v) => {
-                    setSound((prev) => ({ ...prev, [kind.id]: v }));
-                    void setPref(kind.soundKey, v).catch(() => {});
-                  }}
-                  className={SETTING_FIELD}
-                  options={[
-                    ...MAC_SOUNDS.map((name) => ({ value: name, label: name })),
-                    { value: "", label: t("notifySilent") },
-                  ]}
-                />
-              </SettingLine>
-            );
-          })}
+          <SettingLine label={t("cfgSoundWhen")}>
+            <SettingSegment
+              label={t("cfgGroupSound")}
+              options={SOUND_WHEN.map((o) => ({ value: o.value, label: t(o.label) }))}
+              value={choice.when}
+              onChange={(v) => saveSounds(v, choice.sound)}
+            />
+          </SettingLine>
+          <SettingLine label={t("cfgSoundWhich")}>
+            <SettingButton
+              tone="ghost"
+              icon={<Play size={16} />}
+              onClick={() => void previewNotifySound(choice.sound).catch(() => {})}
+            >
+              {t("cfgListen")}
+            </SettingButton>
+            <Select
+              value={choice.sound}
+              onChange={(v) => saveSounds(choice.when === "off" ? "need" : choice.when, v)}
+              className={SETTING_FIELD}
+              options={MAC_SOUNDS.map((name) => ({ value: name, label: name }))}
+            />
+          </SettingLine>
         </SettingGroup>
       )}
       {IS_MAC && (
@@ -870,9 +896,11 @@ export function SettingsView({
   const [defaultDir, setDefaultDir] = useState("");
   const [fontSize, setFontSize] = useState(13);
   const [uiFont, setUiFontState] = useState<UiFont>(getUiFont);
+  const [uiScale, setUiScaleState] = useState<UiScale>(getUiScale);
   const [effBase, setEffBase] = useState(getEffectiveBase);
 
   useEffect(() => onUiFontChange(setUiFontState), []);
+  useEffect(() => onUiScaleChange(setUiScaleState), []);
   // O tamanho pode mudar por fora (edição do ~/.tyba/config.toml).
   useEffect(() => {
     const sync = () => setFontSize(getDefaultFontSize());
@@ -948,29 +976,26 @@ export function SettingsView({
   const reviewChoice = reviewAgent === "claude" || reviewAgent === "codex" ? reviewAgent : "custom";
 
   const search = (
-    <label className="flex h-8 items-center gap-2 rounded-[10px] px-2.5 text-tyba-text-faint shadow-[inset_0_0_0_1px_var(--tyba-line)] focus-within:shadow-[inset_0_0_0_1px_var(--tyba-border-strong)]">
-      <MagnifyingGlass size={14} className="shrink-0" />
-      <input
-        value={query}
-        onChange={(e) => setQuery(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Escape") {
-            e.preventDefault();
-            setQuery("");
-            (e.target as HTMLInputElement).blur();
-          }
-          if (e.key === "Enter" && results[0]) {
-            goToSetting(results[0].section, results[0].label);
-          }
-        }}
-        placeholder={t("cfgSearch")}
-        aria-label={t("settingsSearch")}
-        spellCheck={false}
-        autoCorrect="off"
-        autoCapitalize="off"
-        className="min-w-0 flex-1 bg-transparent text-[12.5px] text-tyba-text outline-none placeholder:text-tyba-text-ghost"
-      />
-    </label>
+    // Sem par no quadro (a lista do quadro não tem busca): o Input do Muriki,
+    // na altura de 32px que cabe na coluna de 208px.
+    <Input
+      icon={<MagnifyingGlass size={14} />}
+      className="h-8 px-2.5 text-[12.5px]"
+      value={query}
+      onChange={(e) => setQuery(e.target.value)}
+      onKeyDown={(e) => {
+        if (e.key === "Escape") {
+          e.preventDefault();
+          setQuery("");
+          (e.target as HTMLInputElement).blur();
+        }
+        if (e.key === "Enter" && results[0]) {
+          goToSetting(results[0].section, results[0].label);
+        }
+      }}
+      placeholder={t("cfgSearch")}
+      aria-label={t("settingsSearch")}
+    />
   );
 
   return (
@@ -1113,6 +1138,14 @@ export function SettingsView({
                     onChange={(v) => changeFontSize(Number(v))}
                   />
                 </SettingLine>
+                <SettingLine label={t("cfgUiScale")} hint={t("cfgUiScaleHint")}>
+                  <SettingSegment
+                    label={t("cfgUiScale")}
+                    options={UI_SCALES.map((s) => ({ value: String(s), label: `${s}%` }))}
+                    value={String(uiScale)}
+                    onChange={(v) => setUiScale(parseUiScale(v))}
+                  />
+                </SettingLine>
               </SettingGroup>
               <SettingGroup title={t("cfgGroupSidebar")}>
                 <SettingLine label={t("cfgGitStatus")} hint={t("cfgGitStatusHint")}>
@@ -1215,14 +1248,19 @@ export function SettingsView({
               <SettingGroup title={t("cfgGroupDetect")}>
                 <SettingLine
                   label={t("cfgAgentCommands")}
-                  hint={richInputRegexInvalid ? t("richInputRegexInvalid") : t("richInputRegexHint")}
+                  hint={richInputRegexInvalid ? t("richInputRegexInvalid") : t("cfgAgentCommandsHint")}
                 >
+                  {/* Quadro: a lista de comandos, não a regex. A regex que não é
+                      lista simples aparece crua e continua editável. */}
                   <TextField
-                    value={richInputPref.agentRegex}
-                    placeholder="^(claude|codex|gemini)\b"
-                    onCommit={(v) => onRichInputPrefChange({ ...richInputPref, agentRegex: v })}
+                    value={
+                      agentCommandsFromRegex(richInputPref.agentRegex) ?? richInputPref.agentRegex
+                    }
+                    placeholder="claude, codex, gemini"
+                    onCommit={(v) =>
+                      onRichInputPrefChange({ ...richInputPref, agentRegex: agentRegexFromCommands(v) })
+                    }
                     ariaLabel={t("cfgAgentCommands")}
-                    className="font-mono text-[12.5px]"
                   />
                 </SettingLine>
                 <SettingLine label={t("richInputShowOnMatch")} hint={t("richInputShowOnMatchHint")}>

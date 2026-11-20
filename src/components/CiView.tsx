@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { ArrowClockwise, Copy, GithubLogo } from "@phosphor-icons/react";
 
 import { Button } from "@/components/ui/button";
+import { SegmentedControl } from "@/components/ui/segmented";
 
 import { useRelative } from "./GitHistoryView";
 import { ForgeLoading } from "./ForgeLoading";
@@ -196,28 +197,16 @@ export function CiView({
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       <div className="flex h-[46px] shrink-0 items-center gap-3 shadow-[inset_0_-1px_0_var(--tyba-line)] px-[18px] text-[12px]">
-        <div
-          role="tablist"
-          className="tyba-segment shrink-0"
-        >
-          {(["branch", "all"] as const).map((key) => (
-            <button
-              key={key}
-              type="button"
-              role="tab"
-              aria-selected={scope === key}
-              disabled={key === "branch" && !branch}
-              onClick={() => setScope(key)}
-              className={`whitespace-nowrap rounded-[5px] px-2.5 py-1 ${
-                scope === key
-                  ? "tyba-pill-on text-tyba-text"
-                  : "text-tyba-text-muted hover:text-tyba-text"
-              }`}
-            >
-              {t(key === "branch" ? "ciScopeBranch" : "ciScopeAll")}
-            </button>
-          ))}
-        </div>
+        <SegmentedControl
+          aria-label={t("ciRunsScope")}
+          value={scope}
+          onChange={setScope}
+          options={(["branch", "all"] as const).map((key) => ({
+            value: key,
+            label: t(key === "branch" ? "ciScopeBranch" : "ciScopeAll"),
+            disabled: key === "branch" && !branch,
+          }))}
+        />
         <span className="min-w-0 flex-1 truncate text-right text-[12px] text-tyba-text-faint">
           {note ?? t("ciAutoRefresh")}
         </span>

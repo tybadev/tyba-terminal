@@ -16,7 +16,8 @@ import {
 
 import "./gitScreen.css";
 import { Button } from "@/components/ui/button";
-import { FIELD_SURFACE } from "@/components/ui/input";
+import { SegmentedControl } from "@/components/ui/segmented";
+import { Input } from "@/components/ui/input";
 import { ContainerFilesPanel } from "./ContainerFilesPanel";
 import { ContainerLogsView } from "./ContainerLogsView";
 import { ContainerShellBanner, ContainerStrip } from "./ContainerStrip";
@@ -583,14 +584,14 @@ export function DockerScreen({
         onClick={() => pick(c.id)}
         title={`${c.name}\n${image.full}\n${c.status}`}
         // Escolhido = fundo elevado com contorno inteiro; nunca barra lateral.
-        className={`flex w-full flex-col gap-[5px] rounded-[10px] px-3 py-2.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-tyba-blue ${
+        className={`flex w-full flex-col gap-[3px] rounded-[10px] px-3 py-2.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-tyba-blue ${
           on
             ? "tyba-pill-on"
             : "hover:bg-tyba-text/[.03]"
         } ${running ? "text-tyba-text" : "text-tyba-text-muted"}`}
       >
         <span className="flex w-full items-center justify-between gap-2">
-          <span className="flex min-w-0 items-center gap-1.5 text-[13px]">
+          <span className="flex min-w-0 items-center gap-2 text-[13px] font-semibold">
             <span
               aria-hidden
               className={`size-[7px] shrink-0 rounded-full ${
@@ -599,7 +600,7 @@ export function DockerScreen({
             />
             <span className="truncate">{displayName(c)}</span>
           </span>
-          <span className="shrink-0 truncate text-[11px] text-tyba-text-faint">
+          <span className="shrink-0 truncate font-mono text-[10.5px] font-medium text-tyba-text-faint">
             {reason && reason.kind !== "clean" ? (
               <span className="text-tyba-red">
                 {reason.kind === "code"
@@ -616,7 +617,7 @@ export function DockerScreen({
             )}
           </span>
         </span>
-        <span className="flex gap-3 text-[11px] text-tyba-text-faint">
+        <span className="flex gap-3 pl-[15px] text-[11.5px] text-tyba-text-muted">
           {running ? (
             <>
               {health && (
@@ -826,35 +827,27 @@ export function DockerScreen({
         ) : (
           // Coluna à direita, junto do trilho, como em Arquivos (dono, 2026-10-14).
           <div className="flex min-h-0 flex-1 flex-row-reverse">
-            <div className="flex w-[320px] shrink-0 flex-col border-l border-[var(--tyba-line)] bg-[var(--tyba-panel-bg)]">
+            <div className="flex w-[clamp(220px,40%,320px)] shrink-0 flex-col border-l border-[var(--tyba-line)] bg-[var(--tyba-panel-bg)]">
               <div className="flex shrink-0 items-center gap-2 px-4 pb-1.5 pt-3.5 text-[12.5px] text-tyba-text-muted">
                 <span className="flex-1">
                   {t("dockerScreenContainersCount", { count: list?.length ?? 0 })}
                 </span>
               </div>
               <div className="shrink-0 px-3 pb-2">
-                <label
-                  className={`${FIELD_SURFACE} flex h-9 items-center gap-2 px-3 text-[13px] text-tyba-text-faint focus-within:[box-shadow:var(--tyba-field-focus)]`}
-                >
-                  <MagnifyingGlass size={14} className="shrink-0" />
-                  <input
-                    type="text"
-                    spellCheck={false}
-                    autoCapitalize="off"
-                    autoCorrect="off"
-                    value={query}
-                    onChange={(e) => setQuery(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Escape" && query) {
-                        e.preventDefault();
-                        setQuery("");
-                      }
-                    }}
-                    placeholder={t("dockerPanelFilter")}
-                    aria-label={t("dockerPanelFilter")}
-                    className="min-w-0 flex-1 bg-transparent text-tyba-text outline-none placeholder:text-tyba-text-faint"
-                  />
-                </label>
+                <Input
+                  icon={<MagnifyingGlass size={16} />}
+                  type="text"
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Escape" && query) {
+                      e.preventDefault();
+                      setQuery("");
+                    }
+                  }}
+                  placeholder={t("dockerPanelFilter")}
+                  aria-label={t("dockerPanelFilter")}
+                />
               </div>
               <div className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-2 py-1">
                 {list === null ? (
@@ -871,11 +864,12 @@ export function DockerScreen({
                   ordered.map(card)
                 )}
               </div>
-              <div className="flex shrink-0 items-center gap-2 border-t border-[var(--tyba-line)] px-3.5 py-2.5 text-[11px] leading-4 text-tyba-text-faint">
-                <p className="min-w-0 flex-1">
-                  {host ? t("dockerPanelNoteRemote", { host }) : t("dockerScreenNoteLocal")}
-                </p>
-              </div>
+              {/* A dica só diz algo no servidor; no local o quadro não tem rodapé. */}
+              {host && (
+                <div className="flex shrink-0 items-center gap-2 border-t border-[var(--tyba-line)] px-3.5 py-2.5 text-[11px] leading-4 text-tyba-text-faint">
+                  <p className="min-w-0 flex-1">{t("dockerPanelNoteRemote", { host })}</p>
+                </div>
+              )}
             </div>
 
             <div className="flex min-w-0 flex-1 flex-col">
@@ -889,32 +883,23 @@ export function DockerScreen({
                     inScreen
                     onRestarted={() => setLogsRestart((n) => n + 1)}
                   />
-                  <div className="flex shrink-0 items-center gap-2.5 border-b border-[var(--tyba-line)] px-[18px] py-2">
-                    <span
-                      role="tablist"
+                  {/* Quadro Docker: segue o respiro de 12px do bloco; nos logs
+                      o fio é o da linha de filtros, embaixo. */}
+                  <div
+                    className={`flex shrink-0 items-center gap-2.5 px-5 pt-3 ${
+                      state.pane === "logs" ? "" : "tyba-divide-b pb-3"
+                    }`}
+                  >
+                    {/* Segmentado do quadro (Docker): trilho em pílula, knob branco. */}
+                    <SegmentedControl
                       aria-label={t("dockerScreenPanes")}
-                      className="flex gap-0.5 rounded-[8px] bg-[var(--tyba-panel-bg)] p-[3px]"
-                    >
-                      {CONTAINER_PANES.map((pane) => {
-                        const on = pane === state.pane;
-                        return (
-                          <button
-                            key={pane}
-                            type="button"
-                            role="tab"
-                            aria-selected={on}
-                            onClick={() => showPane(pane)}
-                            className={`rounded-[6px] px-3 py-[5px] text-[12px] disabled:opacity-40 ${
-                              on
-                                ? "tyba-pill-on text-tyba-text"
-                                : "text-tyba-text-faint hover:text-tyba-text"
-                            }`}
-                          >
-                            {t(PANE_LABEL[pane])}
-                          </button>
-                        );
-                      })}
-                    </span>
+                      value={state.pane}
+                      onChange={showPane}
+                      options={CONTAINER_PANES.map((pane) => ({
+                        value: pane,
+                        label: t(PANE_LABEL[pane]),
+                      }))}
+                    />
                     {selected.state !== "running" && (
                       <Button
                         variant="destructive"

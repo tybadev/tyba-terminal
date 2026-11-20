@@ -9,6 +9,10 @@ import {
   X,
 } from "@phosphor-icons/react";
 
+import { Button } from "@/components/ui/button";
+import { FilterChip } from "@/components/ui/filter-chip";
+import { Input } from "@/components/ui/input";
+import { Select } from "@/components/ui/select";
 import { GitIcon } from "./icons/GitIcon";
 import { PromptDialog } from "./PromptDialog";
 import { GitLoading } from "./GitLoading";
@@ -82,10 +86,6 @@ const STATUS_LETTER: Record<FileDiff["status"], { letter: string; cls: string }>
   unmerged: { letter: "U", cls: "text-tyba-red" },
   other: { letter: "?", cls: "text-tyba-text-faint" },
 };
-
-/** Botão da barra de ferramentas (`.tb` do mockup). */
-const TB =
-  "flex h-[26px] items-center gap-1.5 rounded-[6px] bg-tyba-raised px-2.5 text-[12px] text-tyba-text-muted shadow-[var(--tyba-raised-ring)] outline-none hover:text-tyba-text focus-visible:ring-2 focus-visible:ring-tyba-blue disabled:opacity-50";
 
 function Chip({ refLabel }: { refLabel: RefLabel }) {
   return (
@@ -201,40 +201,38 @@ function FilterField({
   const [open, setOpen] = useState(false);
   if (!open && !value) {
     return (
-      <button type="button" className={TB} onClick={() => setOpen(true)}>
+      <FilterChip onClick={() => setOpen(true)}>
         {label}
-        <CaretDown size={10} className="text-tyba-text-faint" />
-      </button>
+        <CaretDown size={12} className="text-tyba-text-faint" />
+      </FilterChip>
     );
   }
   return (
-    <label className="flex h-[26px] items-center gap-1.5 rounded-[6px] bg-tyba-sunken px-2.5 text-[12px] text-tyba-text-faint shadow-[inset_0_0_0_1px_var(--tyba-border-field)]">
-      {label}
-      <input
-        autoFocus={open && !value}
-        type="text"
-        value={value}
-        placeholder={placeholder}
-        spellCheck={false}
-        autoCorrect="off"
-        autoCapitalize="off"
-        autoComplete="off"
-        onChange={(e) => onChange(e.target.value)}
-        onBlur={() => !value && setOpen(false)}
-        className="w-28 bg-transparent text-tyba-text outline-none placeholder:text-tyba-text-faint"
-      />
-      <button
-        type="button"
-        aria-label={t("gitLogClearFilter", { label })}
-        onClick={() => {
-          onChange("");
-          setOpen(false);
-        }}
-        className="text-tyba-text-faint hover:text-tyba-text"
-      >
-        <X size={11} />
-      </button>
-    </label>
+    <Input
+      icon={<span className="shrink-0">{label}</span>}
+      autoFocus={open && !value}
+      type="text"
+      value={value}
+      placeholder={placeholder}
+      autoComplete="off"
+      onChange={(e) => onChange(e.target.value)}
+      onBlur={() => !value && setOpen(false)}
+      aria-label={label}
+      className="w-[240px] shrink-0"
+      trail={
+        <button
+          type="button"
+          aria-label={t("gitLogClearFilter", { label })}
+          onClick={() => {
+            onChange("");
+            setOpen(false);
+          }}
+          className="shrink-0 text-tyba-text-faint hover:text-tyba-text"
+        >
+          <X size={14} />
+        </button>
+      }
+    />
   );
 }
 
@@ -472,60 +470,38 @@ export function GitHistoryView({ session }: { session: Session }) {
 
   return (
     <div className="absolute inset-0 flex flex-col font-mono text-[13px] text-tyba-text">
-      <div className="flex h-11 shrink-0 items-center gap-2 border-b border-[var(--tyba-line)] px-3.5 text-[12px] text-tyba-text-muted">
-        <label className={`${TB} relative text-tyba-blue`}>
-          <GitIcon size={12} />
-          <select
-            aria-label={t("gitLogBranch")}
-            value={refName ?? ""}
-            disabled={allBranches}
-            onChange={(e) => setRefName(e.target.value || null)}
-            className="max-w-[180px] cursor-pointer appearance-none truncate bg-transparent pr-3 text-tyba-blue outline-none"
-          >
-            <option value="">{currentBranch ?? "HEAD"}</option>
-            {branches
-              .filter((b) => !b.is_current)
-              .map((b) => (
-                <option key={b.name} value={b.name}>
-                  {b.name}
-                </option>
-              ))}
-          </select>
-          <CaretDown size={10} className="pointer-events-none absolute right-2 text-tyba-text-faint" />
-        </label>
-        <button
-          type="button"
+      {/* Controles do Muriki (campo 40px, chip 30px, botão sm 34px), na
+          faixa de 52px da barra de PRs. */}
+      <div className="flex h-[52px] shrink-0 items-center gap-2.5 border-b border-[var(--tyba-line)] px-[18px] text-[12px] text-tyba-text-muted">
+        <Select
+          aria-label={t("gitLogBranch")}
+          value={refName ?? ""}
+          disabled={allBranches}
+          onChange={(v) => setRefName(v || null)}
+          icon={<GitIcon size={16} />}
+          options={[
+            { value: "", label: currentBranch ?? "HEAD" },
+            ...branches.filter((b) => !b.is_current).map((b) => ({ value: b.name, label: b.name })),
+          ]}
+          className="max-w-[220px] text-tyba-blue"
+        />
+        <FilterChip
+          active={allBranches}
           aria-pressed={allBranches}
-          className={TB}
           onClick={() => setAllBranches((v) => !v)}
         >
-          <span
-            className={`relative inline-block h-3 w-[22px] rounded-full shadow-[inset_0_0_0_1px_var(--tyba-border-strong)] ${
-              allBranches ? "bg-tyba-blue-tint" : "bg-tyba-overlay"
-            }`}
-          >
-            <span
-              className={`absolute top-0.5 h-2 w-2 rounded-full transition-[left] ${
-                allBranches ? "left-3 bg-tyba-blue" : "left-0.5 bg-tyba-text-faint"
-              }`}
-            />
-          </span>
           {t("gitLogAllBranches")}
-        </button>
-        <label className="flex h-[26px] w-[260px] items-center gap-1.5 rounded-[6px] bg-tyba-sunken px-2.5 shadow-[inset_0_0_0_1px_var(--tyba-border)]">
-          <MagnifyingGlass size={12} className="shrink-0 text-tyba-text-faint" />
-          <input
-            type="text"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder={t("gitLogSearch")}
-            spellCheck={false}
-            autoCorrect="off"
-            autoCapitalize="off"
-            autoComplete="off"
-            className="min-w-0 flex-1 bg-transparent text-[12px] text-tyba-text outline-none placeholder:text-tyba-text-faint"
-          />
-        </label>
+        </FilterChip>
+        <Input
+          icon={<MagnifyingGlass size={16} />}
+          type="text"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder={t("gitLogSearch")}
+          aria-label={t("gitLogSearch")}
+          autoComplete="off"
+          className="w-[260px] shrink-0"
+        />
         <FilterField
           label={t("gitLogAuthor")}
           placeholder={t("gitLogAuthorPlaceholder")}
@@ -549,10 +525,10 @@ export function GitHistoryView({ session }: { session: Session }) {
             {t("gitLogUpdated", { count: ago })}
           </span>
         )}
-        <button type="button" className={TB} disabled={fetching} onClick={() => void fetchNow()}>
-          <DownloadSimple size={12} />
+        <Button variant="outline" size="sm" disabled={fetching} onClick={() => void fetchNow()}>
+          <DownloadSimple />
           {fetching ? t("gitLogFetching") : t("gitLogFetch")}
-        </button>
+        </Button>
       </div>
 
       <div className="flex min-h-0 flex-1">

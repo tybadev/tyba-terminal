@@ -5,6 +5,7 @@ import { FolderOpen, Plus, Stack, Warning, X } from "@phosphor-icons/react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Select } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { LaunchCanvas } from "@/components/LaunchCanvas";
@@ -348,17 +349,12 @@ export function LaunchConfigScreen({
               {slot.kind.type === "ssh" &&
                 field(
                   t("launchSlotHost"),
-                  <select
+                  <Select
                     value={slot.kind.host_id}
-                    onChange={(e) => updateSlot({ kind: { type: "ssh", host_id: e.target.value } })}
-                    className="tyba-focusable h-8 rounded-[6px] border border-tyba-border-field bg-tyba-sunken px-2 font-mono text-[12px] text-tyba-text"
-                  >
-                    {hosts.map((host) => (
-                      <option key={host.id} value={host.id}>
-                        {host.alias}
-                      </option>
-                    ))}
-                  </select>,
+                    onChange={(v) => updateSlot({ kind: { type: "ssh", host_id: v } })}
+                    options={hosts.map((host) => ({ value: host.id, label: host.alias }))}
+                    className="font-mono text-[12px]"
+                  />,
                   t("launchSlotHostHelp"),
                 )}
               {slot.kind.type !== "ssh" && (

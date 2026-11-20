@@ -178,7 +178,13 @@ export function ContainerStrip({ containerId, current, host, onRestarted, inScre
   return (
     <div
       ref={rootRef}
-      className="flex min-h-9 shrink-0 items-center gap-2 tyba-divide-b bg-[var(--tyba-panel-bg)] px-[18px] py-1.5 text-[12px] text-tyba-text-muted"
+      className={`flex min-h-9 shrink-0 items-center gap-2 text-[12px] text-tyba-text-muted ${
+        // Na tela Docker o cabeçalho abre o bloco do quadro (14px 20px, sem
+        // fio); na aba de container continua a faixa com o fio.
+        inScreen
+          ? "px-5 pt-3.5"
+          : "tyba-divide-b bg-[var(--tyba-panel-bg)] px-[18px] py-1.5"
+      }`}
     >
       {/* Quebra linha em vez de cortar: imagem e portas são o que importa ver. */}
       <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1">

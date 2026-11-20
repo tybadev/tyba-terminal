@@ -70,3 +70,29 @@ export function notifyEnabled(
   if (raw === "off" || raw === "false" || raw === "0") return false;
   return defaultEnabled;
 }
+
+/** "Quando tocar" do quadro: nunca, só nos pedidos, ou também no fim do turno. */
+export type SoundWhen = "off" | "need" | "all";
+
+export type SoundByKind = Record<NotifyKindSpec["id"], string>;
+
+/** O som de fábrica de cada espécie, que é o que o core toca sem escolha. */
+export const DEFAULT_SOUNDS = Object.fromEntries(
+  NOTIFY_KINDS.map((k) => [k.id, k.defaultSound]),
+) as SoundByKind;
+
+/**
+ * O par do quadro ("Quando tocar" + "Qual som") lido do som de cada espécie,
+ * que é o que o core guarda (`""` = silêncio). Pedido mudo e turno tocando
+ * não tem par no quadro: vale "Sempre", que é o que de fato toca mais.
+ */
+export function soundChoice(sounds: SoundByKind): { when: SoundWhen; sound: string } {
+  const when: SoundWhen = sounds.done ? "all" : sounds.request ? "need" : "off";
+  return { when, sound: sounds.request || sounds.done || DEFAULT_SOUNDS.request };
+}
+
+/** O som de cada espécie para o par escolhido. O palpite da tela é pedido. */
+export function soundsFor(when: SoundWhen, sound: string): SoundByKind {
+  const need = when === "off" ? "" : sound;
+  return { request: need, observedRequest: need, done: when === "all" ? sound : "" };
+}

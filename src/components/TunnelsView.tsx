@@ -37,10 +37,6 @@ const KIND_LABEL: Record<TunnelKind, string> = {
   dynamic: "tunnelsKindDynamic",
 };
 
-/** O `.btn` dos mockups: 11px, contorno 0,14; cantos de 6px, como os botões da main. */
-const BTN =
-  "shrink-0 rounded-[5px] border border-tyba-border-strong px-[9px] py-[3px] text-[11px] text-tyba-text-muted hover:text-tyba-text";
-
 const FIELD =
   "h-[30px] rounded-[6px] border border-tyba-border-field bg-tyba-sunken px-2 font-mono text-[12px] text-tyba-text outline-none focus:border-tyba-cyan/50";
 
@@ -115,13 +111,13 @@ export function TunnelsView({ session, hostAlias }: Props) {
         <span className="shrink-0 text-[14px] font-medium text-tyba-text">{t("tunnelsTitle")}</span>
         <span className="min-w-0 flex-1 truncate text-tyba-text-faint">{hostAlias}</span>
         {!adding && !pendingRisky && (
-          <button
-            type="button"
+          <Button
             onClick={() => setAdding(true)}
-            className={`${BTN} border-tyba-cyan/40 text-tyba-cyan hover:text-tyba-cyan`}
+            variant="outline"
+            size="xs"
           >
             {t("tunnelsNew")}
-          </button>
+          </Button>
         )}
       </header>
 
@@ -161,22 +157,22 @@ export function TunnelsView({ session, hostAlias }: Props) {
                 )}
                 <div className="flex gap-1.5">
                   {broke && (
-                    <button
-                      type="button"
+                    <Button
                       onClick={() => void retry(tn)}
-                      className={`${BTN} text-tyba-text`}
+                      variant="outline"
+                      size="xs"
                     >
                       {t("tunnelsRetry")}
-                    </button>
+                    </Button>
                   )}
-                  <button
-                    type="button"
+                  <Button
                     onClick={() => void remove(tn.id)}
                     aria-label={t("tunnelsRemove")}
-                    className={BTN}
+                    variant="destructive"
+                    size="xs"
                   >
                     {t("tunnelsRemove")}
-                  </button>
+                  </Button>
                 </div>
               </li>
             );
@@ -295,23 +291,19 @@ export function TunnelsView({ session, hostAlias }: Props) {
             </div>
             {error && <p className="text-[11px] text-tyba-red">{error}</p>}
             <div className="flex gap-2">
-              <Button
-                size="sm"
-                type="submit"
-                className="h-auto flex-1 rounded-[5px] bg-tyba-cyan px-3.5 py-[7px] text-[12px] font-normal text-tyba-text-inverse hover:bg-tyba-cyan/90"
-              >
+              <Button type="submit" size="sm" className="flex-1">
                 {t("tunnelsOpen")}
               </Button>
-              <button
-                type="button"
-                className={BTN}
+              <Button
+                variant="ghost"
+                size="sm"
                 onClick={() => {
                   setAdding(false);
                   setError(null);
                 }}
               >
                 {t("tunnelsCancel")}
-              </button>
+              </Button>
             </div>
           </form>
         )}

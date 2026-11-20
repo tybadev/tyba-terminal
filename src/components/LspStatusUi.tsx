@@ -140,7 +140,7 @@ export function LspStatusChip({ stat, truncated, onRetry }: ChipProps) {
   const { t } = useTranslation();
   if (!stat || stat.state === "unsupported") return null;
   const dot = (cls: string, pulse = false) => (
-    <span aria-hidden className={`size-1.5 rounded-full ${cls} ${pulse ? "animate-pulse" : ""}`} />
+    <span aria-hidden className={`size-1.5 rounded-full ${cls} ${pulse ? "tyba-pulse" : ""}`} />
   );
   switch (stat.state) {
     case "ready":

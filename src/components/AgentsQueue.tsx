@@ -10,6 +10,7 @@ import {
   oldestApprovalBySession,
   wantsAttention,
   type AgentRow,
+  type DetectedAgents,
   type SessionPlace,
 } from "../lib/agentsBoard";
 import {
@@ -27,6 +28,8 @@ interface Props {
   sessions: Session[];
   layout: LayoutState;
   approvals: ApprovalRequest[];
+  /** O agente que a sonda de processo achou: as mesmas linhas da barra lateral. */
+  detected?: DetectedAgents;
   onJump: (sessionId: SessionId, place: SessionPlace) => void;
   onReviewDiff: (sessionId: SessionId) => void;
   onClose: () => void;
@@ -246,14 +249,15 @@ export function AgentsQueue({
   sessions,
   layout,
   approvals,
+  detected,
   onJump,
   onReviewDiff,
   onClose,
 }: Props) {
   const { t } = useTranslation();
   const rows = useMemo(
-    () => boardOrder(buildRows(sessions, layout)),
-    [sessions, layout],
+    () => boardOrder(buildRows(sessions, layout, detected)),
+    [sessions, layout, detected],
   );
   const esperando = useMemo(() => rows.filter(wantsAttention).length, [rows]);
   // Mesma função que o toaster usa (via agentQueueVisibleApprovalIds em

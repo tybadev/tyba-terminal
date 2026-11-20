@@ -343,7 +343,7 @@ export function PrDetailView({
     target && (
       <Button
         variant="ghost"
-        size="xs"
+        size="sm"
         disabled={forwarded.has(id)}
         onClick={() =>
           void onForward(target, prompt()).then(() =>

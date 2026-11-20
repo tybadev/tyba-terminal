@@ -758,7 +758,7 @@ impl Turns {
             bound,
             stop_seen_at_ms: None,
             started_at_ms,
-            prompt,
+            prompt: prompt.filter(|p| is_human_prompt(p)),
             usage,
             repo: rx,
         })
@@ -876,6 +876,20 @@ impl Turns {
         self.slots.lock().expect("turns lock").remove(&id);
         let _ = std::fs::remove_dir_all(self.session_dir(id));
     }
+}
+
+/// Texto que o próprio Claude Code injeta como "prompt" (fim de subagente,
+/// lembrete do sistema, saída de comando local) não é pedido de ninguém: não
+/// vira título de aviso nem "pedido" do turno.
+pub fn is_human_prompt(prompt: &str) -> bool {
+    const MACHINE: [&str; 4] = [
+        "<task-notification>",
+        "<system-reminder>",
+        "<local-command-stdout>",
+        "<local-command-caveat>",
+    ];
+    let p = prompt.trim_start();
+    !MACHINE.iter().any(|tag| p.starts_with(tag))
 }
 
 #[cfg(test)]
@@ -1739,6 +1753,16 @@ mod tests {
         assert_eq!(s.prompt.as_deref(), Some("oi"));
         assert!(matches!(s.repo, Snapshot::Tree(_)));
         assert_eq!(s.scratch, fx.private().join(id.to_string()).join("1"));
+    }
+
+    #[test]
+    fn machine_prompt_is_not_a_request() {
+        assert!(!is_human_prompt(
+            "<task-notification> <task-id>ab12</task-id>"
+        ));
+        assert!(!is_human_prompt("  <system-reminder>x</system-reminder>"));
+        assert!(is_human_prompt("arruma o <div> do header"));
+        assert!(is_human_prompt("oi"));
     }
 
     /// Prompt novo com turno ainda aberto (Esc e negação no prompt nativo

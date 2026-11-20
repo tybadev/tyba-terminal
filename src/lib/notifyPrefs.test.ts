@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { NOTIFY_KINDS, notifyEnabled } from "./notifyPrefs";
+import { DEFAULT_SOUNDS, NOTIFY_KINDS, notifyEnabled, soundChoice, soundsFor } from "./notifyPrefs";
 
 const byId = (id: string) => {
   const kind = NOTIFY_KINDS.find((k) => k.id === id);
@@ -63,5 +63,36 @@ describe("notifyEnabled", () => {
   test("valor irreconhecível cai no default da espécie, e não em ligado", () => {
     expect(notifyEnabled("talvez", true)).toBe(true);
     expect(notifyEnabled("talvez", false)).toBe(false);
+  });
+});
+
+describe("som do quadro: Quando tocar + Qual som", () => {
+  test("de fábrica toca sempre, com o som do pedido", () => {
+    expect(soundChoice(DEFAULT_SOUNDS)).toEqual({ when: "all", sound: "Ping" });
+  });
+
+  test("só nos pedidos: o fim do turno fica mudo", () => {
+    expect(soundsFor("need", "Glass")).toEqual({
+      request: "Glass",
+      observedRequest: "Glass",
+      done: "",
+    });
+    expect(soundChoice(soundsFor("need", "Glass"))).toEqual({ when: "need", sound: "Glass" });
+  });
+
+  test("nunca: tudo em silêncio, e o som escolhido volta ao de fábrica", () => {
+    expect(soundsFor("off", "Hero")).toEqual({ request: "", observedRequest: "", done: "" });
+    expect(soundChoice(soundsFor("off", "Hero")).when).toBe("off");
+  });
+
+  test("sempre: um som só para tudo", () => {
+    expect(soundsFor("all", "Funk")).toEqual({ request: "Funk", observedRequest: "Funk", done: "Funk" });
+  });
+
+  test("pedido mudo e turno tocando é lido como sempre", () => {
+    expect(soundChoice({ request: "", observedRequest: "", done: "Glass" })).toEqual({
+      when: "all",
+      sound: "Glass",
+    });
   });
 });

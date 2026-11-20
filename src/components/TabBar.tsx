@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { CaretDown, GitPullRequest, Plus, X } from "@phosphor-icons/react";
 
@@ -174,6 +174,14 @@ export function TabBar({
   const apagarRef = useRef<number | undefined>(undefined);
   const [borda, setBorda] = useState({ antes: false, depois: false });
   const [marca, setMarca] = useState({ esquerda: 0, largura: 100 });
+  // Knob do segmentado: o cartão branco desliza até a aba ativa, com a mesma
+  // mola do SegmentedControl, em vez de a placa trocar de aba de uma vez.
+  const [knob, setKnob] = useState<{ x: number; w: number } | null>(null);
+  useLayoutEffect(() => {
+    const el = ativaRef.current;
+    const next = el ? { x: el.offsetLeft, w: el.offsetWidth } : null;
+    setKnob((prev) => (prev?.x === next?.x && prev?.w === next?.w ? prev : next));
+  });
   const [rolando, setRolando] = useState(false);
 
   const medir = useCallback(() => {
@@ -239,12 +247,19 @@ export function TabBar({
           if (passo === 0 || !faixaRef.current) return;
           faixaRef.current.scrollLeft += passo;
         }}
-        // Quadro Header: degrau de 12px de raio e 3px de folga; a aba ativa
-        // é o cartão branco.
-        className={`tyba-segment tyba-sem-barra flex h-[34px] min-w-0 items-stretch overflow-x-auto !rounded-[12px] !p-[3px] ${
+        // Mesmo desenho do segmentado do Docker (dono, 2026-11-20): trilho em
+        // pílula e a aba ativa no knob branco.
+        className={`tyba-sem-barra relative flex h-9 min-w-0 items-stretch overflow-x-auto rounded-full bg-tyba-text/[.06] p-[3px] ${
           borda.antes ? "tyba-fade-x--ini" : ""
         } ${borda.depois ? "tyba-fade-x--fim" : ""}`}
       >
+      {knob && (
+        <span
+          aria-hidden
+          className="tyba-pill-on pointer-events-none absolute top-[3px] bottom-[3px] left-0 rounded-full transition-[transform,width] duration-300 ease-[cubic-bezier(.3,1.4,.5,1)] motion-reduce:transition-none"
+          style={{ width: knob.w, transform: `translateX(${knob.x}px)` }}
+        />
+      )}
       {shown.map((tab) => {
         const i = tabs.indexOf(tab);
         const isActive = tab.id === activeTab;
@@ -262,9 +277,9 @@ export function TabBar({
               const cwd = tabCwd(tab, cwds);
               return cwd ? `${compactPath(cwd)} · ${combo}` : combo;
             })()}
-            className={`group relative flex max-w-40 shrink-0 items-center gap-1.5 rounded-[9px] px-3.5 text-[12.5px] transition-colors ${
+            className={`group relative z-[1] flex max-w-40 shrink-0 items-center gap-1.5 rounded-full px-4 text-[13px] font-semibold transition-colors duration-200 ${
               isActive
-                ? "tyba-pill-on font-semibold text-tyba-text"
+                ? "text-tyba-text"
                 : "text-tyba-text-muted hover:text-tyba-text"
             }`}
           >
@@ -326,7 +341,7 @@ export function TabBar({
         <DropdownMenu>
           <DropdownMenuTrigger
             aria-label={t("moreTabs", { count: hidden.length })}
-            className="flex shrink-0 items-center gap-1.5 rounded-[9px] px-3.5 text-[12.5px] font-medium text-tyba-text-muted hover:text-tyba-text"
+            className="flex shrink-0 items-center gap-1.5 rounded-full px-4 text-[13px] font-semibold text-tyba-text-muted hover:text-tyba-text"
           >
             {hiddenAttention && (
               <span aria-hidden className="size-1.5 rounded-full bg-tyba-amber" />

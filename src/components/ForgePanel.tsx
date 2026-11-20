@@ -68,7 +68,7 @@ function ToneDot({ tone }: { tone: CheckTone }) {
     <span
       aria-hidden="true"
       className={`size-1.5 shrink-0 rounded-full ${TONE_DOT_CLASS[tone]} ${
-        tone === "pending" ? "motion-safe:animate-pulse" : ""
+        tone === "pending" ? "tyba-pulse" : ""
       }`}
     />
   );
