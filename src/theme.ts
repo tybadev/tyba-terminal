@@ -27,17 +27,17 @@ export const THEMES: ThemeMode[] = ["dark", "light", "system"];
 const media = window.matchMedia("(prefers-color-scheme: light)");
 
 const FALLBACK_DARK: TerminalPalette = {
-  // BLACKOUT: terminal em preto absoluto (--tyba-sunken #000)
-  background: "#000000",
-  foreground: "#f5f5f6",
-  cursor: "#7cc544",
-  cursorAccent: "#000000",
-  selectionBackground: "#7cc5444d",
+  // Muriki noturno: terminal marinho (--tyba-sunken #060f24)
+  background: "#060f24",
+  foreground: "#eef3ff",
+  cursor: "#fdce04",
+  cursorAccent: "#060f24",
+  selectionBackground: "#5b8cff4d",
   ansi: [
-    "#0f0f10", "#f0503c", "#7cc544", "#f5a93b",
-    "#4c7df0", "#ec4899", "#2dd4bf", "#f5f5f6",
-    "#5f6066", "#f4715f", "#a8e05f", "#f5c93b",
-    "#7da3f5", "#a78bfa", "#5eead4", "#ffffff",
+    "#16264a", "#ff6b6b", "#4ade80", "#fdce04",
+    "#5b8cff", "#f472b6", "#5eead4", "#eef3ff",
+    "#5d6f94", "#ff8a8a", "#86efac", "#ffe066",
+    "#8aaeff", "#c4b5fd", "#99f6e4", "#ffffff",
   ],
 };
 

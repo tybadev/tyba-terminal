@@ -408,21 +408,59 @@
 /* Só o escuro do TYBA (sem data-theme). `data-imported` marca tema importado,
    que usa o mesmo atributo de polaridade mas não leva os literais do TYBA. */
 :root:not([data-theme]):not([data-imported]) {
-  --tyba-ghost-mix: 46%;          /* fantasma ≈ #3a3a3f (mockups) */
-  --tyba-diff-add-text: #c9ecaa;
-  --tyba-diff-del-text: #f3b2a8;
-  /* Opção G no BLACKOUT: o cromo é acrílico encorpado sobre a aurora do
-     escuro, e o terminal é preto translúcido. */
+  /* Muriki noturno (dono, 2026-11-18): o escuro do TYBA sai do preto com
+     verde e vira marinho, com o azul da marca clareado e o amarelo de
+     "precisa de você". Os esquemas (Dracula, Monokai…) continuam herdando
+     o :root de sempre; isto vale só para o TYBA escuro. */
+  --tyba-bg: #07122a;
+  --tyba-surface: #0a1830;
+  --tyba-raised: #0e1d38;
+  --tyba-overlay: #10213f;
+  --tyba-sunken: #060f24;
+  --tyba-text: #eef3ff;
+  --tyba-text-muted: #a9b8d6;
+  --tyba-text-faint: #8193b6;     /* 5,6:1 sobre #07122a */
+  --tyba-text-inverse: #07122a;
+  --tyba-green: #4ade80;
+  --tyba-lime: #a3e635;
+  --tyba-amber: #fdce04;
+  --tyba-magenta: #f472b6;
+  --tyba-violet: #a78bfa;
+  --tyba-blue: #5b8cff;
+  --tyba-cyan: #5eead4;
+  --tyba-red: #ff6b6b;
+  --tyba-primary: var(--tyba-blue);
+  --tyba-glow-alpha: 40%;
+  --tyba-ghost-mix: 46%;
+  --tyba-diff-add-text: #b7f5cd;
+  --tyba-diff-del-text: #ffc2c2;
+  /* Campo: o mesmo ambiente quase sem cor do claro, em marinho. */
+  --tyba-field:
+    radial-gradient(60% 40% at 20% 10%, rgba(91, 140, 255, 0.1), transparent 70%),
+    #07122a;
   --tyba-glass-section: color-mix(in srgb, var(--tyba-surface) 80%, transparent);
-  --tyba-paper: rgba(0, 0, 0, 0.72);
-  --tyba-paper-solid: #030304;
+  --tyba-paper: rgba(6, 15, 36, 0.78);
+  --tyba-paper-solid: #060f24;
   --tyba-panel-bg: transparent;
+  /* Selecionado: o cartão do item ativo da barra lateral, um tom acima. */
+  --tyba-glass-active: rgba(255, 255, 255, 0.1);
 }
 
 /* Só o claro do TYBA (os outros claros herdam o bloco de cima e têm acentos
    próprios): tons vivos de ponto e filete do mockup PropostaClaro, literais. */
 [data-theme='light']:not([data-imported]) {
   --tyba-ghost-mix: 38%;          /* fantasma ≈ #c4c4cc */
+  /* Muriki no claro do TYBA (quadro "TYBA 2.0 · Conceito", aprovado em
+     2026-11-18): tinta marinho, azul de marca e amarelo de "precisa de
+     você". Só o claro do TYBA; os outros 17 temas não mudam. */
+  --tyba-text: #0a1830;
+  --tyba-text-muted: #45526b;
+  --tyba-text-faint: #5c6880;     /* 5,4:1 sobre #f4f6fb */
+  --tyba-blue: #1152d2;
+  --tyba-primary: var(--tyba-blue);
+  --tyba-green: #0a7044;
+  --tyba-amber: #8a5a00;
+  --tyba-red: #c21f3a;
   /* Aurora do mockup aprovado (PropostaClaro, 2026-10-12), valores literais:
      não deriva dos acentos, que no claro foram escurecidos para texto. */
   --tyba-aurora:
@@ -434,7 +472,7 @@
   --tyba-diff-del-bg: rgba(201, 60, 43, 0.08);
   --tyba-diff-add-text: #1f4d0a;
   --tyba-diff-del-text: #7a2215;
-  --tyba-amber-fill: #c47c14;
+  --tyba-amber-fill: #fdce04;
   --tyba-red-fill: #d6402e;
   --tyba-filament: linear-gradient(90deg, #3d8a17, #0f9d8c, #7a4ce8);
   --tyba-filament-v: linear-gradient(180deg, #3d8a17, #0f9d8c, #7a4ce8);
@@ -450,19 +488,20 @@
      cromo, 80% no terminal) — fraca, ela some e o claro fica cinza. O teal
      fica embaixo à direita, atrás do terminal, para a lateral sair da mesma
      cor da barra (o L contínuo). Fios e sombras puxam para o violeta. */
+  /* Muriki (2026-11-18): o fundo é o ambiente da barra lateral, um azul
+     quase nada no canto. "Blur mais forte não é borrão de cor mais forte"
+     (dono): quem dá profundidade é o vidro, não a cor do campo. */
   --tyba-field:
-    radial-gradient(75% 65% at 90% -8%, rgba(122, 76, 232, 0.55), transparent 64%),
-    radial-gradient(65% 75% at 100% 108%, rgba(15, 157, 140, 0.42), transparent 64%),
-    radial-gradient(55% 50% at 38% -4%, rgba(78, 150, 34, 0.2), transparent 60%),
-    #fafbff;
+    radial-gradient(60% 40% at 20% 10%, rgba(17, 82, 210, 0.06), transparent 70%),
+    #f4f6fb;
   --tyba-glass-window: transparent;
   --tyba-glass-section: rgba(255, 255, 255, 0.74);
   --tyba-glass-piece: rgba(255, 255, 255, 0.8);
   --tyba-glass-float: rgba(255, 255, 255, 0.97);
-  --tyba-glass-active: #ffffff;
-  --tyba-lens: 0 0 0 1px rgba(60, 40, 120, 0.08);
+  --tyba-glass-active: rgba(255, 255, 255, 0.96);
+  --tyba-lens: 0 0 0 1px rgba(10, 24, 48, 0.08);
   --tyba-lens-shadow: 0 0 transparent;
-  --tyba-line: rgba(60, 40, 120, 0.12);
+  --tyba-line: rgba(10, 24, 48, 0.08);
   --tyba-paper: rgba(255, 255, 255, 0.8);
   --tyba-paper-solid: #fdfcff;
   /* As faixas das telas cheias são a própria folha: separa o fio. */
@@ -1779,7 +1818,9 @@ html {
   --tyba-pill-sheen: var(--tyba-sheen);
 }
 [data-theme='light']:not([data-imported]) {
-  --tyba-pill-on: inset 0 0 0 1px rgba(60, 40, 120, 0.08), 0 1px 2px rgba(60, 40, 120, 0.06), 0 4px 12px -6px rgba(60, 40, 120, 0.1);
+  /* Selecionado = item ativo da barra lateral do Muriki (dono, 2026-11-18):
+     cartão branco quase opaco com a sombra do knob. */
+  --tyba-pill-on: inset 0 1px 0 #ffffff, 0 1px 2px rgba(10, 24, 48, 0.1), 0 4px 12px rgba(10, 24, 48, 0.1);
   --tyba-pill-sheen: none;
   --tyba-piece-shadow: 0 1px 2px rgba(60, 40, 120, 0.05);
   /* Placa de painel/modal no claro: brilho na aresta de cima e sombra violeta. */
@@ -1794,3 +1835,40 @@ html {
   background: var(--tyba-field);
 }
 
+/* Muriki (2026-11-18): no claro do TYBA, o ícone aceso dos trilhos (Git,
+   Docker, Serviços, Arquivos) é o mesmo cartão do item ativo da barra
+   lateral; a cor do ícone continua a da área. */
+[data-theme='light']:not([data-imported]) .tyba-icon-on {
+  background-color: var(--tyba-glass-active);
+  box-shadow: var(--tyba-pill-on);
+}
+/* Vidro forte das telas que abrem sobre o terminal (Git, Arquivos, Docker):
+   véu fino e blur alto. O efeito vem do desfoque, não de cor no fundo. */
+.tyba-frost {
+  background: color-mix(in srgb, var(--tyba-surface) 42%, transparent);
+  backdrop-filter: blur(40px) saturate(140%);
+  -webkit-backdrop-filter: blur(40px) saturate(140%);
+}
+/* Muriki noturno: o selecionado é o mesmo cartão da barra lateral, um tom
+   acima do marinho, com sombra; e a janela fica no campo marinho. */
+:root:not([data-theme]):not([data-imported]) {
+  --tyba-pill-on: inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 1px 2px rgba(0, 0, 0, 0.4), 0 4px 12px rgba(0, 0, 0, 0.35);
+  --tyba-pill-sheen: none;
+}
+:root:not([data-theme]):not([data-imported]) .tyba-icon-on {
+  background-color: var(--tyba-glass-active);
+  box-shadow: var(--tyba-pill-on);
+}
+:root:not([data-theme]):not([data-imported]) .tyba-aurora {
+  background: var(--tyba-field);
+}
+/* Shell dividido, foco B (dono, 2026-11-18): o painel sem foco fica num
+   papel um tom abaixo, puxado para o azul, e com o conteúdo apagado. O com
+   foco fica como está, sem borda. Tokens, para valer em todo tema. */
+.tyba-pane[data-pane-dim] {
+  background: color-mix(in srgb, var(--tyba-text) 4%, color-mix(in srgb, var(--tyba-blue) 3%, var(--tyba-paper-solid)));
+}
+.tyba-pane[data-pane-dim] > .tyba-pane-body,
+.tyba-pane[data-pane-dim] > .tyba-pane-line {
+  opacity: 0.55;
+}

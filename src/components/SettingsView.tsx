@@ -4,33 +4,42 @@ import { Trans, useTranslation } from "react-i18next";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { changelogUrl } from "@/lib/changelog";
 import {
-  DownloadSimple,
-  FolderOpen,
-  Info,
-  Lock,
-  ShieldCheck,
-  MagnifyingGlass,
-  FileText,
+  ArrowClockwise,
   Bell,
   CaretDoubleLeft,
   CaretDoubleRight,
-  GearSix,
-  HardDrives,
-  PlugsConnected,
-  X,
+  CircleHalf,
+  Code,
+  Copy,
+  DownloadSimple,
+  FolderOpen,
+  Gear,
+  Globe,
   Keyboard,
-  Palette,
-  TerminalWindow,
+  MagnifyingGlass,
+  PenNib,
+  Play,
+  Plug,
+  Plus,
+  ShieldCheck,
+  Trash,
   User,
+  X,
 } from "@phosphor-icons/react";
 
-import appIcon from "../../src-tauri/icons/128x128.png";
-
-import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { SettingGroup, SettingLine, SettingNote, SettingStatus } from "./settings/rows";
+import {
+  SETTING_FIELD,
+  SettingButton,
+  SettingFixed,
+  SettingGroup,
+  SettingLine,
+  SettingNote,
+  SettingSegment,
+  SettingStatus,
+} from "./settings/rows";
 import { fileLinksEnabled, setFileLinksEnabled } from "../lib/fileLinks";
 import { ThemePicker } from "./settings/ThemePicker";
 import { IS_MAC } from "@/lib/platform";
@@ -77,19 +86,9 @@ import {
   previewNotifySound,
   updateCheck,
 } from "../lib/ipc";
-import {
-  formatDiagnostics,
-  platformLabel,
-  shortCommitDate,
-} from "../lib/diagnostics";
+import { formatDiagnostics, platformLabel } from "../lib/diagnostics";
 import { openExternalUrl, writeClipboardText } from "../lib/clipboard";
-import {
-  commitUrl,
-  docsUrl,
-  LICENSE_NAME,
-  LICENSE_URL,
-  REPO_URL,
-} from "../lib/links";
+import { commitUrl, docsUrl, LICENSE_NAME, LICENSE_URL, REPO_URL } from "../lib/links";
 import {
   actionsByCategory,
   ACTION_LABEL_KEYS,
@@ -103,11 +102,7 @@ import {
 } from "../lib/keys";
 import { Shortcut } from "@/components/ui/kbd";
 import { toastError } from "../lib/toast";
-import {
-  FONT_SIZE_EVENT,
-  getDefaultFontSize,
-  setDefaultFontSize,
-} from "./TerminalView";
+import { FONT_SIZE_EVENT, getDefaultFontSize, setDefaultFontSize } from "./TerminalView";
 import { ShellSettings } from "./ShellSettings";
 import { ToolbarChipsEditor } from "./ToolbarChipsEditor";
 import type { RichInputPref } from "../lib/richInput";
@@ -125,116 +120,107 @@ type Section =
   | "appearance"
   | "terminal"
   | "agents"
-  | "security"
-  | "integrations"
-  | "ssh"
   | "notifications"
+  | "integrations"
+  | "security"
   | "shortcuts"
   | "about";
 
-/** As seções, na ordem do trilho: cada uma é um assunto, não uma gaveta. */
-const SECTIONS: { id: Section; label: string; hint: string; long: string; icon: React.ReactNode }[] = [
-  { id: "general", label: "settingsGeneral", hint: "settingsGeneralShort", long: "settingsGeneralLong", icon: <GearSix size={16} /> },
-  { id: "appearance", label: "settingsAppearance", hint: "settingsAppearanceShort", long: "settingsAppearanceLong", icon: <Palette size={16} /> },
-  { id: "terminal", label: "settingsTerminal", hint: "settingsTerminalShort", long: "settingsTerminalHint", icon: <TerminalWindow size={16} /> },
-  { id: "agents", label: "settingsAgents", hint: "settingsAgentsShort", long: "settingsAgentsHint", icon: <User size={16} /> },
-  { id: "security", label: "settingsSecurity", hint: "settingsSecurityShort", long: "settingsSecurityHint", icon: <ShieldCheck size={16} /> },
-  { id: "integrations", label: "settingsIntegrations", hint: "settingsIntegrationsShort", long: "settingsIntegrationsHint", icon: <PlugsConnected size={16} /> },
-  { id: "ssh", label: "settingsSsh", hint: "settingsSshShort", long: "settingsSshLong", icon: <HardDrives size={16} /> },
-  { id: "notifications", label: "settingsNotifications", hint: "settingsNotificationsShort", long: "settingsNotificationsHint", icon: <Bell size={16} /> },
-  { id: "shortcuts", label: "settingsShortcuts", hint: "settingsShortcutsShort", long: "shortcutsHint", icon: <Keyboard size={16} /> },
-  { id: "about", label: "settingsAbout", hint: "settingsAboutShort", long: "aboutHint", icon: <Info size={16} /> },
+/**
+ * As seções, na ordem da lista do quadro "Configurações (aprovada)". Atalhos
+ * não está no quadro; fica antes de Sobre para não sumir.
+ */
+const SECTIONS: { id: Section; label: string; sub: string; icon: React.ReactNode }[] = [
+  { id: "general", label: "settingsGeneral", sub: "cfgSubGeneral", icon: <Gear size={16} /> },
+  { id: "appearance", label: "settingsAppearance", sub: "cfgSubAppearance", icon: <CircleHalf size={16} /> },
+  { id: "terminal", label: "settingsTerminal", sub: "cfgSubTerminal", icon: <Code size={16} /> },
+  { id: "agents", label: "settingsAgents", sub: "cfgSubAgents", icon: <User size={16} /> },
+  { id: "notifications", label: "settingsNotifications", sub: "cfgSubNotifications", icon: <Bell size={16} /> },
+  { id: "integrations", label: "settingsIntegrations", sub: "cfgSubIntegrations", icon: <Plug size={16} /> },
+  { id: "security", label: "settingsSecurity", sub: "cfgSubSecurity", icon: <ShieldCheck size={16} /> },
+  { id: "shortcuts", label: "settingsShortcuts", sub: "shortcutsHint", icon: <Keyboard size={16} /> },
+  { id: "about", label: "settingsAbout", sub: "cfgSubAbout", icon: <Globe size={16} /> },
 ];
 
 const RAIL_PREF_KEY = "pref.settings_rail";
 
 /** As regras que o core impõe e que nenhuma configuração desliga. */
-const SECURITY_RULES = ["securityRuleMain", "securityRuleSecrets", "securityRuleKill"];
-
-/** Como o agente roda (agente livre): leitura, sem interruptor. */
-const SECURITY_AGENT = ["securityRuleFree", "securityRuleAsk"];
+const SECURITY_RULES = ["cfgRuleMain", "cfgRuleSecrets", "cfgRuleKill"];
 
 /**
- * Segurança (quadro CfgSegurancaLivre): o que é fixo aparece como leitura,
- * para ninguém procurar um interruptor que não existe; o agente roda livre, e
- * a jaula do TYBA fica para um modo autônomo depois do 2.0.
+ * Segurança: o que é fixo aparece como leitura (cadeado + "Fixo"), para
+ * ninguém procurar um interruptor que não existe; o agente roda livre.
  */
 function SecuritySection() {
   const { t } = useTranslation();
   return (
     <>
-      <SettingGroup title={t("securityFixed")} note={t("securityFixedNote")} />
-      {SECURITY_RULES.map((key) => (
-        <SettingLine key={key} label={t(key)} hint={t(`${key}Hint`)}>
-          <span className="flex items-center gap-1.5 text-[11px] text-tyba-text-faint">
-            <Lock size={12} />
-            {t("securityAlwaysOn")}
-          </span>
-        </SettingLine>
-      ))}
-      <SettingGroup title={t("securityAgent")} />
-      <SettingLine label={t("securityRuleFree")} hint={t("securityRuleFreeHint")}>
-        <span className="rounded-full bg-tyba-green/[.12] px-[9px] py-0.5 text-[11px] text-tyba-green">
-          {t("securityFreeChip")}
-        </span>
-      </SettingLine>
-      <SettingLine label={t("securityRuleAsk")} hint={t("securityRuleAskHint")} />
-      <SettingGroup title={t("securityRepo")} />
-      <SettingNote>
-        <Trans
-          i18nKey="securityRepoHint"
-          components={{ file: <span className="text-tyba-text" /> }}
+      <SettingGroup title={t("cfgGroupAlways")}>
+        {SECURITY_RULES.map((key) => (
+          <SettingLine key={key} label={t(key)} hint={t(`${key}Hint`)}>
+            <SettingFixed>{t("cfgFixed")}</SettingFixed>
+          </SettingLine>
+        ))}
+      </SettingGroup>
+      <SettingGroup title={t("securityAgent")}>
+        <SettingLine label={t("cfgRuleFree")} hint={t("cfgRuleFreeHint")} />
+        <SettingLine
+          label={t("cfgRepoConfig")}
+          hint={
+            <Trans
+              i18nKey="cfgRepoConfigHint"
+              components={{ file: <span className="font-mono text-[12.5px] text-tyba-text" /> }}
+            />
+          }
         />
-      </SettingNote>
-      <div className="px-[18px] py-3.5 text-[11.5px] leading-[17px] text-tyba-text-faint/80">
-        {t("securityLater")}
-      </div>
+      </SettingGroup>
     </>
   );
 }
 
 /**
  * O que a busca conhece, por seção: chaves de i18n do nome. A descrição é a
- * chave `<nome>Hint` quando existe. Atalhos e notificações entram inteiros.
+ * chave `<nome>Hint` quando existe. Atalhos entram inteiros.
  */
 // Função e não constante: as listas que ela usa moram mais abaixo no módulo.
 const searchKeys = (): Record<Section, string[]> => ({
-  general: ["account", "defaultSessionDir", "startup", "language"],
+  general: ["cfgName", "language", "cfgStartup", "cfgSessionDir"],
   appearance: [
     "colorMode",
-    "fontSection",
     "settingsThemes",
-    "appIconSection",
-    "settingsSidebar",
+    "cfgFont",
+    "cfgSize",
+    "cfgCollapse",
+    "cfgGitStatus",
     "sidebarDetails",
-    "gitStatusToggle",
-    "settingsChipsBar",
-    "toolbarToggle",
+    "cfgFooter",
+    "cfgFooterArrange",
+    "appIconSection",
   ],
   terminal: [
     "promptModeTitle",
-    "shellIntegration",
-    "settingsHistory",
-    "historyEnabled",
-    "historyImportTitle",
-    "historyClear",
-    "settingsSnippets",
-    "autocompleteAutoOpen",
+    "cfgAutoOpen",
     "autocompleteShowUses",
+    "cfgZsh",
+    "cfgHistoryOn",
+    "cfgHistoryImport",
+    "cfgHistoryClear",
+    "settingsSnippets",
   ],
   agents: [
-    "reviewAgent",
+    ...COMPOSER_TOGGLES.map((r) => r.label),
+    "cfgSendWith",
+    "cfgAgentCommands",
+    "richInputShowOnMatch",
     "worktreeDefaultPref",
-    "richInputRegex",
-    ...RICH_INPUT_TOGGLES.map((r) => r.label),
-    "settingsLaunchConfigs",
+    "cfgReviewer",
+    "cfgGroupLaunch",
   ],
-  security: [...SECURITY_RULES, ...SECURITY_AGENT, "securityRepo"],
-  integrations: ["dockerIntegration", "claudePlugin", "fileLinks", "defaultEditor"],
-  ssh: ["sshTypedDetect", "sshTypedWhen", "sshDenied"],
-  notifications: [...NOTIFY_KINDS.map((k) => k.label), "notifyMacos"],
+  notifications: [...NOTIFY_KINDS.map((k) => NOTIFY_LABELS[k.id] ?? k.label), "cfgMacos"],
+  integrations: ["cfgClaudeCode", "cfgDocker", "cfgGroupSsh", "sshTypedDetect", "sshTypedWhen", "cfgEditor", "cfgFileLinks"],
+  security: [...SECURITY_RULES, "cfgRuleFree", "cfgRepoConfig"],
   shortcuts: Object.values(ACTION_LABEL_KEYS),
-  about: ["version", "aboutCopyDiagnostics"],
+  about: ["version", "aboutDiagnostics", "aboutDocs", "aboutWhatChanged"],
 });
 
 /** `/Users/x/.tyba/config.toml` → `~/.tyba/config.toml`. */
@@ -243,8 +229,9 @@ function homeShort(path: string): string {
 }
 
 /**
- * O trilho de seções, à direita como nas outras telas cheias. Aberto mostra o
- * nome; recolhido fica só o ícone, com o nome no tooltip.
+ * A lista de seções, à direita: ícone e nome; o escolhido ganha a mancha azul
+ * atrás do ícone e o nome em negrito, sem pílula. Fechar fica embaixo, com o
+ * Esc. Recolhida fica só o ícone, com o nome no tooltip.
  */
 function SettingsRail({
   section,
@@ -252,19 +239,20 @@ function SettingsRail({
   collapsed,
   onToggle,
   onClose,
+  search,
 }: {
   section: Section;
   onSection: (section: Section) => void;
   collapsed: boolean;
   onToggle: () => void;
   onClose: () => void;
+  search: React.ReactNode;
 }) {
   const { t } = useTranslation();
   const item = (
     key: string,
     icon: React.ReactNode,
     label: string,
-    tip: string,
     onClick: () => void,
     active = false,
     trailing?: React.ReactNode,
@@ -272,59 +260,54 @@ function SettingsRail({
     <Tooltip key={key}>
       <TooltipTrigger asChild>
         <button
+          type="button"
           onClick={onClick}
           aria-label={label}
-          className={`flex h-8 shrink-0 items-center gap-2.5 rounded-[7px] text-[12.5px] transition-colors ${
-            collapsed ? "w-9 justify-center" : "px-2.5"
-          } ${
-            active
-              ? "tyba-nav-on text-tyba-green"
-              : "text-tyba-text-muted hover:bg-tyba-text/[.04] hover:text-tyba-text"
-          }`}
+          aria-current={active ? "page" : undefined}
+          className={`flex h-9 shrink-0 items-center gap-2.5 rounded-[10px] text-left text-[13px] transition-colors focus-visible:outline-none focus-visible:[box-shadow:var(--tyba-focus-ring)] ${
+            collapsed ? "w-10 justify-center" : "px-2"
+          } ${active ? "font-bold text-tyba-text" : "text-tyba-text-muted hover:text-tyba-text"}`}
         >
-          <span className="shrink-0">{icon}</span>
-          {!collapsed && (
-            <span className={`min-w-0 flex-1 truncate text-left ${active ? "text-tyba-text" : ""}`}>
-              {label}
-            </span>
-          )}
+          <span
+            className={`grid size-[26px] shrink-0 place-items-center rounded-[8px] ${
+              active
+                ? "bg-tyba-blue-tint text-tyba-blue shadow-[0_0_14px_2px_color-mix(in_srgb,var(--tyba-blue)_18%,transparent)]"
+                : ""
+            }`}
+          >
+            {icon}
+          </span>
+          {!collapsed && <span className="min-w-0 flex-1 truncate">{label}</span>}
           {!collapsed && trailing}
         </button>
       </TooltipTrigger>
-      {collapsed && (
-        <TooltipContent side="left">
-          {label}
-          {tip && <span className="text-tyba-text-faint"> · {tip}</span>}
-        </TooltipContent>
-      )}
+      {collapsed && <TooltipContent side="left">{label}</TooltipContent>}
     </Tooltip>
   );
   return (
     <nav
-      aria-label={t("settings")}
-      className={`flex shrink-0 flex-col gap-0.5 border-l border-[var(--tyba-line)] px-2 pt-3 pb-2.5 ${
-        collapsed ? "w-[52px] items-center" : "w-[188px]"
+      aria-label={t("cfgSections")}
+      className={`flex shrink-0 flex-col gap-0.5 border-l border-[var(--tyba-line)] px-2.5 py-3 ${
+        collapsed ? "w-[60px] items-center" : "w-[208px]"
       }`}
     >
-      {SECTIONS.map((s) =>
-        item(s.id, s.icon, t(s.label), t(s.hint), () => onSection(s.id), s.id === section),
-      )}
+      {!collapsed && <div className="pb-2">{search}</div>}
+      {SECTIONS.map((s) => item(s.id, s.icon, t(s.label), () => onSection(s.id), s.id === section))}
       <span className="flex-1" />
       {item(
         "toggle",
         collapsed ? <CaretDoubleLeft size={14} /> : <CaretDoubleRight size={14} />,
         collapsed ? t("settingsRailExpand") : t("settingsRailCollapse"),
-        "",
         onToggle,
       )}
+      <div className="mx-1.5 my-2 h-px self-stretch bg-[var(--tyba-line)]" />
       {item(
         "close",
-        <X size={15} />,
+        <X size={16} />,
         t("close"),
-        "Esc",
         onClose,
         false,
-        <span className="text-[11px] text-tyba-text-ghost">Esc</span>,
+        <kbd className="ml-auto font-[inherit] text-[11.5px] text-tyba-text-faint">Esc</kbd>,
       )}
     </nav>
   );
@@ -333,8 +316,11 @@ function SettingsRail({
 interface Props {
   /** Fecha a tela e volta para onde estava. */
   onClose: () => void;
-  /** Abre (ou leva) a tela direto nesta seção — o "Ajustar" do toast da troca SSH. */
-  initialSection?: Section;
+  /**
+   * Abre (ou leva) a tela direto nesta seção — o "Ajustar" do toast da troca
+   * SSH pede `ssh`, que hoje mora em Integrações › Hosts SSH.
+   */
+  initialSection?: Section | "ssh";
   /** Abre o `config.toml` no editor do TYBA. */
   onOpenConfig: () => void;
   launchConfigs: LaunchConfig[];
@@ -375,30 +361,38 @@ interface Props {
 }
 
 type RichInputToggle = {
-  field: keyof Omit<RichInputPref, "version" | "agentRegex">;
+  field: keyof Omit<RichInputPref, "version" | "agentRegex" | "submitWithCtrlEnter" | "showOnMatch">;
   label: string;
   hint?: string;
 };
 
-const RICH_INPUT_TOGGLES: RichInputToggle[] = [
-  { field: "autoShow", label: "richInputAutoShow", hint: "richInputHint" },
+/** Caixa de prompt: os do quadro primeiro (o "Enviar com" vai depois do primeiro). */
+const COMPOSER_TOGGLES: RichInputToggle[] = [
+  { field: "autoShow", label: "cfgAutoShow", hint: "cfgAutoShowHint" },
+  { field: "warnOnSensitivePrompt", label: "cfgWarnKey", hint: "cfgWarnKeyHint" },
   { field: "autoOpenOnStart", label: "richInputAutoOpen" },
   { field: "autoDismiss", label: "richInputAutoDismiss" },
-  {
-    field: "submitWithCtrlEnter",
-    label: "richInputCtrlEnter",
-    hint: "richInputCtrlEnterHint",
-  },
-  { field: "warnOnSensitivePrompt", label: "richInputWarnSensitive" },
-  {
-    field: "showOnMatch",
-    label: "richInputShowOnMatch",
-    hint: "richInputShowOnMatchHint",
-  },
 ];
 
+/** O nome do quadro para as espécies de aviso que ele mostra. */
+const NOTIFY_LABELS: Record<string, string> = {
+  request: "cfgNotifyRequest",
+  done: "cfgNotifyDone",
+};
 
-const FONT_SIZES = [11, 12, 13, 14, 15, 16];
+/** Nome curto da espécie na linha de som. */
+const NOTIFY_SOUND_LABELS: Record<string, string> = {
+  request: "cfgSoundRequest",
+  done: "cfgSoundDone",
+  observedRequest: "cfgSoundObserved",
+};
+
+/** Os três tamanhos do quadro; outro valor (do config.toml) aparece como px. */
+const TEXT_SIZES = [
+  { value: 12, label: "cfgSizeSmall" },
+  { value: 13, label: "cfgSizeMedium" },
+  { value: 15, label: "cfgSizeLarge" },
+];
 
 const THEME_EXAMPLE = `{
   "name": "Meu Tema",
@@ -426,9 +420,7 @@ function copyThemeExample() {
   void navigator.clipboard?.writeText(THEME_EXAMPLE).catch(() => {});
 }
 
-
 const MAC_SOUNDS = ["Ping", "Glass", "Submarine", "Hero", "Funk", "Blow"];
-
 
 /**
  * Aviso do sistema por espécie de evento.
@@ -467,100 +459,81 @@ function NotifyPrefs() {
     }
   }, []);
 
+  const withSound = NOTIFY_KINDS.filter((kind) => enabled[kind.id]);
+
   return (
     <>
-      {NOTIFY_KINDS.map((kind) => (
-        <SettingLine key={kind.id} label={t(kind.label)} hint={t(kind.hint)}>
-          <div className="flex items-center gap-2">
-            {IS_MAC && enabled[kind.id] && (
-              <Select
-                value={sound[kind.id] ?? kind.defaultSound}
-                onChange={(v) => {
-                  setSound((prev) => ({ ...prev, [kind.id]: v }));
-                  void setPref(kind.soundKey, v).catch(() => {});
+      <SettingGroup title={t("cfgGroupWhen")}>
+        {NOTIFY_KINDS.map((kind) => {
+          const label = NOTIFY_LABELS[kind.id] ?? kind.label;
+          return (
+            <SettingLine key={kind.id} label={t(label)} hint={t(`${label}Hint`)}>
+              <Switch
+                checked={enabled[kind.id] ?? kind.defaultEnabled}
+                aria-label={t(label)}
+                onCheckedChange={(c) => {
+                  setEnabled((prev) => ({ ...prev, [kind.id]: c }));
+                  void setPref(kind.enabledKey, c ? "on" : "off").catch(() => {});
                 }}
-                className="w-36"
-                options={[
-                  ...MAC_SOUNDS.map((name) => ({ value: name, label: name })),
-                  { value: "", label: t("notifySilent") },
-                ]}
               />
-            )}
-            {IS_MAC && enabled[kind.id] && (sound[kind.id] ?? kind.defaultSound) && (
-              <button
-                onClick={() =>
-                  void previewNotifySound(sound[kind.id] ?? kind.defaultSound).catch(() => {})
-                }
-                className="text-[11px] text-tyba-blue hover:text-tyba-text"
-              >
-                ▶ {t("notifyListen")}
-              </button>
-            )}
-            <Switch
-              checked={enabled[kind.id] ?? kind.defaultEnabled}
-              onCheckedChange={(c) => {
-                setEnabled((prev) => ({ ...prev, [kind.id]: c }));
-                void setPref(kind.enabledKey, c ? "on" : "off").catch(() => {});
-              }}
-            />
-          </div>
-        </SettingLine>
-      ))}
+            </SettingLine>
+          );
+        })}
+      </SettingGroup>
+      {IS_MAC && withSound.length > 0 && (
+        <SettingGroup title={t("cfgGroupSound")}>
+          {withSound.map((kind) => {
+            const current = sound[kind.id] ?? kind.defaultSound;
+            return (
+              <SettingLine key={kind.id} label={t(NOTIFY_SOUND_LABELS[kind.id] ?? kind.label)}>
+                {current && (
+                  <SettingButton
+                    tone="ghost"
+                    icon={<Play size={16} />}
+                    onClick={() => void previewNotifySound(current).catch(() => {})}
+                  >
+                    {t("cfgListen")}
+                  </SettingButton>
+                )}
+                <Select
+                  value={current}
+                  onChange={(v) => {
+                    setSound((prev) => ({ ...prev, [kind.id]: v }));
+                    void setPref(kind.soundKey, v).catch(() => {});
+                  }}
+                  className={SETTING_FIELD}
+                  options={[
+                    ...MAC_SOUNDS.map((name) => ({ value: name, label: name })),
+                    { value: "", label: t("notifySilent") },
+                  ]}
+                />
+              </SettingLine>
+            );
+          })}
+        </SettingGroup>
+      )}
       {IS_MAC && (
-        <>
-          <SettingGroup title={t("notifySystem")} />
-          <SettingLine label={t("notifyMacos")} hint={t("notifyMacosHint")}>
-            <button
-              onClick={() => void openNotificationSettings().catch(() => {})}
-              className="text-[11px] text-tyba-blue hover:text-tyba-text"
-            >
+        <SettingGroup title={t("cfgGroupOutside")}>
+          <SettingLine label={t("cfgMacos")} hint={t("cfgMacosHint")}>
+            <SettingButton onClick={() => void openNotificationSettings().catch(() => {})}>
               {t("notifyMacosOpen")}
-            </button>
+            </SettingButton>
           </SettingLine>
-        </>
+        </SettingGroup>
       )}
     </>
   );
 }
 
-/** Linha de informação do Sobre: rótulo em coluna fixa, valor ao lado. */
-function InfoRow({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div
-      data-setting-row
-      className="grid grid-cols-[160px_1fr] gap-4 border-b border-tyba-border-soft px-[18px] py-2 text-[12.5px]"
-    >
-      <span className="text-tyba-text-faint">{label}</span>
-      <span className="min-w-0 truncate text-tyba-text-muted">{children}</span>
-    </div>
-  );
-}
-
-function ExternalRow({ label, value, href }: { label: string; value: string; href: string }) {
-  const { t } = useTranslation();
-  return (
-    <InfoRow label={label}>
-      <button
-        onClick={() => void openExternalUrl(href).catch(() => {})}
-        aria-label={t("aboutOpenLink", { target: value })}
-        className="text-tyba-blue underline underline-offset-2 hover:text-tyba-text"
-      >
-        {value}
-      </button>
-    </InfoRow>
-  );
-}
-
-function AboutSection({
-  version,
-  update,
-}: {
-  version: string;
-  update: UpdateStatus | null;
-}) {
+/** Versão (com a busca de atualização), diagnóstico e links. */
+function AboutSection({ version, update }: { version: string; update: UpdateStatus | null }) {
   const { t, i18n } = useTranslation();
   const [info, setInfo] = useState<BuildInfo | null>(null);
   const [copied, setCopied] = useState(false);
+  // O resultado de "Procurar atualização" vale mais que o do boot: é mais novo.
+  const [checked, setChecked] = useState<UpdateStatus | null | undefined>(undefined);
+  const [checking, setChecking] = useState(false);
+  const current = checked === undefined ? update : checked;
 
   useEffect(() => {
     let alive = true;
@@ -580,86 +553,6 @@ function AboutSection({
     return () => clearTimeout(timer);
   }, [copied]);
 
-  const copy = () => {
-    if (!info) return;
-    void writeClipboardText(formatDiagnostics(info, i18n.language))
-      .then(() => setCopied(true))
-      .catch(() => {});
-  };
-
-  const commitDate = info ? shortCommitDate(info.commit_date, i18n.language) : "";
-
-  return (
-    <section className="mx-auto w-full max-w-[860px]">
-      <div className="flex items-center gap-4 px-[18px] pt-5 pb-4">
-        <img src={appIcon} alt="" className="size-[52px] rounded-[12px]" draggable={false} />
-        <div className="flex min-w-0 flex-col gap-1">
-          <span className="font-display text-[20px] font-bold text-tyba-text">TYBA {version || ""}</span>
-          <span className="text-[12px] text-tyba-text-faint">
-            {t("aboutTagline")} ·{" "}
-            {update ? (
-              <span className="text-tyba-violet">{t("updateAvailable", { version: update.info.version })}</span>
-            ) : (
-              <span className="text-tyba-green">{t("aboutUpToDateShort")}</span>
-            )}
-          </span>
-        </div>
-      </div>
-      <SettingGroup
-        title={t("aboutDiagnostics")}
-        note={
-          <span className="flex items-center gap-2">
-            {copied && (
-              <span role="status" className="text-tyba-green">
-                {t("aboutCopied")}
-              </span>
-            )}
-            <button
-              disabled={!info}
-              onClick={copy}
-              aria-label={t("aboutCopyDiagnostics")}
-              className="text-tyba-blue underline underline-offset-2 hover:text-tyba-text disabled:opacity-50"
-            >
-              {t("aboutCopyDiagnostics")}
-            </button>
-          </span>
-        }
-      />
-      <InfoRow label={t("aboutBuild")}>
-        {version || "—"} ({import.meta.env.DEV ? "dev" : "release"})
-      </InfoRow>
-      <InfoRow label={t("aboutCommit")}>
-        {info?.commit ? (
-          <button
-            onClick={() => void openExternalUrl(commitUrl(info.commit)).catch(() => {})}
-            aria-label={t("aboutOpenLink", { target: info.commit })}
-            className="font-mono hover:text-tyba-text"
-          >
-            {info.commit}
-            {commitDate && ` · ${commitDate}`}
-          </button>
-        ) : (
-          "—"
-        )}
-      </InfoRow>
-      <InfoRow label={t("aboutPlatform")}>{info ? platformLabel(info) : "—"}</InfoRow>
-      <InfoRow label={t("aboutWebview")}>{info?.webview || "—"}</InfoRow>
-      <SettingGroup title={t("aboutLinks")} />
-      <ExternalRow label={t("aboutRepo")} value="github.com/tybadev/tyba-terminal" href={REPO_URL} />
-      <ExternalRow label={t("aboutDocs")} value="docs.tyba.dev" href={docsUrl(i18n.language)} />
-      <ExternalRow label={t("aboutWhatChanged")} value="changelog" href={changelogUrl(i18n.language)} />
-      <ExternalRow label={t("aboutLicense")} value={LICENSE_NAME} href={LICENSE_URL} />
-    </section>
-  );
-}
-
-/** Versão e atualização, no fim de Geral. */
-function UpdateRows({ version, update }: { version: string; update: UpdateStatus | null }) {
-  const { t, i18n } = useTranslation();
-  // O resultado de "Verificar agora" vale mais que o do boot: é mais novo.
-  const [checked, setChecked] = useState<UpdateStatus | null | undefined>(undefined);
-  const [checking, setChecking] = useState(false);
-  const current = checked === undefined ? update : checked;
   const check = () => {
     setChecking(true);
     void updateCheck()
@@ -667,28 +560,93 @@ function UpdateRows({ version, update }: { version: string; update: UpdateStatus
       .catch((e) => toastError(t("updateCheckFailed"), e))
       .finally(() => setChecking(false));
   };
+
+  const copy = () => {
+    if (!info) return;
+    void writeClipboardText(formatDiagnostics(info, i18n.language))
+      .then(() => setCopied(true))
+      .catch(() => {});
+  };
+
+  const open = (href: string) => void openExternalUrl(href).catch(() => {});
+  const build = info?.commit || `${version || "—"} (${import.meta.env.DEV ? "dev" : "release"})`;
+
   return (
     <>
-      <SettingGroup title={t("settingsUpdates")} />
-      <SettingLine
-        label={`TYBA ${version || "—"}`}
-        hint={
-          current ? t("updateAvailable", { version: current.info.version }) : t("updateUpToDate")
-        }
-      >
-        <Button variant="ghost" size="sm" disabled={checking} onClick={check}>
-          {checking ? t("updateChecking") : t("updateCheckNow")}
-        </Button>
-        <Button
-          variant="ghost"
-          size="sm"
-          className={current ? "text-tyba-violet" : "text-tyba-text-muted"}
-          onClick={() => void openExternalUrl(changelogUrl(i18n.language)).catch(() => {})}
+      <SettingGroup title={t("version")}>
+        <SettingLine
+          label={`TYBA ${version || "—"}`}
+          hint={current ? t("updateAvailable", { version: current.info.version }) : t("cfgUpToDate")}
         >
-          {current && <DownloadSimple size={13} />}
-          {t("updateOpenChangelog")}
-        </Button>
-      </SettingLine>
+          <SettingButton icon={<ArrowClockwise size={16} />} disabled={checking} onClick={check}>
+            {checking ? t("updateChecking") : t("cfgCheckUpdate")}
+          </SettingButton>
+          <SettingButton
+            tone="ghost"
+            icon={current ? <DownloadSimple size={16} /> : undefined}
+            className={current ? "text-tyba-violet" : ""}
+            onClick={() => open(changelogUrl(i18n.language))}
+          >
+            {t("updateOpenChangelog")}
+          </SettingButton>
+        </SettingLine>
+        <SettingLine
+          label={t("aboutDiagnostics")}
+          hint={
+            <Trans
+              i18nKey="cfgDiagHint"
+              values={{ build, platform: info ? platformLabel(info) : "—" }}
+              components={{
+                commit: info?.commit ? (
+                  <button
+                    type="button"
+                    onClick={() => open(commitUrl(info.commit))}
+                    aria-label={t("aboutOpenLink", { target: info.commit })}
+                    className="font-mono hover:text-tyba-text"
+                  />
+                ) : (
+                  <span />
+                ),
+              }}
+            />
+          }
+        >
+          {copied && (
+            <span role="status" className="text-[13px] font-semibold text-tyba-green">
+              {t("aboutCopied")}
+            </span>
+          )}
+          <SettingButton
+            tone="ghost"
+            icon={<Copy size={16} />}
+            disabled={!info}
+            onClick={copy}
+            aria-label={t("aboutCopyDiagnostics")}
+          >
+            {t("cfgCopy")}
+          </SettingButton>
+        </SettingLine>
+      </SettingGroup>
+      <SettingGroup title={t("cfgGroupProject")}>
+        <SettingLine label={t("cfgOpenSource", { license: LICENSE_NAME })} hint="github.com/tybadev/tyba-terminal">
+          <SettingButton tone="ghost" onClick={() => open(LICENSE_URL)}>
+            {t("aboutLicense")}
+          </SettingButton>
+          <SettingButton tone="ghost" onClick={() => open(REPO_URL)}>
+            {t("cfgOpen")}
+          </SettingButton>
+        </SettingLine>
+        <SettingLine label={t("aboutDocs")} hint="docs.tyba.dev">
+          <SettingButton tone="ghost" onClick={() => open(docsUrl(i18n.language))}>
+            {t("cfgOpen")}
+          </SettingButton>
+        </SettingLine>
+        <SettingLine label={t("aboutWhatChanged")} hint="changelog">
+          <SettingButton tone="ghost" onClick={() => open(changelogUrl(i18n.language))}>
+            {t("cfgOpen")}
+          </SettingButton>
+        </SettingLine>
+      </SettingGroup>
     </>
   );
 }
@@ -697,10 +655,14 @@ function TextField({
   value,
   placeholder,
   onCommit,
+  ariaLabel,
+  className = "",
 }: {
   value: string;
   placeholder: string;
   onCommit: (value: string) => void;
+  ariaLabel: string;
+  className?: string;
 }) {
   const [draft, setDraft] = useState(value);
   useEffect(() => setDraft(value), [value]);
@@ -711,12 +673,13 @@ function TextField({
       autoCorrect="off"
       value={draft}
       placeholder={placeholder}
+      aria-label={ariaLabel}
       onChange={(e) => setDraft(e.target.value)}
       onBlur={() => onCommit(draft.trim())}
       onKeyDown={(e) => {
         if (e.key === "Enter") (e.target as HTMLInputElement).blur();
       }}
-      className="h-8 w-full rounded-[4px] border border-tyba-border bg-tyba-text/[.02] px-2.5 text-[13px] text-tyba-text outline-none placeholder:text-tyba-text-faint focus:border-tyba-border-strong"
+      className={`${SETTING_FIELD} px-3 text-[13px] text-tyba-text outline-none placeholder:text-tyba-text-faint focus:shadow-[0_0_0_1px_var(--tyba-border-strong)] ${className}`}
     />
   );
 }
@@ -757,24 +720,19 @@ function ShortcutRow({
   }, [listening, onRebind]);
 
   return (
-    <div
-      data-setting-row
-      className="grid grid-cols-[1fr_auto] items-center gap-4 border-b border-tyba-border-soft px-[18px] py-[5px] text-[12.5px]"
-    >
-      <span className="min-w-0 truncate text-tyba-text">
-        {t(ACTION_LABEL_KEYS[action])}
-      </span>
+    <SettingLine label={t(ACTION_LABEL_KEYS[action])}>
       <button
+        type="button"
         onClick={() => setListening(true)}
-        className={`flex h-7 items-center gap-1 rounded-[4px] border px-2 text-[11px] transition-colors ${
+        className={`flex h-[30px] items-center gap-1 rounded-[8px] px-2 text-[12px] transition-colors ${
           listening
-            ? "border-tyba-green font-mono text-tyba-green"
-            : "border-transparent hover:bg-tyba-text/[.04]"
+            ? "font-mono text-tyba-blue shadow-[inset_0_0_0_1px_var(--tyba-blue)]"
+            : "hover:bg-tyba-hover"
         }`}
       >
         {listening ? t("pressKeys") : <Shortcut combo={combo} />}
       </button>
-    </div>
+    </SettingLine>
   );
 }
 
@@ -819,9 +777,11 @@ export function SettingsView({
   onReviewAgentChange,
 }: Props) {
   const { t, i18n } = useTranslation();
-  const [section, setSection] = useState<Section>(initialSection ?? "general");
+  // O SSH de antes mora em Integrações › Hosts SSH.
+  const toSection = (s: Section | "ssh"): Section => (s === "ssh" ? "integrations" : s);
+  const [section, setSection] = useState<Section>(initialSection ? toSection(initialSection) : "general");
   useEffect(() => {
-    if (initialSection) setSection(initialSection);
+    if (initialSection) setSection(toSection(initialSection));
   }, [initialSection]);
   const [railCollapsed, setRailCollapsed] = useState(false);
   const [configPath, setConfigPath] = useState<string | null>(null);
@@ -840,14 +800,14 @@ export function SettingsView({
       SECTIONS.flatMap(({ id }) =>
         searchKeys()[id].map((key) => ({
           section: id,
-          label: t(key, { combo: "" }),
+          label: t(key, { combo: formatCombo(bindings.panel), license: LICENSE_NAME, name: "" }),
           // Sem as marcações do `<Trans>` (`<file>…</file>`): a busca mostra texto.
           hint: i18n.exists(`${key}Hint`)
-            ? t(`${key}Hint`, { combo: "" }).replace(/<\/?[a-z]+>/g, "")
+            ? t(`${key}Hint`, { combo: formatCombo(bindings.richInput) }).replace(/<\/?[a-z]+>/g, "")
             : undefined,
         })),
       ),
-    [t, i18n],
+    [t, i18n, bindings.panel, bindings.richInput],
   );
   const results = useMemo(() => searchSettings(searchEntries, query), [searchEntries, query]);
   // Da busca para a linha: troca de seção e, depois de ela desenhar, rola até
@@ -858,7 +818,7 @@ export function SettingsView({
     requestAnimationFrame(() => {
       const root = contentRef.current;
       if (!root) return;
-      const hit = Array.from(root.querySelectorAll<HTMLElement>("p, span, label, button")).find(
+      const hit = Array.from(root.querySelectorAll<HTMLElement>("p, span, label, button, h2")).find(
         (el) => el.childElementCount === 0 && el.textContent?.trim() === label.trim(),
       );
       const row = (hit?.closest("[data-setting-row]") as HTMLElement | null) ?? hit;
@@ -924,10 +884,7 @@ export function SettingsView({
     window.addEventListener(FONT_SIZE_EVENT, sync);
     return () => window.removeEventListener(FONT_SIZE_EVENT, sync);
   }, []);
-  useEffect(
-    () => onEffectiveBaseChange(() => setEffBase(getEffectiveBase())),
-    [],
-  );
+  useEffect(() => onEffectiveBaseChange(() => setEffBase(getEffectiveBase())), []);
 
   const refresh = useCallback(() => {
     void listThemes().then(setThemes).catch(() => {});
@@ -987,401 +944,441 @@ export function SettingsView({
     }
   };
 
-
   const current = SECTIONS.find((item) => item.id === section) ?? SECTIONS[0];
+  const searching = query.trim().length > 0;
+  const sizeOptions = [
+    ...TEXT_SIZES.map((s) => ({ value: String(s.value), label: t(s.label) })),
+    ...(TEXT_SIZES.some((s) => s.value === fontSize) ? [] : [{ value: String(fontSize), label: `${fontSize}px` }]),
+  ];
+  const reviewChoice = reviewAgent === "claude" || reviewAgent === "codex" ? reviewAgent : "custom";
+
+  const search = (
+    <label className="flex h-8 items-center gap-2 rounded-[10px] px-2.5 text-tyba-text-faint shadow-[inset_0_0_0_1px_var(--tyba-line)] focus-within:shadow-[inset_0_0_0_1px_var(--tyba-border-strong)]">
+      <MagnifyingGlass size={14} className="shrink-0" />
+      <input
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") {
+            e.preventDefault();
+            setQuery("");
+            (e.target as HTMLInputElement).blur();
+          }
+          if (e.key === "Enter" && results[0]) {
+            goToSetting(results[0].section, results[0].label);
+          }
+        }}
+        placeholder={t("cfgSearch")}
+        aria-label={t("settingsSearch")}
+        spellCheck={false}
+        autoCorrect="off"
+        autoCapitalize="off"
+        className="min-w-0 flex-1 bg-transparent text-[12.5px] text-tyba-text outline-none placeholder:text-tyba-text-ghost"
+      />
+    </label>
+  );
 
   return (
-    <div className="flex min-h-0 flex-1">
-      <div className="flex min-w-0 flex-1 flex-col">
-        <header className="flex h-[46px] shrink-0 items-center gap-3 border-b border-[var(--tyba-line)] px-[18px] text-[12px]">
-          <span className="shrink-0 text-tyba-green">{current.icon}</span>
-          <span className="text-[14px] font-medium text-tyba-text">{t("settings")}</span>
-          <span className="min-w-0 flex-1 truncate text-tyba-text-faint">
-            {t(current.label)} · {t(current.long)}
-          </span>
-          <label className="flex w-[260px] shrink-0 items-center gap-2 rounded-[6px] border border-tyba-border-field px-2.5 py-1 text-tyba-text-faint focus-within:border-tyba-border-strong">
-            <MagnifyingGlass size={13} className="shrink-0" />
-            <input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Escape") {
-                  e.preventDefault();
-                  setQuery("");
-                  (e.target as HTMLInputElement).blur();
-                }
-                if (e.key === "Enter" && results[0]) {
-                  goToSetting(results[0].section, results[0].label);
-                }
-              }}
-              placeholder={t("settingsSearch")}
-              spellCheck={false}
-              autoCorrect="off"
-              autoCapitalize="off"
-              className="min-w-0 flex-1 bg-transparent text-[12px] text-tyba-text outline-none placeholder:text-tyba-text-ghost"
-            />
-          </label>
-        </header>
-        <div
-          ref={contentRef}
-          className="tyba-settings min-h-0 flex-1 overflow-y-auto px-8 pt-4 pb-8"
-        >
-        {query.trim() && (
-          <section className="mx-auto w-full max-w-[860px]">
-            <span className="tyba-label">
-              {t("settingsSearchResults", { count: results.length })}
-            </span>
-            <div className="mt-2 flex flex-col">
+    <div className="flex min-h-0 flex-1 text-tyba-text" style={{ background: "var(--tyba-field)" }}>
+      <div ref={contentRef} className="tyba-settings min-h-0 min-w-0 flex-1 overflow-y-auto px-14 pt-9 pb-12">
+        <div className="max-w-[680px]">
+          <div className="flex items-end justify-between gap-6">
+            <div className="min-w-0">
+              <h1 className="m-0 text-[28px] leading-[34px] font-bold tracking-[-.025em]">
+                {searching ? t("settings") : t(current.label)}
+              </h1>
+              <p className="mt-1.5 mb-0 text-[14px] leading-[21px] text-tyba-text-muted">
+                {searching ? t("settingsSearchResults", { count: results.length }) : t(current.sub)}
+              </p>
+            </div>
+            {!searching && section === "appearance" && (
+              <SettingSegment<ThemeMode>
+                label={t("colorMode")}
+                options={[
+                  { value: "light", label: t("themeLight") },
+                  { value: "dark", label: t("themeDark") },
+                  { value: "system", label: t("themeSystem") },
+                ]}
+                value={mode}
+                onChange={setThemeMode}
+              />
+            )}
+          </div>
+
+          {searching && (
+            <div className="mt-6 flex flex-col">
               {results.length === 0 && (
-                <span className="py-3 text-[12px] text-tyba-text-faint">
-                  {t("settingsSearchEmpty")}
-                </span>
+                <span className="py-3 text-[13px] text-tyba-text-faint">{t("settingsSearchEmpty")}</span>
               )}
               {results.map((r) => (
                 <button
                   key={`${r.section}:${r.label}`}
+                  type="button"
                   onClick={() => goToSetting(r.section, r.label)}
-                  className="flex flex-col gap-0.5 rounded-[6px] px-2.5 py-2 text-left hover:bg-tyba-text/[.04]"
+                  className="flex flex-col gap-0.5 border-b border-[var(--tyba-line)] py-[13px] text-left last:border-b-0 hover:text-tyba-blue"
                 >
-                  <span className="text-[13px] text-tyba-text">
+                  <span className="text-[14px] leading-5 font-semibold">
                     {r.label}
-                    <span className="text-[11px] text-tyba-text-faint">
-                      {" "}· {t(SECTIONS.find((x) => x.id === r.section)?.label ?? "")}
+                    <span className="text-[12.5px] font-normal text-tyba-text-faint">
+                      {" "}
+                      · {t(SECTIONS.find((x) => x.id === r.section)?.label ?? "")}
                     </span>
                   </span>
                   {r.hint && (
-                    <span className="line-clamp-2 text-[11px] leading-relaxed text-tyba-text-faint">
+                    <span className="line-clamp-2 max-w-[420px] text-[13px] leading-[19px] text-tyba-text-muted">
                       {r.hint}
                     </span>
                   )}
                 </button>
               ))}
             </div>
-          </section>
-        )}
-        {!query.trim() && (<>
-        {section === "general" && (
-          <section className="mx-auto w-full max-w-[860px]">
-            <SettingGroup title={t("account")} />
-            <SettingLine label={t("accountNameLabel")} hint={t("accountHint")}>
-              <span className="rounded-full p-px" style={{ background: "var(--tyba-gradient)" }}>
-                <span className="flex size-7 items-center justify-center rounded-full bg-tyba-raised text-tyba-text-muted">
-                  <User size={13} weight="bold" />
-                </span>
-              </span>
-              <div className="w-[220px]">
-                <TextField
-                  value={accountName}
-                  placeholder={t("accountNamePlaceholder")}
-                  onCommit={onAccountNameChange}
-                />
-              </div>
-            </SettingLine>
-            <SettingGroup title={t("settingsOnOpen")} />
-            <SettingLine label={t("startup")} hint={t("startupHint")}>
-              <Select
-                value={startup}
-                onChange={(value) => onStartupChange(parseStartupMode(value))}
-                className="w-52"
-                options={[
-                  { value: "resume", label: t("startupResume") },
-                  { value: "keep_layout", label: t("startupKeepLayout") },
-                  { value: "fresh", label: t("startupFresh") },
-                ]}
+          )}
+
+          {!searching && section === "general" && (
+            <>
+              <SettingGroup title={t("cfgGroupYou")}>
+                <SettingLine label={t("cfgName")} hint={t("cfgNameHint")}>
+                  <TextField
+                    value={accountName}
+                    placeholder={t("accountNamePlaceholder")}
+                    onCommit={onAccountNameChange}
+                    ariaLabel={t("cfgName")}
+                  />
+                </SettingLine>
+                <SettingLine label={t("language")}>
+                  <Select
+                    value={i18n.language}
+                    onChange={(v) => setLanguage(v as LanguageCode)}
+                    className={SETTING_FIELD}
+                    options={LANGUAGES.map((l) => ({ value: l.code, label: l.label }))}
+                  />
+                </SettingLine>
+              </SettingGroup>
+              <SettingGroup title={t("cfgGroupOnOpen")}>
+                <SettingLine label={t("cfgStartup")} hint={t("cfgStartupHint")}>
+                  <SettingSegment<StartupMode>
+                    label={t("cfgStartup")}
+                    options={[
+                      { value: "resume", label: t("cfgStartupResume") },
+                      { value: "keep_layout", label: t("startupKeepLayout") },
+                      { value: "fresh", label: t("cfgStartupFresh") },
+                    ]}
+                    value={startup}
+                    onChange={(value) => onStartupChange(parseStartupMode(value))}
+                  />
+                </SettingLine>
+                <SettingLine label={t("cfgSessionDir")} hint={t("cfgSessionDirHint")}>
+                  <TextField
+                    value={defaultDir}
+                    placeholder="~"
+                    onCommit={commitDefaultDir}
+                    ariaLabel={t("cfgSessionDir")}
+                  />
+                  <SettingButton
+                    tone="ghost"
+                    className="px-2.5"
+                    onClick={() => void chooseDefaultDir()}
+                    aria-label={t("chooseFolder")}
+                    icon={<FolderOpen size={16} />}
+                  />
+                </SettingLine>
+              </SettingGroup>
+            </>
+          )}
+
+          {!searching && section === "appearance" && (
+            <>
+              <ThemePicker
+                themes={themes}
+                state={themeState}
+                mode={mode}
+                effectiveBase={effBase}
+                fontSize={fontSize}
+                footer={toolbarPref.enabled}
+                onImport={() => void importTheme()}
+                onCopyExample={copyThemeExample}
               />
-            </SettingLine>
-            <SettingLine label={t("defaultSessionDir")} hint={t("defaultSessionDirHint")}>
-              <div className="w-[200px]">
-                <TextField value={defaultDir} placeholder="~" onCommit={commitDefaultDir} />
-              </div>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => void chooseDefaultDir()}
-                className="text-tyba-text-muted hover:text-tyba-text"
-              >
-                <FolderOpen size={14} />
-                {t("chooseFolder")}
-              </Button>
-            </SettingLine>
-            <SettingGroup title={t("language")} />
-            <SettingLine label={t("language")} hint={t("languageHint")}>
-              <Select
-                value={i18n.language}
-                onChange={(v) => setLanguage(v as LanguageCode)}
-                className="w-52"
-                options={LANGUAGES.map((l) => ({ value: l.code, label: l.label }))}
-              />
-            </SettingLine>
-            <UpdateRows version={version} update={update} />
-          </section>
-        )}
-        {section === "appearance" && (
-          <section className="mx-auto w-full max-w-[860px]">
-            <SettingGroup
-              title={t("settingsThemes")}
-              note={
-                <span className="flex items-center gap-2">
-                  {t("themesCount", { count: themes.length })}
-                  <span>·</span>
-                  <button onClick={() => copyThemeExample()} className="text-tyba-blue hover:text-tyba-text">
-                    {t("copyThemeExample")}
-                  </button>
-                </span>
-              }
-            />
-            <ThemePicker
-              themes={themes}
-              state={themeState}
-              mode={mode}
-              effectiveBase={effBase}
-              onMode={setThemeMode}
-              onImport={() => void importTheme()}
-            />
-            <SettingGroup title={t("fontSection")} />
-            <SettingLine label={t("fontTerminalLabel")} hint={t("fontHint")}>
-              <Select
-                value={uiFont}
-                onChange={(v) => setUiFont(v as UiFont)}
-                className="w-44"
-                options={UI_FONTS.map((f) => ({ value: f, label: UI_FONT_LABELS[f] }))}
-              />
-              <Select
-                value={String(fontSize)}
-                onChange={(v) => changeFontSize(Number(v))}
-                className="w-24"
-                options={FONT_SIZES.map((s) => ({ value: String(s), label: `${s}px` }))}
-              />
-            </SettingLine>
-            <div className="border-b border-tyba-border-soft px-[18px] py-3">
-              <AppIconPicker />
-            </div>
-            <SettingGroup title={t("settingsSidebar")} />
-            <SettingLine label={t("sidebarToggleBehavior", { combo: formatCombo(bindings.panel) })}>
-              <Select
-                value={togglePref}
-                onChange={(v) => onTogglePrefChange(v as SidebarTogglePref)}
-                className="w-44"
-                options={[
-                  { value: "hidden", label: t("collapseAll") },
-                  { value: "rail", label: t("collapseRail") },
-                ]}
-              />
-            </SettingLine>
-            <SettingLine label={t("sidebarDetails")}>
-              <Switch
-                checked={detailsPref === "on"}
-                onCheckedChange={(c) => onDetailsPrefChange(c ? "on" : "off")}
-              />
-            </SettingLine>
-            <SettingLine label={t("gitStatusToggle")} hint={t("gitStatusHint")}>
-              <Switch checked={showGitStatus} onCheckedChange={onShowGitStatusChange} />
-            </SettingLine>
-            <SettingGroup
-              title={t("settingsChipsBar")}
-              note={
-                <span className="flex items-center gap-2">
-                  {t("chipsDragNote")}
-                  <span>·</span>
-                  <button
-                    onClick={() => onToolbarPrefChange({ ...DEFAULT_TOOLBAR, enabled: toolbarPref.enabled })}
-                    className="text-tyba-blue hover:text-tyba-text"
+              <SettingGroup title={t("cfgGroupText")}>
+                <SettingLine label={t("cfgFont")} hint={t("cfgFontHint")}>
+                  <Select
+                    value={uiFont}
+                    onChange={(v) => setUiFont(v as UiFont)}
+                    className={SETTING_FIELD}
+                    options={UI_FONTS.map((f) => ({ value: f, label: UI_FONT_LABELS[f] }))}
+                  />
+                </SettingLine>
+                <SettingLine label={t("cfgSize")}>
+                  <SettingSegment
+                    label={t("cfgSize")}
+                    options={sizeOptions}
+                    value={String(fontSize)}
+                    onChange={(v) => changeFontSize(Number(v))}
+                  />
+                </SettingLine>
+              </SettingGroup>
+              <SettingGroup title={t("cfgGroupSidebar")}>
+                <SettingLine
+                  label={t("cfgCollapse", { combo: formatCombo(bindings.panel) })}
+                  hint={t("cfgCollapseHint")}
+                >
+                  <SettingSegment<SidebarTogglePref>
+                    label={t("cfgCollapse", { combo: formatCombo(bindings.panel) })}
+                    options={[
+                      { value: "hidden", label: t("cfgCollapseHidden") },
+                      { value: "rail", label: t("cfgCollapseRail") },
+                    ]}
+                    value={togglePref}
+                    onChange={onTogglePrefChange}
+                  />
+                </SettingLine>
+                <SettingLine label={t("cfgGitStatus")} hint={t("cfgGitStatusHint")}>
+                  <Switch
+                    checked={showGitStatus}
+                    onCheckedChange={onShowGitStatusChange}
+                    aria-label={t("cfgGitStatus")}
+                  />
+                </SettingLine>
+                <SettingLine label={t("sidebarDetails")}>
+                  <Switch
+                    checked={detailsPref === "on"}
+                    onCheckedChange={(c) => onDetailsPrefChange(c ? "on" : "off")}
+                    aria-label={t("sidebarDetails")}
+                  />
+                </SettingLine>
+                <SettingLine label={t("cfgFooter")} hint={t("cfgFooterHint")}>
+                  <Switch
+                    checked={toolbarPref.enabled}
+                    onCheckedChange={(c) => onToolbarPrefChange({ ...toolbarPref, enabled: c })}
+                    aria-label={t("cfgFooter")}
+                  />
+                </SettingLine>
+                {toolbarPref.enabled && (
+                  <SettingLine
+                    label={t("cfgFooterArrange")}
+                    hint={t("cfgFooterArrangeHint")}
+                    below={<ToolbarChipsEditor pref={toolbarPref} onChange={onToolbarPrefChange} />}
                   >
-                    {t("chipsEditorReset")}
-                  </button>
-                </span>
-              }
-            />
-            {toolbarPref.enabled && (
-              <ToolbarChipsEditor pref={toolbarPref} onChange={onToolbarPrefChange} />
-            )}
-            <SettingLine label={t("toolbarToggle")} hint={t("toolbarHint")}>
-              <Switch
-                checked={toolbarPref.enabled}
-                onCheckedChange={(c) => onToolbarPrefChange({ ...toolbarPref, enabled: c })}
-              />
-            </SettingLine>
-          </section>
-        )}
-        {section === "terminal" && (
-          <section className="mx-auto w-full max-w-[860px]">
+                    <SettingButton
+                      tone="ghost"
+                      icon={<ArrowClockwise size={16} />}
+                      onClick={() => onToolbarPrefChange({ ...DEFAULT_TOOLBAR, enabled: toolbarPref.enabled })}
+                    >
+                      {t("chipsEditorReset")}
+                    </SettingButton>
+                  </SettingLine>
+                )}
+              </SettingGroup>
+              <SettingGroup title={t(IS_MAC ? "cfgGroupIconMac" : "appIconSection")}>
+                <AppIconPicker />
+              </SettingGroup>
+            </>
+          )}
+
+          {!searching && section === "terminal" && (
             <ShellSettings
               lineRows={
-                <>
-                  <SettingLine label={t("shellIntegration")} hint={t("shellIntegrationHint")}>
+                <SettingLine label={t("cfgZsh")} hint={t("cfgZshHint")}>
+                  <Switch
+                    checked={shellIntegration}
+                    onCheckedChange={onShellIntegrationChange}
+                    aria-label={t("cfgZsh")}
+                  />
+                </SettingLine>
+              }
+            />
+          )}
+
+          {!searching && section === "agents" && (
+            <>
+              <SettingGroup title={t("cfgGroupComposer")}>
+                {COMPOSER_TOGGLES.slice(0, 1).map(({ field, label, hint }) => (
+                  <SettingLine
+                    key={field}
+                    label={t(label)}
+                    hint={hint ? t(hint, { combo: formatCombo(bindings.richInput) }) : undefined}
+                  >
                     <Switch
-                      checked={shellIntegration}
-                      onCheckedChange={onShellIntegrationChange}
-                      aria-label={t("shellIntegration")}
+                      checked={richInputPref[field]}
+                      aria-label={t(label)}
+                      onCheckedChange={(c) => onRichInputPrefChange({ ...richInputPref, [field]: c })}
                     />
                   </SettingLine>
-                </>
-              }
-            />
-          </section>
-        )}
-        {section === "agents" && (
-          <section className="mx-auto w-full max-w-[860px]">
-            <SettingGroup title={t("settingsReview")} />
-            <SettingLine label={t("reviewAgent")} hint={t("reviewAgentHint")}>
-              <Select
-                value={reviewAgent === "claude" || reviewAgent === "codex" ? reviewAgent : "custom"}
-                onChange={(v) => onReviewAgentChange(v === "custom" ? "" : v)}
-                className="w-52"
-                options={[
-                  { value: "claude", label: "Claude Code" },
-                  { value: "codex", label: "Codex" },
-                  { value: "custom", label: t("reviewAgentCustom") },
-                ]}
-              />
-            </SettingLine>
-            {reviewAgent !== "claude" && reviewAgent !== "codex" && (
-              <SettingLine label={t("reviewAgentCustomCommand")} hint={t("reviewAgentCustomHint")}>
-                <div className="w-64">
-                  <TextField value={reviewAgent} placeholder="claude --model opus" onCommit={onReviewAgentChange} />
-                </div>
-              </SettingLine>
-            )}
-            <SettingGroup title={t("settingsSessions")} />
-            <SettingLine label={t("worktreeDefaultPref")} hint={t("worktreeDefaultHint")}>
-              <Switch checked={worktreeDefault} onCheckedChange={onWorktreeDefaultChange} />
-            </SettingLine>
-            <SettingLine
-              label={t("richInputRegexLabel")}
-              hint={richInputRegexInvalid ? t("richInputRegexInvalid") : t("richInputRegexHint")}
-            >
-              <div className="w-60 font-mono">
-                <TextField
-                  value={richInputPref.agentRegex}
-                  placeholder="^(claude|codex|gemini)\b"
-                  onCommit={(v) => onRichInputPrefChange({ ...richInputPref, agentRegex: v })}
-                />
-              </div>
-            </SettingLine>
-            <SettingGroup title={t("settingsAgentComposer")} />
-            {RICH_INPUT_TOGGLES.map(({ field, label, hint }) => (
-              <SettingLine
-                key={field}
-                label={t(label)}
-                hint={hint ? t(hint, { combo: formatCombo(bindings.richInput) }) : undefined}
-              >
-                <Switch
-                  checked={richInputPref[field]}
-                  onCheckedChange={(c) => onRichInputPrefChange({ ...richInputPref, [field]: c })}
-                />
-              </SettingLine>
-            ))}
-            <SettingGroup
-              title={t("settingsLaunchConfigs")}
-              note={
-                <span className="flex items-center gap-2">
-                  {launchConfigs.length}
-                  <span>·</span>
-                  <button onClick={onNewLaunchConfig} className="text-tyba-blue hover:text-tyba-text">
-                    + {t("launchConfigNewShort")}
-                  </button>
-                </span>
-              }
-            />
-            {launchConfigs.length === 0 && <SettingNote>{t("launchNoConfigs")}</SettingNote>}
-            {launchConfigs.map((config) => (
-              <SettingLine
-                key={config.id}
-                label={config.name}
-                hint={`${config.repo_root} · ${config.slots.length} ${config.slots.length === 1 ? "pane" : "panes"}`}
-              >
-                <Button variant="ghost" size="sm" onClick={() => onApplyLaunchConfig(config.id)}>
-                  {t("launchOpen")}
-                </Button>
-                <Button variant="ghost" size="sm" onClick={() => onEditLaunchConfig(config.id)}>
-                  {t("launchEdit")}
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="text-tyba-red"
-                  onClick={() => onDeleteLaunchConfig(config.id)}
+                ))}
+                <SettingLine
+                  label={t("cfgSendWith")}
+                  hint={richInputPref.submitWithCtrlEnter ? t("cfgSendCtrlEnterHint") : t("cfgSendEnterHint")}
                 >
-                  {t("launchDelete")}
-                </Button>
-              </SettingLine>
-            ))}
-          </section>
-        )}
-        {section === "security" && (
-          <section className="mx-auto w-full max-w-[860px]">
-            <SecuritySection />
-          </section>
-        )}
-        {section === "integrations" && (
-          <section className="mx-auto w-full max-w-[860px]">
-            <SettingGroup title="Docker" />
-            <SettingLine label={t("dockerIntegration")} hint={t("dockerIntegrationHint")}>
-              {showContainers && dockerUp !== null && (
-                <SettingStatus tone={dockerUp ? "green" : "faint"}>
-                  {dockerUp ? t("dockerRunning") : t("dockerNotFound")}
-                </SettingStatus>
-              )}
-              <Switch
-                checked={showContainers}
-                onCheckedChange={onShowContainersChange}
-                aria-label={t("dockerIntegration")}
-              />
-            </SettingLine>
-            <SettingGroup title="Claude Code" />
-            <ClaudePluginSetting />
-            <SettingGroup title={t("settingsEditor")} />
-            <SettingLine label={t("defaultEditor")} hint={editorPath ?? t("defaultEditorHint")}>
-              <Select
-                value={editor}
-                onChange={onEditorChange}
-                className="w-52"
-                options={[
-                  { value: "", label: t("defaultEditorSystem") },
-                  ...editors.map((e) => ({ value: e.id, label: e.name })),
-                ]}
-              />
-            </SettingLine>
-            <SettingLine label={t("fileLinksLabel")} hint={t("fileLinksHint", { combo: IS_MAC ? "⌘" : "Ctrl" })}>
-              <Switch
-                checked={filesInTyba}
-                onCheckedChange={(c) => {
-                  setFilesInTyba(c);
-                  setFileLinksEnabled(c);
-                }}
-              />
-            </SettingLine>
-          </section>
-        )}
-        {section === "ssh" && (
-          <section className="mx-auto w-full max-w-[860px]">
-            <SshSection />
-          </section>
-        )}
-        {section === "notifications" && (
-          <section className="mx-auto w-full max-w-[860px]">
-            <SettingGroup title={t("settingsAgents")} />
-            <NotifyPrefs />
-          </section>
-        )}
-        {section === "shortcuts" && (
-          <section className="mx-auto w-full max-w-[860px]">
-            {actionsByCategory().map(([category, actions], i) =>
-              actions.length === 0 ? null : (
-                <div key={category}>
-                  <SettingGroup
-                    title={t(KEY_CATEGORY_LABEL_KEYS[category])}
-                    note={
-                      i === 0 ? (
-                        <button
-                          onClick={() => onBindingsChange({ ...DEFAULT_BINDINGS })}
-                          className="text-tyba-blue hover:text-tyba-text"
-                        >
-                          {t("shortcutsRestore")}
-                        </button>
-                      ) : undefined
-                    }
+                  <SettingSegment
+                    label={t("cfgSendWith")}
+                    options={[
+                      { value: "enter", label: "Enter" },
+                      { value: "ctrl", label: "Ctrl Enter" },
+                    ]}
+                    value={richInputPref.submitWithCtrlEnter ? "ctrl" : "enter"}
+                    onChange={(v) => onRichInputPrefChange({ ...richInputPref, submitWithCtrlEnter: v === "ctrl" })}
                   />
+                </SettingLine>
+                {COMPOSER_TOGGLES.slice(1).map(({ field, label, hint }) => (
+                  <SettingLine key={field} label={t(label)} hint={hint ? t(hint) : undefined}>
+                    <Switch
+                      checked={richInputPref[field]}
+                      aria-label={t(label)}
+                      onCheckedChange={(c) => onRichInputPrefChange({ ...richInputPref, [field]: c })}
+                    />
+                  </SettingLine>
+                ))}
+              </SettingGroup>
+              <SettingGroup title={t("cfgGroupDetect")}>
+                <SettingLine
+                  label={t("cfgAgentCommands")}
+                  hint={richInputRegexInvalid ? t("richInputRegexInvalid") : t("richInputRegexHint")}
+                >
+                  <TextField
+                    value={richInputPref.agentRegex}
+                    placeholder="^(claude|codex|gemini)\b"
+                    onCommit={(v) => onRichInputPrefChange({ ...richInputPref, agentRegex: v })}
+                    ariaLabel={t("cfgAgentCommands")}
+                    className="font-mono text-[12.5px]"
+                  />
+                </SettingLine>
+                <SettingLine label={t("richInputShowOnMatch")} hint={t("richInputShowOnMatchHint")}>
+                  <Switch
+                    checked={richInputPref.showOnMatch}
+                    aria-label={t("richInputShowOnMatch")}
+                    onCheckedChange={(c) => onRichInputPrefChange({ ...richInputPref, showOnMatch: c })}
+                  />
+                </SettingLine>
+                <SettingLine label={t("worktreeDefaultPref")} hint={t("worktreeDefaultHint")}>
+                  <Switch
+                    checked={worktreeDefault}
+                    onCheckedChange={onWorktreeDefaultChange}
+                    aria-label={t("worktreeDefaultPref")}
+                  />
+                </SettingLine>
+              </SettingGroup>
+              <SettingGroup title={t("cfgGroupReview")}>
+                <SettingLine label={t("cfgReviewer")} hint={t("cfgReviewerHint")}>
+                  <SettingSegment
+                    label={t("cfgReviewer")}
+                    options={[
+                      { value: "claude", label: "Claude Code" },
+                      { value: "codex", label: "Codex" },
+                      { value: "custom", label: t("cfgReviewerCustom") },
+                    ]}
+                    value={reviewChoice}
+                    onChange={(v) => onReviewAgentChange(v === "custom" ? "" : v)}
+                  />
+                </SettingLine>
+                {reviewChoice === "custom" && (
+                  <SettingLine label={t("reviewAgentCustomCommand")} hint={t("reviewAgentCustomHint")}>
+                    <TextField
+                      value={reviewAgent}
+                      placeholder="claude --model opus"
+                      onCommit={onReviewAgentChange}
+                      ariaLabel={t("reviewAgentCustomCommand")}
+                      className="font-mono text-[12.5px]"
+                    />
+                  </SettingLine>
+                )}
+              </SettingGroup>
+              <SettingGroup title={t("cfgGroupLaunch")}>
+                {launchConfigs.length === 0 && <SettingNote>{t("launchNoConfigs")}</SettingNote>}
+                {launchConfigs.map((config) => (
+                  <SettingLine
+                    key={config.id}
+                    label={config.name}
+                    hint={`${config.repo_root} · ${config.slots.length} ${config.slots.length === 1 ? "pane" : "panes"}`}
+                  >
+                    <SettingButton tone="ghost" icon={<Play size={16} />} onClick={() => onApplyLaunchConfig(config.id)}>
+                      {t("launchOpen")}
+                    </SettingButton>
+                    <SettingButton tone="ghost" icon={<PenNib size={16} />} onClick={() => onEditLaunchConfig(config.id)}>
+                      {t("launchEdit")}
+                    </SettingButton>
+                    <SettingButton
+                      tone="ghost"
+                      className="px-2.5 hover:text-tyba-red"
+                      aria-label={t("launchDelete")}
+                      icon={<Trash size={16} />}
+                      onClick={() => onDeleteLaunchConfig(config.id)}
+                    />
+                  </SettingLine>
+                ))}
+                <SettingLine>
+                  <SettingButton icon={<Plus size={16} />} onClick={onNewLaunchConfig}>
+                    {t("cfgLaunchNew")}
+                  </SettingButton>
+                </SettingLine>
+              </SettingGroup>
+            </>
+          )}
+
+          {!searching && section === "notifications" && <NotifyPrefs />}
+
+          {!searching && section === "integrations" && (
+            <>
+              <SettingGroup title={t("cfgGroupConnected")}>
+                <ClaudePluginSetting />
+                <SettingLine label={t("cfgDocker")} hint={t("cfgDockerHint")}>
+                  {showContainers && dockerUp !== null && (
+                    <SettingStatus tone={dockerUp ? "green" : "faint"}>
+                      {dockerUp ? t("dockerRunning") : t("dockerNotFound")}
+                    </SettingStatus>
+                  )}
+                  <Switch
+                    checked={showContainers}
+                    onCheckedChange={onShowContainersChange}
+                    aria-label={t("cfgDocker")}
+                  />
+                </SettingLine>
+              </SettingGroup>
+              <SshSection />
+              <SettingGroup title={t("settingsEditor")}>
+                <SettingLine label={t("cfgEditor")} hint={editorPath ?? t("cfgEditorHint")}>
+                  <Select
+                    value={editor}
+                    onChange={onEditorChange}
+                    className={SETTING_FIELD}
+                    options={[
+                      { value: "", label: t("defaultEditorSystem") },
+                      ...editors.map((e) => ({ value: e.id, label: e.name })),
+                    ]}
+                  />
+                </SettingLine>
+                <SettingLine label={t("cfgFileLinks", { combo: IS_MAC ? "⌘" : "Ctrl" })} hint={t("cfgFileLinksHint")}>
+                  <Switch
+                    checked={filesInTyba}
+                    aria-label={t("cfgFileLinks", { combo: IS_MAC ? "⌘" : "Ctrl" })}
+                    onCheckedChange={(c) => {
+                      setFilesInTyba(c);
+                      setFileLinksEnabled(c);
+                    }}
+                  />
+                </SettingLine>
+              </SettingGroup>
+            </>
+          )}
+
+          {!searching && section === "security" && <SecuritySection />}
+
+          {!searching && section === "shortcuts" &&
+            actionsByCategory().map(([category, actions], i) =>
+              actions.length === 0 ? null : (
+                <SettingGroup
+                  key={category}
+                  title={t(KEY_CATEGORY_LABEL_KEYS[category])}
+                  note={
+                    i === 0 ? (
+                      <button
+                        type="button"
+                        onClick={() => onBindingsChange({ ...DEFAULT_BINDINGS })}
+                        className="font-semibold text-tyba-blue hover:underline"
+                      >
+                        {t("shortcutsRestore")}
+                      </button>
+                    ) : undefined
+                  }
+                >
                   {actions.map((action) => (
                     <ShortcutRow
                       key={action}
@@ -1390,40 +1387,41 @@ export function SettingsView({
                       onRebind={(combo) => onBindingsChange({ ...bindings, [action]: combo })}
                     />
                   ))}
-                </div>
+                </SettingGroup>
               ),
             )}
-          </section>
-        )}
-        {section === "about" && (
-          <AboutSection version={version} update={update} />
-        )}
-        </>)}
+
+          {!searching && section === "about" && <AboutSection version={version} update={update} />}
+
+          {configPath && (
+            <div className="mt-10 text-[13px] text-tyba-text-muted">
+              <Trans
+                i18nKey="cfgFileFoot"
+                values={{ path: homeShort(configPath) }}
+                components={{ file: <span className="font-mono text-[12.5px] text-tyba-text" /> }}
+              />
+              <button
+                type="button"
+                onClick={onOpenConfig}
+                className="ml-1 font-semibold text-tyba-blue hover:underline"
+              >
+                {t("cfgFileOpen")}
+              </button>
+            </div>
+          )}
         </div>
-        {configPath && (
-          <footer className="flex h-[26px] shrink-0 items-center gap-2.5 border-t border-[var(--tyba-line)] px-[18px] text-[11px] text-tyba-text-faint">
-            <FileText size={12} className="shrink-0" />
-            <span className="truncate">
-              {t("settingsFileIn")}{" "}
-              <span className="text-tyba-text-muted">{homeShort(configPath)}</span>
-            </span>
-            <button
-              onClick={onOpenConfig}
-              className="shrink-0 text-tyba-blue hover:text-tyba-text"
-            >
-              {t("settingsOpenInTyba")}
-            </button>
-            <span className="flex-1" />
-            <span className="hidden truncate lg:inline">{t("settingsFileLive")}</span>
-          </footer>
-        )}
       </div>
       <SettingsRail
         section={section}
-        onSection={setSection}
+        onSection={(s) => {
+          setQuery("");
+          setSection(s);
+          contentRef.current?.scrollTo({ top: 0 });
+        }}
         collapsed={railCollapsed}
         onToggle={toggleRail}
         onClose={onClose}
+        search={search}
       />
     </div>
   );

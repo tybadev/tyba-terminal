@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 
-import { Button } from "@/components/ui/button";
 import {
   claudePluginStatus,
   installClaudePlugin,
@@ -10,7 +9,7 @@ import {
 } from "../lib/ipc";
 import { translateError } from "../lib/errors";
 import { toastError } from "../lib/toast";
-import { SettingLine, SettingNote, SettingStatus } from "./settings/rows";
+import { SettingButton, SettingLine, SettingNote, SettingStatus } from "./settings/rows";
 
 /**
  * M6-B: Configurações → Integrações → "Integração com Claude Code". O plugin
@@ -51,7 +50,7 @@ export function ClaudePluginSetting() {
 
   return (
     <>
-      <SettingLine label={t("claudePlugin")} hint={t("claudePluginHint")}>
+      <SettingLine label={t("cfgClaudeCode")} hint={t("cfgClaudeCodeHint")}>
         {status && !status.available ? (
           <SettingStatus tone="faint">{t("claudePluginUnavailableShort")}</SettingStatus>
         ) : status?.installed ? (
@@ -60,18 +59,13 @@ export function ClaudePluginSetting() {
           <SettingStatus tone="faint">{t("claudePluginNotInstalled")}</SettingStatus>
         )}
         {status?.installed ? (
-          <Button variant="ghost" size="sm" disabled={busy} onClick={() => change(uninstallClaudePlugin)}>
+          <SettingButton tone="ghost" disabled={busy} onClick={() => change(uninstallClaudePlugin)}>
             {t("claudePluginUninstall")}
-          </Button>
+          </SettingButton>
         ) : (
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={busy || !status?.available}
-            onClick={() => change(installClaudePlugin)}
-          >
+          <SettingButton disabled={busy || !status?.available} onClick={() => change(installClaudePlugin)}>
             {t("claudePluginInstallShort")}
-          </Button>
+          </SettingButton>
         )}
       </SettingLine>
       {status && !status.available && <SettingNote>{t("claudePluginUnavailable")}</SettingNote>}

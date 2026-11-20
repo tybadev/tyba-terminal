@@ -305,15 +305,16 @@ fn ansi(colors: [&str; 16]) -> Vec<String> {
 }
 
 fn dark_terminal() -> TerminalPalette {
+    // Muriki noturno (2026-11-18): marinho, cursor amarelo, seleção azul.
     TerminalPalette {
-        background: "#000000".into(),
-        foreground: "#f2f2f5".into(),
-        cursor: "#7cc544".into(),
-        cursor_accent: Some("#000000".into()),
-        selection_background: Some("#7cc5444d".into()),
+        background: "#060f24".into(),
+        foreground: "#eef3ff".into(),
+        cursor: "#fdce04".into(),
+        cursor_accent: Some("#060f24".into()),
+        selection_background: Some("#5b8cff4d".into()),
         ansi: ansi([
-            "#1a1a20", "#f0503c", "#7cc544", "#f5a93b", "#4c7df0", "#ec4899", "#2dd4bf", "#f2f2f5",
-            "#6a6a76", "#f4715f", "#a8e05f", "#f5c93b", "#7da3f5", "#a78bfa", "#5eead4", "#ffffff",
+            "#16264a", "#ff6b6b", "#4ade80", "#fdce04", "#5b8cff", "#f472b6", "#5eead4", "#eef3ff",
+            "#5d6f94", "#ff8a8a", "#86efac", "#ffe066", "#8aaeff", "#c4b5fd", "#99f6e4", "#ffffff",
         ]),
     }
 }
