@@ -21,7 +21,7 @@ function ToastViewport({
     <ToastPrimitive.Viewport
       data-slot="toast-viewport"
       className={cn(
-        "fixed right-4 top-12 z-[100] flex w-full max-w-sm flex-col gap-2 outline-none",
+        "fixed right-4 top-[60px] z-[100] flex w-full max-w-sm flex-col gap-2 outline-none",
         className,
       )}
       {...props}

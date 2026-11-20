@@ -6629,23 +6629,26 @@ export default function App() {
           style={DEV_HEADER_STYLE}
           // Barra B do quadro PropostaClaro: seção de vidro na largura toda,
           // semáforos, marca, migalha, branch e, à direita, os ícones do painel.
-          // Os semáforos nativos ficam dentro dela (`trafficLightPosition`).
-          className={`tyba-section tyba-mk-glass tyba-bar flex h-10 shrink-0 items-center gap-2.5 pr-2.5 ${
+          // Os semáforos nativos ficam dentro dela (`trafficLightPosition`,
+          // centrado nos 52px do `.hd` do quadro Header, em todo tema).
+          className={`tyba-section tyba-mk-glass tyba-bar flex h-[52px] shrink-0 items-center gap-2.5 pr-2.5 ${
             IS_MAC ? "pl-[84px]" : "pl-2.5"
           }`}
         >
           {/* Só o wordmark, como no quadro Header. Sem eventos: o clique cai no header, que
               arrasta a janela. */}
-          <span className="pointer-events-none flex shrink-0 items-center gap-3">
-            <span className="font-sans text-[14px] font-semibold tracking-[0.02em] text-tyba-text">
+          {/* Quadro Header: wordmark 14/700 e o fio de 1×20 a 10px, no claro
+              (`--tyba-mk-hd-*`); os outros temas ficam no 600 e no 1×18 a 12px. */}
+          <span className="pointer-events-none flex shrink-0 items-center gap-[var(--tyba-mk-hd-gap,12px)]">
+            <span className="font-sans text-[14px] [font-weight:var(--tyba-mk-wordmark-weight,600)] tracking-[0.02em] text-tyba-text">
               TYBA
             </span>
-            <span aria-hidden className="h-[18px] w-px bg-tyba-border" />
+            <span aria-hidden className="h-[var(--tyba-mk-hd-sep,18px)] w-px bg-[var(--tyba-mk-glass-line,var(--tyba-border))]" />
           </span>
 
           <nav
             aria-label={t("breadcrumb")}
-            className="flex min-w-0 items-center gap-2 text-[13px] font-medium text-tyba-text-faint"
+            className="flex min-w-0 items-center gap-[var(--tyba-mk-hd-gap,8px)] text-[13px] font-medium text-tyba-text-faint"
           >
             {/* O modo atual (Terminal ou Workspace/Orbit). Quem troca de modo é
                 a lateral — o item Workspace (dono, 2026-11-02); clicar aqui no

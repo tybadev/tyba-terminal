@@ -1921,6 +1921,11 @@ html {
   --tyba-mk-field-size: 14px;
   --tyba-mk-knob-press: 28px;
   --tyba-mk-knob-press-x: 15px;
+  /* Header (`.hd`): gap de 10, wordmark 700, fio de 1×20 em glass-line. */
+  --tyba-mk-glass-line: rgba(10, 24, 48, 0.08);
+  --tyba-mk-hd-gap: 10px;
+  --tyba-mk-hd-sep: 20px;
+  --tyba-mk-wordmark-weight: 700;
   /* Rótulo em caixa alta do Muriki (`.mk-sb-label`, `.q-lbl`): 11/600/.04em. */
   --tyba-mk-label-size: 11px;
   --tyba-mk-label-weight: 600;
