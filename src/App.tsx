@@ -72,6 +72,8 @@ import { ClaudeIcon } from "./components/icons/ClaudeIcon";
 import { OpenAIIcon } from "./components/icons/OpenAIIcon";
 import { CommandPalette } from "./components/CommandPalette";
 import { ConfirmHost } from "./components/ConfirmHost";
+import { HandoffSheet } from "./components/HandoffSheet";
+import { handoffReady, handoffSource, requestHandoff } from "./lib/handoff";
 import { ToastHost } from "./components/ToastHost";
 import { requestConfirm } from "./lib/confirm";
 import { translateError } from "./lib/errors";
@@ -105,6 +107,7 @@ import {
   type LaunchConfigDraftState,
 } from "./components/LaunchConfigScreen";
 import { OrbitScreen, type FocusSessionRequest } from "./components/orbit/OrbitScreen";
+import { onFocusSession } from "./lib/orbit";
 import { ShortcutsPanel } from "./components/ShortcutsPanel";
 import { EmptySessions } from "./components/EmptySessions";
 import { OrbitIcon } from "./components/icons/OrbitIcon";
@@ -213,6 +216,7 @@ import {
   createSession,
   createTab,
   createWorkspace,
+  moveTab,
   userConfigPath,
   disposeSession,
   dockerAvailable,
@@ -324,6 +328,7 @@ import {
   type SessionCwd,
   type SessionGitStatus,
   type SessionId,
+  type TabId,
   type SessionKind,
   type SplitKind,
   type Workspace,
@@ -2731,6 +2736,39 @@ export default function App() {
 
   const activeSession = activeId ? sessionById.get(activeId) : undefined;
 
+  // "Passar para outro agente" na paleta (H4): só na sessão ativa de claude
+  // ou codex (inclusive o agente livre que o probe achou no shell); runner
+  // custom fica de fora.
+  const activeDetected = activeId ? (detectedBySession.get(activeId) ?? null) : null;
+  const activeHandoffFrom = !activeSession
+    ? null
+    : activeSession.kind.type === "agent"
+      ? handoffSource(activeSession.kind.runner)
+      : activeSession.kind.type === "shell"
+        ? handoffSource(activeDetected?.kind)
+        : null;
+  const paletteHandoff =
+    activeSession && activeHandoffFrom
+      ? (() => {
+          const ready = handoffReady(activeSession);
+          const turn = activeSession.last_turn;
+          const from = activeHandoffFrom;
+          const time = turn
+            ? new Date(turn.started_at_ms).toLocaleTimeString(i18n.language, {
+                hour: "2-digit",
+                minute: "2-digit",
+              })
+            : "";
+          return {
+            disabled: !ready,
+            detail: ready ? t("handoffPaletteFrom", { agent: from, time }) : t("handoffPaletteWait"),
+            onRun: () => {
+              if (turn) requestHandoff({ sessionId: activeSession.id, from, turn });
+            },
+          };
+        })()
+      : undefined;
+
   // A pílula da gaveta mora no rodapé da janela (quadro GavetaPaneEstreito) e
   // mostra a sessão do pane ativo, como o nome da sessão ao lado dela.
   const footerRef = useRef<HTMLDivElement>(null);
@@ -3833,6 +3871,27 @@ export default function App() {
     [activeWorkspace, sessionById, goToSession, layout.workspaces],
   );
 
+  // Handoff entre agentes (H3): a sessão nova ganha aba logo depois da de
+  // origem e fica ativa (o `create_tab` já ativa). Falha ao criar a aba
+  // descarta a sessão recém-nascida e sobe para a folha mostrar o erro.
+  const adoptHandoffSession = useCallback(
+    async (opened: Session, origin: SessionId) => {
+      const location = findSessionLocation(layout.workspaces, origin);
+      setSessions((prev) => [...prev, opened]);
+      let tab: TabId;
+      try {
+        tab = await createTab(opened.id, location?.workspaceId);
+      } catch (e) {
+        void disposeSession(opened.id).catch(() => {});
+        throw e;
+      }
+      const w = layout.workspaces.find((ws) => ws.id === location?.workspaceId);
+      const at = w ? w.tabs.findIndex((x) => x.id === location?.tabId) : -1;
+      if (at >= 0) void moveTab(tab, at + 1).catch(() => {});
+    },
+    [layout.workspaces],
+  );
+
   const runInTerminal = useCallback(
     async (command: string) => {
       if (!activeWorkspace) {
@@ -4567,6 +4626,14 @@ export default function App() {
     },
     [layout.workspaces, goToSession],
   );
+  // Clicou no aviso do sistema de um nó que espera você: vai ao nó (o core
+  // decide se o foco da janela foi esse clique).
+  useEffect(() => {
+    const off = onFocusSession((id) => focusSessionOrNode(id as SessionId));
+    return () => {
+      void off.then((fn) => fn());
+    };
+  }, [focusSessionOrNode]);
   const machineTunnels = useMemo(() => sshTunnelTargets(sessions, sshHosts), [sessions, sshHosts]);
   useEffect(() => {
     if (!activeId || gitScreenOpen || orbitOpen) return;
@@ -6127,6 +6194,7 @@ export default function App() {
       <ErrorBoundary region="notificações">
         <ToastHost />
         <ConfirmHost />
+        <HandoffSheet onOpened={adoptHandoffSession} />
         <UpdateToast
           status={update}
           onDismiss={() => {
@@ -6207,6 +6275,7 @@ export default function App() {
         historyScope={historyScope}
         onPickHistory={injectIntoActive}
         onPickSnippet={pickSnippet}
+        handoff={paletteHandoff}
       />
       <HostFormDialog
         state={hostEditor}

@@ -28,6 +28,8 @@ import { LoadingState } from "./ui/loading";
 
 interface Props {
   containerId: string;
+  /** Host SSH (alias) do container; ausente = docker local. */
+  host?: string | null;
   /** Sem ele (dentro da tela de Docker) não há botão de fechar. */
   onClose?: () => void;
 }
@@ -46,7 +48,7 @@ function parentOf(dir: string): string {
  * (mascarados). Editar fica de fora de propósito — o que se escreve aqui some
  * no próximo deploy.
  */
-export function ContainerFilesPanel({ containerId, onClose }: Props) {
+export function ContainerFilesPanel({ containerId, host = null, onClose }: Props) {
   const { t } = useTranslation();
   const [root, setRoot] = useState<string | null>(null);
   const [entries, setEntries] = useState<Record<string, ContainerFsEntry[]>>({});
@@ -59,7 +61,7 @@ export function ContainerFilesPanel({ containerId, onClose }: Props) {
 
   useEffect(() => {
     let alive = true;
-    void dockerContainerDetail(containerId)
+    void dockerContainerDetail(containerId, host)
       .then((d) => {
         if (!alive) return;
         rememberContainerName(containerId, d.name);
@@ -71,18 +73,18 @@ export function ContainerFilesPanel({ containerId, onClose }: Props) {
     return () => {
       alive = false;
     };
-  }, [containerId]);
+  }, [containerId, host]);
 
   const list = useCallback(
     (dir: string) => {
-      void dockerFsList(containerId, dir)
+      void dockerFsList(containerId, dir, host)
         .then((items) => {
           setEntries((prev) => ({ ...prev, [dir]: items }));
           setError(null);
         })
         .catch((e) => setError(String(e)));
     },
-    [containerId],
+    [containerId, host],
   );
 
   useEffect(() => {
@@ -110,7 +112,7 @@ export function ContainerFilesPanel({ containerId, onClose }: Props) {
     setFileError(null);
     setFileAt(Date.now());
     // A falha fica no lugar do arquivo, com "Tentar de novo" — sem toast repetindo.
-    void dockerFsRead(containerId, path)
+    void dockerFsRead(containerId, path, host)
       .then(setFile)
       .catch((e) => setFileError(`${t("containerFileReadError")}: ${translateError(e, t)}`));
   };

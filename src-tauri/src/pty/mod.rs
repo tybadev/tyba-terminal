@@ -559,6 +559,96 @@ pub struct PtyPool {
     sweep_on_exit: Mutex<std::collections::HashSet<PtyId>>,
 }
 
+/// O histórico do `vt100` (scrollback e tela), linha lógica por linha
+/// lógica. O `vt100` só mostra a janela visível no deslocamento atual, então
+/// a leitura anda o deslocamento do topo até 0 e devolve o deslocamento que
+/// estava — tudo sob o lock de quem chama, a tela nunca fica num meio-termo.
+///
+/// Teto: UMA tela de scrollback acima da tela. O `vt100` 0.15 entra em
+/// pânico (subtração em `Grid::visible_rows`) com deslocamento maior que a
+/// altura da tela, então o que está mais acima não é alcançável por aqui.
+fn scrollback_lines(parser: &mut vt100::Parser) -> Vec<String> {
+    let previous = parser.screen().scrollback();
+    let (height, cols) = parser.screen().size();
+    parser.set_scrollback(usize::MAX);
+    let depth = parser.screen().scrollback().min(usize::from(height));
+    let mut rows: Vec<(String, bool)> = Vec::new();
+    for offset in (1..=depth).rev() {
+        parser.set_scrollback(offset);
+        let screen = parser.screen();
+        if let Some(text) = screen.rows(0, cols).next() {
+            rows.push((text, screen.row_wrapped(0)));
+        }
+    }
+    parser.set_scrollback(0);
+    let screen = parser.screen();
+    for (i, text) in screen.rows(0, cols).enumerate() {
+        rows.push((text, screen.row_wrapped(i as u16)));
+    }
+    parser.set_scrollback(previous);
+
+    let mut out = Vec::new();
+    let mut current = String::new();
+    for (text, wrapped) in rows {
+        if wrapped {
+            current.push_str(&text);
+        } else {
+            current.push_str(text.trim_end());
+            out.push(std::mem::take(&mut current));
+        }
+    }
+    if !current.is_empty() {
+        out.push(current);
+    }
+    while out.last().is_some_and(|l| l.is_empty()) {
+        out.pop();
+    }
+    out
+}
+
+#[cfg(test)]
+mod scrollback_tests {
+    use super::scrollback_lines;
+
+    #[test]
+    fn reads_one_screen_of_history_above_the_screen_in_order() {
+        let mut parser = vt100::Parser::new(4, 20, 100);
+        for i in 0..3 {
+            parser.process(format!("linha {i}\r\n").as_bytes());
+        }
+        let expected: Vec<String> = (0..3).map(|i| format!("linha {i}")).collect();
+        assert_eq!(scrollback_lines(&mut parser), expected);
+
+        // Mais fundo que uma tela: vem a tela e a tela de cima, sem pânico.
+        for i in 3..20 {
+            parser.process(format!("linha {i}\r\n").as_bytes());
+        }
+        let expected: Vec<String> = (13..20).map(|i| format!("linha {i}")).collect();
+        assert_eq!(scrollback_lines(&mut parser), expected);
+    }
+
+    #[test]
+    fn wrapped_rows_come_back_as_one_line() {
+        let mut parser = vt100::Parser::new(4, 10, 100);
+        parser.process(b"abcdefghijKLMNOPQRST\r\nfim\r\n");
+        assert_eq!(
+            scrollback_lines(&mut parser),
+            ["abcdefghijKLMNOPQRST", "fim"]
+        );
+    }
+
+    #[test]
+    fn restores_the_scroll_offset_it_found() {
+        let mut parser = vt100::Parser::new(4, 20, 100);
+        for i in 0..10 {
+            parser.process(format!("linha {i}\r\n").as_bytes());
+        }
+        parser.set_scrollback(3);
+        let _ = scrollback_lines(&mut parser);
+        assert_eq!(parser.screen().scrollback(), 3);
+    }
+}
+
 /// A parte visual das ações, sob um lock só.
 ///
 /// `chunk.get` em vez de índice: o recorte vem da máquina e o chunk é o mesmo
@@ -1889,6 +1979,16 @@ impl PtyPool {
         }
         let start = rows.len().saturating_sub(max);
         Some(rows.split_off(start))
+    }
+
+    /// Scrollback + tela do core, em linhas lógicas (as linhas que o terminal
+    /// quebrou por largura voltam inteiras — a redação precisa da linha toda
+    /// para achar um segredo). Texto CRU: quem entrega para fora redige antes
+    /// (`tyba capture`, ver [`crate::cli`]).
+    pub fn scrollback_lines(&self, id: PtyId) -> Option<Vec<String>> {
+        let screen = self.screen_of(id)?;
+        let mut state = screen.lock();
+        Some(scrollback_lines(&mut state.parser))
     }
 
     pub fn bracketed_paste(&self, id: PtyId) -> Option<bool> {
