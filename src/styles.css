@@ -1968,6 +1968,13 @@ html {
   /* Véu atrás das folhas (`.ho-bg`): marinho .18, sem desfoque. */
   --tyba-mk-scrim: rgba(10, 24, 48, 0.18);
   --tyba-mk-scrim-blur: 0px;
+  /* Tela inicial (DirAB): peça parada .5, botão compacto .6, e o hover que
+     acende para o branco .96 com a sombra do knob. */
+  --tyba-mk-glass-tile: rgba(255, 255, 255, 0.5);
+  --tyba-mk-glass-mini: rgba(255, 255, 255, 0.6);
+  --tyba-mk-raised: rgba(255, 255, 255, 0.96);
+  --tyba-mk-hover-shadow: var(--tyba-knob-shadow);
+  --tyba-mk-mini-shadow: inset 0 0 0 1px var(--tyba-line);
   /* Foco do campo (`.mk-input:focus-within`): anel de 2px da marca e o halo
      de 5px no azul suave. */
   --tyba-field-focus: 0 0 0 2px var(--tyba-blue), 0 0 0 5px var(--tyba-brand-soft);

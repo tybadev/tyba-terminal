@@ -7526,12 +7526,8 @@ export default function App() {
                     </div>
                   ))}
                   {!activeTab && (
-                    <div
-                      className="absolute inset-0 flex flex-col items-center justify-center"
-                      style={{
-                        transform: `translateX(${-SIDEBAR_WIDTH[sidebar] / 2}px)`,
-                      }}
-                    >
+                    // Quadro DirAB: centrada na área à direita da barra lateral.
+                    <div className="absolute inset-0 flex flex-col items-center justify-center">
                       <EmptySessions
                         hasWorkspaces={layout.workspaces.length > 0}
                         bindings={bindings}
