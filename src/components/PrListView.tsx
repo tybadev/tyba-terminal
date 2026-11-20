@@ -11,7 +11,9 @@ import {
 } from "@phosphor-icons/react";
 
 import { Button } from "@/components/ui/button";
+import { EmptyState } from "@/components/ui/empty-state";
 import { Input } from "@/components/ui/input";
+import { GitHubIcon } from "./icons/GitHubIcon";
 import { SegmentedControl } from "@/components/ui/segmented";
 import { useRelative } from "./GitHistoryView";
 import { OpenPrDialog } from "./OpenPrDialog";
@@ -378,7 +380,13 @@ export function PrListView({
         )}
         {error && page !== undefined && <p className="p-6 text-[12px] text-tyba-red">{error}</p>}
         {page === null && !error && (
-          <p className="p-6 text-[12px] text-tyba-text-faint">{t("prListUnsupported")}</p>
+          <div className="flex flex-1 items-center justify-center">
+            <EmptyState
+              icon={<GitHubIcon />}
+              title={t("prListUnsupportedTitle")}
+              description={t("prListUnsupported")}
+            />
+          </div>
         )}
         {page && filter === "ci" && <CiTab sessionId={session.id} wide />}
         {page && filter !== "ci" && (

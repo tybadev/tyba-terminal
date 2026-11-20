@@ -269,8 +269,11 @@ export function GitScreen({
                 {note.text}
               </span>
             ) : (
-              // Quadro: "api · claude" — a sessão e o agente dela.
-              [session.title, agentOf(session)].filter(Boolean).join(" · ")
+              // Quadro: "api · claude" — a sessão (a pasta, como na barra
+              // lateral) e o agente dela.
+              [session.repo_root?.split("/").filter(Boolean).pop() ?? session.title, agentOf(session)]
+                .filter(Boolean)
+                .join(" · ")
             )}
           </span>
           <span className="flex shrink-0 items-center gap-2">
