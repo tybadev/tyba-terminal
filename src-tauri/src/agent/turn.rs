@@ -811,6 +811,18 @@ impl Turns {
             .is_some_and(|slot| slot.open.is_some())
     }
 
+    /// O prompt do turno aberto (já redigido e cortado), se há um.
+    pub fn open_prompt(&self, id: SessionId) -> Option<String> {
+        self.slots
+            .lock()
+            .expect("turns lock")
+            .get(&id)?
+            .open
+            .as_ref()?
+            .prompt
+            .clone()
+    }
+
     /// Quando o turno aberto começou (ms desde a época), se há um.
     pub fn open_started_at(&self, id: SessionId) -> Option<u64> {
         self.slots

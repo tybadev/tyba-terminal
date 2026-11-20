@@ -8223,6 +8223,78 @@ fn write_control(state: State<'_, AppState>, id: SessionId, bytes: String) -> Re
         .map_err(|e| e.to_string())
 }
 
+/// Pausa/retoma o agente da sessão (botão ‖ do FocusHUD): SIGSTOP/SIGCONT
+/// no process group e o estado no core. Só Unix; no Windows a UI nem
+/// mostra o botão.
+#[tauri::command]
+fn agent_pause(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: SessionId,
+    paused: bool,
+) -> Result<(), String> {
+    pause_agent(&app, &state, id, paused)
+}
+
+#[cfg(unix)]
+fn pause_agent(
+    app: &AppHandle,
+    state: &AppState,
+    id: SessionId,
+    paused: bool,
+) -> Result<(), String> {
+    let now = approvals::now_ms();
+    let session = state.sessions.get(id).ok_or("sessão não existe")?;
+    if session.paused_at_ms.is_some() == paused {
+        return Ok(());
+    }
+    // Checa antes de mandar o sinal: nada de parar um processo que o core
+    // não vai registrar como pausado.
+    if paused {
+        if !matches!(session.kind, session::SessionKind::Agent { .. }) {
+            return Err("só dá para pausar agente aberto pelo TYBA".into());
+        }
+        if session.turn_started_at_ms.is_none() {
+            return Err("o agente não está num turno".into());
+        }
+    }
+    state
+        .pty_pool
+        .pause_group(id, paused)
+        .map_err(|e| e.to_string())?;
+    state
+        .sessions
+        .set_paused(app, id, paused, now)
+        .map_err(str::to_string)
+}
+
+#[cfg(not(unix))]
+fn pause_agent(_: &AppHandle, _: &AppState, _: SessionId, _: bool) -> Result<(), String> {
+    Err("pausar o agente só existe no macOS e no Linux".into())
+}
+
+/// Encerra o turno do agente como o dono faria: Esc no PTY (Claude Code e
+/// Codex cancelam o turno com Esc). Nunca mata a sessão. Pausado, retoma
+/// antes: parado, o agente não leria a tecla.
+#[tauri::command]
+fn agent_stop_turn(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: SessionId,
+) -> Result<(), String> {
+    if state
+        .sessions
+        .get(id)
+        .is_some_and(|s| s.paused_at_ms.is_some())
+    {
+        pause_agent(&app, &state, id, false)?;
+    }
+    state
+        .owner_input
+        .record(&id.to_string(), b"\x1b", approvals::now_ms());
+    state.pty_pool.write(id, b"\x1b").map_err(|e| e.to_string())
+}
+
 /// Consulta o modo prompt em vez de esperar o evento: quem assina depois do
 /// primeiro prompt nunca receberia o `633;P` e ficaria sem a linha de comando.
 /// Prévia de texto de uma sessão (nó do Orbit fora do zoom 100%): as
@@ -11075,6 +11147,8 @@ pub fn run() {
             set_app_menu,
             submit_shell_line,
             write_control,
+            agent_pause,
+            agent_stop_turn,
             toggle_prompt_mode,
             session_prompt_mode,
             session_hook_expected,
@@ -12053,6 +12127,10 @@ mod tests {
             last_turn: None,
             turn_open: false,
             turn_started_at_ms: None,
+            turn_prompt: None,
+            paused_at_ms: None,
+            paused_ms: 0,
+            waiting_since_ms: None,
             last_words: None,
             shell_resume_offer: false,
             agent_conversation_cwd: None,
