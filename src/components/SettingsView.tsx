@@ -27,6 +27,7 @@ import {
   X,
 } from "@phosphor-icons/react";
 
+import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -964,29 +965,26 @@ export function SettingsView({
   const reviewChoice = reviewAgent === "claude" || reviewAgent === "codex" ? reviewAgent : "custom";
 
   const search = (
-    <label className="flex h-8 items-center gap-2 rounded-[10px] px-2.5 text-tyba-text-faint shadow-[inset_0_0_0_1px_var(--tyba-line)] focus-within:shadow-[inset_0_0_0_1px_var(--tyba-border-strong)]">
-      <MagnifyingGlass size={14} className="shrink-0" />
-      <input
-        value={query}
-        onChange={(e) => setQuery(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Escape") {
-            e.preventDefault();
-            setQuery("");
-            (e.target as HTMLInputElement).blur();
-          }
-          if (e.key === "Enter" && results[0]) {
-            goToSetting(results[0].section, results[0].label);
-          }
-        }}
-        placeholder={t("cfgSearch")}
-        aria-label={t("settingsSearch")}
-        spellCheck={false}
-        autoCorrect="off"
-        autoCapitalize="off"
-        className="min-w-0 flex-1 bg-transparent text-[12.5px] text-tyba-text outline-none placeholder:text-tyba-text-ghost"
-      />
-    </label>
+    // Sem par no quadro (a lista do quadro não tem busca): o Input do Muriki,
+    // na altura de 32px que cabe na coluna de 208px.
+    <Input
+      icon={<MagnifyingGlass size={14} />}
+      className="h-8 px-2.5 text-[12.5px]"
+      value={query}
+      onChange={(e) => setQuery(e.target.value)}
+      onKeyDown={(e) => {
+        if (e.key === "Escape") {
+          e.preventDefault();
+          setQuery("");
+          (e.target as HTMLInputElement).blur();
+        }
+        if (e.key === "Enter" && results[0]) {
+          goToSetting(results[0].section, results[0].label);
+        }
+      }}
+      placeholder={t("cfgSearch")}
+      aria-label={t("settingsSearch")}
+    />
   );
 
   return (
