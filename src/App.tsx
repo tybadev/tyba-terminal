@@ -67,6 +67,7 @@ import { AgentIcon } from "./components/icons/AgentIcon";
 import { AgentsBoard } from "./components/AgentsBoard";
 import { AgentsQueue } from "./components/AgentsQueue";
 import { AgentsSidebar, RobotIcon } from "./components/AgentsSidebar";
+import { Input } from "./components/ui/input";
 import { ClaudeIcon } from "./components/icons/ClaudeIcon";
 import { OpenAIIcon } from "./components/icons/OpenAIIcon";
 import { CommandPalette } from "./components/CommandPalette";
@@ -5732,14 +5733,14 @@ export default function App() {
               role="img"
               aria-label={t(SESSION_DOT_LABEL_KEY[dot])}
               title={agentLabel ?? t(SESSION_DOT_LABEL_KEY[dot])}
-              className={`absolute -right-[3px] -top-0.5 size-[7px] rounded-full shadow-[0_0_0_2px_var(--tyba-paper-solid)] ${iconDot}`}
+              className={`tyba-sdot absolute -right-[3px] -top-0.5 size-[7px] rounded-full shadow-[0_0_0_2px_var(--tyba-paper-solid)] ${iconDot}`}
             />
           )}
         </span>
         {open && (
           <>
             <span className="flex min-w-0 flex-1 flex-col items-start">
-              <span className="w-full truncate text-left leading-[22px]">
+              <span className="w-full truncate text-left leading-[var(--tyba-mk-ses-lh,22px)]">
                 {isConfig
                   ? t("settings")
                   : isWtView
@@ -6915,19 +6916,16 @@ export default function App() {
                   className="tyba-section tyba-mk-sidebar flex shrink-0 flex-col overflow-hidden"
                   style={{ width: SIDEBAR_WIDTH[sidebar] }}
                 >
+                  {/* A busca é o Input do Muriki com ícone (quadro Sidebar). */}
                   {open && (
-                    <label className="mx-3 mt-3 flex h-10 shrink-0 items-center gap-2 rounded-[10px] bg-tyba-raised pl-4 pr-3 text-tyba-text-faint shadow-[0_0_0_1px_var(--tyba-line)] focus-within:shadow-[0_0_0_2px_var(--tyba-blue)]">
-                      <MagnifyingGlass size={16} className="shrink-0" />
-                      <input
-                        spellCheck={false}
-                        autoCapitalize="off"
-                        autoCorrect="off"
-                        value={sessionQuery}
-                        onChange={(e) => setSessionQuery(e.target.value)}
-                        placeholder={t("searchSessions")}
-                        className="w-full min-w-0 bg-transparent text-[14px] font-medium text-tyba-text outline-none placeholder:text-tyba-text-faint"
-                      />
-                    </label>
+                    <Input
+                      icon={<MagnifyingGlass size={18} />}
+                      value={sessionQuery}
+                      onChange={(e) => setSessionQuery(e.target.value)}
+                      placeholder={t("searchSessions")}
+                      aria-label={t("searchSessions")}
+                      className="mx-3 mt-3 w-auto shrink-0"
+                    />
                   )}
                   <div className={`flex shrink-0 flex-col gap-0.5 ${open ? "mt-1.5 px-3" : "mt-2 px-1"}`}>
                     <SidebarItem
@@ -6975,10 +6973,14 @@ export default function App() {
                       open ? "px-3" : "mt-2 gap-0.5 px-1"
                     }`}
                   >
+                    {/* Vazia, a caixa tracejada do quadro SidebarVazia (`.vz`). */}
                     {open && sidebarGroups.length === 0 && (
-                      <span className="px-3 py-2 text-[12.5px] text-tyba-text-faint">
-                        {t("sidebarNoSessions")}
-                      </span>
+                      <div className="tyba-vz mx-1 mb-1 mt-0.5 flex flex-col gap-1 rounded-[12px] px-3 py-3.5 text-[12px] leading-[17px] text-tyba-text-muted">
+                        <b className="text-[12.5px] font-semibold text-tyba-text">
+                          {t("sidebarNoSessions")}
+                        </b>
+                        <span>{t("sidebarNoSessionsHint")}</span>
+                      </div>
                     )}
                     {sidebarGroups.map((g) => {
                       // Fechada, a lateral é o trilho: só os ícones.

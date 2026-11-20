@@ -1459,6 +1459,35 @@ samp {
 .tyba-half-flip {
   animation: tyba-half-flip 1.2s steps(1, end) infinite;
 }
+/* No claro, o pulso do Muriki (`.pulse` do quadro Sidebar): o anel sai da
+   cor do ponto, cresce 5px e some em 1.8s. O mesmo halo, em escala. */
+@keyframes tyba-mk-pulse {
+  0% { transform: scale(1); opacity: 1; }
+  70%, 100% { transform: scale(2.43); opacity: 0; }
+}
+[data-theme='light']:not([data-imported]) .tyba-pulse::after {
+  animation: tyba-mk-pulse 1.8s ease infinite;
+}
+/* O ponto no canto do ícone da sessão (`.sdot`) fica parado, com o anel
+   branco de 2px que o brilho não apaga. */
+[data-theme='light']:not([data-imported]) .tyba-sdot {
+  box-shadow: 0 0 0 2px var(--tyba-paper-solid);
+}
+[data-theme='light']:not([data-imported]) .tyba-sdot.tyba-pulse::after {
+  display: none;
+}
+/* Agente parado: o ponto cheio em ink-subtle do quadro Sidebar. */
+[data-theme='light']:not([data-imported]) .tyba-dot-rest {
+  background: var(--tyba-text-faint);
+  box-shadow: none;
+}
+/* Lateral vazia (quadro SidebarVazia, `.vz`): a caixa tracejada. */
+.tyba-vz {
+  border: 1px dashed color-mix(in srgb, var(--tyba-text) 12%, transparent);
+}
+[data-theme='light']:not([data-imported]) .tyba-vz {
+  border-color: rgba(10, 24, 48, 0.16);
+}
 @media (prefers-reduced-motion: reduce) {
   .tyba-flow-line--live,
   .tyba-half-flip { animation: none; }
@@ -1947,6 +1976,10 @@ html {
   --tyba-mk-cmd-where-lh: 20px;
   --tyba-mk-cmd-where-ink: var(--tyba-text-muted);
   --tyba-mk-cmd-focus-line: var(--tyba-line);
+  /* Barra lateral (quadro Sidebar): nome da sessão na entrelinha do corpo e
+     o cartão de agente a .62. */
+  --tyba-mk-ses-lh: 18px;
+  --tyba-mk-ag-bg: rgba(255, 255, 255, 0.62);
   /* Toast (`.mk-toast`): 12 8 12 16, de 340 a 440, descrição sans 13/18. */
   --tyba-mk-toast-vw: auto;
   --tyba-mk-toast-min: 340px;
