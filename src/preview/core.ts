@@ -13,6 +13,7 @@ import {
   HOST_GROUPS,
   HOSTS,
   NOTIFICATIONS,
+  RUNNING,
   SESSIONS,
   THEMES,
   initialLayout,
@@ -41,6 +42,9 @@ export const state = {
   theme: "dark" as "dark" | "light",
   layout: initialLayout(),
   drawers: [] as DrawerState[],
+  /** A branch do repo api: a do quadro Header ("main") nas telas do shell;
+   *  a do PR nas do Git. */
+  branch: BRANCH,
 };
 
 function activeWorkspace(): Workspace {
@@ -76,6 +80,20 @@ const b64 = (text: string) => btoa(String.fromCharCode(...new TextEncoder().enco
 function attach(id: unknown): null {
   const text = SCREENS[String(id)];
   if (text) setTimeout(() => void emit(`pty://output/${String(id)}`, { data: b64(text) }), 50);
+  const running = RUNNING[String(id)];
+  if (running) {
+    setTimeout(
+      () =>
+        void emit(`session://command/${String(id)}`, {
+          command: running.command,
+          running: true,
+          agent_match: true,
+          continuation: false,
+          started_at_ms: running.startedAtMs,
+        }),
+      300,
+    );
+  }
   return null;
 }
 
@@ -87,18 +105,21 @@ const themeState = () => ({
   light: THEMES[1],
 });
 
+// O quadro mostra o Docker no header (o dono liga o ícone nas Configurações).
+const PREFS: Record<string, string> = { "pref.code.show_containers": "on" };
+
 const handlers: Record<string, Handler> = {
   boot_snapshot: () => ({
     ready: true,
     bootFailure: null,
-    prefs: {},
+    prefs: PREFS,
     sessions: SESSIONS,
     layout: structuredClone(state.layout),
   }),
   boot_poll: () => ({ ready: true, bootFailure: null }),
   layout_state: () => ({ ready: true, value: structuredClone(state.layout) }),
   list_sessions: () => ({ ready: true, value: SESSIONS }),
-  get_pref: () => null,
+  get_pref: ({ key }) => PREFS[String(key)] ?? null,
   set_pref: () => null,
   get_theme_state: themeState,
   list_themes: () => THEMES,
@@ -123,11 +144,20 @@ const handlers: Record<string, Handler> = {
     {
       ahead: 2,
       behind: 0,
-      upstream: `origin/${BRANCH}`,
+      upstream: `origin/${state.branch}`,
       root: REPO_API,
-      branch: BRANCH,
+      branch: state.branch,
       status: { dirty: true, changed: 4, insertions: 42, deletions: 7 },
     },
+    // core e site limpos na main (o "⎇ main" do site no quadro Sidebar).
+    ...[ID.core, ID.site].map((id) => ({
+      ahead: 0,
+      behind: 0,
+      upstream: "origin/main",
+      root: SESSIONS.find((x) => x.id === id)?.repo_root ?? "",
+      branch: "main",
+      status: { dirty: false, changed: 0, insertions: 0, deletions: 0 },
+    })),
   ],
   services_session_ports: () => ({}),
   "plugin:path|resolve_directory": () => HOME,
@@ -271,7 +301,9 @@ export function setup(opts: {
   tab?: string;
   drawer?: DrawerState;
   files?: Workspace["screens"]["files"];
+  branch?: string;
 }): void {
+  if (opts.branch) state.branch = opts.branch;
   if (opts.workspace) state.layout.active_workspace = opts.workspace;
   if (opts.tab) activeWorkspace().active_tab = opts.tab;
   if (opts.files) activeWorkspace().screens.files = opts.files;

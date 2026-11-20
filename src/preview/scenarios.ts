@@ -29,8 +29,13 @@ const menu = (action: string) => emit("tyba:menu", action);
 
 /** Estado inicial do core falso por cenário (antes do app montar). */
 export const SCENARIO_SETUP: Record<string, Parameters<typeof setup>[0]> = {
-  "shell-split": { workspace: "ws-api", tab: "tab-api-split" },
+  main: { branch: "main" },
+  sidebar: { branch: "main" },
+  header: { branch: "main" },
+  "session-menu": { branch: "main" },
+  "shell-split": { workspace: "ws-api", tab: "tab-api-split", branch: "main" },
   agents: {
+    branch: "main",
     workspace: "ws-api",
     tab: "tab-api-claude",
     drawer: { session_id: ID.claudeApi, open: true, tab: "agents", outcome_seen: false },
@@ -78,7 +83,7 @@ export const SCENARIOS: Record<string, () => Promise<unknown> | void> = {
     button.click();
   },
   "session-menu": async () => {
-    const row = await waitFor(() => byText("button", /^core.*~\/projetos\/core/));
+    const row = await waitFor(() => byText("button", /^core/));
     const rect = row.getBoundingClientRect();
     row.dispatchEvent(
       new MouseEvent("contextmenu", {
@@ -102,6 +107,10 @@ export async function runScenario(name: string): Promise<void> {
   }
   // O app pronto: a barra lateral já listou as sessões.
   await waitFor(() => byText("button", /^api/), 8000);
+  // Como no quadro Sidebar: as SSH e o grupo Clientes fechados.
+  for (const name of ["prod-01", "staging", "Clientes"]) {
+    document.querySelector<HTMLElement>(`button[aria-label="${name}"][aria-expanded="true"]`)?.click();
+  }
   await sleep(150);
   await run();
 }
