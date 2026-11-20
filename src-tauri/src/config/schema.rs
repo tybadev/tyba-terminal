@@ -18,6 +18,8 @@ pub const KEY_THEME_DARK: &str = "theme.slot.dark";
 pub const KEY_THEME_LIGHT: &str = "theme.slot.light";
 pub const KEY_UI_FONT: &str = "pref.ui_font";
 pub const KEY_FONT_SIZE: &str = "pref.code.font_size";
+/// Fonte do terminal (e dos blocos): a JetBrains Mono embarcada ou a mono do sistema.
+pub const KEY_TERMINAL_FONT: &str = "pref.terminal_font";
 pub const KEY_BINDINGS: &str = "pref.keybindings";
 /// Escala da interface em % (o front aceita 100, 110 e 125; fora disso, 100).
 pub const KEY_UI_SCALE: &str = "pref.ui_scale";
@@ -85,6 +87,12 @@ pub const FIELDS: &[Field] = &[
         kind: Kind::Int(10, 20),
     },
     Field {
+        section: "font",
+        name: "terminal",
+        key: KEY_TERMINAL_FONT,
+        kind: Kind::Enum(&["jetbrains", "system"]),
+    },
+    Field {
         section: "appearance",
         name: "app_icon",
         key: KEY_APP_ICON,
@@ -110,6 +118,7 @@ pub const FILE_KEYS: &[&str] = &[
     KEY_THEME_LIGHT,
     KEY_UI_FONT,
     KEY_FONT_SIZE,
+    KEY_TERMINAL_FONT,
     KEY_BINDINGS,
     KEY_APP_ICON,
     KEY_UI_SCALE,

@@ -127,7 +127,9 @@ pub fn set(text: &str, key: &str, value: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::schema::{KEY_FONT_SIZE, KEY_THEME_DARK, KEY_THEME_MODE, KEY_UI_FONT};
+    use crate::config::schema::{
+        KEY_FONT_SIZE, KEY_TERMINAL_FONT, KEY_THEME_DARK, KEY_THEME_MODE, KEY_UI_FONT,
+    };
 
     const COMMENTED: &str = r#"# meu config
 # segunda linha
@@ -247,12 +249,13 @@ x = 1
             (KEY_THEME_DARK, "dracula"),
             (KEY_UI_FONT, "mono"),
             (KEY_FONT_SIZE, "12"),
+            (KEY_TERMINAL_FONT, "system"),
             (KEY_BINDINGS, r#"{"copy":"meta+c"}"#),
         ] {
             text = set(&text, k, v).unwrap();
         }
         let p = schema::parse(&text).unwrap();
         assert!(p.warnings.is_empty(), "{:?}", p.warnings);
-        assert_eq!(p.values.len(), 5);
+        assert_eq!(p.values.len(), 6);
     }
 }

@@ -111,6 +111,13 @@ import {
 } from "../lib/ipc";
 import { formatDiagnostics, platformLabel } from "../lib/diagnostics";
 import { openExternalUrl, writeClipboardText } from "../lib/clipboard";
+import {
+  TERMINAL_FONTS,
+  getTerminalFont,
+  parseTerminalFont,
+  setTerminalFont,
+  type TerminalFont,
+} from "../lib/terminalFont";
 import { commitUrl, docsUrl, LICENSE_NAME, LICENSE_URL, REPO_URL, themeDocsUrl } from "../lib/links";
 import {
   actionsByCategory,
@@ -268,6 +275,7 @@ const searchKeys = (): Record<Section, string[]> => ({
     "colorMode",
     "settingsThemes",
     "cfgFont",
+    "cfgUiFont",
     "cfgSize",
     "cfgUiScale",
     "cfgCollapse",
@@ -955,6 +963,7 @@ export function SettingsView({
   const [defaultDir, setDefaultDir] = useState("");
   const [fontSize, setFontSize] = useState(13);
   const [uiFont, setUiFontState] = useState<UiFont>(getUiFont);
+  const [terminalFont, setTerminalFontState] = useState<TerminalFont>(getTerminalFont);
   const [uiScale, setUiScaleState] = useState<UiScale>(getUiScale);
   const [effBase, setEffBase] = useState(getEffectiveBase);
 
@@ -1182,12 +1191,18 @@ export function SettingsView({
                 onHowTo={() => void openExternalUrl(themeDocsUrl(i18n.language)).catch(() => {})}
               />
               <SettingGroup title={t("cfgGroupText")}>
-                <SettingLine label={t("cfgFont")} hint={t("cfgFontHint")}>
+                {/* Quadro: a fonte do terminal e o tamanho, nessa ordem; a da
+                    interface (escolha do app que o quadro não tem) vem depois. */}
+                <SettingLine label={t("cfgFont")} hint={t("cfgTerminalFontHint")}>
                   <Select
-                    value={uiFont}
-                    onChange={(v) => setUiFont(v as UiFont)}
+                    value={terminalFont}
+                    onChange={(v) => {
+                      const next = parseTerminalFont(v);
+                      setTerminalFontState(next);
+                      setTerminalFont(next);
+                    }}
                     className={SETTING_FIELD}
-                    options={UI_FONTS.map((f) => ({ value: f, label: UI_FONT_LABELS[f] }))}
+                    options={TERMINAL_FONTS.map((f) => ({ value: f, label: t(`cfgTerminalFont_${f}`) }))}
                   />
                 </SettingLine>
                 <SettingLine label={t("cfgSize")}>
@@ -1196,6 +1211,14 @@ export function SettingsView({
                     options={sizeOptions}
                     value={String(fontSize)}
                     onChange={(v) => changeFontSize(Number(v))}
+                  />
+                </SettingLine>
+                <SettingLine label={t("cfgUiFont")} hint={t("cfgFontHint")}>
+                  <Select
+                    value={uiFont}
+                    onChange={(v) => setUiFont(v as UiFont)}
+                    className={SETTING_FIELD}
+                    options={UI_FONTS.map((f) => ({ value: f, label: UI_FONT_LABELS[f] }))}
                   />
                 </SettingLine>
                 <SettingLine label={t("cfgUiScale")} hint={t("cfgUiScaleHint")}>
