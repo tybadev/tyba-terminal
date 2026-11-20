@@ -1,6 +1,7 @@
-import { CaretUpDown, Check } from "@phosphor-icons/react";
+import { CaretDown, Check } from "@phosphor-icons/react";
 
 import { cn } from "@/lib/utils";
+import { FIELD_SURFACE } from "@/components/ui/input";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -30,12 +31,13 @@ export function Select({
       <DropdownMenuTrigger asChild>
         <button
           className={cn(
-            "flex h-8 items-center justify-between gap-2 rounded-[4px] border border-tyba-border bg-tyba-text/[.02] px-2.5 text-[13px] text-tyba-text transition-colors outline-none hover:border-tyba-border-strong focus-visible:[box-shadow:var(--tyba-focus-ring)]",
+            FIELD_SURFACE,
+            "flex h-10 cursor-pointer items-center justify-between gap-2 pr-3 pl-4 data-[state=open]:[box-shadow:var(--tyba-field-focus)]",
             className,
           )}
         >
           <span className="truncate">{current?.label ?? value}</span>
-          <CaretUpDown size={13} className="shrink-0 text-tyba-text-faint" />
+          <CaretDown size={14} className="shrink-0 text-tyba-text-faint" />
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent
@@ -50,7 +52,7 @@ export function Select({
           >
             {o.label}
             {o.value === value && (
-              <Check size={12} weight="bold" className="text-tyba-green" />
+              <Check size={12} weight="bold" className="text-primary" />
             )}
           </DropdownMenuItem>
         ))}

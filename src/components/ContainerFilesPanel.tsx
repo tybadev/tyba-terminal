@@ -198,7 +198,7 @@ export function ContainerFilesPanel({ containerId, host = null, onClose }: Props
         </span>
         <span
           title={t("containerFilesNote")}
-          className="shrink-0 rounded-[3px] bg-tyba-text/[.06] px-1.5 py-0.5 text-[10px] text-tyba-text-muted"
+          className="shrink-0 whitespace-nowrap rounded-[3px] bg-tyba-text/[.06] px-1.5 py-0.5 text-[10px] text-tyba-text-muted"
         >
           {t("containerFilesReadOnlyChip")}
         </span>

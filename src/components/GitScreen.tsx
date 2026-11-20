@@ -178,7 +178,7 @@ export function GitScreen({
       tabIndex={-1}
       aria-label={t("gitScreenTitle")}
       data-exiting={exiting}
-      className="tyba-git-screen absolute inset-0 z-30 flex outline-none flex-row-reverse bg-tyba-paper-solid"
+      className="tyba-git-screen absolute inset-0 z-30 flex outline-none flex-row-reverse"
       onKeyDown={(e) => {
         if (e.key !== "Escape" || e.defaultPrevented) return;
         const target = e.target as HTMLElement;
@@ -196,18 +196,18 @@ export function GitScreen({
     >
       <nav
         aria-label={t("gitScreenSections")}
-        className="relative flex w-[52px] shrink-0 flex-col items-center gap-1.5 tyba-divide-l bg-[var(--tyba-panel-bg)] pt-3"
+        className="tyba-frost relative flex w-[52px] shrink-0 flex-col items-center gap-1.5 tyba-divide-l py-2.5"
       >
         {sections.map((key) => {
           const { icon: SectionIcon, label } = RAIL[key];
           const on = key === place.section;
           const badge =
             key === "changes" && changed > 0 ? (
-              <span className="absolute right-0 top-0.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-tyba-amber px-1 text-[9px] text-tyba-text-inverse">
+              <span className="absolute right-0 top-px flex h-4 min-w-4 items-center justify-center rounded-full bg-tyba-amber px-1 text-[10px] font-bold text-tyba-text-inverse">
                 {changed > 99 ? "99+" : changed}
               </span>
             ) : key === "ci" && ciFailing ? (
-              <span className="absolute right-1 top-1 size-1.5 rounded-full bg-tyba-red-fill" />
+              <span className="absolute right-1.5 top-1.5 size-[7px] rounded-full bg-tyba-red-fill" />
             ) : null;
           return (
             <button
@@ -217,7 +217,7 @@ export function GitScreen({
               aria-pressed={on}
               title={t(label)}
               onClick={() => go({ section: key, pr: null })}
-              className={`relative flex size-9 items-center justify-center rounded-[8px] transition-colors ${
+              className={`relative flex size-9 items-center justify-center rounded-[10px] transition-colors ${
                 on ? "tyba-icon-on text-tyba-blue" : "text-tyba-text-faint hover:text-tyba-text"
               }`}
             >
@@ -232,23 +232,23 @@ export function GitScreen({
           aria-label={t("gitScreenClose")}
           title={t("gitScreenClose")}
           onClick={onClose}
-          className="mb-2.5 flex size-9 items-center justify-center rounded-[8px] text-tyba-text-faint hover:text-tyba-text"
+          className="flex size-9 items-center justify-center rounded-[10px] text-tyba-text-faint hover:text-tyba-text"
         >
           <X size={15} />
         </button>
       </nav>
 
-      <div className="flex min-w-0 flex-1 flex-col">
-        <div className="flex h-[46px] shrink-0 items-center gap-3 tyba-divide-b bg-[var(--tyba-panel-bg)] px-[18px] text-[12px]">
+      <div className="tyba-frost flex min-w-0 flex-1 flex-col">
+        <div className="flex h-[46px] shrink-0 items-center gap-3 tyba-divide-b px-[18px] text-[12px]">
           {place.section === "prs" && place.pr !== null && (
             <button type="button" className={BTN} onClick={() => go({ section: "prs", pr: null })}>
               ← {t("gitScreenPrs")}
             </button>
           )}
-          <span className="shrink-0 text-[14px] font-medium text-tyba-text">
+          <span className="shrink-0 text-[15px] font-bold tracking-[-0.01em] text-tyba-text">
             {t(titleKey, { number: place.pr ?? 0 })}
           </span>
-          <span className="min-w-0 flex-1 truncate text-[11px] text-tyba-text-faint">
+          <span className="min-w-0 flex-1 truncate text-[12px] text-tyba-text-faint">
             {note ? (
               <span className={note.error ? "text-tyba-red" : "text-tyba-green"} title={note.text}>
                 {note.text}
@@ -258,7 +258,7 @@ export function GitScreen({
             )}
           </span>
           <span className="flex shrink-0 items-center gap-2">
-            {snapshot?.branch && <span className="font-mono text-tyba-blue">{snapshot.branch}</span>}
+            {snapshot?.branch && <span className="font-mono font-semibold text-tyba-blue">{snapshot.branch}</span>}
             {ahead !== null && behind !== null && (
               <span className="font-mono text-tyba-text-muted">
                 ↑{ahead} ↓{behind} {snapshot?.upstream ?? ""}

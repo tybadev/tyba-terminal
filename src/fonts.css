@@ -1,4 +1,14 @@
 /*
+ * Plus Jakarta Sans — a sans do Muriki: fonte da interface no claro do TYBA
+ * quando a preferência pede sans (`[data-font='grotesk']`, fim de styles.css).
+ * `@import` precisa vir antes de qualquer regra do arquivo.
+ */
+@import "@fontsource/plus-jakarta-sans/400.css";
+@import "@fontsource/plus-jakarta-sans/500.css";
+@import "@fontsource/plus-jakarta-sans/600.css";
+@import "@fontsource/plus-jakarta-sans/700.css";
+
+/*
  * JetBrains Mono — fonte PADRÃO do terminal, embarcada.
  *
  * Regular (400/normal) e Bold (700/normal) JÁ vêm embarcados por
