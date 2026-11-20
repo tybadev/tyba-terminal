@@ -14,6 +14,8 @@ import {
 } from "@phosphor-icons/react";
 
 import { Button } from "@/components/ui/button";
+import { FIELD_SURFACE } from "@/components/ui/input";
+import { cn } from "@/lib/utils";
 import { translateError } from "../lib/errors";
 import {
   agentsDrawerCollapse,
@@ -225,7 +227,8 @@ export function PromptQueue({
       aria-label={t(
         hasSubagents ? "agentsDrawerLabel" : turn ? "turnDrawerLabel" : "promptQueueTitle",
       )}
-      className={`fixed z-30 overflow-hidden ${PLATE} ${PLATE_LINE} ${PLATE_FLOAT}`}
+      // Quadro Agentes (`.g4-dw`): vidro `is-float` com raio 14.
+      className={cn(PLATE, PLATE_LINE, PLATE_FLOAT, "fixed z-30 overflow-hidden rounded-[14px]")}
       style={{ left: box.box.left, width: box.box.width, bottom: box.box.bottom }}
       onPointerEnter={() => setHover(true)}
       onPointerLeave={() => setHover(false)}
@@ -251,10 +254,9 @@ export function PromptQueue({
           agents={hasSubagents ? progress : null}
           turnCount={turn ? turnTabCount(turn) : undefined}
           pending={pending}
-          // Na Fila, Pausar e limpar dividem a linha: com as três abas os
-          // rótulos não cabem nos 430px, e as abas ficam só com ícone e número
-          // (o nome no tooltip), como na gaveta estreita.
-          compact={box.box.compact || (tab === "queue" && hasSubagents && turn !== null)}
+          // Quadro: os rótulos inteiros nas três abas, também na Fila; só a
+          // gaveta estreita fica com ícone e número (o nome no tooltip).
+          compact={box.box.compact}
           onTab={setTab}
         />
         <span className="flex-1" />
@@ -392,7 +394,7 @@ export function PromptQueue({
           )}
           {/* Quadro Agentes (g6-foot): o campo do Muriki, com o atalho dentro. */}
           <div className="px-3 pb-3 pt-2.5 shadow-[inset_0_1px_0_var(--tyba-line)]">
-            <div className="flex h-10 items-center gap-2 rounded-[10px] bg-[var(--tyba-glass-piece)] pl-4 pr-3 shadow-[0_0_0_1px_var(--tyba-line)] focus-within:[box-shadow:var(--tyba-focus-ring)]">
+            <div className={cn(FIELD_SURFACE, "flex h-10 items-center gap-2 pl-4 pr-3 focus-within:[box-shadow:var(--tyba-field-focus)]")}>
               <textarea
                 rows={1}
                 // O que sai daqui vai para o agente como foi escrito.
@@ -505,16 +507,20 @@ function DrawerTabs({
   onTab: (tab: DrawerTab) => void;
 }) {
   const { t } = useTranslation();
-  // Quadro Agentes (g4-seg): segmento em pílula, a placa branca no escolhido.
+  // Quadro Agentes (g4-seg): segmento de vidro em pílula, a placa branca no
+  // escolhido, com a mola de .3s no fundo.
   const item = (on: boolean) =>
-    `flex h-7 min-w-0 items-center whitespace-nowrap rounded-full text-[12px] font-semibold transition-colors focus-visible:outline-none focus-visible:[box-shadow:var(--tyba-focus-ring)] ${
-      compact ? "gap-[5px] px-2.5" : "gap-1.5 px-3"
+    `flex h-7 min-w-0 items-center whitespace-nowrap rounded-full text-[12px] font-semibold [transition:background-color_.3s_cubic-bezier(.3,1.4,.5,1),box-shadow_.3s_cubic-bezier(.3,1.4,.5,1),color_.2s] focus-visible:outline-none focus-visible:[box-shadow:var(--tyba-focus-ring)] ${
+      compact ? "gap-[5px] px-2.5" : "gap-2 px-3"
     } ${on ? "tyba-pill-on text-tyba-text" : "text-tyba-text-muted hover:text-tyba-text"}`;
   const queueName = `${t("agentsDrawerQueue")} · ${queueCount}`;
   const agentsName = agents && `${t("agentsTitle")} · ${agents.done}/${agents.total}`;
   const turnName = `${t("pillTurn")} · ${turnCount ?? "–"}`;
   return (
-    <div role="tablist" className="tyba-segment min-w-0 rounded-full! p-1!">
+    <div
+      role="tablist"
+      className="tyba-segment tyba-mk-glass min-w-0 rounded-full! border-[length:var(--tyba-mk-edge-w,0px)] border-[var(--tyba-mk-glass-edge,transparent)] p-1!"
+    >
       <button
         type="button"
         role="tab"
@@ -524,7 +530,7 @@ function DrawerTabs({
         className={item(tab === "queue")}
         onClick={() => onTab("queue")}
       >
-        <Rows size={15} className="shrink-0" />
+        <Rows size={16} className="shrink-0" />
         {compact ? queueCount : (
           <>
             <span className="truncate">{t("agentsDrawerQueue")}</span>
@@ -575,7 +581,7 @@ function DrawerTabs({
           className={item(tab === "turn")}
           onClick={() => onTab("turn")}
         >
-          <PlusMinus size={15} className="shrink-0" />
+          <PlusMinus size={16} className="shrink-0" />
           {compact ? (turnCount ?? "–") : (
             <>
               <span className="truncate">{t("pillTurn")}</span>
@@ -643,8 +649,9 @@ export function DrawerPill({
   const turnFailed = turn?.outcome === "failed";
   const ring = "inset 0 0 0 1.5px var(--tyba-amber-fill)";
   const shadow = open ? (attn ? `var(--tyba-pill-on), ${ring}` : undefined) : attn ? ring : undefined;
-  const sep = <span className="h-3 w-px shrink-0 bg-[var(--tyba-line)]" />;
-  const em = "font-mono font-normal text-tyba-text-faint";
+  // Quadro (g3-pill): fio de 1×14 e os números em mono 11 no peso da pílula.
+  const sep = <span className="h-3.5 w-px shrink-0 bg-[var(--tyba-line)]" />;
+  const em = "font-mono text-[11px] text-tyba-text-faint";
   return (
     <button
       type="button"
@@ -652,7 +659,8 @@ export function DrawerPill({
       aria-expanded={open}
       aria-label={label}
       title={label}
-      className={`inline-flex h-[26px] shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full px-2.5 font-semibold transition-colors ${
+      // mr-1.5: com o gap-1 do rodapé, os 10px do quadro até "api · 14:46".
+      className={`mr-1.5 inline-flex h-[26px] shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full px-2.5 font-semibold transition-colors ${
         open
           ? "tyba-pill-on text-tyba-text"
           : "bg-[color-mix(in_srgb,var(--tyba-text)_5%,transparent)] text-tyba-text-muted hover:text-tyba-text"
@@ -670,9 +678,6 @@ export function DrawerPill({
           <span className={em}>
             {agents.done}/{agents.total}
           </span>
-          {state?.kind === "run" && (
-            <span className={`${DOT} bg-tyba-green-fill [box-shadow:var(--tyba-glow-green)]`} />
-          )}
           {state?.kind === "attn" && (
             <span className="inline-flex items-center gap-[5px] text-tyba-amber">
               <span className={`${DOT} bg-tyba-amber-fill`} />
@@ -711,7 +716,7 @@ export function DrawerPill({
               {turn.body.kind === "counts" && (
                 <>
                   <span className={em}>{t("diffFilesSummary", { count: turn.body.files })}</span>
-                  <span className="inline-flex gap-1 whitespace-nowrap font-mono font-normal tabular-nums">
+                  <span className="inline-flex gap-1 whitespace-nowrap font-mono text-[11px] tabular-nums">
                     <span className="text-tyba-green">+{turn.body.insertions}</span>
                     <span className="text-tyba-red">−{turn.body.deletions}</span>
                   </span>

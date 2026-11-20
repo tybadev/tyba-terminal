@@ -1,5 +1,5 @@
 import { useTranslation } from "react-i18next";
-import { ArrowLineRight, Check, Folder, GitBranch, Minus, Pause } from "@phosphor-icons/react";
+import { ArrowRight, Check, Folder, GitBranch, Minus, Pause } from "@phosphor-icons/react";
 
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -18,6 +18,9 @@ import { useNow } from "./ui/loading";
 
 // Quadro Agentes (g6-box): caixa clara com fio; a cor do estado fica no
 // ícone (e no texto, quando o turno falhou).
+// "Passar para…" (quadro Agentes, `.g6-pass`): 32px com 14 de padding.
+const PASS = "h-8 px-3.5 has-[>svg]:px-3.5";
+
 const BAND: Record<TurnBand, string> = {
   changed: "text-tyba-green",
   failed: "text-tyba-red",
@@ -107,7 +110,7 @@ export function TurnPanel({
         {turnMeta(turn, i18n.language, t)}
       </div>
       <div
-        className="mx-2.5 mb-2 mt-3 flex items-center gap-2.5 rounded-[10px] bg-tyba-paper-solid px-3 py-2.5 text-[13px] font-medium text-tyba-text shadow-[inset_0_0_0_1px_var(--tyba-line)]"
+        className="mx-2.5 mb-2 mt-3 flex items-center gap-2.5 rounded-[10px] bg-[var(--tyba-control-bg)] px-3 py-2.5 text-[13px] font-medium text-tyba-text shadow-[inset_0_0_0_1px_var(--tyba-line)]"
       >
         {band === "failed" ? (
           <span className="size-[7px] shrink-0 rounded-full bg-tyba-red-fill" />
@@ -218,8 +221,8 @@ export function TurnPanel({
             <TooltipTrigger asChild>
               {/* Botão desligado não recebe hover: a dica mora no invólucro. */}
               <span tabIndex={0} className="inline-flex">
-                <Button disabled variant="outline" size="sm">
-                  <ArrowLineRight size={15} />
+                <Button disabled variant="outline" size="sm" className={PASS}>
+                  <ArrowRight size={15} />
                   {t("handoffPassTo")}
                 </Button>
               </span>
@@ -227,8 +230,8 @@ export function TurnPanel({
             <TooltipContent side="top">{t("handoffWaitTurn")}</TooltipContent>
           </Tooltip>
         ) : (
-          <Button onClick={onHandoff} variant="outline" size="sm">
-            <ArrowLineRight size={15} />
+          <Button onClick={onHandoff} variant="outline" size="sm" className={PASS}>
+            <ArrowRight size={15} />
             {t("handoffPassTo")}
           </Button>
         )}
