@@ -10,6 +10,7 @@ use crate::config::schema::{KEY_THEME_DARK, KEY_THEME_LIGHT, KEY_THEME_MODE};
 use crate::config::SharedConfig;
 
 mod schemes;
+mod vscode;
 
 pub const EVENT_CHANGED: &str = "theme://changed";
 pub const BUILTIN_DARK: &str = "tyba-dark";
@@ -683,7 +684,16 @@ impl ThemeManager {
             return Err(ThemeError::TooLarge);
         }
         let json = fs::read_to_string(src)?;
-        let file = parse_theme(&json)?;
+        // O mesmo botão aceita o tema do TYBA e o tema de cor do VS Code.
+        let file = if vscode::looks_like_vscode(&json) {
+            let stem = Path::new(src)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("VS Code");
+            vscode::from_vscode(&json, stem)?
+        } else {
+            parse_theme(&json)?
+        };
         let base = slugify(&file.name);
         if base.is_empty() {
             return Err(ThemeError::InvalidName);
@@ -1225,6 +1235,26 @@ mod tests {
 
         let err = mgr.import_validated(src.to_str().unwrap()).unwrap_err();
         assert!(matches!(err, ThemeError::InvalidColor(key, _) if key == "ui.bg"));
+
+        let _ = fs::remove_file(&src);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn import_accepts_a_vscode_color_theme() {
+        let (mgr, dir) = manager();
+        let src = temp_source("vscode");
+        fs::write(
+            &src,
+            r##"{ "name": "Noite VS", "type": "dark", "colors": { "terminal.background": "#101010" }, }"##,
+        )
+        .unwrap();
+
+        let (id, file) = mgr.import_validated(src.to_str().unwrap()).unwrap();
+        assert_eq!(id, "noite-vs");
+        assert_eq!(file.base, ThemeBase::Dark);
+        assert_eq!(file.terminal.unwrap().background, "#101010");
+        assert!(mgr.list().iter().any(|t| t.id == "noite-vs"));
 
         let _ = fs::remove_file(&src);
         let _ = fs::remove_dir_all(dir);
