@@ -16,7 +16,7 @@ import type {
   WorkflowJob,
   WorkflowRun,
 } from "../lib/ipc";
-import type { Graph } from "../lib/orbit";
+import type { Graph, NodeRun, Run } from "../lib/orbit";
 import { ID, REPO } from "./fixtures";
 
 const NOW = Date.now();
@@ -426,7 +426,15 @@ export const TURN_PANEL_GUTTER = [
 
 // --- Docker -----------------------------------------------------------------
 
-function container(id: string, name: string, image: string, state: string, status: string, ports = ""): ContainerInfo {
+function container(
+  id: string,
+  name: string,
+  image: string,
+  state: string,
+  status: string,
+  ports = "",
+  service = name,
+): ContainerInfo {
   return {
     id,
     name,
@@ -436,7 +444,7 @@ function container(id: string, name: string, image: string, state: string, statu
     ports,
     compose_project: "api",
     compose_working_dir: REPO.api,
-    service: name,
+    service,
     config_files: `${REPO.api}/docker-compose.yml`,
     working_dir_status: "ok",
     compose_file_status: "ok",
@@ -445,13 +453,26 @@ function container(id: string, name: string, image: string, state: string, statu
 }
 
 export const CONTAINERS: ContainerInfo[] = [
-  container("c-postgres18", "muriki_postgres", "muriki-postgres:18", "exited", "Exited (0) 5 days ago"),
+  container("c-postgres18", "muriki_postgres", "muriki-postgres:18", "exited", "Exited (0) 5 days ago", "", "postgres"),
   container("c-redis", "redis", "redis:7-alpine", "exited", "Exited (0) 5 days ago"),
   container("c-postgres", "postgres", "postgres:16", "running", "Up 34 hours (healthy)", "0.0.0.0:7432->5432/tcp"),
   container("c-greenmail", "greenmail", "greenmail/standalone", "exited", "Exited (255) 5 weeks ago"),
   container("c-n8n", "n8n", "n8nio/n8n", "exited", "Exited (255) 5 weeks ago"),
   container("c-rabbit", "rabbitmq", "rabbitmq:3.13-management", "exited", "Exited (0) 9 days ago"),
+  // O resto dos 25 do quadro ("4 rodando · 21 parados"), abaixo da dobra.
+  ...["minio", "mailpit", "keycloak"].map((n) =>
+    container(`c-${n}`, n, `${n}:latest`, "running", "Up 2 days"),
+  ),
+  ...Array.from({ length: 16 }, (_, i) =>
+    container(`c-job${i}`, `job-${i + 1}`, "alpine:3.20", "exited", "Exited (0) 6 weeks ago"),
+  ),
 ];
+
+/** RAM do postgres rodando (quadro: "saudável · RAM 63 MB · há 34 h"). */
+export const PANEL_USAGE = {
+  usage: [{ id: "c-postgres", cpu_percent: 0.4, mem_bytes: 63 * 1024 * 1024 }],
+  exits: [],
+};
 
 const PG_LOG: [string, string, boolean][] = [
   ["04:28:36", '[1] LOG:  background worker "logical replication launcher" (PID 36) exited with code 1', false],
@@ -465,10 +486,17 @@ const PG_LOG: [string, string, boolean][] = [
   ["13:39:37", "[1] LOG:  database system is shut down", false],
 ];
 
+function clockToday(clock: string): number {
+  const [h, m, sec] = clock.split(":").map(Number);
+  const d = new Date(NOW);
+  d.setHours(h, m, sec, 0);
+  return d.getTime();
+}
+
 export const CONTAINER_LOG: LogLine[] = PG_LOG.map(([ts, text, error], seq) => ({
   seq,
   ts,
-  ts_ms: null,
+  ts_ms: clockToday(ts),
   level: error ? "error" : "info",
   continuation: false,
   stderr: error,
@@ -510,28 +538,92 @@ export const HANDOFF_TARGETS: HandoffTarget[] = [
 
 // --- Orbit ------------------------------------------------------------------
 
-/** O grafo do quadro Orbit: o Terminal · api, o Revisor e o plano dele. */
+/** O grafo do quadro Orbit: o Terminal · api, o Revisor e o plano dele, nas
+ *  posições do quadro (que está a 116%). */
+const Q = (px: number) => Math.round(px / 1.16);
 export const ORBIT_GRAPH: Graph = {
   id: "graph-teste",
   name: "teste grafo",
   dir: REPO.api,
   nodes: [
-    { id: "n-term", title: "Terminal · api", kind: { type: "terminal", dir: REPO.api }, position: { x: 20, y: 40 }, size: { w: 380, h: 300 } },
+    {
+      id: "n-term",
+      title: "Terminal · api",
+      kind: { type: "terminal", dir: REPO.api },
+      position: { x: Q(90), y: Q(150) },
+      size: { w: Q(550), h: Q(300) },
+    },
     {
       id: "n-rev",
       title: "Revisor",
       kind: { type: "agent", runner: "claude", role: "Revisor", prompt: "Revise o billing.", dir: REPO.api },
-      position: { x: 440, y: 40 },
-      size: { w: 360, h: 300 },
+      position: { x: Q(760), y: Q(300) },
+      size: { w: Q(520), h: Q(270) },
     },
     {
       id: "n-plan",
       title: "Plano",
       kind: { type: "note", markdown: "- [x] Ler o contexto\n- [ ] Rodar a suíte" },
-      position: { x: 440, y: 380 },
-      size: { w: 300, h: 140 },
+      position: { x: Q(560), y: Q(600) },
+      size: { w: Q(300), h: Q(150) },
     },
   ],
-  edges: [],
-  variables: {},
+  // O quadro liga Terminal → Revisor por "contexto"; o core não aceita essa
+  // ligação (o Terminal só produz plano e controle) e a apaga ao abrir.
+  edges: [{ id: "e-mem", from: "n-rev", to: "n-plan", kind: "memory" }],
+  variables: { port: "3000", api_key: "" },
+  secrets: ["api_key"],
 };
+
+/** Sessões do run ao vivo do quadro (o shell do Terminal e o claude do Revisor). */
+export const ORBIT_SESSION = { term: "orbit-term", rev: "orbit-rev" };
+
+/** As mesmas sessões como o core as lista (`list_sessions`). */
+export const ORBIT_SESSIONS: Session[] = [
+  {
+    id: ORBIT_SESSION.term,
+    kind: { type: "shell" },
+    title: "Terminal · api",
+    repo_root: REPO.api,
+    worktree: null,
+    status: { state: "idle", summary: null },
+    attention: false,
+    created_at: new Date(NOW - 13_000).toISOString(),
+  },
+  {
+    id: ORBIT_SESSION.rev,
+    kind: { type: "agent", runner: "claude_code" },
+    title: "Revisor",
+    repo_root: REPO.api,
+    worktree: null,
+    status: { state: "awaiting_input", hint: "bun run test", reason: "native_prompt" },
+    attention: true,
+    created_at: new Date(NOW - 60_000).toISOString(),
+  },
+];
+
+/** A sessão ao vivo do quadro: o Terminal aberto há 13 s, o Revisor esperando você há 40 s. */
+export const ORBIT_RUN: Run = {
+  id: "run-24",
+  graphId: "graph-teste",
+  number: 24,
+  startedAt: NOW - 13_000,
+  finishedAt: null,
+  status: "running",
+  terminal: "n-term",
+  waitingYou: ["n-rev"],
+  nodes: {
+    "n-term": orbitNode({ status: "running", sessionId: ORBIT_SESSION.term, startedAt: NOW - 13_000 }),
+    "n-rev": orbitNode({
+      status: "running",
+      sessionId: ORBIT_SESSION.rev,
+      startedAt: NOW - 60_000,
+      inbox: 2,
+      waitingYou: { reason: "permission", since: NOW - 40_000, hint: "Rodar bun run test?" },
+    }),
+  },
+};
+
+function orbitNode(over: Partial<NodeRun>): NodeRun {
+  return { status: "waiting", sessionId: null, startedAt: null, finishedAt: null, exitCode: null, outputs: {}, reason: null, ...over };
+}

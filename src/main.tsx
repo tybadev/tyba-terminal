@@ -15,6 +15,7 @@ import "./i18n";
 import "./theme";
 import "./font";
 import { initUiScale } from "./uiScale";
+import { initTerminalFont } from "./lib/terminalFont";
 import App from "./App";
 import { SPLASH_DONE_EVENT } from "./lib/startup";
 
@@ -34,6 +35,7 @@ document.addEventListener("contextmenu", (event) => {
 });
 
 initUiScale();
+initTerminalFont();
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>

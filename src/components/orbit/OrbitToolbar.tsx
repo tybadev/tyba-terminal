@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { Code, Cursor, Globe, Hand, LinkSimple, Note, Play, Sparkle } from "@phosphor-icons/react";
+import { ChatCircle, Code, Cursor, Globe, Hand, LinkSimple, Note, Play, Sparkle } from "@phosphor-icons/react";
 
 import { GLASS_PILL } from "./drawer";
 import type { OrbitTool, PointerTool } from "./toolbar";
@@ -28,10 +28,15 @@ export function OrbitToolbar({
   pointer,
   canLink,
   onTool,
+  talk,
+  onTalk,
 }: {
   pointer: PointerTool;
   canLink: boolean;
   onTool: (tool: OrbitTool) => void;
+  /** O orquestrador vivo para "Falar com o Orquestrador"; `null`, apagado. */
+  talk: { waiting: boolean } | null;
+  onTalk: () => void;
 }) {
   const { t } = useTranslation();
   return (
@@ -78,6 +83,24 @@ export function OrbitToolbar({
               </button>
           );
         })}
+        {/* Quadro Orbit: o balão no fim da barra, com o ponto amarelo quando
+            o orquestrador espera você. Abre ele no modo foco. */}
+        <button
+          type="button"
+          aria-label={t("orbitToolTalk")}
+          title={talk ? t("orbitToolTalk") : t("orbitToolTalkHint")}
+          disabled={!talk}
+          onClick={onTalk}
+          className="relative grid size-[38px] place-items-center rounded-full text-tyba-text-muted transition-[background-color,transform] duration-150 active:scale-[.96] enabled:hover:bg-tyba-text/[.06] enabled:hover:text-tyba-text disabled:cursor-not-allowed disabled:opacity-45"
+        >
+          <ChatCircle size={20} />
+          {talk?.waiting && (
+            <span
+              aria-hidden
+              className="absolute right-[7px] top-[7px] size-2 rounded-full bg-tyba-amber-fill shadow-[0_0_0_2px_var(--tyba-paper-solid,#fff)]"
+            />
+          )}
+        </button>
       </div>
     </>
   );

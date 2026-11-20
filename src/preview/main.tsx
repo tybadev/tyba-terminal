@@ -17,7 +17,9 @@ state.theme = params.get("theme") === "light" ? "light" : "dark";
 }
 // O tema lê o modo salvo antes de perguntar ao core: começa limpo.
 localStorage.clear();
-localStorage.setItem("tyba.theme", state.theme);
+// A Aparência do quadro está no Sistema (dois terminais, claro e escuro).
+if (screen === "settings-appearance") state.mode = "system";
+localStorage.setItem("tyba.theme", state.mode ?? state.theme);
 localStorage.setItem("tyba.theme.migrated", "1");
 if (state.font) localStorage.setItem("tyba.font", state.font);
 

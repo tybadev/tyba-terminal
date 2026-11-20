@@ -65,7 +65,7 @@ const SEC =
   "flex items-center gap-1.5 px-4 pb-1.5 pt-3.5 text-[11px] font-semibold uppercase tracking-[0.04em] text-tyba-text-faint";
 const TITLE = "text-[13px] leading-[18px]";
 const DESC = "mt-0.5 text-[12px] leading-[17px] text-tyba-text-muted";
-const META = "mt-1 flex min-w-0 items-center gap-2 font-mono text-[10.5px] text-tyba-text-faint";
+const META = "mt-1 flex min-w-0 items-center gap-2 font-mono text-[10.5px] leading-[14px] text-tyba-text-faint";
 const ACTS = "mt-2 flex flex-wrap items-center gap-1.5";
 
 type GlyphTone = "amber" | "blue" | "red" | "neutral";
@@ -90,6 +90,13 @@ function Glyph({ icon: Glyphicon, tone, label }: { icon: Icon; tone: GlyphTone; 
 }
 
 const riskTone = (risk: RiskLevel | null): GlyphTone => (risk === "red" ? "red" : "amber");
+
+/** Quadro: o aviso de limite fala o produto ("Claude Code · renova às 16:00"). */
+function productName(agent: string | null): string | null {
+  if (agent === "claude") return "Claude Code";
+  if (agent === "codex") return "Codex";
+  return agent;
+}
 
 function clock(ms: number): string {
   return new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
@@ -354,7 +361,7 @@ export function NotificationsInbox({
   const nativeCard = (e: NotificationEntry) => (
     <div key={e.id} className={`motion-safe:animate-tyba-pop-in ${ITEM} ${ITEM_NEED}`}>
       <Glyph icon={WarningCircle} tone={riskTone(e.risk)} label={t(RISK_LABEL[e.risk ?? "yellow"])} />
-      <div className="min-w-0 flex-1 pr-3">
+      <div className="min-w-0 flex-1">
         <div className={`${TITLE} font-semibold text-tyba-text`}>{entryTitle(e)}</div>
         <div className={`${DESC} truncate`} title={e.command ?? undefined}>
           {[e.command, e.session_title && t("notifInSession", { session: e.session_title })]
@@ -366,7 +373,6 @@ export function NotificationsInbox({
         </div>
         <div className={ACTS}>{openInSessionBtn(e.session_id, () => markRead(e))}</div>
       </div>
-      {!e.read && <UnreadDot label={t("notifUnread")} />}
     </div>
   );
 
@@ -394,7 +400,7 @@ export function NotificationsInbox({
     // O que o agente disse no fim do turno vai entre aspas curvas (quadro).
     const said = e.detail ?? e.command;
     const desc = limit
-      ? [e.agent ?? e.session_title, resets].filter(Boolean).join(" · ")
+      ? [productName(e.agent) ?? e.session_title, resets].filter(Boolean).join(" · ")
       : e.kind === "agent_finished" && said
         ? `“${said}”`
         : said;
@@ -497,7 +503,8 @@ export function NotificationsInbox({
               type="button"
               disabled={unread === 0}
               onClick={() => void notificationsMarkRead(null).catch(() => {})}
-              className={`${BTN_GHOST} ml-auto`}
+              // Quadro renderizado: "Marcar lidas" logo depois da contagem.
+              className={BTN_GHOST}
             >
               <Check size={16} />
               {t("notifMarkAllRead")}

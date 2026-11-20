@@ -25,6 +25,9 @@ import {
   DECORATIONS,
   HANDOFF_TARGETS,
   ORBIT_GRAPH,
+  ORBIT_RUN,
+  ORBIT_SESSIONS,
+  PANEL_USAGE,
   PR_DETAIL,
   PR_PAGE,
   RUN_LOG,
@@ -41,6 +44,8 @@ type Handler = (args: Args) => unknown;
 
 export const state = {
   theme: "dark" as "dark" | "light",
+  /** O modo salvo; "system" segue o `prefers-color-scheme` do navegador. */
+  mode: null as "system" | null,
   font: null as "mono" | "grotesk" | null,
   layout: initialLayout(),
   drawers: [] as DrawerState[],
@@ -103,10 +108,12 @@ function attach(id: unknown): null {
   return null;
 }
 
-const isShell = (id: unknown) => SESSIONS.some((s) => s.id === id && s.kind.type === "shell");
+// O shell do Terminal do Orbit (quadro Orbit) também é shell.
+const isShell = (id: unknown) =>
+  id === "orbit-term" || SESSIONS.some((s) => s.id === id && s.kind.type === "shell");
 
 const themeState = () => ({
-  mode: state.theme,
+  mode: state.mode ?? state.theme,
   dark: THEMES[0],
   light: THEMES[1],
 });
@@ -125,18 +132,44 @@ const handlers: Record<string, Handler> = {
   }),
   boot_poll: () => ({ ready: true, bootFailure: null }),
   layout_state: () => ({ ready: true, value: structuredClone(state.layout) }),
-  list_sessions: () => ({ ready: true, value: SESSIONS }),
+  // O core lista também as sessões dos nós do Orbit (fora de qualquer aba).
+  list_sessions: () => ({ ready: true, value: [...SESSIONS, ...ORBIT_SESSIONS] }),
   get_pref: ({ key }) =>
     key === "pref.ui_font" && state.font ? state.font : (PREFS[String(key)] ?? null),
   set_pref: () => null,
   get_theme_state: themeState,
   list_themes: () => THEMES,
   set_theme_mode: ({ mode }) => {
-    state.theme = mode === "light" ? "light" : "dark";
+    state.mode = mode === "system" ? "system" : null;
+    if (mode !== "system") state.theme = mode === "light" ? "light" : "dark";
     void emit("theme://changed", themeState());
     return null;
   },
   app_version: () => "2.0.0-preview",
+  // Páginas das Configurações (quadro SettingsSpecimen).
+  list_snippets: () => [
+    { id: "s-deploy", name: "deploy", command: "./scripts/deploy.sh", description: null, tags: [], source: "local" },
+    { id: "s-testes", name: "testes", command: "bun run test --watch", description: null, tags: [], source: "local" },
+  ],
+  list_launch_configs: () => [],
+  command_history_total: () => 0,
+  scan_shell_history_sources: () => [],
+  // Quadro SettingsSpecimen: "Permitidos." e "Dois aprovados."
+  notification_permission: () => "granted",
+  list_approved_configs: () => [
+    { repo_root: "~/projetos/api", decided_at: "2026-11-02T14:00:00Z", current: true },
+    { repo_root: "~/projetos/site", decided_at: "2026-10-20T09:30:00Z", current: true },
+  ],
+  claude_plugin_status: () => ({ available: true, installed: true, blocked: null }),
+  ssh_typed_prefs: () => ({ detect: true, mode: "ask", denied: [] }),
+  app_build_info: () => ({
+    version: "2.0.0",
+    commit: "a1b2c3d",
+    commit_date: "2026-11-01",
+    os: "macos",
+    arch: "aarch64",
+    webview: "WebKit",
+  }),
   update_check: () => null,
   config_warnings: () => [],
   list_hosts: () => HOSTS,
@@ -256,7 +289,7 @@ const handlers: Record<string, Handler> = {
   docker_compose_runs: () => ({}),
   docker_logs_start: () => ({ lines: CONTAINER_LOG, following: false }),
   docker_logs_stop: () => null,
-  docker_panel_usage: () => ({ usage: [], exits: [] }),
+  docker_panel_usage: () => PANEL_USAGE,
   docker_container_detail: ({ containerId }) => {
     const c = CONTAINERS.find((x) => x.id === containerId) ?? CONTAINERS[0];
     return { id: c.id, name: c.name, image: c.image, state: c.state, started_at: null, workdir: null, mounts: [], ports: [] };
@@ -276,7 +309,7 @@ const handlers: Record<string, Handler> = {
   detach_session: () => null,
   orbit_list_graphs: () => [ORBIT_GRAPH],
   orbit_get_graph: () => ORBIT_GRAPH,
-  orbit_runs_list: () => [],
+  orbit_runs_list: () => [ORBIT_RUN],
   orbit_node_log: () => [],
   orbit_var_env_problems: () => [],
   orbit_save_graph: () => null,

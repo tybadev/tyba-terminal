@@ -10,6 +10,8 @@
 //!
 //! Retenção: 7 dias e no máximo 500 linhas, podadas na inserção.
 
+pub mod permission;
+
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};

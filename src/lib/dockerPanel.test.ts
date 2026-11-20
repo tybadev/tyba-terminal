@@ -9,7 +9,6 @@ import {
   exitedAgoMs,
   formatBytes,
   formatCpu,
-  groupContainers,
   healthOf,
   loadContainers,
   matchesQuery,
@@ -120,60 +119,11 @@ describe("durações do docker ps", () => {
   });
 });
 
-describe("groupContainers", () => {
-  const list = [
-    make({ id: "1", name: "zeta", compose_project: "outro" }),
-    make({ id: "2", name: "api", compose_project: "muriki", in_repo: true }),
-    make({ id: "3", name: "db", compose_project: "muriki", in_repo: true }),
-    make({
-      id: "4",
-      name: "worker",
-      compose_project: "muriki",
-      in_repo: true,
-      state: "exited",
-      status: "Exited (137) 2 hours ago",
-    }),
-    make({
-      id: "5",
-      name: "velho",
-      compose_project: "muriki",
-      in_repo: true,
-      state: "exited",
-      status: "Exited (0) 6 weeks ago",
-    }),
-    make({
-      id: "6",
-      name: "recente",
-      compose_project: "muriki",
-      in_repo: true,
-      state: "exited",
-      status: "Exited (0) 5 minutes ago",
-    }),
-    make({ id: "7", name: "solto", state: "exited", status: "Exited (1) 1 day ago" }),
-    make({ id: "8", name: "alfa", compose_project: "aaa" }),
-  ];
-
-  test("repo primeiro, depois alfabético, Avulsos por último", () => {
-    expect(groupContainers(list).map((g) => g.project)).toEqual([
-      "muriki",
-      "aaa",
-      "outro",
-      null,
-    ]);
-  });
-
-  test("rodando por nome; parados recentes primeiro; antigos à parte", () => {
-    const [repo] = groupContainers(list);
-    expect(repo.running.map((c) => c.name)).toEqual(["api", "db"]);
-    expect(repo.stopped.map((c) => c.name)).toEqual(["recente", "worker"]);
-    expect(repo.old.map((c) => c.name)).toEqual(["velho"]);
-  });
-
-  test("busca filtra por nome, serviço, imagem ou projeto", () => {
-    expect(groupContainers(list, "solto").map((g) => g.project)).toEqual([null]);
-    expect(groupContainers(list, "OUTRO")[0].running[0].name).toBe("zeta");
-    expect(groupContainers(list, "nada")).toEqual([]);
+describe("matchesQuery", () => {
+  test("busca por nome, serviço, imagem ou projeto", () => {
     expect(matchesQuery(make({ image: "redis:7" }), "redis")).toBe(true);
+    expect(matchesQuery(make({ name: "zeta", compose_project: "outro" }), "OUTRO")).toBe(true);
+    expect(matchesQuery(make({ name: "zeta" }), "nada")).toBe(false);
   });
 });
 

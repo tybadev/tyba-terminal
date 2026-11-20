@@ -26,10 +26,9 @@ import { describe, expect, it } from "bun:test";
 
 const HERE = import.meta.dir;
 const CSS = readFileSync(join(HERE, "..", "styles.css"), "utf8");
-const TERMINAL_VIEW = readFileSync(
-  join(HERE, "..", "components", "TerminalView.tsx"),
-  "utf8",
-);
+// O stack que o xterm recebe mora em `terminalFont.ts` (a escolha "JetBrains
+// Mono" das Configurações, a padrão); o `TerminalView` só o lê de lá.
+const TERMINAL_FONT = readFileSync(join(HERE, "terminalFont.ts"), "utf8");
 const MAIN = readFileSync(join(HERE, "..", "main.tsx"), "utf8");
 
 const NERD = "Symbols Nerd Font Mono";
@@ -42,9 +41,9 @@ function token(css: string, name: string): string {
   return found[1].replace(/['"]/g, "").replace(/\s+/g, " ").trim();
 }
 
-/** O stack que o xterm recebe na construção do `Terminal`. */
+/** O stack padrão que o xterm recebe (a escolha `jetbrains`). */
 function xtermStack(source: string): string {
-  const found = source.match(/fontFamily:\s*\n?\s*'([^']+)'/);
+  const found = source.match(/jetbrains:\s*\n?\s*'([^']+)'/);
   if (!found) throw new Error("fontFamily do xterm não encontrado");
   return found[1].replace(/['"]/g, "").replace(/\s+/g, " ").trim();
 }
@@ -55,7 +54,7 @@ const STACKS: Array<[string, () => string]> = [
   ["--tyba-font-mono", () => token(CSS, "--tyba-font-mono")],
   // A ponte do Tailwind: é ele que a classe `font-mono` do BlockList resolve.
   ["--font-mono", () => token(CSS, "--font-mono")],
-  ["xterm fontFamily", () => xtermStack(TERMINAL_VIEW)],
+  ["xterm fontFamily", () => xtermStack(TERMINAL_FONT)],
 ];
 
 describe("stack mono do terminal", () => {

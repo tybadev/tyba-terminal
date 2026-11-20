@@ -676,7 +676,9 @@ function CapsuleTitle({
           setDraft(title);
           setEditing(true);
         }}
-        className="min-w-0 flex-1 truncate font-sans text-[14px] font-semibold text-tyba-text"
+        // Com o cabeçalho cheio (esperando você, fila, botões), o nome encolhe
+        // mas não some (quadro Orbit: "Revisor" sempre à vista).
+        className="min-w-[5.5em] flex-1 truncate font-sans text-[14px] font-semibold text-tyba-text"
       >
         {title}
       </span>

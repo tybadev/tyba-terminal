@@ -101,12 +101,24 @@ import {
   userConfigPath,
   dockerAvailable,
   openNotificationSettings,
+  testNotification,
+  notificationPermission,
+  listApprovedConfigs,
+  type ApprovedRepoConfig,
+  type NotifyPermission,
   previewNotifySound,
   updateCheck,
 } from "../lib/ipc";
 import { formatDiagnostics, platformLabel } from "../lib/diagnostics";
 import { openExternalUrl, writeClipboardText } from "../lib/clipboard";
-import { commitUrl, docsUrl, LICENSE_NAME, LICENSE_URL, REPO_URL } from "../lib/links";
+import {
+  TERMINAL_FONTS,
+  getTerminalFont,
+  parseTerminalFont,
+  setTerminalFont,
+  type TerminalFont,
+} from "../lib/terminalFont";
+import { commitUrl, docsUrl, LICENSE_NAME, LICENSE_URL, REPO_URL, themeDocsUrl } from "../lib/links";
 import {
   actionsByCategory,
   ACTION_LABEL_KEYS,
@@ -192,7 +204,15 @@ const SECURITY_RULES = ["cfgRuleMain", "cfgRuleSecrets", "cfgRuleKill"];
  * ninguém procurar um interruptor que não existe; o agente roda livre.
  */
 function SecuritySection() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  // Quem aprovou qual `.tyba/config.toml` (o core guarda o consentimento).
+  const [approved, setApproved] = useState<ApprovedRepoConfig[] | null>(null);
+  const [showApproved, setShowApproved] = useState(false);
+  useEffect(() => {
+    void listApprovedConfigs()
+      .then(setApproved)
+      .catch(() => {});
+  }, []);
   return (
     <>
       <SettingGroup title={t("cfgGroupAlways")}>
@@ -207,12 +227,38 @@ function SecuritySection() {
         <SettingLine
           label={t("cfgRepoConfig")}
           hint={
-            <Trans
-              i18nKey="cfgRepoConfigHint"
-              components={{ file: <span className="font-mono text-[12.5px] text-tyba-text" /> }}
-            />
+            <>
+              <Trans
+                i18nKey="cfgRepoConfigHint"
+                components={{ file: <span className="font-mono text-[12.5px] text-tyba-text" /> }}
+              />
+              {approved && <> {t("cfgRepoApproved", { count: approved.length, n: spelled(approved.length, i18n.language) })}</>}
+            </>
           }
-        />
+          below={
+            showApproved && approved ? (
+              <ul className="flex flex-col gap-1 text-[12.5px]">
+                {approved.length === 0 && <li className="text-tyba-text-faint">{t("cfgRepoApprovedNone")}</li>}
+                {approved.map((c) => (
+                  <li key={c.repo_root} className="flex items-baseline gap-3">
+                    <span className="min-w-0 truncate font-mono text-tyba-text" title={c.repo_root}>
+                      {homeShort(c.repo_root)}
+                    </span>
+                    <span className="ml-auto shrink-0 text-tyba-text-faint">
+                      {c.current
+                        ? t("cfgRepoApprovedAt", { date: new Date(c.decided_at).toLocaleDateString(i18n.language) })
+                        : t("cfgRepoApprovedChanged")}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            ) : undefined
+          }
+        >
+          <SettingButton onClick={() => setShowApproved((v) => !v)} aria-expanded={showApproved}>
+            {showApproved ? t("cfgRepoApprovedHide") : t("cfgRepoApprovedShow")}
+          </SettingButton>
+        </SettingLine>
       </SettingGroup>
     </>
   );
@@ -229,6 +275,7 @@ const searchKeys = (): Record<Section, string[]> => ({
     "colorMode",
     "settingsThemes",
     "cfgFont",
+    "cfgUiFont",
     "cfgSize",
     "cfgUiScale",
     "cfgCollapse",
@@ -263,6 +310,16 @@ const searchKeys = (): Record<Section, string[]> => ({
   shortcuts: Object.values(ACTION_LABEL_KEYS),
   about: ["version", "aboutDiagnostics", "aboutDocs", "aboutWhatChanged"],
 });
+
+/** Quadro: "Dois aprovados." — o número por extenso até dez. */
+const SPELLED: Record<string, string[]> = {
+  pt: ["nenhum", "um", "dois", "três", "quatro", "cinco", "seis", "sete", "oito", "nove", "dez"],
+  en: ["none", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"],
+};
+function spelled(n: number, language: string): string {
+  const word = (SPELLED[language.split("-")[0]] ?? SPELLED.en)[n] ?? String(n);
+  return word.charAt(0).toUpperCase() + word.slice(1);
+}
 
 /** `/Users/x/.tyba/config.toml` → `~/.tyba/config.toml`. */
 function homeShort(path: string): string {
@@ -433,32 +490,6 @@ const TEXT_SIZES = [
   { value: 15, label: "cfgSizeLarge" },
 ];
 
-const THEME_EXAMPLE = `{
-  "name": "Meu Tema",
-  "base": "dark",
-  "ui": {
-    "bg": "#282a36",
-    "surface": "#313342",
-    "text": "#f8f8f2",
-    "primary": "#50fa7b",
-    "violet": "#bd93f9"
-  },
-  "terminal": {
-    "background": "#282a36",
-    "foreground": "#f8f8f2",
-    "cursor": "#f8f8f2",
-    "selectionBackground": "#44475a80",
-    "ansi": ["#21222c", "#ff5555", "#50fa7b", "#f1fa8c",
-             "#bd93f9", "#ff79c6", "#8be9fd", "#f8f8f2",
-             "#6272a4", "#ff6e6e", "#69ff94", "#ffffa5",
-             "#d6acff", "#ff92df", "#a4ffff", "#ffffff"]
-  }
-}`;
-
-function copyThemeExample() {
-  void navigator.clipboard?.writeText(THEME_EXAMPLE).catch(() => {});
-}
-
 const MAC_SOUNDS = ["Ping", "Glass", "Submarine", "Hero", "Funk", "Blow"];
 
 /**
@@ -470,6 +501,13 @@ const MAC_SOUNDS = ["Ping", "Glass", "Submarine", "Hero", "Funk", "Blow"];
  */
 function NotifyPrefs() {
   const { t } = useTranslation();
+  // "Permitidos": o que o sistema diz agora (o core pergunta ao macOS).
+  const [permission, setPermission] = useState<NotifyPermission | null>(null);
+  useEffect(() => {
+    void notificationPermission()
+      .then(setPermission)
+      .catch(() => {});
+  }, []);
   // O estado nasce nos defaults de fábrica, e não vazio: entre a montagem e a
   // resposta do `getPref` a linha já aparece, e uma espécie que nasce desligada
   // não pode piscar ligada nesse intervalo.
@@ -557,7 +595,21 @@ function NotifyPrefs() {
       )}
       {IS_MAC && (
         <SettingGroup title={t("cfgGroupOutside")}>
-          <SettingLine label={t("cfgMacos")} hint={t("cfgMacosHint")}>
+          <SettingLine
+            label={t("cfgMacos")}
+            hint={permission ? `${t(`notifyPerm_${permission}`)} ${t("cfgMacosHint")}` : t("cfgMacosHint")}
+          >
+            <SettingButton
+              tone="ghost"
+              icon={<Bell size={16} />}
+              onClick={() =>
+                void testNotification(t("notifyTestTitle"), t("notifyTestBody")).catch((e) =>
+                  toastError(t("notifyTestFailed"), e),
+                )
+              }
+            >
+              {t("notifyTest")}
+            </SettingButton>
             <SettingButton onClick={() => void openNotificationSettings().catch(() => {})}>
               {t("notifyMacosOpen")}
             </SettingButton>
@@ -911,6 +963,7 @@ export function SettingsView({
   const [defaultDir, setDefaultDir] = useState("");
   const [fontSize, setFontSize] = useState(13);
   const [uiFont, setUiFontState] = useState<UiFont>(getUiFont);
+  const [terminalFont, setTerminalFontState] = useState<TerminalFont>(getTerminalFont);
   const [uiScale, setUiScaleState] = useState<UiScale>(getUiScale);
   const [effBase, setEffBase] = useState(getEffectiveBase);
 
@@ -971,7 +1024,8 @@ export function SettingsView({
   const importTheme = async () => {
     const path = await openFileDialog({
       multiple: false,
-      filters: [{ name: "Tema Tyba (JSON)", extensions: ["json"] }],
+      // O tema de cor do VS Code ou o do TYBA: o core reconhece qual é.
+      filters: [{ name: t("themeImportFilter"), extensions: ["json", "jsonc"] }],
     });
     if (typeof path !== "string") return;
     try {
@@ -1134,15 +1188,21 @@ export function SettingsView({
                 fontSize={fontSize}
                 footer={toolbarPref.enabled}
                 onImport={() => void importTheme()}
-                onCopyExample={copyThemeExample}
+                onHowTo={() => void openExternalUrl(themeDocsUrl(i18n.language)).catch(() => {})}
               />
               <SettingGroup title={t("cfgGroupText")}>
-                <SettingLine label={t("cfgFont")} hint={t("cfgFontHint")}>
+                {/* Quadro: a fonte do terminal e o tamanho, nessa ordem; a da
+                    interface (escolha do app que o quadro não tem) vem depois. */}
+                <SettingLine label={t("cfgFont")} hint={t("cfgTerminalFontHint")}>
                   <Select
-                    value={uiFont}
-                    onChange={(v) => setUiFont(v as UiFont)}
+                    value={terminalFont}
+                    onChange={(v) => {
+                      const next = parseTerminalFont(v);
+                      setTerminalFontState(next);
+                      setTerminalFont(next);
+                    }}
                     className={SETTING_FIELD}
-                    options={UI_FONTS.map((f) => ({ value: f, label: UI_FONT_LABELS[f] }))}
+                    options={TERMINAL_FONTS.map((f) => ({ value: f, label: t(`cfgTerminalFont_${f}`) }))}
                   />
                 </SettingLine>
                 <SettingLine label={t("cfgSize")}>
@@ -1151,6 +1211,14 @@ export function SettingsView({
                     options={sizeOptions}
                     value={String(fontSize)}
                     onChange={(v) => changeFontSize(Number(v))}
+                  />
+                </SettingLine>
+                <SettingLine label={t("cfgUiFont")} hint={t("cfgFontHint")}>
+                  <Select
+                    value={uiFont}
+                    onChange={(v) => setUiFont(v as UiFont)}
+                    className={SETTING_FIELD}
+                    options={UI_FONTS.map((f) => ({ value: f, label: UI_FONT_LABELS[f] }))}
                   />
                 </SettingLine>
                 <SettingLine label={t("cfgUiScale")} hint={t("cfgUiScaleHint")}>

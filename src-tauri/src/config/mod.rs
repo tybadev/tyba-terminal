@@ -63,6 +63,9 @@ light = "tyba-light"
 ui = "mono"
 # Tamanho da fonte do terminal, de 10 a 20
 terminal_size = 13
+# Fonte do terminal e dos blocos: "jetbrains" (JetBrains Mono, embarcada) ou
+# "system" (a mono do sistema: SF Mono no macOS)
+# terminal = "jetbrains"
 
 [appearance]
 # Ícone do app: blackout, aurora, filamento, assinatura, fosforo, violeta,

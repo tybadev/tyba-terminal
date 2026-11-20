@@ -16,6 +16,11 @@ import type {
 } from "../lib/ipc";
 
 const NOW = Date.now();
+const today = (h: number, m: number) => {
+  const d = new Date(NOW);
+  d.setHours(h, m, 0, 0);
+  return d.getTime();
+};
 const ISO = new Date(NOW - 3_600_000).toISOString();
 
 export const HOME = "~";
@@ -77,6 +82,24 @@ export const SESSIONS: Session[] = [
     agent_model: "Opus 5.5",
     turn_open: true,
     turn_started_at_ms: NOW - 72_000,
+    // O turno das 14:02 da Inbox (quadro: "Ver diff" nele).
+    last_turn: {
+      seq: 4,
+      outcome: "completed",
+      failure: null,
+      started_at_ms: today(14, 2) - 95_000,
+      ended_at_ms: today(14, 2),
+      duration_ms: 95_000,
+      prompt: "Corrige a ordem do desconto no billing",
+      diff: "ok",
+      files: [],
+      files_total: 3,
+      insertions: 42,
+      deletions: 7,
+      commits: 0,
+      cost_usd: 0.62,
+      tokens: null,
+    },
   }),
   session({
     id: ID.site,
@@ -314,9 +337,31 @@ const DARK_TERMINAL = {
   ],
 };
 
+/** Esquema embutido do core (`theme/schemes.rs`), só a paleta do terminal. */
+function scheme(id: string, name: string, base: "dark" | "light", bg: string, fg: string, cursor: string, ansi: string): Theme {
+  return { id, name, base, builtin: true, ui: {}, terminal: { background: bg, foreground: fg, cursor, ansi: ansi.split(" ") } };
+}
+
+// A lista do core: os dois TYBA e os esquemas embutidos, com os nomes de lá.
 export const THEMES: Theme[] = [
-  { id: "tyba-dark", name: "TYBA Escuro", base: "dark", builtin: true, ui: {}, terminal: DARK_TERMINAL },
-  { id: "tyba-light", name: "TYBA Claro", base: "light", builtin: true, ui: {}, terminal: LIGHT_TERMINAL },
+  { id: "tyba-dark", name: "TYBA Dark", base: "dark", builtin: true, ui: {}, terminal: DARK_TERMINAL },
+  { id: "tyba-light", name: "TYBA Light", base: "light", builtin: true, ui: {}, terminal: LIGHT_TERMINAL },
+  scheme("solarized-dark", "Solarized Dark", "dark", "#002b36", "#93a1a1", "#859900", "#073642 #dc322f #859900 #b58900 #268bd2 #d33682 #2aa198 #93a1a1 #586e75 #e25754 #a3bf00 #c29e2e #4da0da #6c71c4 #50b2ab #ffffff"),
+  scheme("solarized-light", "Solarized Light", "light", "#f5efdc", "#073642", "#859900", "#073642 #dc322f #859900 #b58900 #268bd2 #d33682 #2aa198 #eee8d5 #93a1a1 #e25754 #98ad10 #c29e2e #4da0da #6c71c4 #50b2ab #ffffff"),
+  scheme("dracula", "Dracula", "dark", "#282a36", "#f8f8f2", "#50fa7b", "#2f313f #ff5555 #50fa7b #ffb86c #7b9eff #ff79c6 #8be9fd #f8f8f2 #6272a4 #ff7474 #7dfc9d #ffc586 #93afff #bd93f9 #a0edfd #ffffff"),
+  scheme("dracula-light", "Dracula Light (Alucard)", "light", "#f8f3de", "#1f1f1f", "#14710a", "#1f1f1f #cb3a2a #14710a #a34d14 #2f5fc9 #a3144d #036a96 #efead5 #918c73 #d45d50 #3d8f2a #b46d3e #547cd3 #644ac9 #3085a9 #ffffff"),
+  scheme("gruvbox-dark", "Gruvbox Dark", "dark", "#282828", "#ebdbb2", "#b8bb26", "#32302f #fb4934 #b8bb26 #fabd2f #83a598 #d3869b #8ec07c #ebdbb2 #928374 #fc6a59 #d5dc3a #fbc954 #99b5ab #b16286 #a2cb94 #ffffff"),
+  scheme("gruvbox-light", "Gruvbox Light", "light", "#f2e5bc", "#3c3836", "#79740e", "#3c3836 #9d0006 #79740e #b57614 #076678 #b16286 #427b58 #ebdbb2 #928374 #af2e33 #98971a #c28f3e #348290 #8f3f71 #649376 #ffffff"),
+  scheme("github-dark", "GitHub Dark", "dark", "#0d1117", "#e6edf3", "#3fb950", "#161b22 #f85149 #3fb950 #d29922 #58a6ff #db61a2 #39c5cf #e6edf3 #6e7681 #f9706a #56d364 #daab4a #76b6ff #a371f7 #5dcfd8 #ffffff"),
+  scheme("github-light", "GitHub Light", "light", "#f6f8fa", "#1f2328", "#1a7f37", "#1f2328 #cf222e #1a7f37 #9a6700 #0969da #bf3989 #1b7c83 #eaeef2 #8c959f #d84a54 #2da44e #ac822e #3584e1 #8250df #449499 #ffffff"),
+  scheme("monokai", "Monokai", "dark", "#272822", "#f8f8f2", "#a6e22e", "#2e2f28 #fc4c3f #a6e22e #fd971f #66d9ef #f92672 #a1efe4 #f8f8f2 #75715e #fd6c62 #c4f04a #fdaa47 #82e0f2 #ae81ff #b2f2e9 #ffffff"),
+  scheme("monokai-pro", "Monokai Pro", "dark", "#2d2a2e", "#fcfcfa", "#a9dc76", "#353236 #f4485c #a9dc76 #fc9867 #78dce8 #ff6188 #7ce8cd #fcfcfa #939293 #f66979 #c0e392 #fdab82 #90e2ec #ab9df2 #94ecd6 #ffffff"),
+  scheme("monokai-machine", "Monokai Pro Machine", "dark", "#273136", "#f2fffc", "#a2e57b", "#2d3a40 #f4536a #a2e57b #ffb270 #7cd5f1 #ff6d7e #7fe0ce #f2fffc #6b7678 #f67285 #baf090 #ffc08a #94ddf4 #baa0f8 #96e6d7 #ffffff"),
+  scheme("monokai-octagon", "Monokai Pro Octagon", "dark", "#282a3a", "#eaf2f1", "#bad761", "#2f3142 #f4506b #bad761 #ff9b5e #9cd1bb #ff657a #8ce0d8 #eaf2f1 #696d77 #f67086 #d2e87e #ffad7b #aed9c7 #c39ac9 #a1e6df #ffffff"),
+  scheme("monokai-ristretto", "Monokai Pro Ristretto", "dark", "#2c2525", "#fff1f3", "#adda78", "#342c2c #f04a60 #adda78 #f38d70 #85dacc #fd6883 #7fe4c8 #fff1f3 #72696a #f36b7d #c5ea90 #f5a28a #9be1d5 #a8a9eb #96e9d2 #ffffff"),
+  scheme("monokai-spectrum", "Monokai Pro Spectrum", "dark", "#222222", "#f7f1ff", "#7bd88f", "#2a2a2b #f0485e #7bd88f #fd9353 #5ad4e6 #fc618d #62e2cc #f7f1ff #69676c #f3697b #97e5a6 #fda672 #78dcea #948ae3 #7ee7d5 #ffffff"),
+  scheme("monokai-light", "Monokai Pro Light", "light", "#faf4f2", "#29242a", "#269d69", "#29242a #d0342c #269d69 #cc7a0a #1c8ca8 #e14775 #1da08a #ede7e5 #a59fa0 #d85952 #4db07e #d59236 #45a1b8 #7058be #46b19f #ffffff"),
+  scheme("mono-dark", "Mono Dark", "dark", "#151313", "#eeffff", "#ffd867", "#1a1616 #ff5370 #c3e88d #ffcb6b #82aaff #f07178 #89ddff #eeffff #5c595f #ff728a #d7f2ab #ffd486 #98b9ff #c792ea #9ee3ff #ffffff"),
 ];
 
 function note(over: Partial<NotificationEntry> & Pick<NotificationEntry, "id" | "kind" | "category">): NotificationEntry {
@@ -338,12 +383,6 @@ function note(over: Partial<NotificationEntry> & Pick<NotificationEntry, "id" | 
   };
 }
 
-const today = (h: number, m: number) => {
-  const d = new Date(NOW);
-  d.setHours(h, m, 0, 0);
-  return d.getTime();
-};
-
 export const NOTIFICATIONS: NotificationEntry[] = [
   note({
     id: 5,
@@ -352,6 +391,7 @@ export const NOTIFICATIONS: NotificationEntry[] = [
     at_ms: NOW - 40_000,
     pending: true,
     command: "bun run test",
+    read: true,
   }),
   note({
     id: 4,
@@ -380,7 +420,6 @@ export const NOTIFICATIONS: NotificationEntry[] = [
     session_title: "core",
     agent: "claude",
     usage: { window: "five_hour", pct: 85, resets_at: Math.floor(today(16, 0) / 1000) },
-    read: true,
   }),
   note({
     id: 1,
@@ -480,6 +519,16 @@ export const BLOCKS: Record<string, Block[]> = {
   [ID.server]: [
     block(3, ID.server, "curl localhost:3000/billing", 1, 200, ["error: discount_after_tax"]),
   ],
+  // O Terminal · api do quadro Orbit.
+  "orbit-term": [
+    block(4, "orbit-term", "ls -la", 0, 600, [
+      "drwxr-xr-x   8 dev  staff   256 Oct 14 docs",
+      "drwxr-xr-x 128 dev  staff  4096 Oct 15 drizzle",
+      "-rw-r--r--   1 dev  staff  1786 Oct  5 package.json",
+      "drwxr-xr-x   5 dev  staff   160 Oct  5 src",
+      "drwxr-xr-x   6 dev  staff   192 Oct  5 test",
+    ]),
+  ],
 };
 
 const ESC = "\x1b[";
@@ -533,6 +582,23 @@ export const SCREENS: Record<string, string> = {
   ]),
 };
 SCREENS[ID.core] = SCREENS[ID.claudeSplit];
+
+// O run ao vivo do quadro Orbit: o shell do Terminal · api e o claude do Revisor.
+SCREENS["orbit-term"] = nl([
+  `${ESC}34m❯${ESC}0m ls -la`,
+  "drwxr-xr-x   8 dev  staff   256 Oct 14 docs",
+  "drwxr-xr-x 128 dev  staff  4096 Oct 15 drizzle",
+  "-rw-r--r--   1 dev  staff  1786 Oct  5 package.json",
+  "drwxr-xr-x   5 dev  staff   160 Oct  5 src",
+  "drwxr-xr-x   6 dev  staff   192 Oct  5 test",
+]);
+SCREENS["orbit-rev"] = nl([
+  `${orange("●")} Li o contexto do Terminal · api.`,
+  dim("  ⎿ Leu billing.service.ts (180 linhas)"),
+  `${orange("●")} Quero rodar os testes antes de revisar.`,
+  "",
+  `Rodar ${bold("bun run test")}? · responda no prompt do agente`,
+]);
 // Quadro Shell: o claude digitado no zsh, rodando há 1m 12s, embaixo dos blocos.
 SCREENS[ID.dev] = SCREENS[ID.claudeSplit].split("\r\n").slice(0, 3).join("\r\n") + "\r\n";
 

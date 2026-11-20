@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { TERMINAL_FONT_EVENT, getTerminalFont, terminalFontFamily } from "@/lib/terminalFont";
 import {
   ArrowCounterClockwise,
   Info,
@@ -644,8 +645,8 @@ export function TerminalView({
       // Cor RGB/256 forçada pelo programa (o Monokai do `bat`) sem contraste
       // contra o papel é escurecida ou clareada até 4.5 — padrão do VS Code.
       minimumContrastRatio: MIN_CONTRAST,
-      fontFamily:
-        '"JetBrains Mono", "Symbols Nerd Font Mono", "Fira Code", ui-monospace, SFMono-Regular, Menlo, monospace',
+      // A escolha das Configurações (Fonte do terminal), a mesma dos blocos.
+      fontFamily: terminalFontFamily(getTerminalFont()),
       fontSize: defaultFontSize,
       lineHeight: TERMINAL_LINE_HEIGHT,
       cursorBlink: true,
@@ -1132,6 +1133,13 @@ export function TerminalView({
         schedule();
       }
     };
+    const onTerminalFont = (e: Event) => {
+      const family = (e as CustomEvent<string>).detail;
+      if (typeof family !== "string" || family === term.options.fontFamily) return;
+      term.options.fontFamily = family;
+      term.clearTextureAtlas();
+      schedule();
+    };
     const onMouseDown = () => onFocusRef.current?.();
     // Clique para selecionar continua funcionando; clique "para posicionar o
     // cursor" devolve o foco a quem de fato edita a linha.
@@ -1217,6 +1225,7 @@ export function TerminalView({
     };
     window.addEventListener(RELAYOUT_EVENT, onRelayout);
     window.addEventListener(FONT_SIZE_EVENT, onFontSize);
+    window.addEventListener(TERMINAL_FONT_EVENT, onTerminalFont);
     el.addEventListener("mousedown", onMouseDown);
     el.addEventListener("mouseup", onMouseUp);
     el.addEventListener("paste", onNativePaste, true);
@@ -1235,6 +1244,7 @@ export function TerminalView({
       ro.disconnect();
       window.removeEventListener(RELAYOUT_EVENT, onRelayout);
       window.removeEventListener(FONT_SIZE_EVENT, onFontSize);
+      window.removeEventListener(TERMINAL_FONT_EVENT, onTerminalFont);
       el.removeEventListener("mousedown", onMouseDown);
     el.removeEventListener("mouseup", onMouseUp);
       el.removeEventListener("paste", onNativePaste, true);
