@@ -263,6 +263,7 @@ impl RunHost for Arc<ClaudeHost> {
             on_turn,
             on_exit,
             on_state,
+            None,
         );
         Ok(session)
     }
