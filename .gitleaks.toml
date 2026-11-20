@@ -18,4 +18,7 @@ regexes = [
   '''sk-abcdefghij0123456789ABCD''',
   '''abc123def456''',
   '''eyJhbGciOiJIUzI1NiJ9\.eyJzdWIiOiIxMjM0NTY3ODkwIn0\.''',
+  # Chave PEM falsa dos testes da CLI (src-tauri/src/cli/tests.rs): o corpo é a
+  # constante FAKE_KEY_BODY ("FAKEFAKE…" em base64), não uma chave.
+  '''PRIVATE KEY-----",\s*FAKE_KEY_BODY,''',
 ]
