@@ -498,7 +498,7 @@ export function FilesScreen({
                         className={`shrink-0 ${on ? langGlyph(f.rel).className : ""}`}
                       />
                       <span className={f.preview ? "italic" : ""}>{baseName(f.rel)}</span>
-                      <span className="relative flex size-4 shrink-0 items-center justify-center">
+                      <span className="relative flex size-3 shrink-0 items-center justify-center">
                         {dirty && (
                           <span
                             aria-label={t("filesScreenUnsaved")}

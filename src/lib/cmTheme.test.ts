@@ -16,6 +16,10 @@ const ROLES: (keyof SyntaxPalette)[] = [
   "variable",
   "tag",
   "invalid",
+  "flow",
+  "literal",
+  "property",
+  "bracket",
 ];
 
 describe("cmPalette", () => {
@@ -34,6 +38,9 @@ describe("cmPalette", () => {
     expect(cmPalette(false).keyword).toBe("#7a4ce8");
     expect(cmPalette(false).function).toBe("#1152d2");
     expect(cmPalette(true).string).not.toBe(cmPalette(false).string);
+    // Quadro Files: `return`/`export` e `false` no violeta da palavra-chave.
+    expect(cmPalette(false).flow).toBe(cmPalette(false).keyword);
+    expect(cmPalette(false).literal).toBe(cmPalette(false).keyword);
   });
 });
 

@@ -52,6 +52,7 @@ const detail = (over: Partial<PrDetail> = {}): PrDetail => ({
   url: "https://example.test/pr/42",
   state: "open",
   author: "dono",
+  author_name: null,
   head: "feat/health",
   base: "main",
   head_sha: "c".repeat(40),
@@ -155,8 +156,8 @@ describe("buildTimeline", () => {
         { sha: "c".repeat(40), subject: "três", author: "dono", authored_at: "2026-01-01T12:00:00Z" },
       ],
       reviews: [
-        { author: "ana", state: "changes_requested", submitted_at: "2026-01-01T11:00:00Z", body: "falta versão", commit: "b".repeat(40) },
-        { author: "ana", state: "commented", submitted_at: "2026-01-01T11:01:00Z", body: "", commit: null },
+        { author: "ana", author_name: null, state: "changes_requested", submitted_at: "2026-01-01T11:00:00Z", body: "falta versão", commit: "b".repeat(40) },
+        { author: "ana", author_name: null, state: "commented", submitted_at: "2026-01-01T11:01:00Z", body: "", commit: null },
       ],
     });
     expect(buildTimeline(pr).map((e) => (e.kind === "commits" ? `commits:${e.commits.length}` : e.kind))).toEqual([
@@ -187,8 +188,8 @@ describe("timelineEventId", () => {
   test("revisões do mesmo autor em horas diferentes têm chaves diferentes", () => {
     const pr = detail({
       reviews: [
-        { author: "ana", state: "changes_requested", submitted_at: "2026-01-01T11:00:00Z", body: "x", commit: null },
-        { author: "ana", state: "approved", submitted_at: "2026-01-01T12:00:00Z", body: "y", commit: null },
+        { author: "ana", author_name: null, state: "changes_requested", submitted_at: "2026-01-01T11:00:00Z", body: "x", commit: null },
+        { author: "ana", author_name: null, state: "approved", submitted_at: "2026-01-01T12:00:00Z", body: "y", commit: null },
       ],
     });
     const ids = buildTimeline(pr).map(timelineEventId);
@@ -201,10 +202,10 @@ describe("reviewerStates", () => {
     const pr = detail({
       commits: [{ sha: "c".repeat(40), subject: "fix", author: "dono", authored_at: "2026-01-01T12:00:00Z" }],
       reviews: [
-        { author: "joao", state: "changes_requested", submitted_at: "2026-01-01T10:00:00Z", body: "", commit: "c".repeat(40) },
-        { author: "joao", state: "approved", submitted_at: "2026-01-01T13:00:00Z", body: "", commit: "c".repeat(40) },
-        { author: "ana", state: "changes_requested", submitted_at: "2026-01-01T11:00:00Z", body: "", commit: "b".repeat(40) },
-        { author: "dono", state: "commented", submitted_at: "2026-01-01T11:00:00Z", body: "x", commit: null },
+        { author: "joao", author_name: null, state: "changes_requested", submitted_at: "2026-01-01T10:00:00Z", body: "", commit: "c".repeat(40) },
+        { author: "joao", author_name: null, state: "approved", submitted_at: "2026-01-01T13:00:00Z", body: "", commit: "c".repeat(40) },
+        { author: "ana", author_name: null, state: "changes_requested", submitted_at: "2026-01-01T11:00:00Z", body: "", commit: "b".repeat(40) },
+        { author: "dono", author_name: null, state: "commented", submitted_at: "2026-01-01T11:00:00Z", body: "x", commit: null },
       ],
       pending_reviewers: ["maria", "ana"],
     });
@@ -212,6 +213,22 @@ describe("reviewerStates", () => {
       { author: "joao", state: "approved", staleSince: null },
       { author: "ana", state: "changes_requested", staleSince: "ccccccc" },
       { author: "maria", state: "requested", staleSince: null },
+    ]);
+  });
+
+  test("quem só comentou aparece; comentário depois de aprovar não apaga a aprovação", () => {
+    const pr = detail({
+      commits: [{ sha: "c".repeat(40), subject: "fix", author: "dono", authored_at: "2026-01-01T12:00:00Z" }],
+      reviews: [
+        { author: "joao", author_name: null, state: "approved", submitted_at: "2026-01-01T10:00:00Z", body: "", commit: "c".repeat(40) },
+        { author: "joao", author_name: null, state: "commented", submitted_at: "2026-01-01T13:00:00Z", body: "x", commit: "c".repeat(40) },
+        { author: "ana", author_name: null, state: "commented", submitted_at: "2026-01-01T11:00:00Z", body: "y", commit: "b".repeat(40) },
+      ],
+      pending_reviewers: [],
+    });
+    expect(reviewerStates(pr)).toEqual([
+      { author: "joao", state: "approved", staleSince: null },
+      { author: "ana", state: "commented", staleSince: "ccccccc" },
     ]);
   });
 });

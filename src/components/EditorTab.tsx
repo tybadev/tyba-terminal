@@ -1,9 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ArrowSquareOut, Warning, Wrench } from "@phosphor-icons/react";
+import { ArrowSquareOut, GitDiff, Warning, Wrench } from "@phosphor-icons/react";
 
 import { Button } from "@/components/ui/button";
-import { GitIcon } from "./icons/GitIcon";
 
 import type {
   GutterMarker,
@@ -488,12 +487,17 @@ export function EditorTab({
               <span className={i === parts.length - 1 ? "font-semibold text-tyba-text" : ""}>{part}</span>
             </span>
           ))}
-          {symbols.map((sym, i) => (
-            <span key={`s${i}`} className="flex items-center gap-1">
-              <span aria-hidden>›</span>
-              <span className="text-tyba-text-muted">{sym}</span>
+          {/* Quadro Files (`.q-sym`): o símbolo sai na fonte da UI, depois da folga. */}
+          {symbols.length > 0 && (
+            <span className="ml-1 flex items-center gap-1 [font-family:var(--tyba-font-ui)] text-tyba-text-muted">
+              {symbols.map((sym, i) => (
+                <span key={`s${i}`} className="flex items-center gap-1">
+                  <span aria-hidden>›</span>
+                  {sym}
+                </span>
+              ))}
             </span>
-          ))}
+          )}
         </nav>
         {isMarkdown && (
           <div
@@ -523,7 +527,7 @@ export function EditorTab({
           onClick={onOpenDiff}
           className="flex shrink-0 items-center gap-[5px] text-tyba-text-muted hover:text-tyba-text"
         >
-          <GitIcon size={12} />
+          <GitDiff size={12} />
           {t("editorDiffHead")}
         </button>
         <button

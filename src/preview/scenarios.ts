@@ -2,12 +2,14 @@
 // próprio app (menu, ação de store, clique), nunca montando componente à parte.
 
 import { emit } from "@tauri-apps/api/event";
+import { EditorView } from "@codemirror/view";
 
 import { openGitScreen } from "../lib/gitScreen";
 import { requestHandoff } from "../lib/handoff";
 import { dockerScreenSelect, openDockerPanel, openFilesPanel } from "../lib/ipc";
 import type { setup } from "./core";
-import { ID, SESSIONS, TURN_HANDOFF } from "./fixtures";
+import { ID, REPO, SESSIONS, TURN_HANDOFF } from "./fixtures";
+import { GIT_SESSION } from "./fixtures-screens";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -43,21 +45,32 @@ export const SCENARIO_SETUP: Record<string, Parameters<typeof setup>[0]> = {
     drawer: { session_id: ID.claudeApi, open: true, tab: "agents", outcome_seen: false },
   },
   handoff: { workspace: "ws-api", tab: "tab-api-claude" },
-  "git-prs": { workspace: "ws-api", tab: "tab-api-claude" },
-  "git-pr-detail": { workspace: "ws-api", tab: "tab-api-claude" },
-  "git-ci": { workspace: "ws-api", tab: "tab-api-claude" },
+  "git-prs": { workspace: "ws-api", tab: "tab-api-claude", sessions: GIT_SESSION },
+  "git-pr-detail": { workspace: "ws-api", tab: "tab-api-claude", sessions: GIT_SESSION },
+  "git-ci": { workspace: "ws-api", tab: "tab-api-claude", sessions: GIT_SESSION },
   docker: { workspace: "ws-api", tab: "tab-api-claude" },
   files: {
     workspace: "ws-tyba-terminal",
     files: {
       section: "files",
+      // Quadro: CLAUDE.md é a aba de prévia (itálico, sem X).
       tabs: ["src/components/TurnPanel.tsx", "src/components/HandoffSheet.tsx", "CLAUDE.md"].map((rel) => ({
         view: `editor:${ID.tyba}:${rel}`,
-        preview: false,
+        preview: rel === "CLAUDE.md",
       })),
       active: `editor:${ID.tyba}:src/components/TurnPanel.tsx`,
       recent: [],
     },
+    snapshots: [
+      {
+        ahead: 0,
+        behind: 0,
+        upstream: "origin/feat/handoff-agentes-ui",
+        root: REPO.tyba,
+        branch: "feat/handoff-agentes-ui",
+        status: { dirty: true, changed: 4, insertions: 42, deletions: 7 },
+      },
+    ],
   },
 };
 
@@ -70,7 +83,30 @@ export const SCENARIOS: Record<string, () => Promise<unknown> | void> = {
   "git-prs": () => openGitScreen(ID.claudeApi, "prs"),
   "git-pr-detail": () => openGitScreen(ID.claudeApi, "prs", 437),
   "git-ci": () => openGitScreen(ID.claudeApi, "ci"),
-  files: () => openFilesPanel(ID.tyba),
+  files: async () => {
+    await openFilesPanel(ID.tyba);
+    // Como o dono faria: abre src e components na árvore...
+    const row = (name: string) =>
+      waitFor(() =>
+        [...document.querySelectorAll<HTMLElement>("div.group")].find(
+          (el) => el.textContent?.trim() === name,
+        ),
+      );
+    (await row("src")).click();
+    (await row("components")).click();
+    // ...apaga o espaço no fim da linha 47 (aba suja), põe o cursor na
+    // coluna 18 e rola até a 40 no topo, como no quadro.
+    const content = await waitFor(() => document.querySelector<HTMLElement>(".cm-content"));
+    const view = await waitFor(() => EditorView.findFromDOM(content));
+    await sleep(200);
+    const l47 = view.state.doc.line(47);
+    view.dispatch({ changes: { from: l47.to - 1, to: l47.to } });
+    const l40 = view.state.doc.line(40);
+    view.dispatch({
+      selection: { anchor: view.state.doc.line(47).from + 17 },
+      effects: EditorView.scrollIntoView(l40.from, { y: "start", yMargin: 9 }),
+    });
+  },
   docker: async () => {
     await openDockerPanel(ID.claudeApi);
     await dockerScreenSelect("ws-api", "c-postgres18");

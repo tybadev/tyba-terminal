@@ -8,7 +8,7 @@
         "url": "https://github.com/exemplo/app/pull/42",
         "state": "OPEN",
         "isDraft": false,
-        "author": { "login": "ana-dev" },
+        "author": { "login": "ana-dev", "name": "Ana Exemplo" },
         "headRefName": "tyba/tela-exemplo-ab12",
         "baseRefName": "main",
         "headRefOid": "2222222222222222222222222222222222222222",
@@ -42,8 +42,8 @@
           { "__typename": "StatusContext", "context": "ci/externo", "state": "ERROR", "targetUrl": "https://ci.exemplo.invalid/1", "createdAt": "2026-01-02T09:00:00Z" }
         ] } } } } ] },
         "reviews": { "totalCount": 2, "nodes": [
-          { "author": { "login": "carla-dev" }, "state": "CHANGES_REQUESTED", "body": "faltou teste", "submittedAt": "2026-01-02T10:00:00Z", "commit": { "oid": "1111111111111111111111111111111111111111" } },
-          { "author": { "login": "beto-dev" }, "state": "APPROVED", "body": "", "submittedAt": "2026-01-02T11:00:00Z", "commit": { "oid": "2222222222222222222222222222222222222222" } }
+          { "author": { "login": "carla-dev", "name": "Carla Dev" }, "state": "CHANGES_REQUESTED", "body": "faltou teste", "submittedAt": "2026-01-02T10:00:00Z", "commit": { "oid": "1111111111111111111111111111111111111111" } },
+          { "author": { "login": "beto-dev", "name": "" }, "state": "APPROVED", "body": "", "submittedAt": "2026-01-02T11:00:00Z", "commit": { "oid": "2222222222222222222222222222222222222222" } }
         ] },
         "reviewRequests": { "nodes": [
           { "requestedReviewer": { "__typename": "User", "login": "eu-mesmo" } },

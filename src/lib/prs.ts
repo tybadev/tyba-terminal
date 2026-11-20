@@ -216,17 +216,23 @@ export function timelineEventId(event: TimelineEvent): string {
 export type ReviewerRow = {
   author: string;
   state: PrReview["state"] | "requested";
-  /** Mudanças pedidas num commit que já não é o último: revisão nova pendente. */
+  /** Mudanças pedidas (ou comentário) num commit que já não é o último:
+   * revisão nova pendente. */
   staleSince: string | null;
 };
 
 export function reviewerStates(pr: PrDetail): ReviewerRow[] {
+  // A revisão que decide (aprovou, pediu mudanças, descartada) vale sobre um
+  // comentário depois dela, como no GitHub; quem só comentou aparece como
+  // "comentou" (quadro GitPrDetail).
   const latest = new Map<string, PrReview>();
   for (const review of pr.reviews) {
-    if (review.state === "pending" || review.state === "commented") continue;
+    if (review.state === "pending") continue;
     if (review.author === pr.author) continue;
     const prev = latest.get(review.author);
-    if (!prev || time(review.submitted_at) >= time(prev.submitted_at)) {
+    const decides = review.state !== "commented";
+    const prevDecides = prev !== undefined && prev.state !== "commented";
+    if (!prev || (decides && !prevDecides) || (decides === prevDecides && time(review.submitted_at) >= time(prev.submitted_at))) {
       latest.set(review.author, review);
     }
   }
@@ -235,7 +241,10 @@ export function reviewerStates(pr: PrDetail): ReviewerRow[] {
     author: review.author,
     state: review.state,
     staleSince:
-      review.state === "changes_requested" && review.commit && head && review.commit !== head
+      (review.state === "changes_requested" || review.state === "commented") &&
+      review.commit &&
+      head &&
+      review.commit !== head
         ? head.slice(0, 7)
         : null,
   }));
