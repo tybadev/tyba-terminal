@@ -24,6 +24,7 @@ import {
   applyEdgeChanges,
   applyNodeChanges,
   getBezierPath,
+  useNodesInitialized,
   useReactFlow,
   useStore,
   type FinalConnectionState,
@@ -397,6 +398,15 @@ const modKey = IS_MAC ? "⌘" : "Ctrl+";
  * Nó novo nasce pela paleta (duplo clique, ⌘K, "/" ou ligação solta no
  * vazio), sempre num espaço livre.
  */
+
+/** Enquadrar o grafo (ao abrir e no "Ajustar"): o quadro Orbit mostra o grafo
+ *  a 116%, então o enquadramento pode passar de 100% até aí. Em cima, o
+ *  respiro da barra do grafo, que flutua sobre o canvas. */
+const FIT_VIEW = {
+  padding: { top: "76px", bottom: "24px", x: "5%" },
+  maxZoom: 1.16,
+} as const;
+
 export function OrbitCanvas({
   nodes,
   edges,
@@ -1111,7 +1121,7 @@ export function OrbitCanvas({
         void zoomTo(1, { duration: 150 });
         return;
       case "fit":
-        void fitView({ padding: 0.15, maxZoom: 1, duration: 200 });
+        void fitView({ ...FIT_VIEW, duration: 200 });
         return;
       case "palette":
         openPalette(pointer.current, null, true);
@@ -1171,6 +1181,17 @@ export function OrbitCanvas({
   }, [cardIdsKey, onCardApprovals]);
   useEffect(() => () => onCardApprovals(new Set()), [onCardApprovals]);
   const showMinimap = minimap ?? overflow;
+
+  // Enquadrar ao abrir só com TODOS os nós medidos: o `fitView` de montagem
+  // do xyflow enquadrava o primeiro nó medido (o Terminal) e deixava os
+  // outros cortados fora da vista.
+  const nodesReady = useNodesInitialized();
+  const framed = useRef(false);
+  useEffect(() => {
+    if (!nodesReady || framed.current) return;
+    framed.current = true;
+    void fitView(FIT_VIEW);
+  }, [nodesReady, fitView]);
   const nodeColor = useCallback(
     (n: CanvasNode) =>
       isSubagentNodeId(n.id)
@@ -1226,8 +1247,6 @@ export function OrbitCanvas({
             zoomOnDoubleClick={false}
             minZoom={0.2}
             maxZoom={2}
-            fitView
-            fitViewOptions={{ padding: 0.15, maxZoom: 1 }}
             proOptions={{ hideAttribution: true }}
             connectionLineStyle={{ stroke: "var(--tyba-violet)", strokeWidth: 1.6 }}
             aria-label={t("orbitCanvas")}
