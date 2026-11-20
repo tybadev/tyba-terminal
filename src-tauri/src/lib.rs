@@ -471,13 +471,16 @@ fn poll_agent_probers(app: &AppHandle) {
             },
             approvals::now_ms(),
         );
-        // O claude digitado no Terminal pede permissão na sessão do shell.
+        // O claude digitado no Terminal pede permissão, pergunta ou fecha o
+        // turno na sessão do shell. Fim de turno só com o agente de pé: o
+        // shell parado no prompt não espera ninguém.
         runs.terminal_attention(
             &|session| {
-                SessionId::parse_str(session)
-                    .ok()
-                    .and_then(|id| state.sessions.get(id))
-                    .and_then(|s| orbit::agent::waiting_you(Some(&s.status)))
+                let id = SessionId::parse_str(session).ok()?;
+                let attention = orbit::agent::waiting_you(Some(&state.sessions.get(id)?.status))?;
+                (attention.reason != orbit::agent::WaitReason::TurnEnd
+                    || prober.detected(id).is_some())
+                .then_some(attention)
             },
             approvals::now_ms(),
         );
@@ -10424,6 +10427,18 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .on_window_event(|window, event| {
+            // Clicar no aviso do sistema traz a janela: a primeira volta de
+            // foco depois dele vai ao nó do Orbit que ainda espera o dono.
+            if matches!(event, tauri::WindowEvent::Focused(true)) && window.label() == "main" {
+                if let Some(id) = agent::notify::click_target().take(std::time::Instant::now()) {
+                    let waits = window
+                        .try_state::<orbit::run::SharedRuns>()
+                        .is_some_and(|runs| runs.waits_for_you(&id.to_string()));
+                    if waits {
+                        let _ = window.emit(orbit::run::EVENT_FOCUS_SESSION, id);
+                    }
+                }
+            }
             if matches!(event, tauri::WindowEvent::Destroyed) {
                 if let Some(state) = window.try_state::<AppState>() {
                     state.pty_pool.drop_window_attachers(window.label());
