@@ -61,7 +61,6 @@ import {
   dockerOpenDesktop,
   dockerPanelUsage,
   dockerRemoveContainer,
-  dockerScreenLogs,
   dockerScreenPane,
   dockerScreenHideStopped,
   dockerScreenSection,
@@ -105,16 +104,13 @@ const PANE_LABEL: Record<ContainerPane, string> = {
 const FULL_RECT = { left: 0, top: 0, width: 100, height: 100 } as const;
 
 /** O shell do container dentro da tela: `docker exec` no container, nunca na
- *  máquina local — a faixa azul diz isso antes de qualquer comando. Em sessão
- *  SSH os logs são a mesma coisa sem a faixa: um `docker logs -f` no servidor. */
+ *  máquina local — a faixa azul diz isso antes de qualquer comando. */
 function ShellPane({
-  kind = "shell",
   containerId,
   host,
   exitedOf,
   onSessionsChanged,
 }: {
-  kind?: "shell" | "logs";
   containerId: string;
   host: string | null;
   exitedOf: (id: SessionId) => boolean;
@@ -133,7 +129,7 @@ function ShellPane({
     let alive = true;
     setSessionId(null);
     setError(null);
-    void (kind === "logs" ? dockerScreenLogs : dockerScreenShell)(containerId, host)
+    void dockerScreenShell(containerId, host)
       .then((id) => {
         if (alive) setSessionId(id);
         changedRef.current();
@@ -144,12 +140,12 @@ function ShellPane({
     return () => {
       alive = false;
     };
-  }, [kind, containerId, host, nonce, t]);
+  }, [containerId, host, nonce, t]);
 
   const exited = sessionId ? exitedOf(sessionId) : false;
   return (
     <div className="absolute inset-0 flex flex-col">
-      {kind === "shell" && <ContainerShellBanner containerId={containerId} />}
+      <ContainerShellBanner containerId={containerId} />
       {error ? (
         <p role="alert" className="px-[18px] py-3 text-[12px] text-tyba-red">
           {error}
@@ -175,7 +171,7 @@ function ShellPane({
               className="absolute bottom-3 right-4"
             >
               <ArrowClockwise />
-              {t(kind === "logs" ? "dockerScreenLogsReopen" : "dockerScreenShellReopen")}
+              {t("dockerScreenShellReopen")}
             </Button>
           )}
         </div>
@@ -901,16 +897,12 @@ export function DockerScreen({
                     >
                       {CONTAINER_PANES.map((pane) => {
                         const on = pane === state.pane;
-                        // Arquivos lê o docker local; logs remotos viram terminal.
-                        const disabled = host !== null && pane === "files";
                         return (
                           <button
                             key={pane}
                             type="button"
                             role="tab"
                             aria-selected={on}
-                            disabled={disabled}
-                            title={disabled ? t("dockerScreenLocalOnly") : undefined}
                             onClick={() => showPane(pane)}
                             className={`rounded-[6px] px-3 py-[5px] text-[12px] disabled:opacity-40 ${
                               on
@@ -937,23 +929,14 @@ export function DockerScreen({
                     )}
                   </div>
                   <div className="relative min-h-0 flex-1">
-                    {state.pane === "logs" &&
-                      (host ? (
-                        <ShellPane
-                          key={selected.id}
-                          kind="logs"
-                          containerId={selected.id}
-                          host={host}
-                          exitedOf={exitedOf}
-                          onSessionsChanged={onSessionsChanged}
-                        />
-                      ) : (
-                        <ContainerLogsView
-                          key={selected.id}
-                          containerId={selected.id}
-                          restartNonce={logsRestart}
-                        />
-                      ))}
+                    {state.pane === "logs" && (
+                      <ContainerLogsView
+                        key={selected.id}
+                        containerId={selected.id}
+                        host={host}
+                        restartNonce={logsRestart}
+                      />
+                    )}
                     {state.pane === "shell" &&
                       (selected.state === "running" ? (
                         <ShellPane
@@ -968,13 +951,13 @@ export function DockerScreen({
                         </p>
                       ))}
                     {state.pane === "files" &&
-                      (host ? (
-                        <p className="px-[18px] py-3 text-[12px] text-tyba-text-faint">
-                          {t("dockerScreenLocalOnly")}
-                        </p>
-                      ) : selected.state === "running" ? (
+                      (selected.state === "running" ? (
                         <div className="absolute inset-0 flex">
-                          <ContainerFilesPanel key={selected.id} containerId={selected.id} />
+                          <ContainerFilesPanel
+                            key={selected.id}
+                            containerId={selected.id}
+                            host={host}
+                          />
                         </div>
                       ) : (
                         <p className="px-[18px] py-3 text-[12px] text-tyba-text-faint">

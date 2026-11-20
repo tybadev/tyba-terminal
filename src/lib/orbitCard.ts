@@ -404,8 +404,8 @@ export interface WaitingRow {
 
 /**
  * A fila de atenção da execução à vista: a ordem do core (o mais antigo
- * primeiro), só quem ainda espera agora. Agente que só terminou e processo
- * que caiu nunca estão nela (o core só põe o pedido de permissão).
+ * primeiro), só quem ainda espera agora: permissão, pergunta ou fim de turno.
+ * Processo que caiu nunca está nela.
  */
 export function waitingQueue(run: Run | null, nodes: readonly OrbitNode[]): WaitingRow[] {
   if (!run || run.status !== "running") return [];

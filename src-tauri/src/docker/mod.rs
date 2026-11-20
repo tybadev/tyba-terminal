@@ -156,15 +156,12 @@ pub enum ContainerTab {
     /// O shell da tela de Docker: mesmo `docker exec`, mas sem aba — mora
     /// dentro da tela e morre quando ela fecha.
     ScreenShell,
-    /// Os logs da tela de Docker para container remoto: mesmo `docker logs
-    /// -f` da aba, também sem aba e com a vida da tela.
-    ScreenLogs,
 }
 
 impl ContainerTab {
     /// Mora dentro da tela de Docker (não numa aba).
     pub fn is_screen(self) -> bool {
-        matches!(self, ContainerTab::ScreenShell | ContainerTab::ScreenLogs)
+        matches!(self, ContainerTab::ScreenShell)
     }
 }
 
@@ -1144,6 +1141,40 @@ pub fn validate_container_path(path: &str) -> Result<(), DockerError> {
     Ok(())
 }
 
+/// argv do `ls` de uma pasta do container. Local ou num host SSH, é o mesmo
+/// argv: o remoto vai por `DOCKER_HOST=ssh://`, que leva o comando pela API do
+/// docker (`Cmd` como lista, `execve` no container) — nenhum shell, nem aqui,
+/// nem no servidor, nem no container. Por isso o caminho não leva aspas:
+/// precisa ser um argumento só, depois do `--`.
+pub fn fs_list_args(id: &str, path: &str) -> Result<Vec<String>, DockerError> {
+    if !is_valid_container_id(id) {
+        return Err(DockerError::UnknownContainer(id.chars().take(12).collect()));
+    }
+    validate_container_path(path)?;
+    // Barra no fim: com `-l`, o ls não segue um link simbólico passado na
+    // linha de comando — sem ela, uma pasta que é link listaria o link.
+    let dir = if path.ends_with('/') {
+        path.to_string()
+    } else {
+        format!("{path}/")
+    };
+    Ok(["exec", id, "ls", "-lAn", "--", dir.as_str()]
+        .map(str::to_string)
+        .to_vec())
+}
+
+/// argv do `head` que lê um arquivo do container (ver [`fs_list_args`]).
+pub fn fs_read_args(id: &str, path: &str) -> Result<Vec<String>, DockerError> {
+    if !is_valid_container_id(id) {
+        return Err(DockerError::UnknownContainer(id.chars().take(12).collect()));
+    }
+    validate_container_path(path)?;
+    let limit = (FS_READ_MAX + 1).to_string();
+    Ok(["exec", id, "head", "-c", limit.as_str(), "--", path]
+        .map(str::to_string)
+        .to_vec())
+}
+
 #[derive(Default)]
 pub struct DockerManager {
     /// Por alvo (`None` = local): docker no Mac não diz nada sobre docker na VPS.
@@ -1691,31 +1722,17 @@ impl DockerManager {
         host: Option<&str>,
     ) -> Result<Vec<FsEntry>, DockerError> {
         self.ensure_known(id, host)?;
-        validate_container_path(path)?;
-        // Barra no fim: com `-l`, o ls não segue um link simbólico passado na
-        // linha de comando — sem ela, uma pasta que é link listaria o link.
-        let dir = if path.ends_with('/') {
-            path.to_string()
-        } else {
-            format!("{path}/")
-        };
-        let raw = run_docker(
-            &["exec", id, "ls", "-lAn", "--", dir.as_str()],
-            FS_TIMEOUT,
-            host,
-        )?;
+        let args = fs_list_args(id, path)?;
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let raw = run_docker(&args, FS_TIMEOUT, host)?;
         Ok(parse_ls(&raw))
     }
 
     pub fn fs_read(&self, id: &str, path: &str, host: Option<&str>) -> Result<FsFile, DockerError> {
         self.ensure_known(id, host)?;
-        validate_container_path(path)?;
-        let limit = (FS_READ_MAX + 1).to_string();
-        let raw = run_docker(
-            &["exec", id, "head", "-c", limit.as_str(), "--", path],
-            FS_TIMEOUT,
-            host,
-        )?;
+        let args = fs_read_args(id, path)?;
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let raw = run_docker(&args, FS_TIMEOUT, host)?;
         let binary = raw.contains('\0');
         let truncated = raw.len() > FS_READ_MAX;
         let mut text = if binary { String::new() } else { raw };
@@ -1771,7 +1788,7 @@ impl DockerManager {
         self.tabs.lock().insert((id.to_string(), tab), session);
     }
 
-    /// A sessão da tela (`ScreenShell`/`ScreenLogs`) do container: reaproveita
+    /// A sessão da tela (`ScreenShell`) do container: reaproveita
     /// a registrada se `reuse` disser que segue viva, senão `spawn` e registra.
     pub fn screen_session<E>(
         &self,
@@ -2005,16 +2022,10 @@ não é json
         let shell_tab = SessionId::new_v4();
         let logs_tab = SessionId::new_v4();
         let screen_shell = SessionId::new_v4();
-        let screen_logs = SessionId::new_v4();
         mgr.remember_tab("c1", ContainerTab::Shell, shell_tab);
         mgr.remember_tab("c1", ContainerTab::Logs, logs_tab);
         mgr.remember_tab("c1", ContainerTab::ScreenShell, screen_shell);
-        mgr.remember_tab("c1", ContainerTab::ScreenLogs, screen_logs);
-        let mut screen = mgr.screen_sessions();
-        screen.sort();
-        let mut expected = vec![screen_shell, screen_logs];
-        expected.sort();
-        assert_eq!(screen, expected);
+        assert_eq!(mgr.screen_sessions(), vec![screen_shell]);
         mgr.forget_screen_sessions();
         assert!(mgr.screen_sessions().is_empty());
         assert_eq!(mgr.tab_session("c1", ContainerTab::Shell), Some(shell_tab));
@@ -2846,5 +2857,35 @@ ls: cannot access 'x': Permission denied\n";
         assert!(validate_container_path("app/src").is_err());
         assert!(validate_container_path("/app\n/etc").is_err());
         assert!(validate_container_path("/app\0").is_err());
+    }
+
+    // Nome/caminho vêm de fora (lista do servidor, clique na árvore). Nada
+    // passa por shell: cada um tem de chegar como UM argumento, depois do `--`,
+    // e o que não é id/caminho válido nem vira comando.
+    #[test]
+    fn fs_args_keep_hostile_path_as_one_argument_after_double_dash() {
+        let id = "ab12".repeat(16);
+        let hostile = "/app/x'; rm -rf / #$(id)`id` \"a b\"";
+        let read = fs_read_args(&id, hostile).unwrap();
+        assert_eq!(
+            read,
+            ["exec", id.as_str(), "head", "-c", "524289", "--", hostile]
+        );
+        let list = fs_list_args(&id, "/srv/my dir;ls").unwrap();
+        assert_eq!(
+            list,
+            ["exec", id.as_str(), "ls", "-lAn", "--", "/srv/my dir;ls/"]
+        );
+        // `-` no começo nunca chega: caminho tem de ser absoluto.
+        assert!(fs_read_args(&id, "-rf").is_err());
+        assert!(fs_list_args(&id, "/a\n/b").is_err());
+    }
+
+    #[test]
+    fn fs_args_refuse_container_that_is_not_an_id() {
+        for bad in ["web; rm -rf /", "--help", "../x", "$(id)", ""] {
+            assert!(fs_list_args(bad, "/").is_err(), "{bad}");
+            assert!(fs_read_args(bad, "/etc/hostname").is_err(), "{bad}");
+        }
     }
 }
