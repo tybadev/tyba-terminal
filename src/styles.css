@@ -1203,6 +1203,11 @@ samp {
   color: var(--tyba-text-faint);
 }
 
+/* Legenda das folhas (Handoff): no claro do TYBA, .06em. */
+.tyba-label.is-cap {
+  letter-spacing: var(--tyba-mk-cap-tracking, var(--tyba-mk-label-tracking, var(--tyba-tracking-wide)));
+}
+
 /* Anel de foco padrão para elementos interativos */
 .tyba-focusable:focus-visible {
   outline: none;
@@ -1956,6 +1961,13 @@ html {
   --tyba-mk-label-size: 11px;
   --tyba-mk-label-weight: 600;
   --tyba-mk-label-tracking: 0.04em;
+  /* Legenda das folhas (`.ho-cap` do Handoff): a mesma, com .06em. */
+  --tyba-mk-cap-tracking: 0.06em;
+  /* Vidro fraco das opções e caixas paradas (`.ho-o`, `.box`): branco .55. */
+  --tyba-mk-glass-soft: rgba(255, 255, 255, 0.55);
+  /* Véu atrás das folhas (`.ho-bg`): marinho .18, sem desfoque. */
+  --tyba-mk-scrim: rgba(10, 24, 48, 0.18);
+  --tyba-mk-scrim-blur: 0px;
   /* Foco do campo (`.mk-input:focus-within`): anel de 2px da marca e o halo
      de 5px no azul suave. */
   --tyba-field-focus: 0 0 0 2px var(--tyba-blue), 0 0 0 5px var(--tyba-brand-soft);
