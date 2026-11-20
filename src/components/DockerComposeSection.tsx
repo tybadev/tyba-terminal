@@ -60,6 +60,14 @@ const UNREACHABLE: Record<Exclude<PathStatus, "ok">, string> = {
 
 const GRID = "grid grid-cols-[150px_180px_minmax(0,1fr)_190px_150px_120px] gap-3";
 
+/** Cor do ponto de estado (o do container) por tom. */
+const TONE_DOT: Record<keyof typeof TONE, string> = {
+  green: "bg-tyba-green-fill",
+  amber: "bg-tyba-amber",
+  red: "bg-tyba-red",
+  faint: "bg-tyba-text-ghost",
+};
+
 const OP_LABEL: Record<ComposeOp, string> = {
   up: "composeUp",
   restart: "composeRestart",
@@ -86,8 +94,9 @@ function ComposeOutputPanel({ run }: { run: ComposeRun }) {
       ? { text: t("dockerScreenComposeFailed"), tone: "text-tyba-red" }
       : { text: t("dockerScreenComposeDone"), tone: "text-tyba-green" };
   return (
-    <div className="flex h-[200px] shrink-0 flex-col border-t border-[var(--tyba-line)]">
-      <div className="flex shrink-0 items-center gap-2.5 bg-[var(--tyba-panel-bg)] px-[18px] py-1.5 text-[11px] text-tyba-text-faint">
+    // Quadro Docker: o bloco do log do container — fio só no topo, sem faixa.
+    <div className="flex h-[200px] shrink-0 flex-col border-t border-[var(--tyba-line)] pt-1.5">
+      <div className="flex shrink-0 items-center gap-2.5 text-[12px] leading-[22px] text-tyba-text-faint">
         <span className="text-tyba-text-muted">
           {t("dockerScreenComposeOutput", { op: t(OP_LABEL[run.last_op]) })}
         </span>
@@ -100,7 +109,7 @@ function ComposeOutputPanel({ run }: { run: ComposeRun }) {
           const el = e.currentTarget;
           stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
         }}
-        className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-all px-[18px] py-2 font-mono text-[11.5px] leading-[18px] text-tyba-text-muted"
+        className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-all pb-1.5 font-mono text-[12px] leading-[22px] text-tyba-text-muted"
       >
         {run.output.length > 0
           ? run.output.join("\n")
@@ -111,8 +120,8 @@ function ComposeOutputPanel({ run }: { run: ComposeRun }) {
 }
 
 /**
- * Seção Compose da tela de Docker (mockup DockerCompose): coluna de 300px à
- * direita com todos os projetos compose do alvo, e o projeto escolhido com as
+ * Seção Compose da tela de Docker, na linguagem da de Containers (quadro
+ * Docker): coluna da lista à direita com todos os projetos compose do alvo, e o projeto escolhido com as
  * ações (ver compose, abrir projeto, up/restart/down) e a tabela de serviços.
  * Projeto escolhido e "ocultar parados" são do core.
  */
@@ -190,27 +199,24 @@ export function DockerComposeSection({
         aria-pressed={on}
         onClick={() => pick(p.name)}
         title={p.workingDir ?? p.name}
-        // Escolhido = fundo elevado com contorno inteiro; nunca barra lateral.
-        className={`flex w-full flex-col gap-[5px] rounded-[6px] px-3 py-2.5 text-left text-tyba-text outline-none focus-visible:ring-2 focus-visible:ring-tyba-blue ${
+        // Cartão do container (quadro Docker, .q-ct): escolhido = a placa
+        // branca do knob, contorno inteiro; nunca barra lateral.
+        className={`flex w-full flex-col gap-[3px] rounded-[10px] px-3 py-2.5 text-left text-tyba-text outline-none focus-visible:ring-2 focus-visible:ring-tyba-blue ${
           on ? "tyba-pill-on" : "hover:bg-tyba-text/[.03]"
         }`}
       >
-        <span className="flex w-full items-center justify-between gap-2">
-          <span className="flex min-w-0 items-center gap-1.5 text-[13px]">
-            <span aria-hidden className={`size-[7px] shrink-0 rounded-full ${DOT[run]}`} />
-            <span className="truncate">{p.name}</span>
-          </span>
-          {p.inRepo && (
-            <span className="shrink-0 rounded-[4px] border border-tyba-border-strong px-[5px] text-[10px] text-tyba-blue">
-              {t("dockerScreenThisRepo")}
-            </span>
-          )}
-        </span>
-        <span className="flex w-full justify-between gap-2 text-[11px] text-tyba-text-faint">
-          <span className="min-w-0 truncate">{p.workingDir ? compactPath(p.workingDir) : "—"}</span>
-          <span className="shrink-0">
+        <span className="flex w-full items-center gap-2 text-[13px] font-semibold">
+          <span aria-hidden className={`size-[7px] shrink-0 rounded-full ${DOT[run]}`} />
+          <span className="min-w-0 truncate">{p.name}</span>
+          <span className="ml-auto shrink-0 font-mono text-[10.5px] font-medium text-tyba-text-faint">
             {t("dockerScreenProjectRunning", { running: p.running, total: p.services.length })}
           </span>
+        </span>
+        <span className="flex w-full gap-2 pl-[15px] text-[11.5px] text-tyba-text-muted">
+          <span className="min-w-0 truncate">{p.workingDir ? compactPath(p.workingDir) : "—"}</span>
+          {p.inRepo && (
+            <span className="ml-auto shrink-0 text-tyba-blue">{t("dockerScreenThisRepo")}</span>
+          )}
         </span>
       </button>
     );
@@ -234,9 +240,15 @@ export function DockerComposeSection({
                   : "dockerPanelHealthStarting",
           );
     return (
-      <span className={`truncate ${TONE[st.tone]}`} title={c.status}>
-        ● {label}
-        {span && ` ${t("dockerScreenAgo", { span })}`}
+      <span
+        className={`flex min-w-0 items-center gap-1.5 text-[12px] font-semibold ${TONE[st.tone]}`}
+        title={c.status}
+      >
+        <span aria-hidden className={`size-[7px] shrink-0 rounded-full ${TONE_DOT[st.tone]}`} />
+        <span className="truncate">
+          {label}
+          {span && ` ${t("dockerScreenAgo", { span })}`}
+        </span>
       </span>
     );
   };
@@ -245,39 +257,40 @@ export function DockerComposeSection({
     const up = c.state === "running";
     const ports = portMappings(c.ports);
     const image = shortImage(c.image);
-    const link = "hover:text-tyba-text";
     return (
       <div
         key={c.id}
-        className={`${GRID} items-center border-b border-[var(--tyba-line)] px-[18px] py-[9px] text-[12.5px]`}
+        className={`${GRID} items-center rounded-[10px] px-3 py-2 hover:bg-tyba-text/[.03]`}
       >
-        <span className="truncate text-tyba-text">{c.service ?? c.name}</span>
-        <span className="truncate text-tyba-text-muted" title={c.name}>
+        <span className="truncate text-[13px] font-semibold text-tyba-text">
+          {c.service ?? c.name}
+        </span>
+        <span className="truncate font-mono text-[11.5px] text-tyba-text-muted" title={c.name}>
           {c.name}
         </span>
-        <span className="truncate text-tyba-text-faint" title={image.full}>
+        <span className="truncate font-mono text-[11.5px] text-tyba-text-faint" title={image.full}>
           {image.short}
         </span>
         {stateCell(c)}
-        <span className="truncate text-tyba-text-muted">
+        <span className="truncate font-mono text-[11.5px] text-tyba-text-muted">
           {ports.length > 0 ? ports.join(", ") : "—"}
         </span>
-        <span className="flex gap-2.5 text-[11px] text-tyba-text-muted">
-          <button
-            type="button"
-            className={link}
+        <span className="flex gap-1">
+          <Button
+            variant="ghost"
+            size="xs"
             onClick={() => void dockerScreenShow(workspaceId, c.id, "logs").catch(fail)}
           >
             {t("dockerPanelLogs")}
-          </button>
+          </Button>
           {up && (
-            <button
-              type="button"
-              className={link}
+            <Button
+              variant="ghost"
+              size="xs"
               onClick={() => void dockerScreenShow(workspaceId, c.id, "shell").catch(fail)}
             >
               {t("dockerPanelShell")}
-            </button>
+            </Button>
           )}
         </span>
       </div>
@@ -315,17 +328,28 @@ export function DockerComposeSection({
         {running === op ? `${label}…` : label}
       </Button>
     );
+    // Quadro Docker (.q-dk-main): o bloco do container — 14px 20px, 12px
+    // entre as linhas, sem faixa de fundo.
     return (
-      <>
-        <div className="flex shrink-0 items-center gap-2.5 border-b border-[var(--tyba-line)] bg-[var(--tyba-panel-bg)] px-[18px] py-3 text-[12px] text-tyba-text-muted">
-          <span className="shrink-0 text-[14px] text-tyba-text">{p.name}</span>
-          <span className="min-w-0 truncate" title={p.workingDir ?? undefined}>
-            {p.workingDir ? compactPath(p.workingDir) : "—"}
-          </span>
-          <span className={`shrink-0 ${RUN_TEXT[run]}`}>
-            {t("dockerScreenProjectRunningLong", { running: p.running, total: p.services.length })}
-          </span>
-          <span className="flex-1" />
+      <div className="flex min-h-0 flex-1 flex-col gap-3 px-5 py-3.5">
+        <div className="flex shrink-0 items-center gap-2.5">
+          <div className="flex min-w-0 flex-1 items-center gap-2.5">
+            <span className="min-w-0 max-w-[40%] shrink-0 truncate text-[14px] font-bold text-tyba-text">
+              {p.name}
+            </span>
+            <span
+              className="min-w-0 truncate font-mono text-[11.5px] text-tyba-text-muted"
+              title={p.workingDir ?? undefined}
+            >
+              {p.workingDir ? compactPath(p.workingDir) : "—"}
+            </span>
+            <span
+              className={`flex shrink-0 items-center gap-1.5 text-[12px] font-semibold ${RUN_TEXT[run]}`}
+            >
+              <span aria-hidden className={`size-[7px] rounded-full ${DOT[run]}`} />
+              {t("dockerScreenProjectRunningLong", { running: p.running, total: p.services.length })}
+            </span>
+          </div>
           <Button
             variant="outline"
             size="sm"
@@ -349,19 +373,13 @@ export function DockerComposeSection({
           {opChip("restart", t("composeRestart"))}
           {opChip("down", t("composeDown"))}
         </div>
-        {lastError && (
-          <p className="shrink-0 border-b border-[var(--tyba-line)] px-[18px] py-2 text-[11px] text-tyba-red">
-            {lastError}
-          </p>
-        )}
+        {lastError && <p className="shrink-0 text-[12px] text-tyba-red">{lastError}</p>}
         {unreachable && (
-          <p className="shrink-0 border-b border-[var(--tyba-line)] px-[18px] py-2 text-[11px] text-tyba-text-faint">
-            {t(UNREACHABLE[unreachable])}
-          </p>
+          <p className="shrink-0 text-[12px] text-tyba-text-faint">{t(UNREACHABLE[unreachable])}</p>
         )}
-        <div
-          className={`${GRID} shrink-0 border-b border-[var(--tyba-line)] px-[18px] py-2 text-[11px] text-tyba-text-faint`}
-        >
+        {/* Colunas e linhas alinham o texto com o cabeçalho; o -mx-3 dá o
+            respiro do hover da linha. */}
+        <div className={`${GRID} -mx-3 shrink-0 px-3 text-[12px] text-tyba-text-faint`}>
           <span>{t("dockerScreenColService")}</span>
           <span>{t("dockerScreenColContainer")}</span>
           <span>{t("dockerScreenColImage")}</span>
@@ -369,25 +387,33 @@ export function DockerComposeSection({
           <span>{t("dockerScreenColPorts")}</span>
           <span />
         </div>
-        <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">{p.services.map(row)}</div>
+        <div className="-mx-3 -mt-2 flex min-h-0 flex-1 flex-col overflow-y-auto">
+          {p.services.map(row)}
+        </div>
         {runs[p.name] && <ComposeOutputPanel key={p.name} run={runs[p.name]} />}
-        <div className="mx-[18px] my-4 flex shrink-0 flex-col gap-1 rounded-[8px] border border-tyba-border-strong px-3.5 py-3 text-[12px] text-tyba-text-muted">
-          <span className="text-tyba-text">{t("dockerScreenComposeDownCardTitle")}</span>
+        {/* O cartão do Muriki que o app já usa (SshTypedNote): placa, sem borda. */}
+        <div className="tyba-piece flex shrink-0 flex-col gap-1 rounded-[8px] px-3.5 py-3 text-[12px] text-tyba-text-muted">
+          <span className="font-semibold text-tyba-text">{t("dockerScreenComposeDownCardTitle")}</span>
           <span>{t("dockerScreenComposeDownCardBody")}</span>
         </div>
-        <div className="flex h-[26px] shrink-0 items-center gap-4 border-t border-[var(--tyba-line)] bg-[var(--tyba-panel-bg)] px-[18px] text-[11px] text-tyba-text-faint">
-          <span>{t("dockerScreenComposeFooter", { file, count: p.services.length })}</span>
-          <span className="flex-1" />
-          <span>{t("dockerScreenComposeFooterHint")}</span>
+        {/* Rodapé do log do container (.q-dk-ft): 12px, sem faixa. */}
+        <div className="flex shrink-0 items-center gap-4 text-[12px] leading-4 text-tyba-text-muted">
+          <span className="shrink-0">
+            {t("dockerScreenComposeFooter", { file, count: p.services.length })}
+          </span>
+          <span className="min-w-0 flex-1 truncate text-right">
+            {t("dockerScreenComposeFooterHint")}
+          </span>
         </div>
-      </>
+      </div>
     );
   };
 
   return (
     <div className="flex min-h-0 flex-1 flex-row-reverse">
-      <div className="flex w-[300px] shrink-0 flex-col border-l border-[var(--tyba-line)] bg-[var(--tyba-panel-bg)]">
-        <div className="shrink-0 px-3.5 pb-1.5 pt-3 text-[11px] text-tyba-text-faint">
+      {/* A mesma coluna da lista de containers (DockerScreen). */}
+      <div className="flex w-[clamp(220px,40%,320px)] shrink-0 flex-col border-l border-[var(--tyba-line)] bg-[var(--tyba-panel-bg)]">
+        <div className="shrink-0 px-4 pb-1.5 pt-3.5 text-[12.5px] text-tyba-text-muted">
           {t("dockerScreenProjectsCount", { count: visible.length })}
         </div>
         <div className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-2 py-1">
