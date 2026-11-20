@@ -95,6 +95,8 @@ interface Props {
     turn: PillTurn | null;
     /** Começo do turno que roda (ms, do core); `null` fora de rodando. */
     runningSince: number | null;
+    /** Pausado pelo dono: o tempo para aqui. */
+    pausedAt: number | null;
     open: boolean;
     onToggle: () => void;
   } | null;
@@ -435,6 +437,7 @@ export function Toolbar({
             agents={pill.agents}
             turn={pill.turn}
             runningSince={pill.runningSince}
+            pausedAt={pill.pausedAt}
             open={pill.open}
             compact={!keeps(FOOTER_STEP.pillCompact)}
             onToggle={pill.onToggle}

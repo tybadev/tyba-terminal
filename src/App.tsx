@@ -2934,10 +2934,12 @@ export default function App() {
         drawer?.outcome_seen ?? false,
       ),
       turn: pillTurn(activeSession),
+      // Começo do turno somado ao tempo já pausado: a pílula desconta a pausa.
       runningSince:
-        activeSession && turnElapsedMs(activeSession, 0) !== null
-          ? (activeSession.turn_started_at_ms ?? null)
+        activeSession && turnElapsedMs(activeSession, 0) !== null && activeSession.turn_started_at_ms != null
+          ? activeSession.turn_started_at_ms + (activeSession.paused_ms ?? 0)
           : null,
+      pausedAt: activeSession?.paused_at_ms ?? null,
       open,
       onToggle: () =>
         void (
