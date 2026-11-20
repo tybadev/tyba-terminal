@@ -75,23 +75,10 @@ const REVIEW_VERB: Record<PrReview["state"], { key: string; tone: string }> = {
   pending: { key: "prReviewedCommented", tone: "text-tyba-text-muted" },
 };
 
-const AVATAR_TONES = [
-  "bg-tyba-cyan/[.18] text-tyba-cyan",
-  "bg-tyba-violet/[.2] text-tyba-violet",
-  "bg-tyba-blue/[.2] text-tyba-blue",
-  "bg-tyba-green/[.18] text-tyba-green",
-];
-
-function avatarTone(name: string): string {
-  let h = 0;
-  for (const ch of name) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
-  return AVATAR_TONES[h % AVATAR_TONES.length];
-}
-
 function Avatar({ name }: { name: string }) {
   return (
     <span
-      className={`flex size-5 shrink-0 items-center justify-center rounded-full text-[9px] font-bold ${avatarTone(name)}`}
+      className="flex size-5 shrink-0 items-center justify-center rounded-full bg-[var(--tyba-brand-soft,color-mix(in_srgb,var(--tyba-blue)_14%,transparent))] text-tyba-blue text-[9px] font-bold"
     >
       {initials(name)}
     </span>
@@ -431,7 +418,7 @@ export function PrDetailView({
   };
 
   const eventDot = (event: TimelineEvent) => {
-    const base = "absolute -left-[30px] top-0 flex size-[22px] items-center justify-center rounded-full bg-tyba-paper-solid shadow-[inset_0_0_0_1px_var(--tyba-line)]";
+    const base = "absolute -left-[34px] top-0 flex size-[22px] items-center justify-center rounded-full bg-tyba-paper-solid shadow-[inset_0_0_0_1px_var(--tyba-line)]";
     if (event.kind === "commits") return <span className={`${base} text-tyba-text-muted`}><GitCommit size={12} /></span>;
     if (event.kind === "checks") {
       const tone = checksSummary(event.checks).tone;
@@ -449,7 +436,13 @@ export function PrDetailView({
       );
     }
     if (event.kind === "opened") return <span className={`${base} text-tyba-green`}><GitPullRequest size={12} /></span>;
-    return <span className={`${base} text-tyba-text-muted`}><ChatTeardrop size={12} /></span>;
+    // Comentário de fora (o que leva a marca "conteúdo externo") sai no âmbar do quadro.
+    const external = event.kind === "thread" || event.comment.author !== pr.author;
+    return (
+      <span className={`${base} ${external ? "text-tyba-amber" : "text-tyba-text-muted"}`}>
+        <ChatTeardrop size={12} />
+      </span>
+    );
   };
 
   const renderEvent = (event: TimelineEvent) => {
@@ -458,7 +451,7 @@ export function PrDetailView({
     switch (event.kind) {
       case "opened":
         body = (
-          <div className="flex flex-col gap-1.5">
+          <div className="flex flex-col gap-2">
             <div className="text-[12.5px] leading-[22px] text-tyba-text-muted">
               <span className="font-semibold text-tyba-text">{event.author}</span> {t("prOpenedBy")}{" "}
               <span className="text-tyba-text-faint">· {relative(event.at, now)}</span>
@@ -518,9 +511,9 @@ export function PrDetailView({
               </span>
             </span>
             {event.checks.map((c, i) => (
-              <span key={`${c.name}:${i}`} className="flex items-center gap-2.5">
+              <span key={`${c.name}:${i}`} className="flex items-center gap-2">
                 <CheckMark status={c.status} />
-                <span className="min-w-[70px]">{c.name}</span>
+                <span>{c.name}</span>
                 <span className="font-mono text-[11px] text-tyba-text-faint">{checkDuration(c) ?? ""}</span>
                 {c.status === "failure" && c.url && (
                   <Button
@@ -541,8 +534,8 @@ export function PrDetailView({
       case "review": {
         const verb = REVIEW_VERB[event.review.state];
         body = (
-          <div className={`flex flex-col overflow-hidden ${CARD}`}>
-            <div className="flex items-center gap-2 px-3.5 py-2.5 text-[12.5px] text-tyba-text-muted">
+          <div className={`flex flex-col overflow-hidden px-3.5 py-3 ${CARD}`}>
+            <div className="mb-1.5 flex items-center gap-2 text-[12.5px] text-tyba-text-muted">
               <Avatar name={event.review.author} />
               <span className="font-semibold text-tyba-text">{event.review.author}</span>
               <span className={verb.tone}>{t(verb.key)}</span>
@@ -555,7 +548,7 @@ export function PrDetailView({
                 )}
             </div>
             {event.review.body.trim() && (
-              <div className="min-w-0 px-2.5 pb-2.5 pl-[38px] text-tyba-text-muted">
+              <div className="min-w-0 text-[13px] leading-5 text-tyba-text">
                 <MarkdownView text={event.review.body} dark={dark} compact />
               </div>
             )}
@@ -568,8 +561,8 @@ export function PrDetailView({
         break;
       case "comment":
         body = (
-          <div className={`flex flex-col overflow-hidden ${CARD}`}>
-            <div className="flex items-center gap-2 px-3.5 py-2.5 text-[12.5px] text-tyba-text-muted">
+          <div className={`flex flex-col overflow-hidden px-3.5 py-3 ${CARD}`}>
+            <div className="mb-1.5 flex items-center gap-2 text-[12.5px] text-tyba-text-muted">
               <Avatar name={event.comment.author} />
               <span className="font-semibold text-tyba-text">{event.comment.author}</span>
               <span className="text-tyba-text-muted">{t("prReviewedCommented")}</span>
@@ -580,7 +573,7 @@ export function PrDetailView({
                 forwardPrompt(pr, { author: event.comment.author, verb: t("prReviewedCommented"), body: event.comment.body }),
               )}
             </div>
-            <div className="min-w-0 px-2.5 pb-2.5 pl-[38px] text-tyba-text-muted">
+            <div className="min-w-0 text-[13px] leading-5 text-tyba-text">
               <MarkdownView text={event.comment.body} dark={dark} compact />
             </div>
           </div>
@@ -597,12 +590,12 @@ export function PrDetailView({
 
   const stateChip =
     pr.state === "merged"
-      ? { key: "prStateMerged", cls: "bg-tyba-violet/[.12] text-tyba-violet", icon: <GitMerge size={11} /> }
+      ? { key: "prStateMerged", cls: "bg-tyba-violet/[.12] text-tyba-violet", icon: <GitMerge size={12} /> }
       : pr.state === "closed"
-        ? { key: "prStateClosed", cls: "bg-tyba-red-tint text-tyba-red", icon: <GitPullRequest size={11} /> }
+        ? { key: "prStateClosed", cls: "bg-tyba-red-tint text-tyba-red", icon: <GitPullRequest size={12} /> }
         : pr.state === "draft"
-          ? { key: "prStateDraft", cls: "bg-tyba-text/[.06] text-tyba-text-muted", icon: <GitPullRequest size={11} /> }
-          : { key: "prStateOpen", cls: "bg-tyba-green/[.12] text-tyba-green", icon: <GitPullRequest size={11} /> };
+          ? { key: "prStateDraft", cls: "bg-tyba-text/[.06] text-tyba-text-muted", icon: <GitPullRequest size={12} /> }
+          : { key: "prStateOpen", cls: "bg-tyba-green/[.12] text-tyba-green", icon: <GitPullRequest size={12} /> };
 
   const approvedCount = reviewers.filter((r) => r.state === "approved").length;
   const tabs: { key: Section; label: string; count?: number; tone?: string }[] = [
@@ -615,7 +608,7 @@ export function PrDetailView({
   return (
     <div className="absolute inset-0 flex min-w-0 flex-col">
       <div className="flex flex-col gap-2 px-[22px] pb-3.5 pt-4">
-        <div className="flex items-baseline gap-2.5">
+        <div className="flex items-center gap-2.5">
           <h1 className="min-w-0 truncate text-[19px] font-bold leading-[26px] tracking-[-0.015em] text-tyba-text" title={pr.title}>
             {pr.title}
           </h1>
@@ -648,10 +641,10 @@ export function PrDetailView({
           <span className="font-mono">
             <span className="text-tyba-blue">{pr.head}</span> → <span className="text-tyba-blue">{pr.base}</span>
           </span>
-          <span className="text-tyba-text-ghost">·</span>
+          <span>·</span>
           <span className="flex items-center gap-1.5">
             <Avatar name={pr.author} />
-            <span className="text-tyba-text">{pr.author}</span>
+            <span>{pr.author}</span>
             {t("prOpenedAgo", { ago: relative(pr.created_at, now) })}
           </span>
           {pr.session?.agent && (
@@ -714,7 +707,7 @@ export function PrDetailView({
         <div className="flex min-w-0 flex-[3] flex-col">
         <div className="min-h-0 flex-1 overflow-y-auto px-[22px] py-4">
           {section === "conversation" && (
-            <div className="relative flex flex-col gap-3.5 pl-[30px]">
+            <div className="relative flex flex-col gap-4 pl-[34px]">
               <div className="absolute bottom-0 left-[10px] top-2 w-px bg-[var(--tyba-line)]" />
               {timeline.map(renderEvent)}
             </div>
@@ -778,43 +771,37 @@ export function PrDetailView({
             </label>
             <textarea
               id="pr-review-body"
-              rows={2}
               spellCheck
               autoCorrect="on"
               autoCapitalize="sentences"
               value={reviewBody}
               onChange={(e) => setReviewBody(e.target.value)}
               placeholder={t("prReviewBodyPlaceholder")}
-              className="resize-none rounded-[10px] border border-tyba-border-field bg-tyba-sunken px-3 py-2 text-[13px] text-tyba-text outline-none placeholder:text-tyba-text-faint focus:border-tyba-blue/50"
+              className="h-[52px] resize-none rounded-[10px] bg-[var(--tyba-control-bg)] px-3 py-2 text-[13px] text-tyba-text shadow-[inset_0_0_0_1px_var(--tyba-line)] outline-none placeholder:text-tyba-text-faint focus:shadow-[inset_0_0_0_1px_var(--tyba-blue)]"
             />
             <div className="flex flex-wrap items-center gap-2 text-[12.5px]">
               <fieldset className="flex flex-wrap gap-2">
                 <legend className="sr-only">{t("prReviewDecision")}</legend>
                 {(["comment", "approve", "request_changes"] as const).map((ev) => {
                   const on = reviewEvent === ev;
-                  const tone =
-                    ev === "approve"
-                      ? on
-                        ? "border-tyba-green/50 bg-tyba-green/[.08] text-tyba-green"
-                        : "border-tyba-border-strong text-tyba-green"
-                      : ev === "request_changes"
-                        ? on
-                          ? "border-tyba-red/50 bg-tyba-red/[.08] text-tyba-red"
-                          : "border-tyba-border-strong text-tyba-red"
-                        : on
-                          ? "border-transparent bg-tyba-blue/[.12] text-tyba-blue"
-                          : "border-tyba-border-strong text-tyba-text-muted";
+                  // Quadro `.q-rp`: pílula sem bolinha; a ligada ganha o azul
+                  // suave e perde o fio, a cor do texto é a da decisão.
+                  const color =
+                    ev === "approve" ? "text-tyba-green" : ev === "request_changes" ? "text-tyba-red" : on ? "text-tyba-blue" : "text-tyba-text-muted";
+                  const surface = on
+                    ? "bg-[var(--tyba-brand-soft,color-mix(in_srgb,var(--tyba-blue)_12%,transparent))]"
+                    : "shadow-[inset_0_0_0_1px_var(--tyba-line)]";
                   return (
                     <label
                       key={ev}
-                      className={`flex h-7 cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-full border px-3 font-semibold ${tone}`}
+                      className={`flex h-7 cursor-pointer items-center whitespace-nowrap rounded-full px-3 font-semibold focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-ring ${surface} ${color}`}
                     >
                       <input
                         type="radio"
                         name="pr-review-event"
                         checked={on}
                         onChange={() => setReviewEvent(ev)}
-                        className="m-0"
+                        className="sr-only"
                       />
                       {t(`prReviewEvent_${ev}`)}
                     </label>
@@ -843,15 +830,15 @@ export function PrDetailView({
         </div>
 
         <aside className="flex min-w-0 flex-[2] flex-col gap-[22px] overflow-y-auto px-[18px] py-4 shadow-[inset_1px_0_0_var(--tyba-line)]">
-          <section className="flex flex-col gap-2 text-[13px]">
-            <div className="flex items-baseline justify-between text-[12px] font-semibold text-tyba-text-faint">
+          <section className="flex flex-col text-[13px]">
+            <div className="mb-2 flex items-baseline justify-between text-[12px] font-semibold text-tyba-text-faint">
               <span className="text-[13px] font-bold text-tyba-text">{t("prReviewers")}</span>
               <span>{t("prReviewersApproved", { count: approvedCount, total: reviewers.length })}</span>
             </div>
             {reviewers.length === 0 && <span className="text-tyba-text-faint">{t("prNoReviewers")}</span>}
             {reviewers.map((r) => (
-              <div key={r.author} className="flex flex-col gap-1">
-                <div className="flex items-center gap-2">
+              <div key={r.author} className="flex flex-col">
+                <div className="flex h-[30px] items-center gap-2">
                   <Avatar name={r.author} />
                   <span className="min-w-0 flex-1 truncate">{r.author}</span>
                   <span
@@ -875,8 +862,8 @@ export function PrDetailView({
               </div>
             ))}
           </section>
-          <section className="flex flex-col gap-2 text-[13px]">
-            <div className="flex items-baseline justify-between text-[12px] font-semibold text-tyba-text-faint">
+          <section className="flex flex-col text-[13px]">
+            <div className="mb-2 flex items-baseline justify-between text-[12px] font-semibold text-tyba-text-faint">
               <span className="text-[13px] font-bold text-tyba-text">{t("prTabChecks")}</span>
               {checks.total > 0 && (
                 <span className={TONE_TEXT[checks.tone]}>
@@ -886,7 +873,7 @@ export function PrDetailView({
             </div>
             {pr.checks.length === 0 && <span className="text-tyba-text-faint">{t("prChecksNone")}</span>}
             {pr.checks.map((c, i) => (
-              <div key={`${c.name}:${i}`} className="flex items-center gap-2">
+              <div key={`${c.name}:${i}`} className="flex h-[30px] items-center gap-2">
                 <CheckMark status={c.status} />
                 <span className="min-w-0 flex-1 truncate">{c.name}</span>
                 <span className="font-mono text-[12px] text-tyba-text-faint">{checkDuration(c) ?? ""}</span>
