@@ -202,7 +202,7 @@ export function GitScreen({
           const on = key === place.section;
           const badge =
             key === "changes" && changed > 0 ? (
-              <span className="absolute right-0 top-px flex h-4 min-w-4 items-center justify-center rounded-full bg-tyba-amber px-1 text-[10px] font-bold text-tyba-text-inverse">
+              <span className="absolute right-0 top-px flex h-4 min-w-4 items-center justify-center rounded-full bg-[var(--tyba-spark,var(--tyba-amber))] px-1 text-[10px] font-bold text-[var(--tyba-on-spark,var(--tyba-text-inverse))]">
                 {changed > 99 ? "99+" : changed}
               </span>
             ) : key === "ci" && ciFailing ? (

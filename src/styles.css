@@ -443,8 +443,9 @@
     radial-gradient(1100px 460px at 70% -12%, rgba(17, 82, 210, 0.1), transparent 62%),
     radial-gradient(700px 360px at 18% -10%, rgba(253, 206, 4, 0.1), transparent 60%);
   /* Só azul, amarelo, marinho, verde de sucesso e vermelho (paleta do
-     Muriki): o violeta da IA e o ciano das áreas viram o azul da marca. */
-  --tyba-violet: #1152d2;
+     Muriki): o ciano das áreas vira o azul da marca. O violeta é o #7a4ce8
+     dos quadros (PR mesclado, cor de grupo, robô). */
+  --tyba-violet: #7a4ce8;
   --tyba-cyan: #1152d2;
   --tyba-lime: #0a7044;
   --tyba-magenta: #c21f3a;
@@ -455,6 +456,23 @@
   --tyba-diff-del-text: #8f1428;
   --tyba-amber-fill: #fdce04;
   --tyba-red-fill: #c21f3a;
+  /* Tons suaves do Muriki: o chip âmbar é o spark-soft com o texto warning,
+     o erro é o danger-soft com o texto danger; o badge amarelo leva o texto
+     on-spark. Só aqui: quem lê `--tyba-spark`/`--tyba-on-spark`/
+     `--tyba-danger-soft`/`--tyba-mk-danger` põe o valor de antes no
+     fallback. */
+  --tyba-spark: #fdce04;
+  --tyba-spark-soft: #fff4c2;
+  --tyba-on-spark: #0a1830;
+  --tyba-danger-soft: #fde8ec;
+  --tyba-mk-danger: #c21f3a;
+  --tyba-amber-tint: var(--tyba-spark-soft);
+  --tyba-red-tint: var(--tyba-danger-soft);
+  /* Robô dos quadros Sidebar e Agents, lilás. */
+  --tyba-robot-accent: #a08af5;
+  --tyba-robot-body: #e6e1f7;
+  --tyba-robot-eye: #2a2275;
+  --tyba-robot-mouth: #574898;
   --tyba-filament: linear-gradient(90deg, #1152d2, #fdce04);
   --tyba-filament-v: linear-gradient(180deg, #1152d2, #fdce04);
   --tyba-flow-gradient: linear-gradient(90deg, transparent, #1152d2 25%, #fdce04 75%, transparent);

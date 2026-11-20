@@ -56,8 +56,8 @@ const TONE_TEXT: Record<Tone, string> = {
 
 const CHIP: Record<ReviewChip["tone"], string> = {
   ok: "bg-tyba-green/[.12] text-tyba-green",
-  wait: "bg-tyba-amber/[.12] text-tyba-amber",
-  changes: "bg-tyba-red/[.12] text-tyba-red",
+  wait: "bg-tyba-amber-tint text-tyba-amber",
+  changes: "bg-tyba-red-tint text-tyba-red",
   draft: "bg-tyba-text/[.06] text-tyba-text-muted",
 };
 
@@ -227,7 +227,7 @@ export function PrListView({
             </span>
             <span className="shrink-0 font-medium text-tyba-text-faint">#{item.number}</span>
             {agent && (
-              <span className="shrink-0 rounded-full bg-tyba-amber/[.12] px-2 py-px text-[11px] font-semibold text-tyba-amber">
+              <span className="shrink-0 rounded-full bg-tyba-amber-tint px-2 py-px text-[11px] font-semibold text-tyba-amber">
                 {agent}
               </span>
             )}

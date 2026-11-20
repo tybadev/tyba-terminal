@@ -353,7 +353,7 @@ export function CiView({
                   data-line={i}
                   className={`flex whitespace-pre ${
                     isErrorLine(line) || i === log?.error_line
-                      ? "bg-tyba-diff-del-bg text-tyba-diff-del-text"
+                      ? "bg-[var(--tyba-danger-soft,var(--tyba-diff-del-bg))] text-[var(--tyba-mk-danger,var(--tyba-diff-del-text))]"
                       : "text-tyba-text-muted"
                   }`}
                 >

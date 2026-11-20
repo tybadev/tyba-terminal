@@ -260,7 +260,7 @@ export function GitChangesView({
           {dir && <span className="pl-1.5 text-[11px] text-tyba-text-faint">{dir}</span>}
         </span>
         {isSensitivePath(file.path) && (
-          <span className="shrink-0 rounded-[4px] bg-tyba-red/[.12] px-1 text-[10px] text-tyba-red">
+          <span className="shrink-0 rounded-[4px] bg-tyba-red-tint px-1 text-[10px] text-tyba-red">
             {t("gitPanelLooksSecret")}
           </span>
         )}

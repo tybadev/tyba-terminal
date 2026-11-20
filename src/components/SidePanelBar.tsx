@@ -131,7 +131,7 @@ export function SidePanelBar({
                 {tab.indicator.count !== null && (
                   <span
                     aria-hidden
-                    className="absolute right-[3px] top-[3px] flex h-3 min-w-3 items-center justify-center rounded-[6px] bg-tyba-amber px-[3px] text-[9px] leading-none text-tyba-text-inverse"
+                    className="absolute right-[3px] top-[3px] flex h-3 min-w-3 items-center justify-center rounded-[6px] bg-[var(--tyba-spark,var(--tyba-amber))] px-[3px] text-[9px] leading-none text-[var(--tyba-on-spark,var(--tyba-text-inverse))]"
                   >
                     {tab.indicator.count > 9 ? "9+" : tab.indicator.count}
                   </span>

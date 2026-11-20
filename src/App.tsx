@@ -686,7 +686,7 @@ function agentGlyph(label: string, size = 16): React.ReactNode {
 /** Badge amarelo do Muriki (`mk-sb-badge`): contagem que pede você. */
 function SidebarBadge({ count }: { count: number }) {
   return (
-    <span className="ml-auto grid h-[18px] min-w-[18px] place-items-center rounded-full bg-tyba-amber-fill px-[5px] text-[11px] font-bold text-[color-mix(in_srgb,var(--tyba-amber-fill)_16%,black)]">
+    <span className="ml-auto grid h-[18px] min-w-[18px] place-items-center rounded-full bg-tyba-amber-fill px-[5px] text-[11px] font-bold text-[var(--tyba-on-spark,color-mix(in_srgb,var(--tyba-amber-fill)_16%,black))]">
       {count > 9 ? "9+" : count}
     </span>
   );
@@ -6804,7 +6804,7 @@ export default function App() {
                 >
                   <Tray size={18} />
                   {inboxBadge > 0 && (
-                    <span className="absolute -right-0.5 -top-0.5 grid h-4 min-w-4 place-items-center rounded-full bg-tyba-amber-fill px-1 text-[10px] font-bold text-[color-mix(in_srgb,var(--tyba-amber-fill)_16%,black)]">
+                    <span className="absolute -right-0.5 -top-0.5 grid h-4 min-w-4 place-items-center rounded-full bg-tyba-amber-fill px-1 text-[10px] font-bold text-[var(--tyba-on-spark,color-mix(in_srgb,var(--tyba-amber-fill)_16%,black))]">
                       {inboxBadge > 9 ? "9+" : inboxBadge}
                     </span>
                   )}

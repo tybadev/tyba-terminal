@@ -599,7 +599,7 @@ export function PrDetailView({
     pr.state === "merged"
       ? { key: "prStateMerged", cls: "bg-tyba-violet/[.12] text-tyba-violet", icon: <GitMerge size={11} /> }
       : pr.state === "closed"
-        ? { key: "prStateClosed", cls: "bg-tyba-red/[.12] text-tyba-red", icon: <GitPullRequest size={11} /> }
+        ? { key: "prStateClosed", cls: "bg-tyba-red-tint text-tyba-red", icon: <GitPullRequest size={11} /> }
         : pr.state === "draft"
           ? { key: "prStateDraft", cls: "bg-tyba-text/[.06] text-tyba-text-muted", icon: <GitPullRequest size={11} /> }
           : { key: "prStateOpen", cls: "bg-tyba-green/[.12] text-tyba-green", icon: <GitPullRequest size={11} /> };
@@ -655,7 +655,7 @@ export function PrDetailView({
             {t("prOpenedAgo", { ago: relative(pr.created_at, now) })}
           </span>
           {pr.session?.agent && (
-            <span className="rounded-full bg-tyba-amber/[.12] px-[9px] py-0.5 text-[11.5px] font-semibold text-tyba-amber">
+            <span className="rounded-full bg-tyba-amber-tint px-[9px] py-0.5 text-[11.5px] font-semibold text-tyba-amber">
               {t("prOpenedBySession", { agent: pr.session.agent })}
             </span>
           )}
