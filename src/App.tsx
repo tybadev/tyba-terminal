@@ -153,7 +153,7 @@ import { GitHistoryView } from "./components/GitHistoryView";
 import { DockerScreen } from "./components/DockerScreen";
 import { ServicesScreen } from "./components/ServicesScreen";
 import { HistoryPanel } from "./components/HistoryPanel";
-import { PanelIcon, SidePanelBar, type PanelTab } from "./components/SidePanelBar";
+import { HeaderPanelIcon, SidePanelBar, type PanelTab } from "./components/SidePanelBar";
 import {
   escClosesPanel,
   litPanel,
@@ -798,7 +798,10 @@ const SIDEBAR_WIDTH: Record<SidebarMode, number> = {
 };
 
 /** Listras do header só no build de dev (ver o `<header>` do App). */
-const DEV_HEADER_STYLE: React.CSSProperties | undefined = import.meta.env.DEV
+// O preview do navegador (`preview.html`) fotografa a tela para comparar com
+// o quadro: sem as listras do dev.
+const DEV_HEADER_STYLE: React.CSSProperties | undefined =
+  import.meta.env.DEV && !location.pathname.endsWith("/preview.html")
   ? {
       backgroundImage:
         // Borda em degradê (desfocada), não corte seco: presente sem pesar.
@@ -921,7 +924,9 @@ export default function App() {
     () => new Map(),
   );
   const [sidebar, setSidebar] = useState<SidebarMode>("open");
-  const [detailsPref, setDetailsPref] = useState<DetailsPref>("on");
+  // Padrão do quadro Sidebar: nome e uma linha de estado, sem caminho nem
+  // contagem; os detalhes ligam nas Configurações ou por sessão.
+  const [detailsPref, setDetailsPref] = useState<DetailsPref>("off");
   const [detailOverrides, setDetailOverrides] = useState<
     Record<string, DetailsPref>
   >({});
@@ -5662,13 +5667,14 @@ export default function App() {
     const agentLabel = agentStatus ? t(agentStatus.visual.labelKey) : null;
     const agentDetail = (() => {
       if (!agentStatus) return null;
-      // Quadro: "claude rodando" — o nome já vem do `hoverAgent`; aqui o estado.
-      if (agentStatus.observed) return agentLabel;
+      // Quadro Sidebar: "codex espera você", "claude rodando" — o nome vem do
+      // `hoverAgent`, aqui só o estado; o que ele pede fica no cartão de
+      // Agentes e no hover.
       const status = agentStatus.session.status;
-      if (status.state === "awaiting_input" && status.hint) return status.hint;
+      if (status.state === "awaiting_input") return t("sessionAwaiting");
       if (status.state === "failed") return status.reason;
-      if (status.state === "running" && runningCmd) return runningCmd;
-      return hoverAgent ?? agentLabel;
+      if (agentStatus.visual.labelKey === "sessionInProgress") return t("sidebarRunning");
+      return agentLabel;
     })();
     // Linha de estado do quadro ("claude em andamento"): quem é e o que faz;
     // a pergunta pendente ou o motivo da falha no lugar do estado quando há.
@@ -5827,7 +5833,7 @@ export default function App() {
                 </span>
               )}
             </span>
-            {!isConfig && !isWtView && w.tabs.length > 1 && (
+            {showDetails && w.tabs.length > 1 && (
               <span
                 title={t("sessionPanes", { count: w.tabs.length })}
                 className={`mt-[3px] shrink-0 font-mono text-[10.5px] font-medium text-tyba-text-faint ${
@@ -6771,7 +6777,7 @@ export default function App() {
                           ),
                         })}
                       >
-                        <PanelIcon kind={kind} size={18} />
+                        <HeaderPanelIcon kind={kind} />
                       </IconAction>
                     ),
                 )}

@@ -2,6 +2,8 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 
 import { formatDuration } from "../lib/blockLayout";
+import { ClaudeIcon } from "./icons/ClaudeIcon";
+import { OpenAIIcon } from "./icons/OpenAIIcon";
 
 import { LIVE_INSET_X_PX, type PaneRectStyle } from "./TerminalView";
 
@@ -23,6 +25,8 @@ export {
  * primeiro byte, e no final só o conteúdo troca de renderizador — de xterm para
  * DOM — no mesmo lugar, com o mesmo texto.
  */
+const AGENT_COMMAND = /^\s*(?:\S*\/)?(claude|codex)\b/;
+
 export function ActiveBlockHeader({
   command,
   startedAtMs,
@@ -95,6 +99,7 @@ export function ActiveBlockHeader({
   }, []);
 
   const { t, i18n } = useTranslation();
+  const agent = AGENT_COMMAND.exec(command)?.[1] ?? null;
   // O contador anda de segundo em segundo. O relógio é do core
   // (`started_at_ms`); aqui só se lê a hora para desenhar.
   const [now, setNow] = useState(() => Date.now());
@@ -143,15 +148,31 @@ export function ActiveBlockHeader({
         className="tyba-mk-hide tyba-flow-line tyba-flow-line--live tyba-flow-line--thick pointer-events-none absolute inset-x-0 top-0"
       />
       <div className="flex min-w-0 items-start gap-2.5">
-        <span className="shrink-0 font-mono text-[13px] leading-5 text-primary">
-          ❯
-        </span>
+        {/* Agente digitado no shell (quadro Shell, `.blk.agent`): o glifo
+            dele no lugar do ❯ e o tempo na cor da marca. */}
+        {agent === "claude" ? (
+          <span className="flex h-5 shrink-0 items-center">
+            <ClaudeIcon size={15} style={{ color: "#d97757" }} />
+          </span>
+        ) : agent === "codex" ? (
+          <span className="flex h-5 shrink-0 items-center text-tyba-text">
+            <OpenAIIcon size={15} />
+          </span>
+        ) : (
+          <span className="shrink-0 font-mono text-[13px] leading-5 text-primary">
+            ❯
+          </span>
+        )}
         <span className="min-w-0 flex-1 truncate font-mono text-[13px] font-semibold leading-5 text-tyba-text">
           {command}
         </span>
         {/* O ponto fica: o filete diz "algo corre", o ponto diz "é este bloco".
             Aceso (glow) porque está vivo; o pulso para em reduced-motion. */}
-        <span className="flex shrink-0 items-center gap-2 font-mono text-[11.5px] font-medium leading-5 text-[var(--tyba-mk-run-ink,var(--primary))]">
+        <span
+          className={`flex shrink-0 items-center gap-2 font-mono text-[11.5px] font-medium leading-5 ${
+            agent ? "text-tyba-blue" : "text-[var(--tyba-mk-run-ink,var(--primary))]"
+          }`}
+        >
           <span className="tyba-mk-hide size-[7px] shrink-0 rounded-full bg-primary tyba-pulse" />
           <span aria-hidden className="tyba-mk-only -mr-1">●</span>
           {[elapsed && t("blockRunningFor", { time: elapsed }), note].filter(Boolean).join(" · ")}

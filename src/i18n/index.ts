@@ -1165,6 +1165,8 @@ const resources = {
       agentReadyTimeoutBody:
         "O prompt inicial ficou no composer — revise e envie.",
       sessionInProgress: "em andamento",
+      sidebarRunning: "rodando",
+      agentWantsToRun: "quer rodar {{command}}",
       sessionSubagentsWorking: "subagentes trabalhando",
       sessionBlocked: "bloqueado",
       sessionAwaiting: "espera você",
@@ -4030,6 +4032,8 @@ const resources = {
       agentReadyTimeoutBody:
         "The initial prompt stayed in the composer — review and send it.",
       sessionInProgress: "in progress",
+      sidebarRunning: "running",
+      agentWantsToRun: "wants to run {{command}}",
       sessionSubagentsWorking: "subagents working",
       sessionBlocked: "blocked",
       sessionAwaiting: "waiting for you",

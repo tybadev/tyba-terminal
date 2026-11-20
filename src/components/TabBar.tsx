@@ -10,14 +10,11 @@ import {
   DropdownMenuTrigger,
 } from "./ui/dropdown-menu";
 
-import { AgentIcon } from "./icons/AgentIcon";
 import { DockerIcon } from "./icons/DockerIcon";
 import { GitIcon } from "./icons/GitIcon";
 
 import i18n from "../i18n";
 import { formatCombo, tabDigitCombo } from "@/lib/keys";
-import { ClaudeIcon } from "./icons/ClaudeIcon";
-import { OpenAIIcon } from "./icons/OpenAIIcon";
 import {
   leafSessions,
   type Session,
@@ -55,19 +52,6 @@ interface Props {
   onNew: () => void;
 }
 
-function runnerLabel(kind: Session["kind"]): string | null {
-  if (kind.type !== "agent") return null;
-  if (kind.runner === "claude_code") return "claude";
-  if (kind.runner === "codex") return "codex";
-  return kind.runner.custom;
-}
-
-function agentGlyph(label: string): React.ReactNode {
-  if (label === "claude") return <ClaudeIcon size={12} />;
-  if (label === "codex") return <OpenAIIcon size={12} />;
-  return <AgentIcon size={12} />;
-}
-
 /** Sessão de container (shell `docker exec`) que a aba mostra, se for o caso. */
 function containerSession(tab: Tab, sessions: Map<SessionId, Session>): Session | null {
   if (!tab.root) return null;
@@ -99,13 +83,8 @@ function tabIcon(tab: Tab, sessions: Map<SessionId, Session>): React.ReactNode {
   if (content?.kind === "pr-list" || content?.kind === "pr") {
     return <GitPullRequest size={12} className="text-tyba-blue" />;
   }
-  if (tab.root) {
-    for (const sid of leafSessions(tab.root)) {
-      const session = sessions.get(sid);
-      const label = session && runnerLabel(session.kind);
-      if (label) return agentGlyph(label);
-    }
-  }
+  // Aba de terminal (com ou sem agente) é só o nome, como no quadro Header;
+  // quem espera você ganha o ponto antes do nome.
   return null;
 }
 
@@ -229,7 +208,7 @@ export function TabBar({
     el.scrollTo({ left: destino, behavior: "smooth" });
   }, [activeTab, tabs.length]);
 
-  const { shown, hidden } = splitTabs(tabs, (tab) => tab.id === activeTab);
+  const { shown, hidden } = splitTabs(tabs, (tab) => tab.id === activeTab, 5);
   const attentionOf = (tab: Tab) =>
     tab.root ? tabAttention(leafSessions(tab.root).map((sid) => byId.get(sid))) : null;
   const hiddenAttention = hidden.some((tab) => attentionOf(tab));
@@ -249,7 +228,7 @@ export function TabBar({
         }}
         // Mesmo desenho do segmentado do Docker (dono, 2026-11-20): trilho em
         // pílula e a aba ativa no knob branco.
-        className={`tyba-sem-barra relative flex h-9 min-w-0 items-stretch overflow-x-auto rounded-full bg-tyba-text/[.06] p-[3px] ${
+        className={`tyba-sem-barra relative flex h-[34px] min-w-0 items-stretch overflow-x-auto rounded-full bg-tyba-text/[.06] p-[3px] ${
           borda.antes ? "tyba-fade-x--ini" : ""
         } ${borda.depois ? "tyba-fade-x--fim" : ""}`}
       >
@@ -277,10 +256,13 @@ export function TabBar({
               const cwd = tabCwd(tab, cwds);
               return cwd ? `${compactPath(cwd)} · ${combo}` : combo;
             })()}
-            className={`group relative z-[1] flex max-w-40 shrink-0 items-center gap-1.5 rounded-full px-4 text-[13px] font-semibold transition-colors duration-200 ${
+            // Quadro Header (`.tab`): 28 de altura, 14 de lado, 12.5/500; a
+            // ativa em 600. O X de fechar flutua no respiro da direita, sem
+            // alargar a aba.
+            className={`group relative z-[1] flex max-w-40 shrink-0 items-center gap-1.5 rounded-full px-3.5 text-[12.5px] transition-colors duration-200 ${
               isActive
-                ? "text-tyba-text"
-                : "text-tyba-text-muted hover:text-tyba-text"
+                ? "font-semibold text-tyba-text"
+                : "font-medium text-tyba-text-muted hover:text-tyba-text"
             }`}
           >
             {icon ? (
@@ -330,7 +312,7 @@ export function TabBar({
                 e.stopPropagation();
                 onClose(tab.id);
               }}
-              className="rounded-[3px] text-tyba-text-faint opacity-0 transition-opacity hover:text-tyba-text group-hover:opacity-100"
+              className="absolute right-[3px] top-1/2 -translate-y-1/2 rounded-[3px] text-tyba-text-faint opacity-0 transition-opacity hover:text-tyba-text group-hover:opacity-100"
             >
               <X size={11} weight="bold" />
             </span>
@@ -341,7 +323,7 @@ export function TabBar({
         <DropdownMenu>
           <DropdownMenuTrigger
             aria-label={t("moreTabs", { count: hidden.length })}
-            className="flex shrink-0 items-center gap-1.5 rounded-full px-4 text-[13px] font-semibold text-tyba-text-muted hover:text-tyba-text"
+            className="flex shrink-0 items-center gap-1.5 rounded-full px-3.5 text-[12.5px] font-medium text-tyba-text-muted hover:text-tyba-text"
           >
             {hiddenAttention && (
               <span aria-hidden className="size-1.5 rounded-full bg-tyba-amber" />
