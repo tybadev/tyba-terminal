@@ -1,4 +1,4 @@
-import { Lock } from "@phosphor-icons/react";
+import { LockSimple } from "@phosphor-icons/react";
 
 import { Button } from "@/components/ui/button";
 import { SegmentedControl } from "@/components/ui/segmented";
@@ -20,7 +20,8 @@ export function SettingGroup({
   children?: React.ReactNode;
 }) {
   return (
-    <section className="mt-9">
+    // Quadro: 36px entre grupos, 32px no primeiro (logo abaixo do título ou do seletor de tema).
+    <section className="mt-9 first-of-type:mt-8">
       <div className="mb-1 flex items-baseline gap-3">
         <h2 className="m-0 text-[15px] leading-[22px] font-bold tracking-[-.01em] text-tyba-text">
           {title}
@@ -100,7 +101,7 @@ export function SettingStatus({ tone, children }: { tone: "green" | "faint" | "a
 export function SettingFixed({ children }: { children: React.ReactNode }) {
   return (
     <span className="inline-flex items-center gap-1.5 text-[13px] font-semibold text-tyba-text-faint">
-      <Lock size={14} />
+      <LockSimple size={14} />
       {children}
     </span>
   );

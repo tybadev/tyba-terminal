@@ -1988,6 +1988,11 @@ html {
   --tyba-editor-diff-add: #15803d;
   --tyba-editor-diff-mod: #d4a017;
   --tyba-tree-bg: rgba(255, 255, 255, 0.08);
+  /* Configurações: o `.mk-ambient.is-calm` que o quadro sobrescreve (só a
+     luz azul no alto à esquerda, sem amarelo, sobre #f4f6fb); o terminal de
+     amostra leva o fio fixo do quadro. */
+  --tyba-settings-bg: radial-gradient(60% 40% at 20% 10%, rgba(17, 82, 210, 0.06), transparent 70%), #f4f6fb;
+  --tyba-spec-edge: rgba(10, 24, 48, 0.1);
 }
 /* No claro a sans do cromo é a do Muriki (Plus Jakarta Sans), mas só quando
    a preferência pede sans: "Fonte da interface: mono" vale também no claro

@@ -20,7 +20,7 @@ export type AppIconId = (typeof APP_ICONS)[number];
 
 /** Nomes próprios das variantes: iguais em todo idioma. */
 export const APP_ICON_NAMES: Record<AppIconId, string> = {
-  blackout: "BLACKOUT",
+  blackout: "Blackout",
   aurora: "Aurora",
   filamento: "Filamento",
   assinatura: "Assinatura",
