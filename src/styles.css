@@ -1926,6 +1926,23 @@ html {
   --tyba-mk-hd-gap: 10px;
   --tyba-mk-hd-sep: 20px;
   --tyba-mk-wordmark-weight: 700;
+  /* Toast (`.mk-toast`): 12 8 12 16, de 340 a 440, descrição sans 13/18. */
+  --tyba-mk-toast-vw: auto;
+  --tyba-mk-toast-min: 340px;
+  --tyba-mk-toast-max: 440px;
+  --tyba-mk-toast-pr: 8px;
+  --tyba-mk-toast-pl: 16px;
+  --tyba-mk-toast-font: var(--tyba-font-ui);
+  --tyba-mk-toast-desc: 13px;
+  --tyba-mk-toast-lh: 18px;
+  /* Rodapé da paleta (`.mk-cmd-foot`): 12px muted, 12 20, gap 20. */
+  --tyba-mk-cmd-foot-gap: 20px;
+  --tyba-mk-cmd-foot-px: 20px;
+  --tyba-mk-cmd-foot-py: 12px;
+  --tyba-mk-cmd-foot-size: 12px;
+  --tyba-mk-cmd-foot-ink: var(--tyba-text-muted);
+  --tyba-mk-cmd-foot-kgap: 6px;
+  --tyba-mk-cmd-close-ml: 0px;
   /* Rótulo em caixa alta do Muriki (`.mk-sb-label`, `.q-lbl`): 11/600/.04em. */
   --tyba-mk-label-size: 11px;
   --tyba-mk-label-weight: 600;
@@ -2058,6 +2075,34 @@ html {
   background: rgba(255, 255, 255, 0.62);
   -webkit-backdrop-filter: var(--tyba-mk-filter-md);
   backdrop-filter: var(--tyba-mk-filter-md);
+}
+/* Peça que só existe no claro do TYBA, e a que só existe fora dele: onde o
+   Muriki troca o que não é cor (o ícone regular do toast no lugar do cheio,
+   a tecla esc no campo da paleta). `revert-layer` devolve o `display` que a
+   peça tem nas utilitárias. */
+.tyba-mk-only {
+  display: none;
+}
+[data-theme='light']:not([data-imported]) .tyba-mk-only {
+  display: revert-layer;
+}
+[data-theme='light']:not([data-imported]) .tyba-mk-hide {
+  display: none;
+}
+/* Fechar do toast = Button ghost sm só de ícone do Muriki: 34px, raio 10, o
+   X em ink-muted e o véu de .05 no hover. */
+[data-theme='light']:not([data-imported]) .tyba-mk-toast-x {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border-radius: 10px;
+  color: var(--tyba-text-muted);
+}
+[data-theme='light']:not([data-imported]) .tyba-mk-toast-x:hover {
+  background: rgba(10, 24, 48, 0.05);
+  color: var(--tyba-text);
 }
 /* Rede de contraste do Muriki: quem pede menos transparência ganha o vidro
    opaco. */

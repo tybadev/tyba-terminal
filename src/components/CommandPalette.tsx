@@ -107,7 +107,7 @@ const MODE_BINDINGS: Record<PaletteMode, KeyAction> = {
 };
 
 const PLACEHOLDER_KEYS: Record<PaletteMode, string> = {
-  actions: "searchCommand",
+  actions: "paletteAsk",
   files: "filesFinderPlaceholder",
   sessions: "searchSessions",
   history: "paletteHistory",
@@ -474,6 +474,7 @@ export function CommandPalette({
         onValueChange={setQuery}
         onKeyDown={cycleMode}
         placeholder={t(PLACEHOLDER_KEYS[mode])}
+        kbd="esc"
       />
       <CommandList>
         <CommandEmpty>{t("noResults")}</CommandEmpty>
@@ -745,17 +746,20 @@ export function CommandPalette({
         </>
         )}
       </CommandList>
-      <div className="flex items-center gap-3 tyba-divide-t px-3 py-1.5 text-[10px] text-tyba-text-faint">
-        <span className="flex items-center gap-1">
+      {/* Rodapé do Muriki (`.mk-cmd-foot`) no claro: 12px muted, 12 20, gap
+          20, "abrir" e o fechar na fila; fora dele, o de antes. */}
+      <div className="flex items-center gap-[var(--tyba-mk-cmd-foot-gap,12px)] tyba-divide-t px-[var(--tyba-mk-cmd-foot-px,12px)] py-[var(--tyba-mk-cmd-foot-py,6px)] text-[length:var(--tyba-mk-cmd-foot-size,10px)] text-[var(--tyba-mk-cmd-foot-ink,var(--tyba-text-faint))]">
+        <span className="flex items-center gap-[var(--tyba-mk-cmd-foot-kgap,4px)]">
           <Kbd>↑</Kbd>
           <Kbd>↓</Kbd>
           {t("hintNavigate")}
         </span>
-        <span className="flex items-center gap-1">
+        <span className="flex items-center gap-[var(--tyba-mk-cmd-foot-kgap,4px)]">
           <Kbd>↵</Kbd>
-          {t("hintRun")}
+          <span className="tyba-mk-hide">{t("hintRun")}</span>
+          <span className="tyba-mk-only">{t("hintOpen")}</span>
         </span>
-        <span className="ml-auto flex items-center gap-1">
+        <span className="ml-[var(--tyba-mk-cmd-close-ml,auto)] flex items-center gap-[var(--tyba-mk-cmd-foot-kgap,4px)]">
           <Kbd>⎋</Kbd>
           {t("hintClose")}
         </span>

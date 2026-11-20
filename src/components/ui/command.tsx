@@ -4,6 +4,7 @@ import * as React from "react"
 import { Command as CommandPrimitive } from "cmdk"
 import { MagnifyingGlass } from "@phosphor-icons/react"
 import { cn } from "@/lib/utils"
+import { Kbd } from "@/components/ui/kbd"
 import {
   Dialog,
   DialogContent,
@@ -66,8 +67,13 @@ function CommandDialog({
 
 function CommandInput({
   className,
+  kbd,
   ...props
-}: React.ComponentProps<typeof CommandPrimitive.Input>) {
+}: React.ComponentProps<typeof CommandPrimitive.Input> & {
+  /** Tecla embutida à direita do campo (Muriki `mk-cmd-input`, o `esc`). Só
+   *  no claro do TYBA, como no quadro. */
+  kbd?: string
+}) {
   return (
     // Campo da paleta do Muriki: 60px, sans 17px, lupa na cor da marca.
     <div
@@ -87,6 +93,7 @@ function CommandInput({
         )}
         {...props}
       />
+      {kbd && <Kbd className="tyba-mk-only shrink-0">{kbd}</Kbd>}
     </div>
   )
 }
