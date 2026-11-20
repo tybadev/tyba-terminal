@@ -7,7 +7,7 @@ export const UI_FONTS: UiFont[] = ["mono", "grotesk"];
 
 export const UI_FONT_LABELS: Record<UiFont, string> = {
   mono: "JetBrains Mono",
-  grotesk: "Space Grotesk",
+  grotesk: "Sans",
 };
 
 const STORAGE_KEY = "tyba.font";
