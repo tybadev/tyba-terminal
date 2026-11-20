@@ -23,7 +23,7 @@ const flag = (name: string) => {
   return value ?? null;
 };
 const theme = flag("--theme") ?? "light";
-const font = flag("--font") ?? "mono";
+const font = flag("--font");
 const logIdx = argv.indexOf("--log");
 const log = logIdx >= 0;
 if (log) argv.splice(logIdx, 1);
@@ -56,7 +56,7 @@ if (!(await up())) {
 }
 
 const profile = mkdtempSync(join(tmpdir(), "tyba-preview-"));
-const url = `${BASE}/preview.html?screen=${encodeURIComponent(screen)}&theme=${theme}&font=${font}`;
+const url = `${BASE}/preview.html?screen=${encodeURIComponent(screen)}&theme=${theme}${font ? `&font=${font}` : ""}`;
 const chrome = Bun.spawn(
   [
     CHROME,
