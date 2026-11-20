@@ -13,7 +13,8 @@ import {
 } from "@phosphor-icons/react";
 
 import { Button } from "@/components/ui/button";
-import { FIELD_SURFACE } from "@/components/ui/input";
+import { FilterChip } from "@/components/ui/filter-chip";
+import { Input } from "@/components/ui/input";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -165,65 +166,46 @@ export function ContainerLogsView({ containerId, restartNonce }: Props) {
     }
   }, [containerId, exportable, t]);
 
-  // Chip de filtro do Muriki: pílula de vidro; aceso em azul da marca.
-  const chipClass = (on: boolean) =>
-    `inline-flex h-[30px] shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full px-3 text-[13px] font-medium outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring ${
-      on
-        ? "bg-tyba-blue/10 text-tyba-blue shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--tyba-blue)_25%,transparent)]"
-        : "bg-[var(--tyba-control-bg)] text-tyba-text-muted [box-shadow:inset_0_0_0_1px_var(--tyba-control-line),var(--tyba-control-shadow)] hover:text-tyba-text"
-    }`;
-
   return (
     <div className="absolute inset-0 flex min-h-0 min-w-0 flex-col">
-      <div className="flex shrink-0 flex-wrap items-center gap-x-2.5 gap-y-2 tyba-divide-b px-[18px] py-2.5">
-        <label
-          className={`${FIELD_SURFACE} flex h-[34px] w-[240px] shrink-0 items-center gap-2 px-3 text-[13px] text-tyba-text-faint focus-within:[box-shadow:var(--tyba-field-focus)]`}
-        >
-          <MagnifyingGlass size={14} className="shrink-0" />
-          <input
-            type="text"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            aria-label={t("logsFilter")}
-            placeholder={t("logsFilter")}
-            spellCheck={false}
-            autoCapitalize="off"
-            autoCorrect="off"
-            className="min-w-0 flex-1 bg-transparent text-tyba-text outline-none placeholder:text-tyba-text-faint"
-          />
-          {query.trim() && (
-            <span className="shrink-0">
-              {t("logsMatchCount", { matches, total: visible.length })}
-            </span>
-          )}
-        </label>
-        <button type="button" className={chipClass(chip === "all")} onClick={() => setChip("all")}>
+      {/* Quadro Docker: a linha de filtros fica no respiro de 12px do bloco
+          (sem fio próprio); o fio é o topo do log. */}
+      <div className="flex shrink-0 flex-wrap items-center gap-x-2.5 gap-y-2 tyba-divide-b px-5 pt-3 pb-3">
+        <Input
+          icon={<MagnifyingGlass size={16} />}
+          type="text"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          aria-label={t("logsFilter")}
+          placeholder={t("logsFilter")}
+          className="w-[240px] shrink-0"
+          trail={
+            query.trim() ? (
+              <span className="shrink-0 text-[12px]">
+                {t("logsMatchCount", { matches, total: visible.length })}
+              </span>
+            ) : undefined
+          }
+        />
+        <FilterChip active={chip === "all"} onClick={() => setChip("all")}>
           {t("logsAll")}
-        </button>
-        <button
-          type="button"
-          className={chipClass(chip === "errors")}
-          onClick={() => setChip("errors")}
-        >
-          <WarningCircle size={14} />
+        </FilterChip>
+        <FilterChip active={chip === "errors"} onClick={() => setChip("errors")}>
+          <WarningCircle />
           {t("logsErrors")}
-        </button>
-        <button
-          type="button"
-          className={chipClass(chip === "warnings")}
-          onClick={() => setChip("warnings")}
-        >
-          <Warning size={14} />
+        </FilterChip>
+        <FilterChip active={chip === "warnings"} onClick={() => setChip("warnings")}>
+          <Warning />
           {t("logsWarnings")}
-        </button>
+        </FilterChip>
         {/* Período: chip com relógio (quadro), aberto como o Select do app. */}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <button type="button" aria-label={t("logsWindow")} className={chipClass(false)}>
-              <Clock size={14} />
+            <FilterChip aria-label={t("logsWindow")}>
+              <Clock />
               {t(`logsWindow_${window_}`)}
               <CaretDown size={12} className="text-tyba-text-faint" />
-            </button>
+            </FilterChip>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start" className="max-h-64">
             {TIME_WINDOWS.map((w) => (
@@ -241,27 +223,16 @@ export function ContainerLogsView({ containerId, restartNonce }: Props) {
             ))}
           </DropdownMenuContent>
         </DropdownMenu>
-        <button
-          type="button"
-          className={chipClass(showTime)}
-          aria-pressed={showTime}
-          onClick={() => setShowTime((v) => !v)}
-        >
+        <FilterChip active={showTime} aria-pressed={showTime} onClick={() => setShowTime((v) => !v)}>
           {t("logsTime")}
-        </button>
-        <button
-          type="button"
-          className={chipClass(wrap)}
-          aria-pressed={wrap}
-          onClick={() => setWrap((v) => !v)}
-        >
+        </FilterChip>
+        <FilterChip active={wrap} aria-pressed={wrap} onClick={() => setWrap((v) => !v)}>
           {t("logsWrap")}
-        </button>
-        <button
-          type="button"
+        </FilterChip>
+        <FilterChip
           aria-pressed={follow}
           onClick={() => setFollow((v) => !v)}
-          className={`${chipClass(false)} ${follow && !ended ? "text-tyba-green hover:text-tyba-green" : ""}`}
+          className={follow && !ended ? "text-tyba-green hover:text-tyba-green" : undefined}
         >
           <span
             aria-hidden
@@ -272,7 +243,7 @@ export function ContainerLogsView({ containerId, restartNonce }: Props) {
             }`}
           />
           {ended ? t("logsEnded") : follow ? t("logsFollowing") : t("logsPaused")}
-        </button>
+        </FilterChip>
         <Button variant="ghost" size="sm" onClick={() => void copy()}>
           <Copy />
           {t("logsCopy")}
@@ -286,11 +257,11 @@ export function ContainerLogsView({ containerId, restartNonce }: Props) {
       <div
         ref={scrollRef}
         onScroll={onScroll}
-        className="min-h-0 flex-1 overflow-auto py-2 font-mono text-[12.5px]"
+        className="min-h-0 flex-1 overflow-auto py-1.5 font-mono text-[12px]"
       >
-        {error && <div className="px-4 py-2 text-tyba-red">{error}</div>}
+        {error && <div className="px-5 py-2 text-tyba-red">{error}</div>}
         {!error && visible.length === 0 && (
-          <div className="px-4 py-2 text-tyba-text-faint">{t("logsEmpty")}</div>
+          <div className="px-5 py-2 text-tyba-text-faint">{t("logsEmpty")}</div>
         )}
         <div style={{ height: virtualizer.getTotalSize(), position: "relative" }}>
           {virtualizer.getVirtualItems().map((item) => {
@@ -309,13 +280,13 @@ export function ContainerLogsView({ containerId, restartNonce }: Props) {
                 key={line.seq}
                 data-index={item.index}
                 ref={virtualizer.measureElement}
-                className={`absolute left-0 flex items-start gap-3.5 px-[18px] leading-[22px] ${
+                className={`absolute left-0 flex items-start gap-3 px-5 leading-[22px] ${
                   wrap ? "right-0" : "w-max min-w-full whitespace-pre"
                 } ${rowTone}`}
                 style={{ top: item.start, minHeight: ROW_PX }}
               >
                 {showTime && (
-                  <span className="w-[64px] shrink-0 text-tyba-text-ghost">
+                  <span className="w-[72px] shrink-0 font-medium text-tyba-text-faint">
                     {line.continuation ? "" : (own?.clock ?? clockOf(line.ts_ms))}
                   </span>
                 )}
@@ -371,7 +342,7 @@ export function ContainerLogsView({ containerId, restartNonce }: Props) {
         </div>
       </div>
 
-      <div className="flex h-[26px] shrink-0 items-center gap-4 overflow-hidden whitespace-nowrap border-t border-[var(--tyba-line)] bg-[var(--tyba-panel-bg)] px-[18px] text-[11px] text-tyba-text-faint">
+      <div className="flex shrink-0 items-center gap-4 overflow-hidden whitespace-nowrap px-5 pt-1.5 pb-3.5 text-[12px] leading-4 text-tyba-text-muted">
         <span className="shrink-0">
           {t("logsLines", { count: lines.length })} ·{" "}
           <span className={totals.errors > 0 ? "text-tyba-red" : ""}>

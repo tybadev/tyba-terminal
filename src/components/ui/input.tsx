@@ -10,15 +10,21 @@ export const FIELD_SURFACE =
 
 // Com `icon` e/ou `kbd` (Muriki `Input icon kbd`): o campo vira a caixa —
 // ícone à esquerda, a tecla embutida à direita, o anel no foco de dentro.
-// O `className` então dimensiona a caixa, não o `<input>`.
+// O `className` então dimensiona a caixa, não o `<input>`. `trail` fica
+// dentro da caixa, à direita do texto (contagem, botão de limpar).
 function Input({
   className,
   type,
   icon,
   kbd,
+  trail,
   ...props
-}: React.ComponentProps<"input"> & { icon?: React.ReactNode; kbd?: string }) {
-  if (icon || kbd) {
+}: React.ComponentProps<"input"> & {
+  icon?: React.ReactNode
+  kbd?: string
+  trail?: React.ReactNode
+}) {
+  if (icon || kbd || trail) {
     return (
       <label
         data-slot="input"
@@ -37,6 +43,7 @@ function Input({
           className="min-w-0 flex-1 bg-transparent text-tyba-text outline-none placeholder:text-tyba-text-faint"
           {...props}
         />
+        {trail}
         {kbd && <Kbd>{kbd}</Kbd>}
       </label>
     )

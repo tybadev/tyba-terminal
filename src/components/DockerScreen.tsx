@@ -17,7 +17,7 @@ import {
 import "./gitScreen.css";
 import { Button } from "@/components/ui/button";
 import { SegmentedControl } from "@/components/ui/segmented";
-import { FIELD_SURFACE } from "@/components/ui/input";
+import { Input } from "@/components/ui/input";
 import { ContainerFilesPanel } from "./ContainerFilesPanel";
 import { ContainerLogsView } from "./ContainerLogsView";
 import { ContainerShellBanner, ContainerStrip } from "./ContainerStrip";
@@ -838,28 +838,20 @@ export function DockerScreen({
                 </span>
               </div>
               <div className="shrink-0 px-3 pb-2">
-                <label
-                  className={`${FIELD_SURFACE} flex h-9 items-center gap-2 px-3 text-[13px] text-tyba-text-faint focus-within:[box-shadow:var(--tyba-field-focus)]`}
-                >
-                  <MagnifyingGlass size={14} className="shrink-0" />
-                  <input
-                    type="text"
-                    spellCheck={false}
-                    autoCapitalize="off"
-                    autoCorrect="off"
-                    value={query}
-                    onChange={(e) => setQuery(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Escape" && query) {
-                        e.preventDefault();
-                        setQuery("");
-                      }
-                    }}
-                    placeholder={t("dockerPanelFilter")}
-                    aria-label={t("dockerPanelFilter")}
-                    className="min-w-0 flex-1 bg-transparent text-tyba-text outline-none placeholder:text-tyba-text-faint"
-                  />
-                </label>
+                <Input
+                  icon={<MagnifyingGlass size={16} />}
+                  type="text"
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Escape" && query) {
+                      e.preventDefault();
+                      setQuery("");
+                    }
+                  }}
+                  placeholder={t("dockerPanelFilter")}
+                  aria-label={t("dockerPanelFilter")}
+                />
               </div>
               <div className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-2 py-1">
                 {list === null ? (
@@ -895,7 +887,13 @@ export function DockerScreen({
                     inScreen
                     onRestarted={() => setLogsRestart((n) => n + 1)}
                   />
-                  <div className="flex shrink-0 items-center gap-2.5 border-b border-[var(--tyba-line)] px-[18px] py-2">
+                  {/* Quadro Docker: segue o respiro de 12px do bloco; nos logs
+                      locais o fio é o da linha de filtros, embaixo. */}
+                  <div
+                    className={`flex shrink-0 items-center gap-2.5 px-5 pt-3 ${
+                      state.pane === "logs" && !host ? "" : "tyba-divide-b pb-3"
+                    }`}
+                  >
                     {/* Segmentado do quadro (Docker): trilho em pílula, knob branco. */}
                     <SegmentedControl
                       aria-label={t("dockerScreenPanes")}
