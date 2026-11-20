@@ -4,7 +4,7 @@
 
 import { emit } from "@tauri-apps/api/event";
 
-import type { DrawerState, LayoutState, Workspace } from "../lib/ipc";
+import type { DrawerState, LayoutState, RepoSnapshot, Session, Workspace } from "../lib/ipc";
 import {
   BLOCKS,
   HOME,
@@ -29,6 +29,7 @@ import {
   PR_PAGE,
   RUN_LOG,
   SUBAGENTS,
+  TURN_PANEL_GUTTER,
   TURN_PANEL_SRC,
   WORKFLOW_JOBS,
   WORKFLOW_RUNS,
@@ -40,6 +41,7 @@ type Handler = (args: Args) => unknown;
 
 export const state = {
   theme: "dark" as "dark" | "light",
+  font: null as "mono" | "grotesk" | null,
   layout: initialLayout(),
   drawers: [] as DrawerState[],
   /** A branch do repo api: a do quadro Header ("main") nas telas do shell;
@@ -47,6 +49,8 @@ export const state = {
   branch: BRANCH,
   /** Sessões cujo shell ainda não chegou ao prompt (o Loader do quadro Main). */
   booting: [] as string[],
+  /** Repos a mais no `repo_snapshots`, só no cenário que pede. */
+  snapshots: [] as RepoSnapshot[],
 };
 
 function activeWorkspace(): Workspace {
@@ -109,6 +113,7 @@ const themeState = () => ({
 
 // O quadro mostra o Docker no header (o dono liga o ícone nas Configurações).
 const PREFS: Record<string, string> = { "pref.code.show_containers": "on" };
+const LSP_READY = { state: "ready", server: "typescript", diagnostics: 0, truncated: false };
 
 const handlers: Record<string, Handler> = {
   boot_snapshot: () => ({
@@ -121,7 +126,8 @@ const handlers: Record<string, Handler> = {
   boot_poll: () => ({ ready: true, bootFailure: null }),
   layout_state: () => ({ ready: true, value: structuredClone(state.layout) }),
   list_sessions: () => ({ ready: true, value: SESSIONS }),
-  get_pref: ({ key }) => PREFS[String(key)] ?? null,
+  get_pref: ({ key }) =>
+    key === "pref.ui_font" && state.font ? state.font : (PREFS[String(key)] ?? null),
   set_pref: () => null,
   get_theme_state: themeState,
   list_themes: () => THEMES,
@@ -160,6 +166,7 @@ const handlers: Record<string, Handler> = {
       branch: "main",
       status: { dirty: false, changed: 0, insertions: 0, deletions: 0 },
     })),
+    ...state.snapshots,
   ],
   // O `bun run dev` do Shell dividido escuta na 3000.
   services_session_ports: () => ({ [ID.server]: [3000] }),
@@ -222,13 +229,16 @@ const handlers: Record<string, Handler> = {
   files_watch_dir: () => null,
   files_unwatch_dir: () => null,
   files_decorations: () => DECORATIONS,
-  files_gutter: () => [],
+  files_gutter: ({ path }) => (String(path).endsWith("TurnPanel.tsx") ? TURN_PANEL_GUTTER : []),
   files_edit_begin: ({ path }) => ({ text: String(path).endsWith(".tsx") ? TURN_PANEL_SRC : "", hash: "preview" }),
-  lsp_status: () => ({ state: "ready", server: "typescript", diagnostics: 0, truncated: false }),
-  lsp_open: () => null,
+  lsp_status: () => LSP_READY,
+  lsp_open: () => LSP_READY,
+  lsp_symbol_path: ({ line }) => (Number(line) >= 39 ? ["TurnPanel"] : []),
+  lsp_code_actions: () => [],
   lsp_open_doc: () => null,
   lsp_close_doc: () => null,
   lsp_did_change: () => null,
+  lsp_change: () => null,
   files_read: () => ({
     kind: "text",
     text: TURN_PANEL_SRC,
@@ -306,9 +316,17 @@ export function setup(opts: {
   files?: Workspace["screens"]["files"];
   branch?: string;
   booting?: string[];
+  /** Campos a mais em sessões só deste cenário (as outras telas não mudam). */
+  sessions?: Record<string, Partial<Session>>;
+  snapshots?: RepoSnapshot[];
 }): void {
   if (opts.booting) state.booting = opts.booting;
   if (opts.branch) state.branch = opts.branch;
+  if (opts.snapshots) state.snapshots = opts.snapshots;
+  for (const [id, patch] of Object.entries(opts.sessions ?? {})) {
+    const target = SESSIONS.find((x) => x.id === id);
+    if (target) Object.assign(target, patch);
+  }
   if (opts.workspace) state.layout.active_workspace = opts.workspace;
   if (opts.tab) activeWorkspace().active_tab = opts.tab;
   if (opts.files) activeWorkspace().screens.files = opts.files;

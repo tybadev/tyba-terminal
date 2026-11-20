@@ -11,6 +11,7 @@ import type {
   PrListItem,
   PrPage,
   RunLog,
+  Session,
   SubagentRun,
   WorkflowJob,
   WorkflowRun,
@@ -25,6 +26,33 @@ const HOUR = 60 * MIN;
 const DAY = 24 * HOUR;
 
 export const BRANCH = "feat/handoff-agentes-ui";
+
+/** Quadros Git: o último turno da sessão mexeu em 3 arquivos (trilho com Turno). */
+export const GIT_SESSION: Record<string, Partial<Session>> = {
+  [ID.claudeApi]: {
+    last_turn: {
+      seq: 2,
+      outcome: "completed",
+      failure: null,
+      started_at_ms: NOW - 30 * MIN,
+      ended_at_ms: NOW - 28 * MIN,
+      duration_ms: 2 * MIN,
+      prompt: "liga o handoff na aba Turno",
+      diff: "ok",
+      files: [
+        { path: "src/components/HandoffSheet.tsx", old_path: null, status: "added", insertions: 30, deletions: 0 },
+        { path: "src/components/TurnPanel.tsx", old_path: null, status: "modified", insertions: 9, deletions: 5 },
+        { path: "src/components/CommandPalette.tsx", old_path: null, status: "modified", insertions: 3, deletions: 2 },
+      ],
+      files_total: 3,
+      insertions: 42,
+      deletions: 7,
+      commits: 0,
+      cost_usd: 0.4,
+      tokens: 21_000,
+    },
+  },
+};
 const REPO_SLUG = "exemplo/tyba-terminal";
 const prUrl = (n: number) => `https://github.com/${REPO_SLUG}/pull/${n}`;
 
@@ -33,7 +61,7 @@ function pr(over: Partial<PrListItem> & Pick<PrListItem, "number" | "title" | "h
     url: prUrl(over.number),
     state: "open",
     author: "gteodoro",
-    author_name: null,
+    author_name: "Guilherme Teodoro",
     base: "main",
     updated_at: ago(12 * MIN),
     merged_at: null,
@@ -95,6 +123,7 @@ export const PR_PAGE: PrPage = {
       head: "refactor/pty-batch",
       state: "draft",
       author: "mariasouza",
+      author_name: "Maria Souza",
       updated_at: ago(DAY),
       ci: { passed: 4, failed: 1, pending: 0, total: 5 },
       comments: 1,
@@ -106,6 +135,7 @@ export const PR_PAGE: PrPage = {
       title: "chore(deps): bump Swatinem/rust-cache",
       head: "dependabot/rust-cache",
       author: "dependabot",
+      author_name: null,
       updated_at: ago(3 * DAY),
       ci: { passed: 4, failed: 1, pending: 0, total: 5 },
       review: "changes_requested",
@@ -167,6 +197,7 @@ export const PR_DETAIL: PrDetail = {
   url: prUrl(437),
   state: "open",
   author: "gteodoro",
+  author_name: "Guilherme Teodoro",
   head: BRANCH,
   base: "feat/handoff-agentes",
   head_sha: "c41d9e7a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e",
@@ -178,8 +209,8 @@ export const PR_DETAIL: PrDetail = {
   changed_files: 9,
   commits_total: 6,
   commits: [
-    { sha: "8f2c1a0b", subject: "feat(ui): folha do handoff com nota", author: "gteodoro", authored_at: ago(DAY) },
-    { sha: "c41d9e7a", subject: "feat(ui): Passar para… na paleta", author: "gteodoro", authored_at: ago(DAY) },
+    { sha: "8f2c1a0b", subject: "feat(ui): folha do handoff com nota", author: "gteodoro", authored_at: ago(DAY + HOUR) },
+    { sha: "c41d9e7a", subject: "feat(ui): Passar para… na paleta", author: "gteodoro", authored_at: ago(DAY + HOUR) },
   ],
   files: [
     { path: "src/components/HandoffSheet.tsx", additions: 214, deletions: 0 },
@@ -190,10 +221,11 @@ export const PR_DETAIL: PrDetail = {
   reviews: [
     {
       author: "mariasouza",
+      author_name: "Maria Souza",
       state: "commented",
       submitted_at: ago(3 * HOUR),
       body: "A folha fecha sozinha se eu clicar fora sem querer. Dá para pedir confirmação quando já tem nota escrita?",
-      commit: null,
+      commit: "8f2c1a0b",
     },
   ],
   pending_reviewers: [],
@@ -318,10 +350,52 @@ export const DECORATIONS: FileDecoration[] = [
   { path: "src/components/HandoffSheet.tsx", status: "added" },
   { path: "src/components/TurnPanel.tsx", status: "modified" },
   { path: "src/components/CommandPalette.tsx", status: "modified" },
-  { path: "CLAUDE.md", status: "modified" },
 ];
 
-export const TURN_PANEL_SRC = `import { useState } from "react";
+/**
+ * Fonte de TurnPanel.tsx no quadro Files: 39 linhas antes, para o trecho do
+ * quadro cair nas linhas 40–55. A linha 47 salva tem um espaço no fim que o
+ * cenário apaga (aba com alteração não salva, como no quadro). Sem quebra de
+ * linha no fim: o quadro termina na 55.
+ */
+export const TURN_PANEL_SRC = `import { useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
+
+import { Button } from "@/components/ui/button";
+import { HandoffSheet } from "./HandoffSheet";
+import { TurnSummary } from "./TurnSummary";
+import { useTurnFiles } from "../lib/turn";
+import type { TurnDigest } from "../lib/ipc";
+
+/**
+ * Aba Turno: o resumo do último turno do agente e o botão
+ * "Passar para…", que abre a folha do handoff com a nota.
+ * A nota vai para o agente de destino como prompt, marcada
+ * como vinda de outro agente.
+ */
+interface Props {
+  turn: TurnDigest;
+  /** Chamado quando o handoff sai; a sessão de destino já existe. */
+  onHandoff: (target: string) => void;
+}
+
+/** Turno sem arquivo mudado não oferece handoff. */
+export function canHandoff(turn: TurnDigest): boolean {
+  return turn.diff === "ok" && turn.files_total > 0;
+}
+
+/** Rótulo do botão: o agente de destino quando só há um. */
+export function handoffLabel(targets: string[]): string {
+  return targets.length === 1 ? \`Passar para \${targets[0]}\` : "Passar para…";
+}
+
+function useHandoffTargets(turn: TurnDigest): string[] {
+  const { t } = useTranslation();
+  return useMemo(
+    () => (canHandoff(turn) ? [t("agent.codex")] : []),
+    [turn, t],
+  );
+}
 
 export function TurnPanel({ turn, onHandoff }: Props) {
   const files = useTurnFiles(turn.id);
@@ -330,7 +404,7 @@ export function TurnPanel({ turn, onHandoff }: Props) {
   return (
     <section className="turn">
       <TurnSummary turn={turn} files={files} />
-      <Button onClick={() => setSheet(true)}>
+      <Button onClick={() => setSheet(true)}> 
         {t("turn.handoff")}
       </Button>
       {sheet && (
@@ -338,8 +412,17 @@ export function TurnPanel({ turn, onHandoff }: Props) {
       )}
     </section>
   );
-}
-`;
+}`;
+
+/** Faixas do quadro: 42 e 50–52 novas, 47–48 alteradas. */
+export const TURN_PANEL_GUTTER = [
+  { line: 42, kind: "added" as const },
+  { line: 47, kind: "modified" as const },
+  { line: 48, kind: "modified" as const },
+  { line: 50, kind: "added" as const },
+  { line: 51, kind: "added" as const },
+  { line: 52, kind: "added" as const },
+];
 
 // --- Docker -----------------------------------------------------------------
 
