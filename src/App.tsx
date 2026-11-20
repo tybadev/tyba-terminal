@@ -963,9 +963,7 @@ export default function App() {
     () => new Map(),
   );
   const [sidebar, setSidebar] = useState<SidebarMode>("open");
-  // Padrão do quadro Sidebar: nome e uma linha de estado, sem caminho nem
-  // contagem; os detalhes ligam nas Configurações ou por sessão.
-  const [detailsPref, setDetailsPref] = useState<DetailsPref>("off");
+  const [detailsPref, setDetailsPref] = useState<DetailsPref>("on");
   const [detailOverrides, setDetailOverrides] = useState<
     Record<string, DetailsPref>
   >({});
@@ -5708,14 +5706,13 @@ export default function App() {
     const agentLabel = agentStatus ? t(agentStatus.visual.labelKey) : null;
     const agentDetail = (() => {
       if (!agentStatus) return null;
-      // Quadro Sidebar: "codex espera você", "claude rodando" — o nome vem do
-      // `hoverAgent`, aqui só o estado; o que ele pede fica no cartão de
-      // Agentes e no hover.
+      // Quadro: "claude rodando" — o nome já vem do `hoverAgent`; aqui o estado.
+      if (agentStatus.observed) return agentLabel;
       const status = agentStatus.session.status;
-      if (status.state === "awaiting_input") return t("sessionAwaiting");
+      if (status.state === "awaiting_input" && status.hint) return status.hint;
       if (status.state === "failed") return status.reason;
-      if (agentStatus.visual.labelKey === "sessionInProgress") return t("sidebarRunning");
-      return agentLabel;
+      if (status.state === "running" && runningCmd) return runningCmd;
+      return hoverAgent ?? agentLabel;
     })();
     // Linha de estado do quadro ("claude em andamento"): quem é e o que faz;
     // a pergunta pendente ou o motivo da falha no lugar do estado quando há.
@@ -5874,7 +5871,7 @@ export default function App() {
                 </span>
               )}
             </span>
-            {showDetails && w.tabs.length > 1 && (
+            {!isConfig && !isWtView && w.tabs.length > 1 && (
               <span
                 title={t("sessionPanes", { count: w.tabs.length })}
                 className={`mt-[3px] shrink-0 font-mono text-[10.5px] font-medium text-tyba-text-faint ${

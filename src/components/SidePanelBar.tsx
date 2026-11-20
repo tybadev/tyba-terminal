@@ -1,7 +1,6 @@
 import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import {
-  Buildings,
   Clock,
   FolderSimple,
   GitDiff,
@@ -62,10 +61,8 @@ export function PanelIcon({
   }
 }
 
-/** O ícone no header (quadro Header): o Docker é o prédio do Muriki
- *  (`buildings`); a tela do Docker continua com a baleia. */
+/** O ícone no header: o Docker é a baleia do Docker (dono, 2026-11-20). */
 export function HeaderPanelIcon({ kind, size = 18 }: { kind: PanelKind; size?: number }) {
-  if (kind === "docker") return <Buildings size={size} />;
   return <PanelIcon kind={kind} size={size} />;
 }
 
