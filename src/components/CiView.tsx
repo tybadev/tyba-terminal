@@ -105,7 +105,10 @@ export function CiView({
     () => sortRuns((runs ?? []).filter((r) => scope === "all" || !branch || r.head_branch === branch)),
     [runs, scope, branch],
   );
-  const run = shown.find((r) => r.id === runId) ?? shown[0] ?? null;
+  // Sem escolha, abre o último run concluído (o que tem log e resultado; o
+  // quadro abre no que falhou com um rodando acima). Só run na fila: o primeiro.
+  const run =
+    shown.find((r) => r.id === runId) ?? shown.find((r) => r.status === "completed") ?? shown[0] ?? null;
 
   // Jobs e log são rebuscados quando o run escolhido muda de estado (fila →
   // rodando → concluído) e depois do rerun; só a troca de run limpa a tela.
@@ -235,7 +238,7 @@ export function CiView({
 
       {run && (
         <div className="flex min-h-0 flex-1">
-          <ul className="flex w-[340px] shrink-0 flex-col gap-0.5 overflow-y-auto shadow-[inset_-1px_0_0_var(--tyba-line)] p-2">
+          <ul className="flex w-[357px] shrink-0 flex-col gap-0.5 overflow-y-auto shadow-[inset_-1px_0_0_var(--tyba-line)] p-2">
             {shown.map((r) => {
               const tone = runTone(r);
               const on = r.id === run.id;
@@ -244,17 +247,15 @@ export function CiView({
                   <button
                     type="button"
                     onClick={() => setRunId(r.id)}
-                    className={`flex w-full flex-col gap-[3px] rounded-[10px] px-2.5 py-2.5 text-left ${
+                    className={`flex w-full flex-col gap-[3px] rounded-[10px] px-2.5 py-2.5 text-left leading-[normal] ${
                       on ? "tyba-pill-on" : "hover:bg-tyba-raised/60"
                     }`}
                   >
                     <span className="flex min-w-0 items-center gap-2 text-[13px] font-semibold">
                       <span className={`size-[7px] shrink-0 rounded-full ${TONE_DOT[tone]}`} />
-                      <span className="min-w-0 flex-1 truncate text-tyba-text">
-                        {r.name}
-                        <span className="text-[11.5px] font-medium text-tyba-text-faint"> · {r.event}</span>
-                      </span>
-                      <span className={`shrink-0 text-[11.5px] ${TONE_TEXT[tone]}`}>{t(STATUS_KEY[tone])}</span>
+                      <span className="min-w-0 truncate text-tyba-text">{r.name}</span>
+                      <span className="min-w-0 truncate text-[11.5px] font-medium text-tyba-text-faint">· {r.event}</span>
+                      <span className={`ml-auto shrink-0 text-[11.5px] ${TONE_TEXT[tone]}`}>{t(STATUS_KEY[tone])}</span>
                     </span>
                     <span className="truncate pl-[15px] text-[11.5px] text-tyba-text-faint">
                       <span className="font-mono text-tyba-blue">{r.head_branch}</span> ·{" "}
@@ -266,7 +267,7 @@ export function CiView({
             })}
           </ul>
 
-          <div className="flex w-[260px] shrink-0 flex-col gap-0.5 overflow-y-auto shadow-[inset_-1px_0_0_var(--tyba-line)] px-2.5 py-3">
+          <div className="flex w-[281px] shrink-0 flex-col gap-0.5 overflow-y-auto shadow-[inset_-1px_0_0_var(--tyba-line)] px-2.5 py-3">
             <span className="tyba-label px-2 pb-1.5 pt-1 font-semibold">{t("ciJobs")}</span>
             {jobs === null && (
               <ForgeLoading
