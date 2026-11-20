@@ -351,13 +351,13 @@ export function CiView({
                 <div
                   key={i}
                   data-line={i}
-                  className={`flex whitespace-pre ${
+                  className={`grid grid-cols-[44px_1fr] gap-3.5 whitespace-pre ${
                     isErrorLine(line) || i === log?.error_line
                       ? "bg-[var(--tyba-danger-soft,var(--tyba-diff-del-bg))] text-[var(--tyba-mk-danger,var(--tyba-diff-del-text))]"
                       : "text-tyba-text-muted"
                   }`}
                 >
-                  <span className="w-11 shrink-0 select-none pr-3.5 text-right text-tyba-text-faint opacity-60">{i + 1}</span>
+                  <span className="select-none text-right text-tyba-text-faint opacity-60">{i + 1}</span>
                   <span className="pr-4">{line}</span>
                 </div>
               ))}

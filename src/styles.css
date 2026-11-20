@@ -1963,10 +1963,11 @@ html {
   --tyba-knob-shadow: inset 0 1px 0 #ffffff, 0 1px 2px rgba(10, 24, 48, 0.1), 0 4px 12px rgba(10, 24, 48, 0.1);
   --ring: var(--tyba-blue);
   --tyba-focus-ring: 0 0 0 2px var(--tyba-bg), 0 0 0 4px var(--tyba-blue);
-  /* Vidro das telas cheias (Docker, Git, Arquivos): no quadro ele assenta
-     sobre o ambiente #f4f6fb e sai nesse tom; aqui o que está atrás é o
-     papel branco do terminal, então o véu traz o ambiente (#eef2f9). */
-  --tyba-frost-bg: color-mix(in srgb, #eef2f9 72%, transparent);
+  /* Vidro das telas cheias (Docker, Git, Arquivos): o `.q-frost` do quadro,
+     literal — véu de .42 e quem dá o efeito é o blur 40 com saturação 140. */
+  --tyba-frost-bg: rgba(246, 248, 252, 0.42);
+  /* Anel que recorta o ponto sobre o ícone (`.q-dotr`): o fundo do quadro. */
+  --tyba-ring-bg: #f4f6fb;
 }
 /* No claro a sans do cromo é a do Muriki (Plus Jakarta Sans), mas só quando
    a preferência pede sans: "Fonte da interface: mono" vale também no claro
