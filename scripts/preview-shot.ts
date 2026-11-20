@@ -12,7 +12,8 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 const CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
-const PORT = 1425;
+// `PREVIEW_PORT`: porta própria por worktree, para não fotografar o vite de outro.
+const PORT = Number(process.env.PREVIEW_PORT ?? 1425);
 const BASE = `http://localhost:${PORT}`;
 
 const argv = process.argv.slice(2);
@@ -64,6 +65,8 @@ const chrome = Bun.spawn(
     `--screenshot=${resolve(out)}`,
     `--window-size=${w},${h}`,
     "--hide-scrollbars",
+    // O "Sistema" do app segue o `prefers-color-scheme`: o mesmo do tema pedido.
+    `--blink-settings=preferredColorScheme=${theme === "light" ? 1 : 0}`,
     "--force-device-scale-factor=2",
     "--virtual-time-budget=8000",
     ...(log ? ["--enable-logging=stderr", "--v=0"] : []),
