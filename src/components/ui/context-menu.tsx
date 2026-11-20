@@ -41,15 +41,27 @@ function ContextMenuContent({
   );
 }
 
+// Ícone em ink-muted (`.mk-menu-item .mk-ico`), como no dropdown-menu; o
+// item perigoso em vermelho com o hover danger-soft (`.is-danger`).
+const MENU_ICON = "[&_svg:not([class*='text-'])]:text-muted-foreground";
+const MENU_DANGER =
+  "data-[variant=destructive]:text-destructive data-[variant=destructive]:focus:bg-[var(--tyba-danger-soft,color-mix(in_oklab,var(--destructive)_10%,transparent))] data-[variant=destructive]:focus:[box-shadow:none] data-[variant=destructive]:focus:[background-image:none] data-[variant=destructive]:focus:text-destructive data-[variant=destructive]:*:[svg]:text-destructive!";
+
 function ContextMenuItem({
   className,
+  variant = "default",
   ...props
-}: React.ComponentProps<typeof ContextMenuPrimitive.Item>) {
+}: React.ComponentProps<typeof ContextMenuPrimitive.Item> & {
+  variant?: "default" | "destructive";
+}) {
   return (
     <ContextMenuPrimitive.Item
       data-slot="context-menu-item"
+      data-variant={variant}
       className={cn(
         MENU_ITEM,
+        MENU_ICON,
+        MENU_DANGER,
         "data-[disabled]:pointer-events-none data-[disabled]:opacity-40",
         className,
       )}
@@ -104,13 +116,18 @@ function ContextMenuSubTrigger({
       data-slot="context-menu-sub-trigger"
       className={cn(
         MENU_ITEM,
+        MENU_ICON,
         "data-[state=open]:bg-[var(--tyba-glass-active)] data-[state=open]:[box-shadow:var(--tyba-pill-on)]",
         className,
       )}
       {...props}
     >
       {children}
-      <CaretRight size={11} className="ml-auto shrink-0" />
+      {/* No claro, o "›" do quadro como atalho (`.mk-shortcut`). */}
+      <CaretRight size={11} className="tyba-mk-hide ml-auto shrink-0" />
+      <span aria-hidden className="tyba-mk-only ml-auto font-mono text-[11px] text-tyba-text-faint">
+        ›
+      </span>
     </ContextMenuPrimitive.SubTrigger>
   );
 }

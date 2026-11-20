@@ -13,6 +13,7 @@ import {
   FolderSimple,
   GearSix,
   GitDiff,
+  GithubLogo,
   HardDrives,
   MagnifyingGlass,
   Monitor,
@@ -764,15 +765,25 @@ function SidebarItem({
   );
 }
 
+// Ordem do quadro SessionMenu (azul, amarelo, verde, vermelho, violeta);
+// ciano e magenta por último, só fora do claro do TYBA.
 const SESSION_COLORS = [
-  "green",
-  "amber",
-  "magenta",
-  "violet",
   "blue",
-  "cyan",
+  "amber",
+  "green",
   "red",
+  "violet",
+  "cyan",
+  "magenta",
 ];
+
+/** No claro do TYBA o ciano é o azul e o magenta é o vermelho. */
+const LIGHT_REPEATED_COLORS = new Set(["cyan", "magenta"]);
+
+/** A cor como mancha (amostra, quadradinho do grupo): o tom de preenchimento
+ *  quando o tema tem um (no claro, o amarelo #fdce04 em vez do âmbar de
+ *  texto); fora dele, a cor de sempre. */
+const colorFill = (c: string) => `var(--tyba-${c}-fill, var(--tyba-${c}))`;
 
 const copyText = (text: string) => {
   void navigator.clipboard?.writeText(text).catch(() => {});
@@ -5448,25 +5459,27 @@ export default function App() {
     M: MenuParts,
   ) => (
     <>
-      <div className="px-2 pb-1 pt-1.5 text-[11px] font-semibold uppercase tracking-[0.04em] text-tyba-text-faint">
+      <div className="px-3 pb-1 pt-2 text-[11px] font-semibold uppercase leading-4 tracking-[0.04em] text-tyba-text-faint">
         {t("menuSession")}
       </div>
       <M.Item
-        className="gap-2.5 text-[13px]"
         onSelect={() => setPrompt({ kind: "rename", ws: w })}
       >
-        <TextT size={15} className="shrink-0" />
+        <TextT size={18} className="shrink-0" />
         {t("menuRename")}
       </M.Item>
       <M.Sub>
-        <M.SubTrigger className="gap-2.5 text-[13px]">
-          <FolderSimple size={15} className="shrink-0" />
+        <M.SubTrigger>
+          <FolderSimple size={18} className="shrink-0" />
           {t("menuColorGroup")}
         </M.SubTrigger>
-        <M.SubContent className="w-[220px] p-2">
+        <M.SubContent className="flex w-[220px] flex-col gap-0.5 p-2">
           <div className="px-2.5 py-1.5 text-[11px] font-semibold uppercase tracking-[0.04em] text-tyba-text-faint">
             {t("menuColor")}
           </div>
+          {/* As seis do quadro, numa linha e na ordem dele: sem cor, azul,
+              amarelo, verde, vermelho e violeta. Ciano e magenta, que no
+              claro repetem o azul e o vermelho, só aparecem fora dele. */}
           <div className="grid grid-cols-6 gap-2 px-2.5 pb-2 pt-1">
             <button
               aria-label={t("noColor")}
@@ -5475,7 +5488,7 @@ export default function App() {
               className={`size-[22px] rounded-[7px] bg-tyba-raised ${
                 !w.color
                   ? "shadow-[0_0_0_2px_var(--tyba-paper-solid),0_0_0_4px_var(--tyba-blue)]"
-                  : "shadow-[inset_0_0_0_1px_var(--tyba-border-strong)]"
+                  : "shadow-[inset_0_0_0_1px_var(--tyba-mk-swatch-line,var(--tyba-border-strong))]"
               }`}
             />
             {SESSION_COLORS.map((c) => (
@@ -5485,11 +5498,13 @@ export default function App() {
                 title={c}
                 onClick={() => void setWorkspaceColor(w.id, c)}
                 className={`size-[22px] rounded-[7px] ${
+                  LIGHT_REPEATED_COLORS.has(c) ? "tyba-mk-hide" : ""
+                } ${
                   w.color === c
                     ? "shadow-[0_0_0_2px_var(--tyba-paper-solid),0_0_0_4px_var(--tyba-blue)]"
-                    : "shadow-[inset_0_0_0_1px_var(--tyba-line)]"
+                    : "shadow-[inset_0_0_0_1px_var(--tyba-mk-swatch-line,var(--tyba-line))]"
                 }`}
-                style={{ background: `var(--tyba-${c})` }}
+                style={{ background: colorFill(c) }}
               />
             ))}
           </div>
@@ -5501,7 +5516,7 @@ export default function App() {
             return (
               <M.Item
                 key={name}
-                className={`h-[34px] gap-2.5 text-[13px] ${
+                className={`h-[34px] gap-2.5 px-2.5 text-[13.5px] ${
                   w.group === name ? "tyba-pill-on font-semibold" : ""
                 }`}
                 onSelect={() =>
@@ -5511,14 +5526,14 @@ export default function App() {
                 <span
                   aria-hidden
                   className={`size-2 shrink-0 rounded-[3px] ${color ? "" : "bg-tyba-text-faint"}`}
-                  style={color ? { background: `var(--tyba-${color})` } : undefined}
+                  style={color ? { background: colorFill(color) } : undefined}
                 />
                 <span className="min-w-0 flex-1 truncate">{name}</span>
               </M.Item>
             );
           })}
           <M.Item
-            className="h-[34px] gap-2.5 text-[13px]"
+            className="h-[34px] gap-2.5 px-2.5 text-[13.5px]"
             onSelect={() => setPrompt({ kind: "group", ws: w })}
           >
             <Plus size={15} className="shrink-0" />
@@ -5528,10 +5543,10 @@ export default function App() {
       </M.Sub>
       {w.group && (
         <M.Item
-          className="gap-2.5 text-[13px]"
+          
           onSelect={() => void setWorkspaceGroup(w.id, null)}
         >
-          <ArrowBendUpLeft size={15} className="shrink-0" />
+          <ArrowBendUpLeft size={18} className="shrink-0" />
           {t("menuLeaveGroup")}
         </M.Item>
       )}
@@ -5539,59 +5554,55 @@ export default function App() {
           só aparece no menu da sessão que está na tela. */}
       {w.id === layout.active_workspace && activeTab?.active_pane && (
         <M.Item
-          className="gap-2.5 text-[13px]"
+          
           onSelect={() => void splitActive("v")}
         >
-          <Columns size={15} className="shrink-0" />
+          <Columns size={18} className="shrink-0" />
           {t("splitRight")}
           <Shortcut combo={bindings.splitRight} className="ml-auto" />
         </M.Item>
       )}
       <M.Separator />
       {branch && (
-        <M.Item className="gap-2.5 text-[13px]" onSelect={() => copyText(branch)}>
-          <Copy size={15} className="shrink-0" />
+        <M.Item onSelect={() => copyText(branch)}>
+          <Copy size={18} className="shrink-0" />
           {t("copyBranch")}
         </M.Item>
       )}
       {w.repo_root && (
         <M.Item
-          className="gap-2.5 text-[13px]"
+          
           onSelect={() => copyText(w.repo_root as string)}
         >
-          <FolderSimple size={15} className="shrink-0" />
+          <FolderSimple size={18} className="shrink-0" />
           {t("menuCopyDir")}
         </M.Item>
       )}
       <M.Item
-        className="gap-2.5 text-[13px]"
         onSelect={() => toggleWorkspaceDetails(w.id)}
       >
         {detailsFor(w.id) ? (
-          <EyeSlash size={15} className="shrink-0" />
+          <EyeSlash size={18} className="shrink-0" />
         ) : (
-          <Eye size={15} className="shrink-0" />
+          <Eye size={18} className="shrink-0" />
         )}
         {detailsFor(w.id) ? t("detailsHide") : t("detailsShow")}
       </M.Item>
       {worktreeSessionOf(w) && (
         <M.Item
-          className="gap-2.5 text-[13px]"
+          
           onSelect={() => {
             const target = worktreeSessionOf(w);
             if (target) void openDiffContentTab(target.id).catch(() => {});
           }}
         >
-          <GitDiff size={15} className="shrink-0" />
+          <GithubLogo size={18} className="shrink-0" />
           {t("diffReviewAction")}
         </M.Item>
       )}
       <M.Separator />
-      <M.Item
-        className="gap-2.5 text-[13px] text-tyba-red focus:text-tyba-red"
-        onSelect={() => void killWorkspace(w.id)}
-      >
-        <Trash size={15} className="shrink-0" />
+      <M.Item variant="destructive" onSelect={() => void killWorkspace(w.id)}>
+        <Trash size={18} className="shrink-0" />
         {t("killSession")}
       </M.Item>
     </>
@@ -5842,7 +5853,7 @@ export default function App() {
                   <DotsThree size={16} weight="bold" />
                 </span>
               </DropdownMenuTrigger>
-              <DropdownMenuContent align="start" className="w-[270px]">
+              <DropdownMenuContent align="start" className="w-[248px]">
                 {renderWorkspaceMenuItems(w, branch, DROPDOWN_MENU_PARTS)}
               </DropdownMenuContent>
             </DropdownMenu>
@@ -5863,7 +5874,7 @@ export default function App() {
             <ContextMenuTrigger asChild>
               <HoverCardTrigger asChild>{workspaceButton}</HoverCardTrigger>
             </ContextMenuTrigger>
-            <ContextMenuContent className="w-[270px]">
+            <ContextMenuContent className="w-[248px]">
               {renderWorkspaceMenuItems(w, branch, CONTEXT_MENU_PARTS)}
             </ContextMenuContent>
           </ContextMenu>
@@ -7024,7 +7035,7 @@ export default function App() {
                               <span
                                 aria-hidden
                                 className={`size-2 shrink-0 rounded-[3px] ${g.color ? "" : "bg-tyba-text-faint"}`}
-                                style={g.color ? { background: `var(--tyba-${g.color})` } : undefined}
+                                style={g.color ? { background: colorFill(g.color) } : undefined}
                               />
                             )}
                             <span className="min-w-0 flex-1 truncate text-left">
