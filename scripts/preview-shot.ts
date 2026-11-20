@@ -46,6 +46,9 @@ if (!(await up())) {
   vite = spawn("bunx", ["vite", "--port", String(PORT), "--strictPort"], {
     cwd: resolve(import.meta.dir, ".."),
     stdio: "ignore",
+    // Grupo próprio: o `bunx` deixa o `vite` filho, e matar só o pai deixava
+    // um servidor velho na porta servindo o código de antes.
+    detached: true,
   });
   for (let i = 0; i < 100 && !(await up()); i++) await Bun.sleep(200);
   // Primeira carga otimiza dependências e recarrega a página: aquece antes.
@@ -72,7 +75,7 @@ const chrome = Bun.spawn(
 const stderr = await new Response(chrome.stderr).text();
 const code = await chrome.exited;
 rmSync(profile, { recursive: true, force: true });
-vite?.kill();
+if (vite?.pid) process.kill(-vite.pid);
 
 if (log) {
   for (const line of stderr.split("\n")) {
