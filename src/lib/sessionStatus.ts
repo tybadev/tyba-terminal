@@ -10,14 +10,18 @@ import { sameAgentUsage } from "./agentUsage";
 
 /**
  * Há quanto tempo o turno que roda começou, a partir do instante que o core
- * mandou. `null` quando a sessão não está rodando ou o core não viu o começo.
+ * mandou, sem o tempo em que o dono o deixou pausado (parado enquanto
+ * pausado). `null` quando a sessão não está rodando ou o core não viu o começo.
  */
 export const turnElapsedMs = (
-  session: Pick<Session, "status" | "turn_started_at_ms">,
+  session: Pick<Session, "status" | "turn_started_at_ms" | "paused_at_ms" | "paused_ms">,
   now: number,
 ): number | null =>
   session.status.state === "running" && session.turn_started_at_ms != null
-    ? Math.max(0, now - session.turn_started_at_ms)
+    ? Math.max(
+        0,
+        (session.paused_at_ms ?? now) - session.turn_started_at_ms - (session.paused_ms ?? 0),
+      )
     : null;
 
 export const isFinishedStatus = (status: SessionStatus): boolean =>
@@ -236,6 +240,10 @@ export const mergeSessionUpdate = (
     sameTurnDigest(current.last_turn, incoming.last_turn) &&
     Boolean(current.turn_open) === Boolean(incoming.turn_open) &&
     (current.turn_started_at_ms ?? null) === (incoming.turn_started_at_ms ?? null) &&
+    (current.turn_prompt ?? null) === (incoming.turn_prompt ?? null) &&
+    (current.paused_at_ms ?? null) === (incoming.paused_at_ms ?? null) &&
+    (current.paused_ms ?? 0) === (incoming.paused_ms ?? 0) &&
+    (current.waiting_since_ms ?? null) === (incoming.waiting_since_ms ?? null) &&
     Boolean(current.shell_resume_offer) === Boolean(incoming.shell_resume_offer)
   ) {
     return null;
@@ -249,6 +257,10 @@ export const mergeSessionUpdate = (
     last_turn: incoming.last_turn ?? null,
     turn_open: incoming.turn_open ?? false,
     turn_started_at_ms: incoming.turn_started_at_ms ?? null,
+    turn_prompt: incoming.turn_prompt ?? null,
+    paused_at_ms: incoming.paused_at_ms ?? null,
+    paused_ms: incoming.paused_ms ?? 0,
+    waiting_since_ms: incoming.waiting_since_ms ?? null,
     shell_resume_offer: incoming.shell_resume_offer ?? false,
     connection: incoming.connection,
     connection_failure: incoming.connection_failure ?? null,

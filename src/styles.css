@@ -2260,3 +2260,23 @@ html {
 @media (prefers-reduced-motion: reduce) {
   .tyba-loader-drop { animation: none; left: calc(50% - 28px); }
 }
+
+/* O pulso do ponto do FocusHUD (`.mk-hud-dot::after`, `mk-pulse`): halo da
+   cor do ponto, 5px para fora, de .6 a 1.6 em 2s. Parado em movimento
+   reduzido. */
+.tyba-hud-dot.is-running::after {
+  content: "";
+  position: absolute;
+  inset: -5px;
+  border-radius: inherit;
+  background: inherit;
+  opacity: 0.45;
+  animation: tyba-hud-pulse 2s ease-out infinite;
+}
+@keyframes tyba-hud-pulse {
+  0% { transform: scale(0.6); opacity: 0.55; }
+  100% { transform: scale(1.6); opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tyba-hud-dot.is-running::after { animation: none; }
+}

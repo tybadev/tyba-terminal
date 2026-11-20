@@ -45,6 +45,8 @@ export const SCENARIO_SETUP: Record<string, Parameters<typeof setup>[0]> = {
     drawer: { session_id: ID.claudeApi, open: true, tab: "agents", outcome_seen: false },
   },
   handoff: { workspace: "ws-api", tab: "tab-api-claude" },
+  "focus-hud": { branch: "main", workspace: "ws-api", tab: "tab-api-claude" },
+  "focus-hud-paused": { branch: "main", workspace: "ws-api", tab: "tab-api-claude" },
   "git-prs": { workspace: "ws-api", tab: "tab-api-claude", sessions: GIT_SESSION },
   "git-pr-detail": { workspace: "ws-api", tab: "tab-api-claude", sessions: GIT_SESSION },
   "git-ci": { workspace: "ws-api", tab: "tab-api-claude", sessions: GIT_SESSION },
@@ -74,7 +76,23 @@ export const SCENARIO_SETUP: Record<string, Parameters<typeof setup>[0]> = {
   },
 };
 
+/** O turno do claude em api do quadro Main ("01:12", "handoff da aba
+ *  Turno"), rodando ou pausado há 10s. */
+const focusTurn = (paused: boolean) => {
+  const now = Date.now();
+  const s = SESSIONS.find((x) => x.id === ID.claudeApi);
+  return emit(`session://status/${ID.claudeApi}`, {
+    ...s,
+    turn_started_at_ms: now - 72_000 - (paused ? 10_000 : 0),
+    turn_prompt: "handoff da aba Turno",
+    paused_at_ms: paused ? now - 10_000 : null,
+    paused_ms: 0,
+  });
+};
+
 export const SCENARIOS: Record<string, () => Promise<unknown> | void> = {
+  "focus-hud": () => focusTurn(false),
+  "focus-hud-paused": () => focusTurn(true),
   main: () => {},
   sidebar: () => {},
   header: () => {},

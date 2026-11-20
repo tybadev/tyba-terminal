@@ -32,6 +32,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { Button } from "@/components/ui/button";
 import { Loader } from "@/components/ui/loader";
+import { FocusHUD } from "@/components/ui/focus-hud";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -64,7 +65,7 @@ import { NotificationToaster } from "./components/NotificationToaster";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { WindowControls, WindowResizeEdges } from "./components/WindowChrome";
 import { UpdateToast } from "./components/UpdateToast";
-import { IS_MAC } from "./lib/platform";
+import { IS_MAC, IS_WINDOWS } from "./lib/platform";
 import { AgentIcon } from "./components/icons/AgentIcon";
 import { AgentsBoard } from "./components/AgentsBoard";
 import { AgentsQueue } from "./components/AgentsQueue";
@@ -289,6 +290,8 @@ import {
   agentsDrawerCollapse,
   agentsDrawerOpen,
   onAgentsDrawerChanged,
+  agentPause,
+  agentStopTurn,
   type DrawerState,
   detectedAgent,
   canResumeAgentSession,
@@ -817,6 +820,41 @@ function PaneTurnTime({ session }: { session: Session }) {
   const now = useNow(turnElapsedMs(session, 0) !== null);
   const ms = turnElapsedMs(session, now);
   return ms === null ? null : <>{` · ${formatElapsed(ms)}`}</>;
+}
+
+/** "01:12", "1:02:05": o relógio do FocusHUD. */
+const hudClock = (ms: number): string => {
+  const total = Math.floor(ms / 1000);
+  const two = (n: number) => String(n).padStart(2, "0");
+  const [h, m, s] = [Math.floor(total / 3600), Math.floor(total / 60) % 60, total % 60];
+  return h > 0 ? `${h}:${two(m)}:${two(s)}` : `${two(m)}:${two(s)}`;
+};
+
+/** O FocusHUD do turno que roda no painel ativo (quadro Main): tempo do
+ *  turno sem as pausas, agente · prompt, pausar (SIGSTOP no core, só agente
+ *  aberto pelo TYBA e fora do Windows) e encerrar (Esc, como o dono). Tudo
+ *  do core; componente próprio para só ele andar de segundo em segundo. */
+function PaneFocusHud({ session, agent }: { session: Session; agent: string }) {
+  const { t } = useTranslation();
+  const paused = session.paused_at_ms != null;
+  const now = useNow(!paused);
+  const ms = turnElapsedMs(session, now);
+  if (ms === null) return null;
+  const fail = (e: unknown) => toastError(t("focusHudFailed"), e);
+  return (
+    <FocusHUD
+      className="pointer-events-auto"
+      time={hudClock(ms)}
+      task={session.turn_prompt ? `${agent} · ${session.turn_prompt}` : agent}
+      paused={paused}
+      onPause={
+        !IS_WINDOWS && session.kind.type === "agent"
+          ? () => void agentPause(session.id, !paused).catch(fail)
+          : undefined
+      }
+      onStop={() => void agentStopTurn(session.id).catch(fail)}
+    />
+  );
 }
 
 /** Ícones do header no Orbit, na ordem do terminal (quadro Header). */
@@ -6109,6 +6147,22 @@ export default function App() {
                   );
                   return <Loader label={t(step.key, step.params)} />;
                 })()}
+              </div>
+            )}
+          {/* Agente com turno rodando no painel ativo: o FocusHUD no canto
+              de baixo, acima do rodapé; some com a gaveta de Agentes aberta. */}
+          {!bare &&
+            s.id === activeId &&
+            !(drawers.get(s.id)?.open ?? false) &&
+            turnElapsedMs(s, 0) !== null &&
+            (s.kind.type === "agent" || detected) && (
+              <div className="pointer-events-none absolute right-4 bottom-4 z-20">
+                <PaneFocusHud
+                  session={s}
+                  agent={agentBinaryName(
+                    s.kind.type === "agent" ? s.kind.runner : detected!.kind,
+                  )}
+                />
               </div>
             )}
           {wrapNodeTerminal(nodeZoom, <TerminalView

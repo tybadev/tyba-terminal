@@ -115,6 +115,14 @@ export interface Session {
   /** Quando o turno aberto começou (ms desde a época). Anda com
    * `turn_open`; o front só conta o tempo a partir dele. Só memória no core. */
   turn_started_at_ms?: number | null;
+  /** O prompt do turno aberto, redigido e cortado pelo core. */
+  turn_prompt?: string | null;
+  /** O dono pausou o agente (SIGSTOP no core): desde quando. */
+  paused_at_ms?: number | null;
+  /** Quanto do turno aberto já ficou pausado, sem a pausa de agora. */
+  paused_ms?: number;
+  /** Desde quando a sessão espera o dono; ausente fora disso. */
+  waiting_since_ms?: number | null;
   /** Shell restaurado com uma conversa do Claude que ainda dá para retomar.
    * Decidido pelo core no boot; só em memória. */
   shell_resume_offer?: boolean;
@@ -165,6 +173,13 @@ export interface ShellOption {
   program: string;
   args: string[];
 }
+
+/** Pausa (SIGSTOP) ou retoma o agente da sessão. Só Unix. */
+export const agentPause = (id: SessionId, paused: boolean) =>
+  invoke<void>("agent_pause", { id, paused });
+
+/** Encerra o turno do agente como o dono faria (Esc), sem matar a sessão. */
+export const agentStopTurn = (id: SessionId) => invoke<void>("agent_stop_turn", { id });
 
 export const listShells = () => invoke<ShellOption[]>("list_shells");
 
