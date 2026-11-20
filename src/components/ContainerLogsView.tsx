@@ -48,6 +48,8 @@ import { pushToast, toastError } from "@/lib/toast";
 
 interface Props {
   containerId: string;
+  /** Host SSH (alias) do container; ausente = docker local. */
+  host?: string | null;
   /** Muda a cada "Reiniciar": religa o `docker logs -f`. */
   restartNonce: number;
 }
@@ -63,7 +65,7 @@ const LEVEL_CLASS: Record<string, string> = {
 
 /** Logs do container como lista: hora, nível, filtro que acende, links de
  *  stack trace para o editor. O parse já veio do core. */
-export function ContainerLogsView({ containerId, restartNonce }: Props) {
+export function ContainerLogsView({ containerId, host = null, restartNonce }: Props) {
   const { t } = useTranslation();
   const [lines, setLines] = useState<LogLine[]>([]);
   const [ended, setEnded] = useState(false);
@@ -93,7 +95,7 @@ export function ContainerLogsView({ containerId, restartNonce }: Props) {
       });
       if (done) setEnded(true);
     });
-    void dockerLogsStart(containerId)
+    void dockerLogsStart(containerId, host)
       .then((snap) => {
         if (!alive) return;
         setLines((prev) => {
@@ -111,7 +113,7 @@ export function ContainerLogsView({ containerId, restartNonce }: Props) {
       alive = false;
       void un.then((f) => f());
     };
-  }, [containerId, restartNonce]);
+  }, [containerId, host, restartNonce]);
 
   // A janela de tempo é relativa ao agora: reavalia de tempos em tempos.
   useEffect(() => {

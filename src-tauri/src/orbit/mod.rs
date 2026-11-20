@@ -21,6 +21,8 @@ pub mod run;
 pub mod secret;
 pub mod service;
 pub mod talk;
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+mod talk_claude_e2e;
 
 pub use service::ServiceSource;
 

@@ -440,6 +440,9 @@ fn notify_native_shown(
     }
     match builder.show() {
         Ok(()) => {
+            if !focused {
+                notify::click_target().shown(id, std::time::Instant::now());
+            }
             eprintln!(
                 "[tyba] aviso {kind:?} de {id} enviado (janela em foco: {focused}, na tela: {viewed:?})"
             );
@@ -642,6 +645,13 @@ fn begin_turn(ctx: &HandlerCtx, event: &HookEvent) {
     if session.owner == crate::session::SessionOwner::Orbit {
         return;
     }
+    let words = crate::agent::handoff::LastWords::on_prompt(
+        ctx.runner_kind.clone(),
+        ctx.worktree_root.clone(),
+        &event.raw,
+    );
+    ctx.sessions
+        .update_last_words(ctx.session_id, |w| *w = Some(words));
     let prompt = event
         .raw
         .get("prompt")
@@ -1399,6 +1409,15 @@ fn on_orbit_tool(ctx: &HandlerCtx, event: &HookEvent) -> HookAction {
                 .into(),
         };
     };
+    orbit_tool_action(tools, event)
+}
+
+/// O pedido `OrbitTool` da ponte (`tyba _orbit-mcp`) levado às ferramentas
+/// do nó: chamada, cancelamento ou confirmação de entrega.
+pub(crate) fn orbit_tool_action(
+    tools: &crate::orbit::orchestrator::ToolHandler,
+    event: &HookEvent,
+) -> HookAction {
     use crate::orbit::orchestrator::ToolRequest;
     let text = |key: &str| event.raw.get(key).and_then(|t| t.as_str());
     let tool = text("tool").unwrap_or_default();
@@ -1666,6 +1685,15 @@ fn handle_event(ctx: &HandlerCtx, event: HookEvent) -> HookAction {
                     }
                 }
                 Some(SessionStatus::Idle { .. }) => {
+                    // A fala final fica para o handoff, só em memória.
+                    ctx.sessions.update_last_words(ctx.session_id, |w| {
+                        crate::agent::handoff::LastWords::on_stop(
+                            w,
+                            ctx.runner_kind.clone(),
+                            ctx.worktree_root.clone(),
+                            &event,
+                        )
+                    });
                     let turn = turn_summary(&event);
                     let summary = turn.text;
                     let needs_settle = !turn.settled;
@@ -1995,7 +2023,7 @@ pub(crate) const FORCE_HYPERLINK: (&str, &str) = ("FORCE_HYPERLINK", "1");
 /// PATH com `TYBA_HOSTED=1`, como no pane: um claude aberto de dentro do
 /// agente (Bash, script, `claude -p`) passa pelo `_jail` e ganha o
 /// guarda-corpo.
-fn free_agent_env(
+pub(crate) fn free_agent_env(
     base: HashMap<String, String>,
     login_path: String,
     nested_wrapper: Option<&Path>,
@@ -2459,8 +2487,8 @@ fn note_turn_tail(tail: &mut TurnTail, event: &HookEvent) {
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-struct FreeCommand {
-    cmd: portable_pty::CommandBuilder,
+pub(crate) struct FreeCommand {
+    pub(crate) cmd: portable_pty::CommandBuilder,
     worktree_root: PathBuf,
     /// Sempre `true`: o hook do nó só observa, como o do claude digitado.
     observe_only: bool,
@@ -2482,7 +2510,7 @@ fn prompt_arg(prompt: &str) -> String {
 /// login, guarda-corpo de push, sem o que desligaria os hooks) mais o que o
 /// nó pede, por cima.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-fn node_agent_env(
+pub(crate) fn node_agent_env(
     free_env: HashMap<String, String>,
     extra: &[(String, String)],
 ) -> HashMap<String, String> {
@@ -2497,7 +2525,7 @@ fn node_agent_env(
 /// de observação, prompt como argumento, `Sandbox` passthrough.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[allow(clippy::too_many_arguments)]
-fn build_free_command(
+pub(crate) fn build_free_command(
     runner: &dyn AgentRunner,
     cwd: &Path,
     env: &HashMap<String, String>,

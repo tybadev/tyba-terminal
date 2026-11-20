@@ -427,7 +427,7 @@ fn connect_with_retry(socket_path: &Path) -> Option<std::os::unix::net::UnixStre
 /// `/tmp` compartilhado, onde outro usuário poderia ter criado o diretório
 /// antes e plantado um socket que devolve um plano dele.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-fn socket_dir_is_ours(socket_path: &Path) -> bool {
+pub(crate) fn socket_dir_is_ours(socket_path: &Path) -> bool {
     use std::os::unix::fs::MetadataExt;
 
     let Some(meta) = socket_path
