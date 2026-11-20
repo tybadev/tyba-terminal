@@ -7,7 +7,7 @@ import { openGitScreen } from "../lib/gitScreen";
 import { requestHandoff } from "../lib/handoff";
 import { dockerScreenSelect, openDockerPanel, openFilesPanel } from "../lib/ipc";
 import type { setup } from "./core";
-import { ID, TURN_HANDOFF } from "./fixtures";
+import { ID, SESSIONS, TURN_HANDOFF } from "./fixtures";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -33,6 +33,8 @@ export const SCENARIO_SETUP: Record<string, Parameters<typeof setup>[0]> = {
   sidebar: { branch: "main" },
   header: { branch: "main" },
   "session-menu": { branch: "main" },
+  toasts: { branch: "main" },
+  opening: { branch: "main", workspace: "ws-site", booting: [ID.site] },
   "shell-split": { workspace: "ws-api", tab: "tab-api-split", branch: "main" },
   agents: {
     branch: "main",
@@ -81,6 +83,20 @@ export const SCENARIOS: Record<string, () => Promise<unknown> | void> = {
       document.querySelector<HTMLElement>('button[aria-label^="Notificações"], button[aria-label="Inbox"]'),
     );
     button.click();
+  },
+  // Os avisos do quadro Main: o turno do claude em core termina (toast
+  // "Turno terminou") e o codex em api pede permissão (faixa "precisa de você").
+  opening: () => {},
+  toasts: async () => {
+    const core = SESSIONS.find((x) => x.id === ID.core);
+    await emit("agent://asks", [{ session_id: ID.api, agent: "Codex", project: "api", branch: "main" }]);
+    await emit(`session://status/${ID.core}`, {
+      ...core,
+      status: { state: "idle", summary: null },
+      attention: true,
+      turn_open: false,
+      last_turn: { ...TURN_HANDOFF, files_total: 3, insertions: 42, deletions: 7 },
+    });
   },
   "session-menu": async () => {
     const row = await waitFor(() => byText("button", /^core/));

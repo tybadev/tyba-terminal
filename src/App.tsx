@@ -31,6 +31,7 @@ import { homeDir } from "@tauri-apps/api/path";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { Button } from "@/components/ui/button";
+import { Loader } from "@/components/ui/loader";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -597,7 +598,7 @@ import {
 } from "./lib/termRegistry";
 import { HoverCard, HoverCardTrigger } from "@/components/ui/hover-card";
 import { Kbd, Shortcut } from "@/components/ui/kbd";
-import type { ShellBoot } from "./lib/loading";
+import { shellBootStep, type ShellBoot } from "./lib/loading";
 
 const EMPTY_LAYOUT: LayoutState = { workspaces: [], active_workspace: null };
 type MenuParts = {
@@ -6089,6 +6090,27 @@ export default function App() {
           <ContainerShellBanner containerId={s.kind.container_id} />
         )}
         <div className="tyba-pane-body relative min-h-0 flex-1">
+          {/* Sessão abrindo (o shell ainda não chegou ao prompt): o Loader do
+              quadro Main no meio do painel, com a etapa que o core mandou. */}
+          {!bare &&
+            s.kind.type !== "agent" &&
+            line?.state === "waiting" &&
+            promptModes[s.id] !== true &&
+            !isFinishedStatus(s.status) &&
+            (blocks[s.id]?.length ?? 0) === 0 && (
+              <div className="pointer-events-none absolute inset-0 z-20 grid place-items-center">
+                {(() => {
+                  const step = shellBootStep(
+                    shellBoots[s.id] ?? null,
+                    s.kind.type === "ssh"
+                      ? (sshHosts.find((h) => s.kind.type === "ssh" && h.id === s.kind.host_id)
+                          ?.alias ?? null)
+                      : null,
+                  );
+                  return <Loader label={t(step.key, step.params)} />;
+                })()}
+              </div>
+            )}
           {wrapNodeTerminal(nodeZoom, <TerminalView
             key={`${s.id}:${paneEpochs.get(s.id) ?? 0}`}
             sessionId={s.id}

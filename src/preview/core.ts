@@ -45,6 +45,8 @@ export const state = {
   /** A branch do repo api: a do quadro Header ("main") nas telas do shell;
    *  a do PR nas do Git. */
   branch: BRANCH,
+  /** Sessões cujo shell ainda não chegou ao prompt (o Loader do quadro Main). */
+  booting: [] as string[],
 };
 
 function activeWorkspace(): Workspace {
@@ -166,10 +168,10 @@ const handlers: Record<string, Handler> = {
   resize_session: () => null,
   session_mark_seen: () => null,
   session_blocks: ({ id }) => BLOCKS[String(id)] ?? [],
-  session_prompt_mode: ({ id }) => isShell(id),
+  session_prompt_mode: ({ id }) => isShell(id) && !state.booting.includes(String(id)),
   session_hook_expected: ({ id }) => isShell(id),
   session_shell_boot: ({ id }) =>
-    isShell(id) ? { shell: "zsh", rc: "~/.zshrc", started_at_ms: Date.now() - 600_000 } : null,
+    isShell(id) && !state.booting.includes(String(id)) ? { shell: "zsh", rc: "~/.zshrc", started_at_ms: Date.now() - 600_000 } : null,
   session_cwd: ({ id }) => {
     const s = SESSIONS.find((x) => x.id === id);
     return s?.repo_root ? { cwd: s.repo_root, canonical: s.repo_root } : null;
@@ -303,7 +305,9 @@ export function setup(opts: {
   drawer?: DrawerState;
   files?: Workspace["screens"]["files"];
   branch?: string;
+  booting?: string[];
 }): void {
+  if (opts.booting) state.booting = opts.booting;
   if (opts.branch) state.branch = opts.branch;
   if (opts.workspace) state.layout.active_workspace = opts.workspace;
   if (opts.tab) activeWorkspace().active_tab = opts.tab;

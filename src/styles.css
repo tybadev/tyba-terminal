@@ -2245,3 +2245,18 @@ html {
     backdrop-filter: none;
   }
 }
+
+/* A gota do Loader do Muriki (`mk-slide`): atravessa o trilho e some do
+   outro lado. Parada no meio em movimento reduzido. */
+.tyba-loader-drop {
+  left: 2px;
+  animation: tyba-loader-slide 1.6s cubic-bezier(.65, 0, .35, 1) infinite;
+}
+@keyframes tyba-loader-slide {
+  0% { left: -56px; }
+  50% { left: calc(100% - 56px); width: 72px; }
+  100% { left: 100%; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tyba-loader-drop { animation: none; left: calc(50% - 28px); }
+}
