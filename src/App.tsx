@@ -3,7 +3,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   ArrowBendUpLeft,
-  ArrowsLeftRight,
   CaretDown,
   CaretRight,
   Columns,
@@ -792,6 +791,9 @@ const DEV_HEADER_STYLE: React.CSSProperties | undefined = import.meta.env.DEV
         "repeating-linear-gradient(-45deg, transparent 0, color-mix(in srgb, var(--tyba-text) 5%, transparent) 7px, transparent 14px, transparent 26px)",
     }
   : undefined;
+
+/** Ícones do header no Orbit, na ordem do terminal (quadro Header). */
+const ORBIT_HEADER_PANELS: readonly PanelKind[] = ["history", "docker", "services", "git"];
 
 function IconAction({
   label,
@@ -6705,7 +6707,7 @@ export default function App() {
             )}
           </nav>
           {activeChips.branch?.state === "known" && (
-            <span className="flex h-6 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full bg-tyba-blue-tint px-2.5 text-[12px] font-semibold text-tyba-blue">
+            <span className="flex h-6 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full bg-[var(--tyba-brand-soft,var(--tyba-blue-tint))] px-2.5 text-[12px] font-semibold text-tyba-blue">
               <span aria-hidden className="size-1.5 rounded-full bg-current" />
               {activeChips.branch.label}
             </span>
@@ -6713,30 +6715,42 @@ export default function App() {
 
           <div className="h-full flex-1" data-tauri-drag-region />
 
-          {/* Ícones do painel lateral: soltos na barra (opção G). */}
-          <div className="flex items-center gap-0.5">
+          {/* Ícones do painel lateral: soltos na barra (opção G). No claro,
+              a 4px um do outro, como no quadro Header. */}
+          <div className="flex items-center gap-[var(--tyba-mk-hd-icons-gap,2px)]">
             {orbitOpen ? (
-              // No Orbit não há sessão à vista: Serviços e Túneis abrem a
-              // tela da máquina por cima dele; o que depende de sessão fica
-              // desabilitado dizendo onde funciona, em vez de não fazer nada.
+              // No Orbit não há sessão à vista: Serviços abre a tela da
+              // máquina por cima dele (os túneis são uma seção dela); o que
+              // depende de sessão fica desabilitado dizendo onde funciona, em
+              // vez de não fazer nada. A ordem é a do terminal (quadro Header:
+              // relógio, Docker, plugue, Git e pasta).
               <>
-                <IconAction label={t("servicesTitle")} onClick={() => setMachineScreen("ports")}>
-                  <Plug size={18} />
-                </IconAction>
-                <IconAction label={t("tunnelsTitle")} onClick={() => setMachineScreen("tunnels")}>
-                  <ArrowsLeftRight size={18} />
-                </IconAction>
-                {panelTabs
-                  .filter((tab) => tab.kind !== "services")
-                  .map((tab) => (
-                    <IconAction
-                      key={tab.kind}
-                      disabled
-                      label={t("openInTerminalHint", { what: tab.label })}
-                    >
-                      <PanelIcon kind={tab.kind} size={18} />
-                    </IconAction>
-                  ))}
+                {ORBIT_HEADER_PANELS.filter((kind) => kind !== "docker" || showContainers).map(
+                  (kind) =>
+                    kind === "services" ? (
+                      <IconAction
+                        key={kind}
+                        label={t("servicesTitle")}
+                        onClick={() => setMachineScreen("ports")}
+                      >
+                        <Plug size={18} />
+                      </IconAction>
+                    ) : (
+                      <IconAction
+                        key={kind}
+                        disabled
+                        label={t("openInTerminalHint", {
+                          what: panelAriaLabel(
+                            kind,
+                            { ...panelIndicatorInput, gitChanged: null },
+                            t,
+                          ),
+                        })}
+                      >
+                        <PanelIcon kind={kind} size={18} />
+                      </IconAction>
+                    ),
+                )}
                 <IconAction disabled label={t("openInTerminalHint", { what: t("filesPanel") })}>
                   <FolderSimple size={18} />
                 </IconAction>

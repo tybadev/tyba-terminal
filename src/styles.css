@@ -1926,6 +1926,10 @@ html {
   --tyba-mk-hd-gap: 10px;
   --tyba-mk-hd-sep: 20px;
   --tyba-mk-wordmark-weight: 700;
+  /* Ícones da direita a 4px; botão só de ícone (Nova aba) 34×34, raio 10. */
+  --tyba-mk-hd-icons-gap: 4px;
+  --tyba-mk-ib: 34px;
+  --tyba-mk-ib-r: 10px;
   /* Toast (`.mk-toast`): 12 8 12 16, de 340 a 440, descrição sans 13/18. */
   --tyba-mk-toast-vw: auto;
   --tyba-mk-toast-min: 340px;

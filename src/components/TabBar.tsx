@@ -394,11 +394,13 @@ export function TabBar({
         />
       )}
       </div>
-      {/* Nova aba: botão fantasma fora do degrau, como no quadro. */}
+      {/* Nova aba: botão fantasma fora do degrau, como no quadro. No claro
+          é o Button ghost sm só de ícone do Muriki: 34×34, raio 10, a 10px
+          das abas (`--tyba-mk-ib*`). */}
       <button
         onClick={onNew}
         aria-label={t("newTab")}
-        className="ml-1.5 flex size-8 shrink-0 items-center justify-center rounded-[8px] text-tyba-text-muted transition-colors hover:bg-tyba-text/[.05] hover:text-tyba-text"
+        className="ml-[var(--tyba-mk-hd-gap,6px)] flex size-[var(--tyba-mk-ib,32px)] shrink-0 items-center justify-center rounded-[var(--tyba-mk-ib-r,8px)] text-tyba-text-muted transition-colors hover:bg-tyba-text/[.05] hover:text-tyba-text"
       >
         <Plus size={16} />
       </button>
