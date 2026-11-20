@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import {
-  CaretDown,
   Check,
   Clock,
   Copy,
@@ -172,7 +171,7 @@ export function ContainerLogsView({ containerId, host = null, restartNonce }: Pr
     <div className="absolute inset-0 flex min-h-0 min-w-0 flex-col">
       {/* Quadro Docker: a linha de filtros fica no respiro de 12px do bloco
           (sem fio próprio); o fio é o topo do log. */}
-      <div className="flex shrink-0 flex-wrap items-center gap-x-2.5 gap-y-2 tyba-divide-b px-5 pt-3 pb-3">
+      <div className="flex shrink-0 flex-wrap items-center gap-x-2.5 gap-y-2 px-5 pt-3 pb-3">
         <Input
           icon={<MagnifyingGlass size={16} />}
           type="text"
@@ -189,25 +188,27 @@ export function ContainerLogsView({ containerId, host = null, restartNonce }: Pr
             ) : undefined
           }
         />
-        <FilterChip active={chip === "all"} onClick={() => setChip("all")}>
-          {t("logsAll")}
-        </FilterChip>
-        <FilterChip active={chip === "errors"} onClick={() => setChip("errors")}>
-          <WarningCircle />
-          {t("logsErrors")}
-        </FilterChip>
-        <FilterChip active={chip === "warnings"} onClick={() => setChip("warnings")}>
-          <Warning />
-          {t("logsWarnings")}
-        </FilterChip>
+        <FilterChip active={chip === "all"} onClick={() => setChip("all")} label={t("logsAll")} />
+        <FilterChip
+          active={chip === "errors"}
+          onClick={() => setChip("errors")}
+          icon={<WarningCircle />}
+          label={t("logsErrors")}
+        />
+        <FilterChip
+          active={chip === "warnings"}
+          onClick={() => setChip("warnings")}
+          icon={<Warning />}
+          label={t("logsWarnings")}
+        />
         {/* Período: chip com relógio (quadro), aberto como o Select do app. */}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <FilterChip aria-label={t("logsWindow")}>
-              <Clock />
-              {t(`logsWindow_${window_}`)}
-              <CaretDown size={12} className="text-tyba-text-faint" />
-            </FilterChip>
+            <FilterChip
+              aria-label={t("logsWindow")}
+              icon={<Clock />}
+              label={t(`logsWindow_${window_}`)}
+            />
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start" className="max-h-64">
             {TIME_WINDOWS.map((w) => (
@@ -256,6 +257,8 @@ export function ContainerLogsView({ containerId, host = null, restartNonce }: Pr
         </Button>
       </div>
 
+      {/* O fio do topo do log fica dentro do respiro de 20px (`.q-dk-log`). */}
+      <div aria-hidden className="mx-5 h-px shrink-0 bg-[var(--tyba-line)]" />
       <div
         ref={scrollRef}
         onScroll={onScroll}
@@ -344,10 +347,10 @@ export function ContainerLogsView({ containerId, host = null, restartNonce }: Pr
         </div>
       </div>
 
-      <div className="flex shrink-0 items-center gap-4 overflow-hidden whitespace-nowrap px-5 pt-1.5 pb-3.5 text-[12px] leading-4 text-tyba-text-muted">
+      <div className="flex shrink-0 items-center gap-4 overflow-hidden whitespace-nowrap px-5 pt-3 pb-3.5 text-[12px] leading-4 text-tyba-text-muted">
         <span className="shrink-0">
           {t("logsLines", { count: lines.length })} ·{" "}
-          <span className={totals.errors > 0 ? "text-tyba-red" : ""}>
+          <span className={totals.errors > 0 ? "font-bold text-tyba-red" : ""}>
             {t("editorErrors", { count: totals.errors })}
           </span>{" "}
           ·{" "}

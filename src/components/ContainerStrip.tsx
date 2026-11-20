@@ -144,7 +144,6 @@ export function ContainerStrip({ containerId, current, host, onRestarted, inScre
     : running
       ? t("containerRunningFor", { time: formatRunningFor(minutes ?? 0) })
       : t("containerState", { state: detail.state });
-  const sep = <span className="shrink-0 text-tyba-text-ghost">·</span>;
   const chip =
     "shrink-0 whitespace-nowrap rounded-[6px] border border-tyba-border-field bg-transparent px-[9px] py-[3px] text-[11px] text-tyba-text-muted hover:bg-tyba-text/[.06] hover:text-tyba-text disabled:opacity-50";
 
@@ -187,23 +186,27 @@ export function ContainerStrip({ containerId, current, host, onRestarted, inScre
       }`}
     >
       {/* Quebra linha em vez de cortar: imagem e portas são o que importa ver. */}
-      <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1">
+      {/* Quadro Docker (`.q-dk-row`): gap 10, sem separadores. */}
+      <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2.5 gap-y-1">
         <span className="min-w-0 max-w-[40%] shrink-0 truncate text-[14px] font-bold text-tyba-text">
           {detail?.name ?? containerId.slice(0, 12)}
         </span>
         {detail && (
           <>
-            {sep}
             <span className="min-w-0 break-all font-mono text-[11.5px]" title={detail.image}>
               {detail.image}
             </span>
-            {sep}
-            <span className={`shrink-0 ${running ? "text-tyba-green" : "text-tyba-red"}`}>
-              ● {stateLabel}
+            {/* Estado (`.q-dk-st`): 12px/600 com a bolinha de 7px. */}
+            <span
+              className={`inline-flex shrink-0 items-center gap-1.5 text-[12px] font-semibold ${
+                running ? "text-tyba-green" : "text-tyba-red"
+              }`}
+            >
+              <i aria-hidden className="block size-[7px] rounded-full bg-current" />
+              {stateLabel}
             </span>
             {detail.ports.length > 0 && (
               <>
-                {sep}
                 {detail.ports.map((port) => (
                   <span
                     key={port}
@@ -216,7 +219,6 @@ export function ContainerStrip({ containerId, current, host, onRestarted, inScre
             )}
             {stats && (
               <>
-                {sep}
                 <span className="shrink-0" title={`CPU ${stats.cpu} · RAM ${stats.mem}`}>
                   CPU {compactCpu(stats.cpu)} · RAM {compactMem(stats.mem)}
                 </span>
