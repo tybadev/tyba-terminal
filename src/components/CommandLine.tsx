@@ -770,7 +770,7 @@ export function CommandLine({
     <div
       className={`relative shrink-0 py-2.5 transition-shadow ${
         focused
-          ? "shadow-[inset_0_1px_0_color-mix(in_srgb,var(--tyba-green)_35%,transparent)]"
+          ? "shadow-[inset_0_1px_0_var(--tyba-mk-cmd-focus-line,color-mix(in_srgb,var(--tyba-green)_35%,transparent))]"
           : "shadow-[inset_0_1px_0_var(--tyba-line)]"
       }`}
     >
@@ -846,7 +846,8 @@ export function CommandLine({
           className={`shrink-0 select-none font-mono transition-all ${
             collapsed
               ? "text-[11px] leading-[17px] text-tyba-text-faint"
-              : `pt-1 text-[13px] leading-[20px] ${focused ? "text-primary" : "text-tyba-text-ghost"}`
+              : // No claro o ❯ é sempre da marca (quadro Shell).
+                `pt-1 text-[13px] leading-[20px] ${focused ? "text-primary" : "text-[var(--tyba-mk-prompt-idle,var(--tyba-text-ghost))]"}`
           }`}
           style={
             focused && !collapsed
@@ -951,7 +952,7 @@ export function CommandLine({
             }}
             onFocus={() => setFocused(true)}
             onBlur={() => setFocused(false)}
-            className={`max-h-[140px] min-h-[28px] w-full resize-none border-0 bg-transparent py-1 font-mono text-[13px] text-tyba-text outline-none placeholder:text-tyba-text-ghost ${
+            className={`max-h-[140px] min-h-[28px] w-full resize-none border-0 bg-transparent py-1 font-mono text-[13px] text-tyba-text outline-none placeholder:text-[var(--tyba-mk-placeholder,var(--tyba-text-ghost))] ${
               focused && !waiting && !selecting ? "caret-transparent" : ""
             }`}
           />
@@ -972,7 +973,9 @@ export function CommandLine({
             A branch vem antes, em azul (a cor do git): com dois painéis em
             repositórios diferentes, a da status bar é só a do painel ativo. */}
         {(where || branch) && !collapsed && (
-          <span className="flex shrink-0 items-center gap-2 truncate pt-1.5 font-mono text-[11px] leading-[17px] text-tyba-text-faint">
+          // No claro, branch e caminho a 13px, o caminho em muted (quadro
+          // Shell, `.cmdl`).
+          <span className="flex shrink-0 items-center gap-2 truncate pt-[var(--tyba-mk-cmd-where-pt,6px)] font-mono text-[length:var(--tyba-mk-cmd-where-size,11px)] leading-[var(--tyba-mk-cmd-where-lh,17px)] text-[var(--tyba-mk-cmd-where-ink,var(--tyba-text-faint))]">
             {branch && <span className="text-tyba-blue">{branch}</span>}
             {where && <span title={cwd ?? undefined}>{where}</span>}
           </span>

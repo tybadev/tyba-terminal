@@ -303,7 +303,7 @@ const BlockHeader = memo(function BlockHeader({
       ) : (
         took && (
           <span className="shrink-0 font-mono text-[11.5px] font-medium leading-5 tabular-nums text-tyba-text-faint">
-            <span className="text-primary">✓</span> {took}
+            <span className="text-[var(--tyba-mk-ok,var(--primary))]">✓</span> {took}
           </span>
         )
       )}
@@ -438,10 +438,12 @@ const BlockCard = memo(function BlockCard({
       // véu violeta do tema (Claro A · Aurora). `dark:` = todo tema escuro.
       // Mockup: o marcado é a superfície (`#0a0a0b` + aresta) no escuro e o
       // véu violeta (`#f5f3ff`) no claro; a divisa entre blocos é 0,05.
-      className={`group pb-2.5 focus-within:bg-tyba-violet/[.07] dark:focus-within:bg-tyba-surface ${
+      // Quadro Shell no claro (`.blk`, `.bo`): o fio fica em cima, em
+      // glass-line, e o corpo tem 12px embaixo (`--tyba-mk-blk-*`).
+      className={`group pb-[var(--tyba-mk-blk-pb,10px)] focus-within:bg-tyba-violet/[.07] dark:focus-within:bg-tyba-surface ${
         marked
           ? "bg-tyba-violet/[.07] dark:bg-tyba-surface"
-          : "shadow-[inset_0_-1px_0_0_var(--tyba-border-field)]"
+          : "shadow-[var(--tyba-mk-blk-line,inset_0_-1px_0_0_var(--tyba-border-field))]"
       }`}
     >
       <BlockHeader block={block} onInject={onInject} marked={marked} />
@@ -458,7 +460,9 @@ const BlockCard = memo(function BlockCard({
         // ter mudado o tamanho da fonte. Preso em 13px, o texto encolhia ao
         // virar cartão.
         <div
-          className="pl-[38px] pr-[18px] font-mono text-tyba-text-muted"
+          // No claro o corpo é tinta (`.bo` = ink); só o que o programa pinta
+          // muda de cor.
+          className="pl-[38px] pr-[18px] font-mono text-[var(--tyba-mk-blk-ink,var(--tyba-text-muted))]"
           style={{
             fontSize: `${fontSizePx}px`,
             lineHeight: `${lineHeightPx}px`,

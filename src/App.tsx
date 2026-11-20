@@ -107,6 +107,8 @@ import {
 } from "./components/LaunchConfigScreen";
 import { OrbitScreen, type FocusSessionRequest } from "./components/orbit/OrbitScreen";
 import { onFocusSession } from "./lib/orbit";
+import { formatElapsed } from "./lib/agentTree";
+import { useNow } from "./components/ui/loading";
 import { ShortcutsPanel } from "./components/ShortcutsPanel";
 import { EmptySessions } from "./components/EmptySessions";
 import { OrbitIcon } from "./components/icons/OrbitIcon";
@@ -791,6 +793,15 @@ const DEV_HEADER_STYLE: React.CSSProperties | undefined = import.meta.env.DEV
         "repeating-linear-gradient(-45deg, transparent 0, color-mix(in srgb, var(--tyba-text) 5%, transparent) 7px, transparent 14px, transparent 26px)",
     }
   : undefined;
+
+/** O tempo do turno no cabeçalho do painel ("em andamento · 1m 12s",
+ *  quadro ShellSplit). Componente próprio: só ele anda de segundo em
+ *  segundo, não o App. */
+function PaneTurnTime({ session }: { session: Session }) {
+  const now = useNow(turnElapsedMs(session, 0) !== null);
+  const ms = turnElapsedMs(session, now);
+  return ms === null ? null : <>{` · ${formatElapsed(ms)}`}</>;
+}
 
 /** Ícones do header no Orbit, na ordem do terminal (quadro Header). */
 const ORBIT_HEADER_PANELS: readonly PanelKind[] = ["history", "docker", "services", "git"];
@@ -6018,7 +6029,7 @@ export default function App() {
         {splitHeader && paneRect && (
           <div
             className={`group/ph flex h-6 shrink-0 items-center gap-1.5 px-2.5 font-sans text-[11px] text-tyba-text-faint shadow-[inset_0_-1px_0_var(--tyba-line)] ${
-              paneDimmed ? "bg-tyba-text/[.03]" : ""
+              paneDimmed ? "tyba-pane-head-dim bg-tyba-text/[.03]" : ""
             }`}
           >
             {paneAgent ? (
@@ -6040,6 +6051,7 @@ export default function App() {
                 }`}
               >
                 {paneState}
+                {paneAgent && <PaneTurnTime session={s} />}
               </span>
             )}
             <button
@@ -7533,7 +7545,9 @@ export default function App() {
                         // Mesmo peso do divisor do painel lateral: são a mesma
                         // peça de linguagem visual e destoar entre elas se lê
                         // como defeito.
-                        className={`rounded-full bg-tyba-border-strong/60 transition-colors hover:bg-tyba-green/70 ${
+                        // No claro, o fio do quadro ShellSplit (`.pane+.pane`):
+                        // glass-line e sem hover (`.tyba-mk-divider`).
+                        className={`tyba-mk-divider rounded-full bg-tyba-border-strong/60 transition-colors hover:bg-tyba-green/70 ${
                           d.kind === "v" ? "h-full w-px" : "h-px w-full"
                         }`}
                       />
