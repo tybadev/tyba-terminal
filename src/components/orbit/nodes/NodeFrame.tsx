@@ -1323,7 +1323,7 @@ export function NodeFrame({
           </div>
         ) : request ? (
           <ApprovalFooter node={node} request={request} />
-        ) : waiting ? (
+        ) : waiting?.reason === "permission" ? (
           <div className="shrink-0 truncate px-3.5 pt-1 pb-2 text-[11px] text-tyba-text-faint">
             {t("orbitWaitingYouHint")}
           </div>
