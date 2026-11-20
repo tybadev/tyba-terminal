@@ -15,7 +15,7 @@ import type {
   WorkflowJob,
   WorkflowRun,
 } from "../lib/ipc";
-import type { Graph } from "../lib/orbit";
+import type { Graph, NodeRun, Run } from "../lib/orbit";
 import { ID, REPO } from "./fixtures";
 
 const NOW = Date.now();
@@ -455,28 +455,68 @@ export const HANDOFF_TARGETS: HandoffTarget[] = [
 
 // --- Orbit ------------------------------------------------------------------
 
-/** O grafo do quadro Orbit: o Terminal · api, o Revisor e o plano dele. */
+/** O grafo do quadro Orbit: o Terminal · api, o Revisor e o plano dele, nas
+ *  posições do quadro (que está a 116%). */
+const Q = (px: number) => Math.round(px / 1.16);
 export const ORBIT_GRAPH: Graph = {
   id: "graph-teste",
   name: "teste grafo",
   dir: REPO.api,
   nodes: [
-    { id: "n-term", title: "Terminal · api", kind: { type: "terminal", dir: REPO.api }, position: { x: 20, y: 40 }, size: { w: 380, h: 300 } },
+    {
+      id: "n-term",
+      title: "Terminal · api",
+      kind: { type: "terminal", dir: REPO.api },
+      position: { x: Q(90), y: Q(150) },
+      size: { w: Q(550), h: Q(300) },
+    },
     {
       id: "n-rev",
       title: "Revisor",
       kind: { type: "agent", runner: "claude", role: "Revisor", prompt: "Revise o billing.", dir: REPO.api },
-      position: { x: 440, y: 40 },
-      size: { w: 360, h: 300 },
+      position: { x: Q(760), y: Q(300) },
+      size: { w: Q(520), h: Q(270) },
     },
     {
       id: "n-plan",
       title: "Plano",
       kind: { type: "note", markdown: "- [x] Ler o contexto\n- [ ] Rodar a suíte" },
-      position: { x: 440, y: 380 },
-      size: { w: 300, h: 140 },
+      position: { x: Q(560), y: Q(600) },
+      size: { w: Q(300), h: Q(150) },
     },
   ],
-  edges: [],
-  variables: {},
+  // O quadro liga Terminal → Revisor por "contexto"; o core não aceita essa
+  // ligação (o Terminal só produz plano e controle) e a apaga ao abrir.
+  edges: [{ id: "e-mem", from: "n-rev", to: "n-plan", kind: "memory" }],
+  variables: { port: "3000", api_key: "" },
+  secrets: ["api_key"],
 };
+
+/** Sessões do run ao vivo do quadro (o shell do Terminal e o claude do Revisor). */
+export const ORBIT_SESSION = { term: "orbit-term", rev: "orbit-rev" };
+
+/** A sessão ao vivo do quadro: o Terminal aberto há 13 s, o Revisor esperando você há 40 s. */
+export const ORBIT_RUN: Run = {
+  id: "run-24",
+  graphId: "graph-teste",
+  number: 24,
+  startedAt: NOW - 13_000,
+  finishedAt: null,
+  status: "running",
+  terminal: "n-term",
+  waitingYou: ["n-rev"],
+  nodes: {
+    "n-term": orbitNode({ status: "running", sessionId: ORBIT_SESSION.term, startedAt: NOW - 13_000 }),
+    "n-rev": orbitNode({
+      status: "running",
+      sessionId: ORBIT_SESSION.rev,
+      startedAt: NOW - 60_000,
+      inbox: 2,
+      waitingYou: { reason: "permission", since: NOW - 40_000, hint: "Rodar bun run test?" },
+    }),
+  },
+};
+
+function orbitNode(over: Partial<NodeRun>): NodeRun {
+  return { status: "waiting", sessionId: null, startedAt: null, finishedAt: null, exitCode: null, outputs: {}, reason: null, ...over };
+}

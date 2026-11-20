@@ -431,6 +431,16 @@ export const BLOCKS: Record<string, Block[]> = {
   [ID.server]: [
     block(3, ID.server, "curl localhost:3000/billing", 1, 200, ["error: discount_after_tax"]),
   ],
+  // O Terminal · api do quadro Orbit.
+  "orbit-term": [
+    block(4, "orbit-term", "ls -la", 0, 600, [
+      "drwxr-xr-x   8 dev  staff   256 Oct 14 docs",
+      "drwxr-xr-x 128 dev  staff  4096 Oct 15 drizzle",
+      "-rw-r--r--   1 dev  staff  1786 Oct  5 package.json",
+      "drwxr-xr-x   5 dev  staff   160 Oct  5 src",
+      "drwxr-xr-x   6 dev  staff   192 Oct  5 test",
+    ]),
+  ],
 };
 
 const ESC = "\x1b[";
@@ -483,3 +493,20 @@ export const SCREENS: Record<string, string> = {
   ]),
 };
 SCREENS[ID.core] = SCREENS[ID.claudeSplit];
+
+// O run ao vivo do quadro Orbit: o shell do Terminal · api e o claude do Revisor.
+SCREENS["orbit-term"] = nl([
+  `${ESC}34m❯${ESC}0m ls -la`,
+  "drwxr-xr-x   8 dev  staff   256 Oct 14 docs",
+  "drwxr-xr-x 128 dev  staff  4096 Oct 15 drizzle",
+  "-rw-r--r--   1 dev  staff  1786 Oct  5 package.json",
+  "drwxr-xr-x   5 dev  staff   160 Oct  5 src",
+  "drwxr-xr-x   6 dev  staff   192 Oct  5 test",
+]);
+SCREENS["orbit-rev"] = nl([
+  `${orange("●")} Li o contexto do Terminal · api.`,
+  dim("  ⎿ Leu billing.service.ts (180 linhas)"),
+  `${orange("●")} Quero rodar os testes antes de revisar.`,
+  "",
+  `Rodar ${bold("bun run test")}? · responda no prompt do agente`,
+]);

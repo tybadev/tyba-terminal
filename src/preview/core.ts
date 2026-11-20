@@ -24,6 +24,7 @@ import {
   DECORATIONS,
   HANDOFF_TARGETS,
   ORBIT_GRAPH,
+  ORBIT_RUN,
   PANEL_USAGE,
   PR_DETAIL,
   PR_PAGE,
@@ -82,7 +83,9 @@ function attach(id: unknown): null {
   return null;
 }
 
-const isShell = (id: unknown) => SESSIONS.some((s) => s.id === id && s.kind.type === "shell");
+// O shell do Terminal do Orbit (quadro Orbit) também é shell.
+const isShell = (id: unknown) =>
+  id === "orbit-term" || SESSIONS.some((s) => s.id === id && s.kind.type === "shell");
 
 const themeState = () => ({
   mode: state.mode ?? state.theme,
@@ -254,7 +257,7 @@ const handlers: Record<string, Handler> = {
   detach_session: () => null,
   orbit_list_graphs: () => [ORBIT_GRAPH],
   orbit_get_graph: () => ORBIT_GRAPH,
-  orbit_runs_list: () => [],
+  orbit_runs_list: () => [ORBIT_RUN],
   orbit_node_log: () => [],
   orbit_var_env_problems: () => [],
   orbit_save_graph: () => null,
