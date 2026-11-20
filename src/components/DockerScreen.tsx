@@ -584,14 +584,14 @@ export function DockerScreen({
         onClick={() => pick(c.id)}
         title={`${c.name}\n${image.full}\n${c.status}`}
         // Escolhido = fundo elevado com contorno inteiro; nunca barra lateral.
-        className={`flex w-full flex-col gap-[5px] rounded-[10px] px-3 py-2.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-tyba-blue ${
+        className={`flex w-full flex-col gap-[3px] rounded-[10px] px-3 py-2.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-tyba-blue ${
           on
             ? "tyba-pill-on"
             : "hover:bg-tyba-text/[.03]"
         } ${running ? "text-tyba-text" : "text-tyba-text-muted"}`}
       >
         <span className="flex w-full items-center justify-between gap-2">
-          <span className="flex min-w-0 items-center gap-1.5 text-[13px]">
+          <span className="flex min-w-0 items-center gap-2 text-[13px] font-semibold">
             <span
               aria-hidden
               className={`size-[7px] shrink-0 rounded-full ${
@@ -600,7 +600,7 @@ export function DockerScreen({
             />
             <span className="truncate">{displayName(c)}</span>
           </span>
-          <span className="shrink-0 truncate text-[11px] text-tyba-text-faint">
+          <span className="shrink-0 truncate font-mono text-[10.5px] font-medium text-tyba-text-faint">
             {reason && reason.kind !== "clean" ? (
               <span className="text-tyba-red">
                 {reason.kind === "code"
@@ -617,7 +617,7 @@ export function DockerScreen({
             )}
           </span>
         </span>
-        <span className="flex gap-3 text-[11px] text-tyba-text-faint">
+        <span className="flex gap-3 pl-[15px] text-[11.5px] text-tyba-text-muted">
           {running ? (
             <>
               {health && (
