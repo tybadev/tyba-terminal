@@ -197,6 +197,7 @@ export const PR_DETAIL: PrDetail = {
   url: prUrl(437),
   state: "open",
   author: "gteodoro",
+  author_name: "Guilherme Teodoro",
   head: BRANCH,
   base: "feat/handoff-agentes",
   head_sha: "c41d9e7a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e",
@@ -208,8 +209,8 @@ export const PR_DETAIL: PrDetail = {
   changed_files: 9,
   commits_total: 6,
   commits: [
-    { sha: "8f2c1a0b", subject: "feat(ui): folha do handoff com nota", author: "gteodoro", authored_at: ago(DAY) },
-    { sha: "c41d9e7a", subject: "feat(ui): Passar para… na paleta", author: "gteodoro", authored_at: ago(DAY) },
+    { sha: "8f2c1a0b", subject: "feat(ui): folha do handoff com nota", author: "gteodoro", authored_at: ago(DAY + HOUR) },
+    { sha: "c41d9e7a", subject: "feat(ui): Passar para… na paleta", author: "gteodoro", authored_at: ago(DAY + HOUR) },
   ],
   files: [
     { path: "src/components/HandoffSheet.tsx", additions: 214, deletions: 0 },
@@ -220,10 +221,11 @@ export const PR_DETAIL: PrDetail = {
   reviews: [
     {
       author: "mariasouza",
+      author_name: "Maria Souza",
       state: "commented",
       submitted_at: ago(3 * HOUR),
       body: "A folha fecha sozinha se eu clicar fora sem querer. Dá para pedir confirmação quando já tem nota escrita?",
-      commit: null,
+      commit: "8f2c1a0b",
     },
   ],
   pending_reviewers: [],
