@@ -7,15 +7,18 @@
 export const PLATE =
   "rounded-[10px] border [box-shadow:var(--tyba-plate-shadow,var(--tyba-edge),var(--tyba-shadow-lg))]!";
 
-/** O fio da placa quando ela não tem cor de risco própria. */
-export const PLATE_LINE = "border-[var(--tyba-line)]";
+/** O fio da placa quando ela não tem cor de risco própria. No claro do
+ *  TYBA é a aresta branca do vidro do Muriki (`--tyba-mk-glass-edge`). */
+export const PLATE_LINE = "border-[var(--tyba-mk-glass-edge,var(--tyba-line))]";
 
-/** Painel (modal): o acrílico do cromo. */
+/** Painel (modal): o acrílico do cromo. No claro do TYBA, o vidro
+ *  `is-float` do Muriki (`.tyba-mk-glass`). */
 export const PLATE_ACRYLIC =
-  "bg-[var(--tyba-glass-section)] backdrop-blur-[28px] backdrop-saturate-150";
+  "tyba-mk-glass is-float bg-[var(--tyba-glass-section)] backdrop-blur-[28px] backdrop-saturate-150";
 
-/** Flutuante sobre texto (toast, cartão no terminal): quase opaco (97%). */
-export const PLATE_FLOAT = "bg-[var(--tyba-glass-float)] backdrop-blur-xl";
+/** Flutuante sobre texto (toast, cartão no terminal): quase opaco (97%). No
+ *  claro do TYBA, o vidro `is-float` do Muriki. */
+export const PLATE_FLOAT = "tyba-mk-glass is-float bg-[var(--tyba-glass-float)] backdrop-blur-xl";
 
 /** Fio de baixo entre faixas, na cor do fio da G. */
 export const LINE_B = "shadow-[inset_0_-1px_0_var(--tyba-line)]";

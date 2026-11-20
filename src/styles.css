@@ -1866,8 +1866,25 @@ html {
   --tyba-pill-on: inset 0 1px 0 #ffffff, 0 1px 2px rgba(10, 24, 48, 0.1), 0 4px 12px rgba(10, 24, 48, 0.1);
   --tyba-pill-sheen: none;
   --tyba-piece-shadow: 0 1px 2px rgba(10, 24, 48, 0.05);
-  /* Placa de painel/modal no claro: brilho na aresta de cima e sombra violeta. */
-  --tyba-plate-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9), 0 1px 2px rgba(10, 24, 48, 0.06), 0 24px 60px -12px rgba(10, 24, 48, 0.2);
+  /* Vidro do Muriki (`mk-glass` do bundle.css, paleta pal-muriki), literais.
+     Só existem aqui: quem lê um `--tyba-mk-*` fora das classes `.tyba-mk-*`
+     põe o valor de antes no fallback, então o escuro e os outros temas não
+     mudam. */
+  --tyba-mk-glass: rgba(255, 255, 255, 0.58);
+  --tyba-mk-glass-strong: rgba(255, 255, 255, 0.8);
+  --tyba-mk-glass-hover: rgba(255, 255, 255, 0.74);
+  --tyba-mk-glass-button: rgba(255, 255, 255, 0.46);
+  --tyba-mk-glass-edge: rgba(255, 255, 255, 0.9);
+  --tyba-brand-soft: #e3ebfb;
+  --tyba-mk-sheen: linear-gradient(180deg, rgba(255, 255, 255, 0.35) 0%, rgba(255, 255, 255, 0) 40%);
+  --tyba-mk-shadow-glass: inset 0 1px 0 rgba(255, 255, 255, 0.8), 0 1px 2px rgba(10, 24, 48, 0.04), 0 4px 16px rgba(17, 82, 210, 0.06);
+  --tyba-mk-shadow-float: inset 0 1px 0 rgba(255, 255, 255, 0.8), 0 2px 4px rgba(10, 24, 48, 0.05), 0 12px 32px rgba(17, 82, 210, 0.12);
+  --tyba-mk-filter-sm: blur(12px);
+  --tyba-mk-filter-sm-sat: blur(12px) saturate(180%);
+  --tyba-mk-filter-md: blur(24px) saturate(180%);
+  --tyba-mk-filter-lg: blur(40px) saturate(180%);
+  /* Placa (diálogo, gaveta, toast) = vidro `is-float` do Muriki. */
+  --tyba-plate-shadow: var(--tyba-mk-shadow-float);
   /* Controles do quadro de componentes do Muriki (Main), literais: campo e
      botão de vidro brancos com o fio fino, primário azul com a sombra
      líquida, knob branco, foco no azul da marca. */
@@ -1928,4 +1945,59 @@ html {
 .tyba-pane[data-pane-dim] > .tyba-pane-body,
 .tyba-pane[data-pane-dim] > .tyba-pane-line {
   opacity: 0.55;
+}
+
+/* Vidro do Muriki (`mk-glass` e variantes, bundle.css): fundo branco .58,
+   blur 24 com saturação 180, sombra azulada e o brilho dos 40% de cima. Só
+   no claro do TYBA: nos outros temas as classes não fazem nada e cada peça
+   fica com o material dela. Fora de camada, para vencer o fundo e a sombra
+   que a peça traz em utilitária. O brilho é uma camada de fundo por cima da
+   cor (o `::before` do quadro pede `position`, que quebraria peça
+   `absolute`/`fixed`). A aresta branca não sai daqui: é a cor do fio de cada
+   peça, por `--tyba-mk-glass-edge` com fallback, para o fio de risco
+   (vermelho) continuar vencendo. */
+[data-theme='light']:not([data-imported]) .tyba-mk-glass {
+  background-color: var(--tyba-mk-glass);
+  background-image: var(--tyba-mk-sheen);
+  -webkit-backdrop-filter: var(--tyba-mk-filter-md);
+  backdrop-filter: var(--tyba-mk-filter-md);
+  box-shadow: var(--tyba-mk-shadow-glass);
+}
+[data-theme='light']:not([data-imported]) .tyba-mk-glass.is-float {
+  box-shadow: var(--tyba-mk-shadow-float);
+}
+[data-theme='light']:not([data-imported]) .tyba-mk-glass.is-strong {
+  background-color: var(--tyba-mk-glass-strong);
+}
+[data-theme='light']:not([data-imported]) .tyba-mk-glass.is-deep {
+  -webkit-backdrop-filter: var(--tyba-mk-filter-lg);
+  backdrop-filter: var(--tyba-mk-filter-lg);
+}
+/* Header (quadro Header, `.hd`): o vidro com o fio de baixo. */
+[data-theme='light']:not([data-imported]) .tyba-window .tyba-bar.tyba-mk-glass {
+  box-shadow: inset 0 -1px 0 var(--tyba-line), var(--tyba-mk-shadow-glass);
+}
+/* Barra lateral (`.mk-sidebar.is-docked`): degradê de branco .55 até o azul
+   suave a 78%, blur 40 com saturação 200 e o fio branco por dentro, sem o
+   brilho. */
+[data-theme='light']:not([data-imported]) .tyba-mk-sidebar {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.55) 0%, color-mix(in srgb, var(--tyba-brand-soft) 78%, transparent) 100%);
+  -webkit-backdrop-filter: blur(40px) saturate(200%);
+  backdrop-filter: blur(40px) saturate(200%);
+  box-shadow: inset -1px 0 0 rgba(255, 255, 255, 0.7);
+}
+/* Coluna do Inbox (quadro Inbox, `.nx-ib`): branco .62, blur 24 e 180. */
+[data-theme='light']:not([data-imported]) .tyba-mk-column {
+  background: rgba(255, 255, 255, 0.62);
+  -webkit-backdrop-filter: var(--tyba-mk-filter-md);
+  backdrop-filter: var(--tyba-mk-filter-md);
+}
+/* Rede de contraste do Muriki: quem pede menos transparência ganha o vidro
+   opaco. */
+@media (prefers-reduced-transparency: reduce) {
+  [data-theme='light']:not([data-imported]) :is(.tyba-mk-glass, .tyba-mk-sidebar, .tyba-mk-column) {
+    background: #ffffff;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
 }

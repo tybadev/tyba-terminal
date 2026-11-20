@@ -39,7 +39,7 @@ function Toast({
     <ToastPrimitive.Root
       data-slot="toast"
       className={cn(
-        "pointer-events-auto relative w-full rounded-[14px] border border-tyba-border bg-tyba-overlay/95 p-3 text-tyba-text backdrop-blur-xl [box-shadow:var(--tyba-edge),var(--tyba-shadow-lg)]",
+        "tyba-mk-glass is-float pointer-events-auto relative w-full rounded-[14px] border border-[var(--tyba-mk-glass-edge,var(--tyba-border))] bg-tyba-overlay/95 p-3 text-tyba-text backdrop-blur-xl [box-shadow:var(--tyba-edge),var(--tyba-shadow-lg)]",
         "motion-safe:animate-tyba-pop-in",
         "data-[swipe=move]:translate-x-[var(--radix-toast-swipe-move-x)] data-[swipe=cancel]:translate-x-0 data-[swipe=end]:translate-x-[var(--radix-toast-swipe-end-x)] data-[swipe=move]:transition-none",
         className,

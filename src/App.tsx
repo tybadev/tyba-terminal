@@ -6630,7 +6630,7 @@ export default function App() {
           // Barra B do quadro PropostaClaro: seção de vidro na largura toda,
           // semáforos, marca, migalha, branch e, à direita, os ícones do painel.
           // Os semáforos nativos ficam dentro dela (`trafficLightPosition`).
-          className={`tyba-section tyba-bar flex h-10 shrink-0 items-center gap-2.5 pr-2.5 ${
+          className={`tyba-section tyba-mk-glass tyba-bar flex h-10 shrink-0 items-center gap-2.5 pr-2.5 ${
             IS_MAC ? "pl-[84px]" : "pl-2.5"
           }`}
         >
@@ -6883,7 +6883,7 @@ export default function App() {
                   // Barra lateral do quadro Sidebar (aprovada em 2026-11-15):
                   // busca, Nova sessão/Orbit/Conexões SSH, Sessões por grupo,
                   // Agentes em cartões e, no pé, Inbox e Configurações.
-                  className="tyba-section flex shrink-0 flex-col overflow-hidden"
+                  className="tyba-section tyba-mk-sidebar flex shrink-0 flex-col overflow-hidden"
                   style={{ width: SIDEBAR_WIDTH[sidebar] }}
                 >
                   {open && (

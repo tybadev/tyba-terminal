@@ -436,7 +436,7 @@ export function CommandPalette({
       description={t("searchCommand")}
       shouldFilter={mode !== "files" && mode !== "history"}
       showCloseButton={false}
-      className={`top-28 max-w-[580px] translate-y-0 ${PLATE} ${PLATE_LINE} ${PLATE_FLOAT} rounded-[18px]`}
+      className={`top-28 max-w-[580px] translate-y-0 ${PLATE} ${PLATE_LINE} ${PLATE_FLOAT} is-deep rounded-[18px]`}
     >
       <div className="flex items-center gap-1 tyba-divide-b px-2 py-1.5">
         {(
