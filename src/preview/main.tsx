@@ -11,10 +11,12 @@ const params = new URLSearchParams(location.search);
 const screen = params.get("screen") ?? "main";
 setup(SCENARIO_SETUP[screen] ?? {});
 state.theme = params.get("theme") === "light" ? "light" : "dark";
+state.font = params.get("font") === "grotesk" ? "grotesk" : "mono";
 // O tema lê o modo salvo antes de perguntar ao core: começa limpo.
 localStorage.clear();
 localStorage.setItem("tyba.theme", state.theme);
 localStorage.setItem("tyba.theme.migrated", "1");
+localStorage.setItem("tyba.font", state.font);
 
 mockWindows("main");
 mockIPC((cmd, args) => handle(cmd, args as Record<string, unknown>), {

@@ -11,6 +11,7 @@ import type {
   PrListItem,
   PrPage,
   RunLog,
+  Session,
   SubagentRun,
   WorkflowJob,
   WorkflowRun,
@@ -25,6 +26,33 @@ const HOUR = 60 * MIN;
 const DAY = 24 * HOUR;
 
 export const BRANCH = "feat/handoff-agentes-ui";
+
+/** Quadros Git: o último turno da sessão mexeu em 3 arquivos (trilho com Turno). */
+export const GIT_SESSION: Record<string, Partial<Session>> = {
+  [ID.claudeApi]: {
+    last_turn: {
+      seq: 2,
+      outcome: "completed",
+      failure: null,
+      started_at_ms: NOW - 30 * MIN,
+      ended_at_ms: NOW - 28 * MIN,
+      duration_ms: 2 * MIN,
+      prompt: "liga o handoff na aba Turno",
+      diff: "ok",
+      files: [
+        { path: "src/components/HandoffSheet.tsx", old_path: null, status: "added", insertions: 30, deletions: 0 },
+        { path: "src/components/TurnPanel.tsx", old_path: null, status: "modified", insertions: 9, deletions: 5 },
+        { path: "src/components/CommandPalette.tsx", old_path: null, status: "modified", insertions: 3, deletions: 2 },
+      ],
+      files_total: 3,
+      insertions: 42,
+      deletions: 7,
+      commits: 0,
+      cost_usd: 0.4,
+      tokens: 21_000,
+    },
+  },
+};
 const REPO_SLUG = "exemplo/tyba-terminal";
 const prUrl = (n: number) => `https://github.com/${REPO_SLUG}/pull/${n}`;
 
@@ -33,7 +61,7 @@ function pr(over: Partial<PrListItem> & Pick<PrListItem, "number" | "title" | "h
     url: prUrl(over.number),
     state: "open",
     author: "gteodoro",
-    author_name: null,
+    author_name: "Guilherme Teodoro",
     base: "main",
     updated_at: ago(12 * MIN),
     merged_at: null,
@@ -95,6 +123,7 @@ export const PR_PAGE: PrPage = {
       head: "refactor/pty-batch",
       state: "draft",
       author: "mariasouza",
+      author_name: "Maria Souza",
       updated_at: ago(DAY),
       ci: { passed: 4, failed: 1, pending: 0, total: 5 },
       comments: 1,
@@ -106,6 +135,7 @@ export const PR_PAGE: PrPage = {
       title: "chore(deps): bump Swatinem/rust-cache",
       head: "dependabot/rust-cache",
       author: "dependabot",
+      author_name: null,
       updated_at: ago(3 * DAY),
       ci: { passed: 4, failed: 1, pending: 0, total: 5 },
       review: "changes_requested",

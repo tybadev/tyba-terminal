@@ -4,7 +4,7 @@
 
 import { emit } from "@tauri-apps/api/event";
 
-import type { DrawerState, LayoutState, Workspace } from "../lib/ipc";
+import type { DrawerState, LayoutState, Session, Workspace } from "../lib/ipc";
 import {
   BLOCKS,
   HOME,
@@ -39,6 +39,7 @@ type Handler = (args: Args) => unknown;
 
 export const state = {
   theme: "dark" as "dark" | "light",
+  font: "mono" as "mono" | "grotesk",
   layout: initialLayout(),
   drawers: [] as DrawerState[],
 };
@@ -98,7 +99,7 @@ const handlers: Record<string, Handler> = {
   boot_poll: () => ({ ready: true, bootFailure: null }),
   layout_state: () => ({ ready: true, value: structuredClone(state.layout) }),
   list_sessions: () => ({ ready: true, value: SESSIONS }),
-  get_pref: () => null,
+  get_pref: ({ key }) => (key === "pref.ui_font" ? state.font : null),
   set_pref: () => null,
   get_theme_state: themeState,
   list_themes: () => THEMES,
@@ -271,7 +272,13 @@ export function setup(opts: {
   tab?: string;
   drawer?: DrawerState;
   files?: Workspace["screens"]["files"];
+  /** Campos a mais em sessões só deste cenário (as outras telas não mudam). */
+  sessions?: Record<string, Partial<Session>>;
 }): void {
+  for (const [id, patch] of Object.entries(opts.sessions ?? {})) {
+    const target = SESSIONS.find((x) => x.id === id);
+    if (target) Object.assign(target, patch);
+  }
   if (opts.workspace) state.layout.active_workspace = opts.workspace;
   if (opts.tab) activeWorkspace().active_tab = opts.tab;
   if (opts.files) activeWorkspace().screens.files = opts.files;

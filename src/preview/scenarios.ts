@@ -8,6 +8,7 @@ import { requestHandoff } from "../lib/handoff";
 import { dockerScreenSelect, openDockerPanel, openFilesPanel } from "../lib/ipc";
 import type { setup } from "./core";
 import { ID, TURN_HANDOFF } from "./fixtures";
+import { GIT_SESSION } from "./fixtures-screens";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -36,9 +37,9 @@ export const SCENARIO_SETUP: Record<string, Parameters<typeof setup>[0]> = {
     drawer: { session_id: ID.claudeApi, open: true, tab: "agents", outcome_seen: false },
   },
   handoff: { workspace: "ws-api", tab: "tab-api-claude" },
-  "git-prs": { workspace: "ws-api", tab: "tab-api-claude" },
-  "git-pr-detail": { workspace: "ws-api", tab: "tab-api-claude" },
-  "git-ci": { workspace: "ws-api", tab: "tab-api-claude" },
+  "git-prs": { workspace: "ws-api", tab: "tab-api-claude", sessions: GIT_SESSION },
+  "git-pr-detail": { workspace: "ws-api", tab: "tab-api-claude", sessions: GIT_SESSION },
+  "git-ci": { workspace: "ws-api", tab: "tab-api-claude", sessions: GIT_SESSION },
   docker: { workspace: "ws-api", tab: "tab-api-claude" },
   files: {
     workspace: "ws-tyba-terminal",
