@@ -1,7 +1,25 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { MagnifyingGlass } from "@phosphor-icons/react";
+import {
+  CaretDown,
+  Check,
+  Clock,
+  Copy,
+  DownloadSimple,
+  MagnifyingGlass,
+  Warning,
+  WarningCircle,
+} from "@phosphor-icons/react";
+
+import { Button } from "@/components/ui/button";
+import { FIELD_SURFACE } from "@/components/ui/input";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 
 import {
   dockerLogsStart,
@@ -36,7 +54,7 @@ interface Props {
   restartNonce: number;
 }
 
-const ROW_PX = 24; // mockup: 20px de linha + 2px em cima e embaixo
+const ROW_PX = 22; // quadro Docker: linha de log de 22px
 
 const LEVEL_CLASS: Record<string, string> = {
   error: "text-tyba-red",
@@ -157,18 +175,21 @@ export function ContainerLogsView({ containerId, host = null, restartNonce }: Pr
     }
   }, [containerId, exportable, t]);
 
+  // Chip de filtro do Muriki: pílula de vidro; aceso em azul da marca.
   const chipClass = (on: boolean) =>
-    `shrink-0 whitespace-nowrap rounded-[6px] border px-[9px] py-[3px] text-[11px] ${
+    `inline-flex h-[30px] shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full px-3 text-[13px] font-medium outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring ${
       on
-        ? "tyba-pill-on border-transparent text-tyba-text"
-        : "border-tyba-border-field text-tyba-text-muted hover:text-tyba-text"
+        ? "bg-tyba-blue/10 text-tyba-blue shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--tyba-blue)_25%,transparent)]"
+        : "bg-[var(--tyba-control-bg)] text-tyba-text-muted [box-shadow:inset_0_0_0_1px_var(--tyba-control-line),var(--tyba-control-shadow)] hover:text-tyba-text"
     }`;
 
   return (
     <div className="absolute inset-0 flex min-h-0 min-w-0 flex-col">
       <div className="flex shrink-0 flex-wrap items-center gap-x-2.5 gap-y-2 tyba-divide-b px-[18px] py-2.5">
-        <label className="flex min-w-[180px] max-w-full flex-1 basis-[240px] items-center gap-2 rounded-[6px] border border-tyba-border-field bg-tyba-surface px-2.5 py-[5px] text-[12px] text-tyba-text-faint">
-          <MagnifyingGlass size={13} />
+        <label
+          className={`${FIELD_SURFACE} flex h-[34px] w-[240px] shrink-0 items-center gap-2 px-3 text-[13px] text-tyba-text-faint focus-within:[box-shadow:var(--tyba-field-focus)]`}
+        >
+          <MagnifyingGlass size={14} className="shrink-0" />
           <input
             type="text"
             value={query}
@@ -194,6 +215,7 @@ export function ContainerLogsView({ containerId, host = null, restartNonce }: Pr
           className={chipClass(chip === "errors")}
           onClick={() => setChip("errors")}
         >
+          <WarningCircle size={14} />
           {t("logsErrors")}
         </button>
         <button
@@ -201,23 +223,34 @@ export function ContainerLogsView({ containerId, host = null, restartNonce }: Pr
           className={chipClass(chip === "warnings")}
           onClick={() => setChip("warnings")}
         >
+          <Warning size={14} />
           {t("logsWarnings")}
         </button>
-        <select
-          value={window_}
-          onChange={(e) => {
-            setWindow(e.target.value as TimeWindow);
-            setNow(Date.now());
-          }}
-          aria-label={t("logsWindow")}
-          className="shrink-0 whitespace-nowrap rounded-[6px] border border-tyba-border-field bg-tyba-surface px-1.5 py-0.5 text-[11px] text-tyba-text-muted"
-        >
-          {TIME_WINDOWS.map((w) => (
-            <option key={w} value={w}>
-              {t(`logsWindow_${w}`)}
-            </option>
-          ))}
-        </select>
+        {/* Período: chip com relógio (quadro), aberto como o Select do app. */}
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button type="button" aria-label={t("logsWindow")} className={chipClass(false)}>
+              <Clock size={14} />
+              {t(`logsWindow_${window_}`)}
+              <CaretDown size={12} className="text-tyba-text-faint" />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" className="max-h-64">
+            {TIME_WINDOWS.map((w) => (
+              <DropdownMenuItem
+                key={w}
+                onSelect={() => {
+                  setWindow(w as TimeWindow);
+                  setNow(Date.now());
+                }}
+                className="justify-between gap-3 text-xs"
+              >
+                {t(`logsWindow_${w}`)}
+                {w === window_ && <Check size={12} weight="bold" className="text-primary" />}
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
         <button
           type="button"
           className={chipClass(showTime)}
@@ -238,11 +271,7 @@ export function ContainerLogsView({ containerId, host = null, restartNonce }: Pr
           type="button"
           aria-pressed={follow}
           onClick={() => setFollow((v) => !v)}
-          className={`flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-[6px] border px-2 py-0.5 text-[11px] ${
-            follow && !ended
-              ? "border-tyba-green/40 text-tyba-green"
-              : "border-tyba-border-strong text-tyba-text-muted hover:text-tyba-text"
-          }`}
+          className={`${chipClass(false)} ${follow && !ended ? "text-tyba-green hover:text-tyba-green" : ""}`}
         >
           <span
             aria-hidden
@@ -254,12 +283,14 @@ export function ContainerLogsView({ containerId, host = null, restartNonce }: Pr
           />
           {ended ? t("logsEnded") : follow ? t("logsFollowing") : t("logsPaused")}
         </button>
-        <button type="button" className={chipClass(false)} onClick={() => void copy()}>
+        <Button variant="ghost" size="sm" onClick={() => void copy()}>
+          <Copy />
           {t("logsCopy")}
-        </button>
-        <button type="button" className={chipClass(false)} onClick={() => void download()}>
+        </Button>
+        <Button variant="ghost" size="sm" onClick={() => void download()}>
+          <DownloadSimple />
           {t("logsDownload")}
-        </button>
+        </Button>
       </div>
 
       <div
@@ -291,7 +322,7 @@ export function ContainerLogsView({ containerId, host = null, restartNonce }: Pr
                 key={line.seq}
                 data-index={item.index}
                 ref={virtualizer.measureElement}
-                className={`absolute left-0 flex items-start gap-3.5 px-[18px] py-0.5 leading-5 ${
+                className={`absolute left-0 flex items-start gap-3.5 px-[18px] leading-[22px] ${
                   wrap ? "right-0" : "w-max min-w-full whitespace-pre"
                 } ${rowTone}`}
                 style={{ top: item.start, minHeight: ROW_PX }}

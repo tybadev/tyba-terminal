@@ -109,7 +109,6 @@ import type { RichInputPref } from "../lib/richInput";
 import { DEFAULT_TOOLBAR, type ToolbarPref } from "../lib/repoSnapshots";
 import { parseStartupMode } from "../lib/startup";
 
-export type SidebarTogglePref = "hidden" | "rail";
 /// Espelha `session::StartupMode` no core: o que fazer com as sessões que não
 /// sobreviveram ao fechamento do app.
 export type StartupMode = "resume" | "keep_layout" | "fresh";
@@ -331,8 +330,6 @@ interface Props {
   onRefreshLaunchConfigs: () => void;
   version: string;
   update: UpdateStatus | null;
-  togglePref: SidebarTogglePref;
-  onTogglePrefChange: (value: SidebarTogglePref) => void;
   detailsPref: DetailsPref;
   onDetailsPrefChange: (value: DetailsPref) => void;
   bindings: Bindings;
@@ -748,8 +745,6 @@ export function SettingsView({
   onRefreshLaunchConfigs,
   version,
   update,
-  togglePref,
-  onTogglePrefChange,
   detailsPref,
   onDetailsPrefChange,
   bindings,
@@ -1120,20 +1115,6 @@ export function SettingsView({
                 </SettingLine>
               </SettingGroup>
               <SettingGroup title={t("cfgGroupSidebar")}>
-                <SettingLine
-                  label={t("cfgCollapse", { combo: formatCombo(bindings.panel) })}
-                  hint={t("cfgCollapseHint")}
-                >
-                  <SettingSegment<SidebarTogglePref>
-                    label={t("cfgCollapse", { combo: formatCombo(bindings.panel) })}
-                    options={[
-                      { value: "hidden", label: t("cfgCollapseHidden") },
-                      { value: "rail", label: t("cfgCollapseRail") },
-                    ]}
-                    value={togglePref}
-                    onChange={onTogglePrefChange}
-                  />
-                </SettingLine>
                 <SettingLine label={t("cfgGitStatus")} hint={t("cfgGitStatusHint")}>
                   <Switch
                     checked={showGitStatus}

@@ -4,6 +4,11 @@ import { CaretRight } from "@phosphor-icons/react";
 
 import { cn } from "@/lib/utils";
 
+// Mesmo item do menu do Muriki que o `dropdown-menu`: 14px em linha de 34px,
+// aceso no cartão branco com a sombra do knob (tokens de `.tyba-pill-on`).
+const MENU_ITEM =
+  "relative flex min-h-[34px] cursor-default select-none items-center gap-3 rounded-[8px] px-3 text-[14px] leading-5 text-tyba-text outline-none focus:bg-[var(--tyba-glass-active)] focus:[background-image:var(--tyba-pill-sheen)] focus:[box-shadow:var(--tyba-pill-on)]";
+
 function ContextMenu({
   ...props
 }: React.ComponentProps<typeof ContextMenuPrimitive.Root>) {
@@ -27,7 +32,7 @@ function ContextMenuContent({
       <ContextMenuPrimitive.Content
         data-slot="context-menu-content"
         className={cn(
-          "z-50 min-w-40 overflow-hidden rounded-[6px] border border-tyba-border-strong bg-tyba-surface p-1 shadow-2xl",
+          "z-50 min-w-40 overflow-hidden rounded-[14px] border border-tyba-border bg-tyba-overlay/[.97] p-1.5 backdrop-blur-xl [box-shadow:var(--tyba-edge),var(--tyba-shadow-lg)]",
           className,
         )}
         {...props}
@@ -44,8 +49,8 @@ function ContextMenuItem({
     <ContextMenuPrimitive.Item
       data-slot="context-menu-item"
       className={cn(
-        "relative flex cursor-default select-none items-center gap-2 rounded-[4px] px-2 py-1.5 text-[12px] text-tyba-text outline-none",
-        "focus:bg-tyba-hover data-[disabled]:pointer-events-none data-[disabled]:opacity-40",
+        MENU_ITEM,
+        "data-[disabled]:pointer-events-none data-[disabled]:opacity-40",
         className,
       )}
       {...props}
@@ -60,7 +65,24 @@ function ContextMenuSeparator({
   return (
     <ContextMenuPrimitive.Separator
       data-slot="context-menu-separator"
-      className={cn("-mx-1 my-1 h-px bg-tyba-border", className)}
+      className={cn("mx-2 my-1.5 h-px bg-[var(--tyba-line)]", className)}
+      {...props}
+    />
+  );
+}
+
+/** Coluna de atalho à direita do item (quadro: mono 11px, apagado). */
+function ContextMenuShortcut({
+  className,
+  ...props
+}: React.ComponentProps<"span">) {
+  return (
+    <span
+      data-slot="context-menu-shortcut"
+      className={cn(
+        "ml-auto pl-4 font-mono text-[11px] text-tyba-text-faint",
+        className,
+      )}
       {...props}
     />
   );
@@ -81,8 +103,8 @@ function ContextMenuSubTrigger({
     <ContextMenuPrimitive.SubTrigger
       data-slot="context-menu-sub-trigger"
       className={cn(
-        "relative flex cursor-default select-none items-center gap-2 rounded-[4px] px-2 py-1.5 text-[12px] text-tyba-text outline-none",
-        "focus:bg-tyba-hover data-[state=open]:bg-tyba-hover",
+        MENU_ITEM,
+        "data-[state=open]:bg-[var(--tyba-glass-active)] data-[state=open]:[box-shadow:var(--tyba-pill-on)]",
         className,
       )}
       {...props}
@@ -102,7 +124,7 @@ function ContextMenuSubContent({
       <ContextMenuPrimitive.SubContent
         data-slot="context-menu-sub-content"
         className={cn(
-          "z-50 min-w-40 overflow-hidden rounded-[6px] border border-tyba-border-strong bg-tyba-surface p-1 shadow-2xl",
+          "z-50 min-w-40 overflow-hidden rounded-[14px] border border-tyba-border bg-tyba-overlay/[.97] p-1.5 backdrop-blur-xl [box-shadow:var(--tyba-edge),var(--tyba-shadow-lg)]",
           className,
         )}
         {...props}
@@ -117,6 +139,7 @@ export {
   ContextMenuContent,
   ContextMenuItem,
   ContextMenuSeparator,
+  ContextMenuShortcut,
   ContextMenuSub,
   ContextMenuSubTrigger,
   ContextMenuSubContent,

@@ -268,13 +268,15 @@ const BlockHeader = memo(function BlockHeader({
       // Mockup Proposta: `padding: 10px 18px`, comando em 13px.
       // Comando multilinha cresce o cabeçalho (a saída vem depois dele, não
       // por cima); o preso no topo segue numa linha só.
-      className={`group flex items-start gap-2 px-[18px] pt-2.5 ${
-        multiline ? "min-h-9 pb-1.5" : "h-9"
+      className={`group flex items-start gap-2.5 px-[18px] pt-[9px] ${
+        multiline ? "min-h-[38px] pb-1.5" : "h-[38px]"
       } ${pinned ? "pointer-events-none" : ""}`}
     >
+      {/* Quadro Shell: `❯` na cor primária (azul no claro, verde no escuro);
+          vermelho só quando o comando falhou. */}
       <span
         className={`shrink-0 font-mono text-[13px] leading-5 ${
-          broke ? "text-tyba-red-fill" : "text-tyba-green-fill"
+          broke ? "text-tyba-red-fill" : "text-primary"
         }`}
       >
         ❯
@@ -282,24 +284,28 @@ const BlockHeader = memo(function BlockHeader({
       {/* Comando multilinha mostra as linhas como foram digitadas (`for…do`,
           `\`); uma linha só continua cortando com reticências. */}
       <span
-        className={`min-w-0 flex-1 font-mono text-[13px] leading-5 text-tyba-text ${
+        className={`min-w-0 flex-1 font-mono text-[13px] font-semibold leading-5 text-tyba-text ${
           multiline ? "whitespace-pre-wrap break-words" : "truncate"
         }`}
       >
         {block.command}
       </span>
       <BlockActions block={block} onInject={onInject} visible={marked} />
-      {/* Canto direito: a duração e, quando deu errado, o código — nada mais
-          quando deu certo. */}
-      {broke && (
-        <span className="shrink-0 rounded-[4px] bg-tyba-red-tint px-1.5 font-mono text-[11px] leading-5 text-tyba-red">
-          {t("blockExitedWith", { code: block.exitCode })}
+      {/* Canto direito, em texto como no quadro: `✓ 0,1s` quando deu certo,
+          `✗ saiu com 1 · 4,2s` quando deu errado. */}
+      {broke ? (
+        <span className="shrink-0 font-mono text-[11.5px] font-medium leading-5 tabular-nums text-tyba-text-faint">
+          <span className="text-tyba-red">
+            ✗ {t("blockExitedWith", { code: block.exitCode })}
+          </span>
+          {took && ` · ${took}`}
         </span>
-      )}
-      {!broke && took && (
-        <span className="shrink-0 font-mono text-[11px] leading-5 tabular-nums text-tyba-text-faint">
-          {took}
-        </span>
+      ) : (
+        took && (
+          <span className="shrink-0 font-mono text-[11.5px] font-medium leading-5 tabular-nums text-tyba-text-faint">
+            <span className="text-primary">✓</span> {took}
+          </span>
+        )
       )}
     </div>
   );
@@ -342,12 +348,12 @@ const SHOW_MORE_PX = 22;
 /**
  * Quanto da largura do scroller NÃO é texto do corpo, em px.
  *
- * O `px-4` do corpo (16+16); o scroller não tem padding lateral, para a
+ * O recuo do corpo (38 à esquerda, alinhado ao comando, + 18 à direita); o scroller não tem padding lateral, para a
  * divisa e a superfície do bloco marcado irem de borda a borda. Entra na conta
  * de quantas colunas cabem numa linha — errar aqui volta como estimativa
  * curta, que é bloco em cima de bloco.
  */
-const BODY_INSET_X_PX = 36;
+const BODY_INSET_X_PX = 56;
 
 /**
  * O bloco marcado: superfície levantada, aresta de luz em cima, a divisa
@@ -442,7 +448,7 @@ const BlockCard = memo(function BlockCard({
       {/* Sem corpo, mas com motivo: um cartão vazio e mudo pareceria comando
           que não imprimiu nada. */}
       {block.altScreen && (
-        <div className="px-[18px] font-mono text-[11px] italic leading-4 text-tyba-text-faint">
+        <div className="pl-[38px] pr-[18px] font-mono text-[11px] italic leading-4 text-tyba-text-faint">
           {t("blockAltScreen")}
         </div>
       )}
@@ -452,7 +458,7 @@ const BlockCard = memo(function BlockCard({
         // ter mudado o tamanho da fonte. Preso em 13px, o texto encolhia ao
         // virar cartão.
         <div
-          className="px-[18px] font-mono text-tyba-text-muted"
+          className="pl-[38px] pr-[18px] font-mono text-tyba-text-muted"
           style={{
             fontSize: `${fontSizePx}px`,
             lineHeight: `${lineHeightPx}px`,
@@ -471,13 +477,13 @@ const BlockCard = memo(function BlockCard({
             event.stopPropagation();
             onShowMore?.(block.id);
           }}
-          className="w-full px-[18px] py-1 text-left font-mono text-[10px] leading-[14px] text-tyba-text-faint hover:text-tyba-text"
+          className="w-full pl-[38px] pr-[18px] py-1 text-left font-mono text-[10px] leading-[14px] text-tyba-text-faint hover:text-tyba-text"
         >
           {t("blockShowAll", { count: Math.min(hidden, BODY_LIMIT) })}
         </button>
       )}
       {block.truncated > 0 && (
-        <div className="px-[18px] py-1 font-mono text-[10px] leading-[14px] text-tyba-amber">
+        <div className="pl-[38px] pr-[18px] py-1 font-mono text-[10px] leading-[14px] text-tyba-amber">
           {t("blockTruncated", { count: block.truncated })}
         </div>
       )}
@@ -540,12 +546,12 @@ function SessionOpened({
 /// 13px × 1.35, a mesma métrica do xterm.
 
 /**
- * A linha do comando (`h-9`, `pt-2.5`). Sem caixa em volta, não há borda a somar.
+ * A linha do comando (`h-[38px]`, `pt-[9px]`). Sem caixa em volta, não há borda a somar.
  *
  * Estimativa curta é bloco sobrepondo o vizinho enquanto a medida real não
  * chega — por isso cada parcela abaixo é uma altura FIXA no JSX.
  */
-const HEADER_PX = 36;
+const HEADER_PX = 38;
 /** O `pb-2.5` do bloco, abaixo do corpo (mockup: `padding: 10px 18px`). */
 const BLOCK_PAD_PX = 10;
 /** A linha do diretório (`CwdLine`: `pt-3.5` + `leading-4` + `pb-1.5`). */

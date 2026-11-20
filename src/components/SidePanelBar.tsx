@@ -7,6 +7,7 @@ import {
   Plug,
   X,
 } from "@phosphor-icons/react";
+import { DockerIcon } from "./icons/DockerIcon";
 
 import { Shortcut } from "@/components/ui/kbd";
 import {
@@ -14,7 +15,6 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { DockerIcon } from "./icons/DockerIcon";
 import { GitIcon } from "./icons/GitIcon";
 import type { PanelIndicator, PanelKind } from "../lib/sidePanel";
 
@@ -32,8 +32,8 @@ const AREA: Record<PanelKind, { text: string }> = {
 };
 
 /**
- * Marca de verdade onde a coisa tem marca (Docker, Git); Phosphor no que é
- * conceito (histórico, arquivos, diff, serviços). A marca guarda o desenho e
+ * Marca de verdade no Git e no Docker (dono, 2026-11-19: o `Buildings` do
+ * quadro ficou ruim); Phosphor no resto. A marca guarda o desenho e
  * pinta com `currentColor`: neutra apagada, cor da área acesa.
  */
 export function PanelIcon({

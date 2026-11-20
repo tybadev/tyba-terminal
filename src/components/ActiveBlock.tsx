@@ -77,9 +77,9 @@ export function ActiveBlockHeader({
   // nada, e ainda relata a altura de novo, o que renderiza de novo.
   const onHeightRef = useRef(onHeight);
   onHeightRef.current = onHeight;
-  // A altura também segura o teto: com a peça de baixo o header passa de 36px,
+  // A altura também segura o teto: com a peça de baixo o header passa de 38px,
   // e preso no topo do painel ele não pode sair pela borda.
-  const [height, setHeight] = useState(36);
+  const [height, setHeight] = useState(38);
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
@@ -116,15 +116,15 @@ export function ActiveBlockHeader({
       // Sem caixa, como os blocos prontos: o que diz "este roda" é o filete
       // vivo no topo e o ponto aceso. `px-2.5` + o recuo da faixa põem o comando
       // na mesma coluna do comando dos blocos da lista (`px-[18px]`, mockup).
-      className={`z-10 flex flex-col overflow-hidden bg-tyba-paper-solid px-2.5 pt-2.5 ${
-        below ? "pb-3" : "h-9"
+      className={`z-10 flex flex-col overflow-hidden bg-tyba-paper-solid px-2.5 pt-[9px] ${
+        below ? "pb-3" : "h-[38px]"
       }`}
       style={{
         position: "absolute",
         left: `calc(${rect.left}% + ${LIVE_INSET_X_PX}px)`,
         // `translateY(-100%)` põe a BASE do header em `top`; o `max` não
         // deixa a base subir acima de um header de altura abaixo do topo.
-        top: `max(calc(${rect.top}% - ${liftPx}px), calc(${paneTop}% + ${Math.max(36, height)}px))`,
+        top: `max(calc(${rect.top}% - ${liftPx}px), calc(${paneTop}% + ${Math.max(38, height)}px))`,
         width: `calc(${rect.width}% - ${LIVE_INSET_X_PX * 2}px)`,
         transform: "translateY(-100%)",
       }}
@@ -140,17 +140,17 @@ export function ActiveBlockHeader({
         aria-hidden
         className="tyba-flow-line tyba-flow-line--live tyba-flow-line--thick pointer-events-none absolute inset-x-0 top-0"
       />
-      <div className="flex min-w-0 items-start gap-2">
-        <span className="shrink-0 font-mono text-[13px] leading-5 text-tyba-green">
+      <div className="flex min-w-0 items-start gap-2.5">
+        <span className="shrink-0 font-mono text-[13px] leading-5 text-primary">
           ❯
         </span>
-        <span className="min-w-0 flex-1 truncate font-mono text-[13px] leading-5 text-tyba-text">
+        <span className="min-w-0 flex-1 truncate font-mono text-[13px] font-semibold leading-5 text-tyba-text">
           {command}
         </span>
         {/* O ponto fica: o filete diz "algo corre", o ponto diz "é este bloco".
             Aceso (glow) porque está vivo; o pulso para em reduced-motion. */}
-        <span className="flex shrink-0 items-center gap-2 font-mono text-[11px] leading-5 text-tyba-green">
-          <span className="size-[7px] shrink-0 rounded-full bg-tyba-green-fill shadow-[var(--tyba-glow-green)] tyba-pulse" />
+        <span className="flex shrink-0 items-center gap-2 font-mono text-[11.5px] font-medium leading-5 text-primary">
+          <span className="size-[7px] shrink-0 rounded-full bg-primary tyba-pulse" />
           {[elapsed && t("blockRunningFor", { time: elapsed }), note].filter(Boolean).join(" · ")}
         </span>
       </div>

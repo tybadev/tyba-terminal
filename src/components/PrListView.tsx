@@ -210,7 +210,7 @@ export function PrListView({
         onKeyDown={(e) => {
           if (e.key === "Enter") onOpenPr(item.number);
         }}
-        className={`${GRID} group/pr cursor-pointer shadow-[inset_0_-1px_0_var(--tyba-line)] py-3 text-[13.5px] outline-none hover:bg-tyba-raised focus-visible:bg-tyba-raised ${
+        className={`${GRID} group/pr cursor-pointer shadow-[inset_0_-1px_0_var(--tyba-line)] py-3 text-[13.5px] outline-none hover:bg-[color-mix(in_srgb,var(--tyba-glass-active)_57%,transparent)] focus-visible:bg-[color-mix(in_srgb,var(--tyba-glass-active)_57%,transparent)] ${
           dim ? "opacity-75" : ""
         }`}
       >
@@ -330,12 +330,8 @@ export function PrListView({
           />
         </label>
         {status && (
-          <Button
-            size="sm"
-            className="h-auto shrink-0 gap-1.5 rounded-[6px] px-3 py-1.5 text-[12px] font-semibold"
-            onClick={() => setCreating(true)}
-          >
-            <Plus size={12} weight="bold" />
+          <Button size="sm" onClick={() => setCreating(true)}>
+            <Plus weight="bold" />
             {t("prNew")}
           </Button>
         )}
@@ -411,19 +407,19 @@ export function PrListView({
             )}
             {page.capped && nextPrLimit(limit) !== null && (
               <div className="flex justify-center pb-1.5 pt-3.5">
-                <button
-                  type="button"
+                <Button
+                  variant="outline"
+                  size="sm"
                   disabled={loading}
                   onClick={() => {
                     setLoadingMore(true);
                     setLimit((l) => nextPrLimit(l) ?? l);
                   }}
-                  className="rounded-[6px] border border-tyba-border-strong px-3 py-1 text-[12px] text-tyba-text-muted hover:text-tyba-text disabled:opacity-50"
                 >
                   {loadingMore
                     ? t("loadForgeMore", { count: (nextPrLimit(limit) ?? limit) - limit })
                     : t("prLoadMore")}
-                </button>
+                </Button>
               </div>
             )}
             {merged.length > 0 && (

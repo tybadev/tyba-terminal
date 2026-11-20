@@ -1,4 +1,4 @@
-export type ToastTone = "info" | "warning" | "error";
+export type ToastTone = "info" | "success" | "warning" | "error";
 
 /** Entrega B (§5.3): a única ação de um toast é o clique que abre o
  * navegador -- run() nunca é chamado sozinho, só pela mão do dono. */

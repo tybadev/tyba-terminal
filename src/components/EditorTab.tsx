@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ArrowSquareOut, Warning, Wrench } from "@phosphor-icons/react";
 
+import { Button } from "@/components/ui/button";
 import { GitIcon } from "./icons/GitIcon";
 
 import type {
@@ -537,14 +538,9 @@ export function EditorTab({
           <ArrowSquareOut size={12} />
           {t("editorOpenDefault")}
         </button>
-        <button
-          type="button"
-          onClick={() => void save()}
-          disabled={loaded.kind !== "ready"}
-          className="shrink-0 rounded-[6px] border border-tyba-border-strong px-2 py-0.5 text-tyba-text hover:bg-tyba-text/[.06] disabled:opacity-50"
-        >
+        <Button variant="outline" size="xs" onClick={() => void save()} disabled={loaded.kind !== "ready"}>
           {t("editorSave", { combo: IS_MAC ? "⌘S" : "Ctrl+S" })}
-        </button>
+        </Button>
       </div>
 
       {conflict && (
@@ -554,27 +550,20 @@ export function EditorTab({
         >
           <Warning size={13} className="shrink-0 text-tyba-amber" />
           <span className="min-w-0 flex-1 truncate">{t("filesConflictBanner")}</span>
-          <button
-            type="button"
-            onClick={() => void viewConflictDiff()}
-            className="rounded-[3px] px-1.5 py-0.5 text-tyba-text-muted hover:bg-tyba-text/[.08] hover:text-tyba-text"
-          >
+          <Button variant="ghost" size="xs" onClick={() => void viewConflictDiff()}>
             {t("filesConflictDiff")}
-          </button>
-          <button
-            type="button"
-            onClick={() => void reload()}
-            className="rounded-[3px] px-1.5 py-0.5 text-tyba-text-muted hover:bg-tyba-text/[.08] hover:text-tyba-text"
-          >
+          </Button>
+          <Button variant="ghost" size="xs" onClick={() => void reload()}>
             {t("filesConflictReload")}
-          </button>
-          <button
-            type="button"
+          </Button>
+          <Button
+            variant="ghost"
+            size="xs"
+            className="text-tyba-amber hover:bg-tyba-amber/20 hover:text-tyba-amber"
             onClick={() => void overwrite()}
-            className="rounded-[3px] px-1.5 py-0.5 text-tyba-amber hover:bg-tyba-amber/20"
           >
             {t("filesConflictOverwrite")}
-          </button>
+          </Button>
         </div>
       )}
 
