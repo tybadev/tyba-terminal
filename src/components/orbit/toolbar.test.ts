@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { linkPair, toolKey } from "./toolbar";
+import { linkPair, talkTarget, toolKey } from "./toolbar";
 
 const key = (k: string, mods: Partial<KeyboardEvent> = {}) => ({
   key: k,
@@ -49,5 +49,25 @@ describe("linkPair", () => {
     expect(linkPair([])).toBeNull();
     expect(linkPair([at("a", 0)])).toBeNull();
     expect(linkPair([at("a", 0), at("b", 1), at("c", 2)])).toBeNull();
+  });
+});
+
+describe("talkTarget", () => {
+  const nodes = [
+    { id: "nota", kind: { type: "note" } },
+    { id: "term", kind: { type: "terminal", dir: "/srv/api" } },
+    { id: "rev", kind: { type: "agent" } },
+  ] as Parameters<typeof talkTarget>[0];
+
+  test("o orquestrador que espera você vem primeiro", () => {
+    expect(talkTarget(nodes, () => true, (id) => id === "rev")).toEqual({ id: "rev", waiting: true });
+  });
+
+  test("ninguém esperando: o primeiro com sessão", () => {
+    expect(talkTarget(nodes, (n) => n.id !== "term", () => false)).toEqual({ id: "rev", waiting: false });
+  });
+
+  test("sem sessão viva, nada a abrir", () => {
+    expect(talkTarget(nodes, () => false, () => false)).toBeNull();
   });
 });

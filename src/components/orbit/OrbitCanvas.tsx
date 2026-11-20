@@ -47,7 +47,7 @@ import {
 } from "@/lib/graphLayout";
 import { paletteEntries, recentDirs, type PaletteEntry } from "@/lib/graphPalette";
 import { listSnippets, type Snippet } from "@/lib/ipc";
-import { ringState, visibleCardApprovalIds } from "@/lib/orbitCard";
+import { ringState, visibleCardApprovalIds, waitingYouOf } from "@/lib/orbitCard";
 import { SNAP_PX, deletePlan, snapToGuides, type Guide } from "@/lib/orbitHandling";
 import { IS_MAC } from "@/lib/platform";
 import { getTerm } from "@/lib/termRegistry";
@@ -117,7 +117,7 @@ import {
 import { NodeFocus } from "./nodes/NodeFocus";
 import { NodePalette, PALETTE_H, PALETTE_W } from "./NodePalette";
 import { OrbitToolbar } from "./OrbitToolbar";
-import { NODE_TOOL_ENTRY, linkPair, toolKey, type OrbitTool, type PointerTool } from "./toolbar";
+import { NODE_TOOL_ENTRY, linkPair, talkTarget, toolKey, type OrbitTool, type PointerTool } from "./toolbar";
 import { NoteNode } from "./nodes/NoteNode";
 import { ProcessNode } from "./nodes/ProcessNode";
 import { ServiceNode } from "./nodes/ServiceNode";
@@ -952,6 +952,12 @@ export function OrbitCanvas({
   // Quadro Orbit: Selecionar (o de sempre) ou Mover (arrastar só move o canvas).
   const [pointerTool, setPointerTool] = useState<PointerTool>("cursor");
   const pair = linkPair(nodes.filter((n) => n.selected));
+  // "Falar com o Orquestrador": abre no foco o agente/Terminal vivo.
+  const talk = talkTarget(
+    nodes.map((n) => n.data.node),
+    (n) => shownSession(n.kind, run, runs, n.id, live) !== null,
+    (id) => waitingYouOf(run?.nodes[id]) !== null,
+  );
 
   const applyTool = (tool: OrbitTool) => {
     if (tool === "cursor" || tool === "hand") {
@@ -1286,7 +1292,13 @@ export function OrbitCanvas({
           </ReactFlow>
         </EdgeActionsContext.Provider>
       </NodeDeleteContext.Provider>
-      <OrbitToolbar pointer={pointerTool} canLink={pair !== null} onTool={applyTool} />
+      <OrbitToolbar
+        pointer={pointerTool}
+        canLink={pair !== null}
+        onTool={applyTool}
+        talk={talk}
+        onTalk={() => talk && setFocusNode(talk.id)}
+      />
       {palette && (
         <NodePalette
           at={palette.screen}
