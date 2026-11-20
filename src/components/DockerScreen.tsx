@@ -16,6 +16,7 @@ import {
 
 import "./gitScreen.css";
 import { Button } from "@/components/ui/button";
+import { SegmentedControl } from "@/components/ui/segmented";
 import { FIELD_SURFACE } from "@/components/ui/input";
 import { ContainerFilesPanel } from "./ContainerFilesPanel";
 import { ContainerLogsView } from "./ContainerLogsView";
@@ -875,11 +876,12 @@ export function DockerScreen({
                   ordered.map(card)
                 )}
               </div>
-              <div className="flex shrink-0 items-center gap-2 border-t border-[var(--tyba-line)] px-3.5 py-2.5 text-[11px] leading-4 text-tyba-text-faint">
-                <p className="min-w-0 flex-1">
-                  {host ? t("dockerPanelNoteRemote", { host }) : t("dockerScreenNoteLocal")}
-                </p>
-              </div>
+              {/* A dica só diz algo no servidor; no local o quadro não tem rodapé. */}
+              {host && (
+                <div className="flex shrink-0 items-center gap-2 border-t border-[var(--tyba-line)] px-3.5 py-2.5 text-[11px] leading-4 text-tyba-text-faint">
+                  <p className="min-w-0 flex-1">{t("dockerPanelNoteRemote", { host })}</p>
+                </div>
+              )}
             </div>
 
             <div className="flex min-w-0 flex-1 flex-col">
@@ -894,35 +896,18 @@ export function DockerScreen({
                     onRestarted={() => setLogsRestart((n) => n + 1)}
                   />
                   <div className="flex shrink-0 items-center gap-2.5 border-b border-[var(--tyba-line)] px-[18px] py-2">
-                    <span
-                      role="tablist"
+                    {/* Segmentado do quadro (Docker): trilho em pílula, knob branco. */}
+                    <SegmentedControl
                       aria-label={t("dockerScreenPanes")}
-                      className="flex gap-0.5 rounded-[8px] bg-[var(--tyba-panel-bg)] p-[3px]"
-                    >
-                      {CONTAINER_PANES.map((pane) => {
-                        const on = pane === state.pane;
+                      value={state.pane}
+                      onChange={showPane}
+                      options={CONTAINER_PANES.map((pane) => ({
+                        value: pane,
+                        label: t(PANE_LABEL[pane]),
                         // Arquivos lê o docker local; logs remotos viram terminal.
-                        const disabled = host !== null && pane === "files";
-                        return (
-                          <button
-                            key={pane}
-                            type="button"
-                            role="tab"
-                            aria-selected={on}
-                            disabled={disabled}
-                            title={disabled ? t("dockerScreenLocalOnly") : undefined}
-                            onClick={() => showPane(pane)}
-                            className={`rounded-[6px] px-3 py-[5px] text-[12px] disabled:opacity-40 ${
-                              on
-                                ? "tyba-pill-on text-tyba-text"
-                                : "text-tyba-text-faint hover:text-tyba-text"
-                            }`}
-                          >
-                            {t(PANE_LABEL[pane])}
-                          </button>
-                        );
-                      })}
-                    </span>
+                        disabled: host !== null && pane === "files",
+                      }))}
+                    />
                     {selected.state !== "running" && (
                       <Button
                         variant="destructive"

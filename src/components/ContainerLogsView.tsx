@@ -54,13 +54,6 @@ interface Props {
 
 const ROW_PX = 22; // quadro Docker: linha de log de 22px
 
-const LEVEL_CLASS: Record<string, string> = {
-  error: "text-tyba-red",
-  warn: "text-tyba-amber",
-  info: "text-tyba-text-faint",
-  debug: "text-tyba-text-faint",
-};
-
 /** Logs do container como lista: hora, nível, filtro que acende, links de
  *  stack trace para o editor. O parse já veio do core. */
 export function ContainerLogsView({ containerId, restartNonce }: Props) {
@@ -127,7 +120,6 @@ export function ContainerLogsView({ containerId, restartNonce }: Props) {
   const matches = useMemo(() => countMatches(visible, query), [visible, query]);
   const totals = useMemo(() => levelTotals(lines), [lines]);
   // Coluna de nível só quando alguma linha visível tem nível conhecido.
-  const hasLevels = useMemo(() => visible.some((l) => l.level !== null), [visible]);
 
   const virtualizer = useVirtualizer({
     count: visible.length,
@@ -309,12 +301,9 @@ export function ContainerLogsView({ containerId, restartNonce }: Props) {
             // as que não trazem. Hora desligada: o texto vai cru.
             const own = showTime && !line.continuation ? ownTimestamp(line.text) : null;
             const text = own ? own.rest : line.text;
-            const rowTone =
-              line.level === "error" && !line.continuation
-                ? "bg-tyba-red/[.08]"
-                : hit
-                  ? "bg-tyba-blue/[.06]"
-                  : "";
+            // Quadro Docker: o erro só tinge o texto (sem faixa nem coluna de
+            // nível); só o filtro que acende ganha fundo.
+            const rowTone = hit ? "bg-tyba-blue/[.06]" : "";
             return (
               <div
                 key={line.seq}
@@ -328,13 +317,6 @@ export function ContainerLogsView({ containerId, restartNonce }: Props) {
                 {showTime && (
                   <span className="w-[64px] shrink-0 text-tyba-text-ghost">
                     {line.continuation ? "" : (own?.clock ?? clockOf(line.ts_ms))}
-                  </span>
-                )}
-                {hasLevels && (
-                  <span
-                    className={`w-[44px] shrink-0 ${LEVEL_CLASS[line.level ?? ""] ?? "text-tyba-text-faint"}`}
-                  >
-                    {line.continuation ? "" : (line.level ?? "")}
                   </span>
                 )}
                 <span
