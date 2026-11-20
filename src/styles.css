@@ -122,6 +122,7 @@
   --tyba-field: var(--tyba-bg);                   /* o que fica atrás do vidro */
   --tyba-glass-window: var(--tyba-glass-bg);      /* a janela inteira */
   --tyba-glass-section: var(--tyba-glass-bg);     /* lateral, peça da tela */
+  --tyba-statusbar-bg: var(--tyba-glass-section); /* rodapé da coluna do terminal */
   --tyba-glass-piece: var(--tyba-raised);         /* faixa, cápsula, campo */
   --tyba-glass-float: var(--tyba-overlay);        /* pílula, gaveta, popover */
   --tyba-glass-active: var(--tyba-raised);        /* item ativo */
@@ -481,6 +482,8 @@
   /* A barra lateral deixa o ambiente aparecer (quadro Sidebar): os
      cartões brancos é que se destacam sobre ela. */
   --tyba-glass-section: rgba(255, 255, 255, 0.32);
+  /* Quadro Shell (.st): o rodapé é do terminal, branco .72, não da lateral. */
+  --tyba-statusbar-bg: rgba(255, 255, 255, 0.72);
   --tyba-glass-piece: rgba(255, 255, 255, 0.8);
   --tyba-glass-float: rgba(255, 255, 255, 0.97);
   --tyba-glass-active: rgba(255, 255, 255, 0.96);
