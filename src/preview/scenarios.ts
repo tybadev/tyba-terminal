@@ -128,7 +128,12 @@ export const SCENARIOS: Record<string, () => Promise<unknown> | void> = {
   "settings-integrations": () => settingsPage("Integrações"),
   "settings-security": () => settingsPage("Segurança"),
   "settings-about": () => settingsPage("Sobre"),
-  orbit: () => menu("toggleOrbit"),
+  // Quadro Orbit: a sessão ao vivo com o painel Variáveis aberto.
+  orbit: async () => {
+    await menu("toggleOrbit");
+    const vars = await waitFor(() => byText("button", /^Variáveis$/));
+    vars.click();
+  },
   handoff: () => requestHandoff({ sessionId: ID.claudeApi, from: "claude", turn: TURN_HANDOFF }),
   inbox: async () => {
     const button = await waitFor(() =>

@@ -26,6 +26,7 @@ import {
   HANDOFF_TARGETS,
   ORBIT_GRAPH,
   ORBIT_RUN,
+  ORBIT_SESSIONS,
   PANEL_USAGE,
   PR_DETAIL,
   PR_PAGE,
@@ -131,7 +132,8 @@ const handlers: Record<string, Handler> = {
   }),
   boot_poll: () => ({ ready: true, bootFailure: null }),
   layout_state: () => ({ ready: true, value: structuredClone(state.layout) }),
-  list_sessions: () => ({ ready: true, value: SESSIONS }),
+  // O core lista também as sessões dos nós do Orbit (fora de qualquer aba).
+  list_sessions: () => ({ ready: true, value: [...SESSIONS, ...ORBIT_SESSIONS] }),
   get_pref: ({ key }) =>
     key === "pref.ui_font" && state.font ? state.font : (PREFS[String(key)] ?? null),
   set_pref: () => null,

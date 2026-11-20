@@ -578,6 +578,30 @@ export const ORBIT_GRAPH: Graph = {
 /** Sessões do run ao vivo do quadro (o shell do Terminal e o claude do Revisor). */
 export const ORBIT_SESSION = { term: "orbit-term", rev: "orbit-rev" };
 
+/** As mesmas sessões como o core as lista (`list_sessions`). */
+export const ORBIT_SESSIONS: Session[] = [
+  {
+    id: ORBIT_SESSION.term,
+    kind: { type: "shell" },
+    title: "Terminal · api",
+    repo_root: REPO.api,
+    worktree: null,
+    status: { state: "idle", summary: null },
+    attention: false,
+    created_at: new Date(NOW - 13_000).toISOString(),
+  },
+  {
+    id: ORBIT_SESSION.rev,
+    kind: { type: "agent", runner: "claude_code" },
+    title: "Revisor",
+    repo_root: REPO.api,
+    worktree: null,
+    status: { state: "awaiting_input", hint: "bun run test", reason: "native_prompt" },
+    attention: true,
+    created_at: new Date(NOW - 60_000).toISOString(),
+  },
+];
+
 /** A sessão ao vivo do quadro: o Terminal aberto há 13 s, o Revisor esperando você há 40 s. */
 export const ORBIT_RUN: Run = {
   id: "run-24",
