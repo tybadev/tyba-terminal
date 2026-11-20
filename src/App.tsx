@@ -3,7 +3,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   ArrowBendUpLeft,
-  ArrowsLeftRight,
   CaretDown,
   CaretRight,
   Columns,
@@ -14,6 +13,7 @@ import {
   FolderSimple,
   GearSix,
   GitDiff,
+  GithubLogo,
   HardDrives,
   MagnifyingGlass,
   Monitor,
@@ -68,6 +68,7 @@ import { AgentIcon } from "./components/icons/AgentIcon";
 import { AgentsBoard } from "./components/AgentsBoard";
 import { AgentsQueue } from "./components/AgentsQueue";
 import { AgentsSidebar, RobotIcon } from "./components/AgentsSidebar";
+import { Input } from "./components/ui/input";
 import { ClaudeIcon } from "./components/icons/ClaudeIcon";
 import { OpenAIIcon } from "./components/icons/OpenAIIcon";
 import { CommandPalette } from "./components/CommandPalette";
@@ -108,6 +109,8 @@ import {
 } from "./components/LaunchConfigScreen";
 import { OrbitScreen, type FocusSessionRequest } from "./components/orbit/OrbitScreen";
 import { onFocusSession } from "./lib/orbit";
+import { formatElapsed } from "./lib/agentTree";
+import { useNow } from "./components/ui/loading";
 import { ShortcutsPanel } from "./components/ShortcutsPanel";
 import { EmptySessions } from "./components/EmptySessions";
 import { OrbitIcon } from "./components/icons/OrbitIcon";
@@ -762,15 +765,25 @@ function SidebarItem({
   );
 }
 
+// Ordem do quadro SessionMenu (azul, amarelo, verde, vermelho, violeta);
+// ciano e magenta por último, só fora do claro do TYBA.
 const SESSION_COLORS = [
-  "green",
-  "amber",
-  "magenta",
-  "violet",
   "blue",
-  "cyan",
+  "amber",
+  "green",
   "red",
+  "violet",
+  "cyan",
+  "magenta",
 ];
+
+/** No claro do TYBA o ciano é o azul e o magenta é o vermelho. */
+const LIGHT_REPEATED_COLORS = new Set(["cyan", "magenta"]);
+
+/** A cor como mancha (amostra, quadradinho do grupo): o tom de preenchimento
+ *  quando o tema tem um (no claro, o amarelo #fdce04 em vez do âmbar de
+ *  texto); fora dele, a cor de sempre. */
+const colorFill = (c: string) => `var(--tyba-${c}-fill, var(--tyba-${c}))`;
 
 const copyText = (text: string) => {
   void navigator.clipboard?.writeText(text).catch(() => {});
@@ -792,6 +805,18 @@ const DEV_HEADER_STYLE: React.CSSProperties | undefined = import.meta.env.DEV
         "repeating-linear-gradient(-45deg, transparent 0, color-mix(in srgb, var(--tyba-text) 5%, transparent) 7px, transparent 14px, transparent 26px)",
     }
   : undefined;
+
+/** O tempo do turno no cabeçalho do painel ("em andamento · 1m 12s",
+ *  quadro ShellSplit). Componente próprio: só ele anda de segundo em
+ *  segundo, não o App. */
+function PaneTurnTime({ session }: { session: Session }) {
+  const now = useNow(turnElapsedMs(session, 0) !== null);
+  const ms = turnElapsedMs(session, now);
+  return ms === null ? null : <>{` · ${formatElapsed(ms)}`}</>;
+}
+
+/** Ícones do header no Orbit, na ordem do terminal (quadro Header). */
+const ORBIT_HEADER_PANELS: readonly PanelKind[] = ["history", "docker", "services", "git"];
 
 function IconAction({
   label,
@@ -5434,25 +5459,27 @@ export default function App() {
     M: MenuParts,
   ) => (
     <>
-      <div className="px-2 pb-1 pt-1.5 text-[11px] font-semibold uppercase tracking-[0.04em] text-tyba-text-faint">
+      <div className="px-3 pb-1 pt-2 text-[11px] font-semibold uppercase leading-4 tracking-[0.04em] text-tyba-text-faint">
         {t("menuSession")}
       </div>
       <M.Item
-        className="gap-2.5 text-[13px]"
         onSelect={() => setPrompt({ kind: "rename", ws: w })}
       >
-        <TextT size={15} className="shrink-0" />
+        <TextT size={18} className="shrink-0" />
         {t("menuRename")}
       </M.Item>
       <M.Sub>
-        <M.SubTrigger className="gap-2.5 text-[13px]">
-          <FolderSimple size={15} className="shrink-0" />
+        <M.SubTrigger>
+          <FolderSimple size={18} className="shrink-0" />
           {t("menuColorGroup")}
         </M.SubTrigger>
-        <M.SubContent className="w-[220px] p-2">
+        <M.SubContent className="flex w-[220px] flex-col gap-0.5 p-2">
           <div className="px-2.5 py-1.5 text-[11px] font-semibold uppercase tracking-[0.04em] text-tyba-text-faint">
             {t("menuColor")}
           </div>
+          {/* As seis do quadro, numa linha e na ordem dele: sem cor, azul,
+              amarelo, verde, vermelho e violeta. Ciano e magenta, que no
+              claro repetem o azul e o vermelho, só aparecem fora dele. */}
           <div className="grid grid-cols-6 gap-2 px-2.5 pb-2 pt-1">
             <button
               aria-label={t("noColor")}
@@ -5461,7 +5488,7 @@ export default function App() {
               className={`size-[22px] rounded-[7px] bg-tyba-raised ${
                 !w.color
                   ? "shadow-[0_0_0_2px_var(--tyba-paper-solid),0_0_0_4px_var(--tyba-blue)]"
-                  : "shadow-[inset_0_0_0_1px_var(--tyba-border-strong)]"
+                  : "shadow-[inset_0_0_0_1px_var(--tyba-mk-swatch-line,var(--tyba-border-strong))]"
               }`}
             />
             {SESSION_COLORS.map((c) => (
@@ -5471,11 +5498,13 @@ export default function App() {
                 title={c}
                 onClick={() => void setWorkspaceColor(w.id, c)}
                 className={`size-[22px] rounded-[7px] ${
+                  LIGHT_REPEATED_COLORS.has(c) ? "tyba-mk-hide" : ""
+                } ${
                   w.color === c
                     ? "shadow-[0_0_0_2px_var(--tyba-paper-solid),0_0_0_4px_var(--tyba-blue)]"
-                    : "shadow-[inset_0_0_0_1px_var(--tyba-line)]"
+                    : "shadow-[inset_0_0_0_1px_var(--tyba-mk-swatch-line,var(--tyba-line))]"
                 }`}
-                style={{ background: `var(--tyba-${c})` }}
+                style={{ background: colorFill(c) }}
               />
             ))}
           </div>
@@ -5487,7 +5516,7 @@ export default function App() {
             return (
               <M.Item
                 key={name}
-                className={`h-[34px] gap-2.5 text-[13px] ${
+                className={`h-[34px] gap-2.5 px-2.5 text-[13.5px] ${
                   w.group === name ? "tyba-pill-on font-semibold" : ""
                 }`}
                 onSelect={() =>
@@ -5497,14 +5526,14 @@ export default function App() {
                 <span
                   aria-hidden
                   className={`size-2 shrink-0 rounded-[3px] ${color ? "" : "bg-tyba-text-faint"}`}
-                  style={color ? { background: `var(--tyba-${color})` } : undefined}
+                  style={color ? { background: colorFill(color) } : undefined}
                 />
                 <span className="min-w-0 flex-1 truncate">{name}</span>
               </M.Item>
             );
           })}
           <M.Item
-            className="h-[34px] gap-2.5 text-[13px]"
+            className="h-[34px] gap-2.5 px-2.5 text-[13.5px]"
             onSelect={() => setPrompt({ kind: "group", ws: w })}
           >
             <Plus size={15} className="shrink-0" />
@@ -5514,10 +5543,10 @@ export default function App() {
       </M.Sub>
       {w.group && (
         <M.Item
-          className="gap-2.5 text-[13px]"
+          
           onSelect={() => void setWorkspaceGroup(w.id, null)}
         >
-          <ArrowBendUpLeft size={15} className="shrink-0" />
+          <ArrowBendUpLeft size={18} className="shrink-0" />
           {t("menuLeaveGroup")}
         </M.Item>
       )}
@@ -5525,59 +5554,55 @@ export default function App() {
           só aparece no menu da sessão que está na tela. */}
       {w.id === layout.active_workspace && activeTab?.active_pane && (
         <M.Item
-          className="gap-2.5 text-[13px]"
+          
           onSelect={() => void splitActive("v")}
         >
-          <Columns size={15} className="shrink-0" />
+          <Columns size={18} className="shrink-0" />
           {t("splitRight")}
           <Shortcut combo={bindings.splitRight} className="ml-auto" />
         </M.Item>
       )}
       <M.Separator />
       {branch && (
-        <M.Item className="gap-2.5 text-[13px]" onSelect={() => copyText(branch)}>
-          <Copy size={15} className="shrink-0" />
+        <M.Item onSelect={() => copyText(branch)}>
+          <Copy size={18} className="shrink-0" />
           {t("copyBranch")}
         </M.Item>
       )}
       {w.repo_root && (
         <M.Item
-          className="gap-2.5 text-[13px]"
+          
           onSelect={() => copyText(w.repo_root as string)}
         >
-          <FolderSimple size={15} className="shrink-0" />
+          <FolderSimple size={18} className="shrink-0" />
           {t("menuCopyDir")}
         </M.Item>
       )}
       <M.Item
-        className="gap-2.5 text-[13px]"
         onSelect={() => toggleWorkspaceDetails(w.id)}
       >
         {detailsFor(w.id) ? (
-          <EyeSlash size={15} className="shrink-0" />
+          <EyeSlash size={18} className="shrink-0" />
         ) : (
-          <Eye size={15} className="shrink-0" />
+          <Eye size={18} className="shrink-0" />
         )}
         {detailsFor(w.id) ? t("detailsHide") : t("detailsShow")}
       </M.Item>
       {worktreeSessionOf(w) && (
         <M.Item
-          className="gap-2.5 text-[13px]"
+          
           onSelect={() => {
             const target = worktreeSessionOf(w);
             if (target) void openDiffContentTab(target.id).catch(() => {});
           }}
         >
-          <GitDiff size={15} className="shrink-0" />
+          <GithubLogo size={18} className="shrink-0" />
           {t("diffReviewAction")}
         </M.Item>
       )}
       <M.Separator />
-      <M.Item
-        className="gap-2.5 text-[13px] text-tyba-red focus:text-tyba-red"
-        onSelect={() => void killWorkspace(w.id)}
-      >
-        <Trash size={15} className="shrink-0" />
+      <M.Item variant="destructive" onSelect={() => void killWorkspace(w.id)}>
+        <Trash size={18} className="shrink-0" />
         {t("killSession")}
       </M.Item>
     </>
@@ -5719,14 +5744,14 @@ export default function App() {
               role="img"
               aria-label={t(SESSION_DOT_LABEL_KEY[dot])}
               title={agentLabel ?? t(SESSION_DOT_LABEL_KEY[dot])}
-              className={`absolute -right-[3px] -top-0.5 size-[7px] rounded-full shadow-[0_0_0_2px_var(--tyba-paper-solid)] ${iconDot}`}
+              className={`tyba-sdot absolute -right-[3px] -top-0.5 size-[7px] rounded-full shadow-[0_0_0_2px_var(--tyba-paper-solid)] ${iconDot}`}
             />
           )}
         </span>
         {open && (
           <>
             <span className="flex min-w-0 flex-1 flex-col items-start">
-              <span className="w-full truncate text-left leading-[22px]">
+              <span className="w-full truncate text-left leading-[var(--tyba-mk-ses-lh,22px)]">
                 {isConfig
                   ? t("settings")
                   : isWtView
@@ -5828,7 +5853,7 @@ export default function App() {
                   <DotsThree size={16} weight="bold" />
                 </span>
               </DropdownMenuTrigger>
-              <DropdownMenuContent align="start" className="w-[270px]">
+              <DropdownMenuContent align="start" className="w-[248px]">
                 {renderWorkspaceMenuItems(w, branch, DROPDOWN_MENU_PARTS)}
               </DropdownMenuContent>
             </DropdownMenu>
@@ -5849,7 +5874,7 @@ export default function App() {
             <ContextMenuTrigger asChild>
               <HoverCardTrigger asChild>{workspaceButton}</HoverCardTrigger>
             </ContextMenuTrigger>
-            <ContextMenuContent className="w-[270px]">
+            <ContextMenuContent className="w-[248px]">
               {renderWorkspaceMenuItems(w, branch, CONTEXT_MENU_PARTS)}
             </ContextMenuContent>
           </ContextMenu>
@@ -6016,7 +6041,7 @@ export default function App() {
         {splitHeader && paneRect && (
           <div
             className={`group/ph flex h-6 shrink-0 items-center gap-1.5 px-2.5 font-sans text-[11px] text-tyba-text-faint shadow-[inset_0_-1px_0_var(--tyba-line)] ${
-              paneDimmed ? "bg-tyba-text/[.03]" : ""
+              paneDimmed ? "tyba-pane-head-dim bg-tyba-text/[.03]" : ""
             }`}
           >
             {paneAgent ? (
@@ -6038,6 +6063,7 @@ export default function App() {
                 }`}
               >
                 {paneState}
+                {paneAgent && <PaneTurnTime session={s} />}
               </span>
             )}
             <button
@@ -6705,7 +6731,7 @@ export default function App() {
             )}
           </nav>
           {activeChips.branch?.state === "known" && (
-            <span className="flex h-6 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full bg-tyba-blue-tint px-2.5 text-[12px] font-semibold text-tyba-blue">
+            <span className="flex h-6 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full bg-[var(--tyba-brand-soft,var(--tyba-blue-tint))] px-2.5 text-[12px] font-semibold text-tyba-blue">
               <span aria-hidden className="size-1.5 rounded-full bg-current" />
               {activeChips.branch.label}
             </span>
@@ -6713,30 +6739,42 @@ export default function App() {
 
           <div className="h-full flex-1" data-tauri-drag-region />
 
-          {/* Ícones do painel lateral: soltos na barra (opção G). */}
-          <div className="flex items-center gap-0.5">
+          {/* Ícones do painel lateral: soltos na barra (opção G). No claro,
+              a 4px um do outro, como no quadro Header. */}
+          <div className="flex items-center gap-[var(--tyba-mk-hd-icons-gap,2px)]">
             {orbitOpen ? (
-              // No Orbit não há sessão à vista: Serviços e Túneis abrem a
-              // tela da máquina por cima dele; o que depende de sessão fica
-              // desabilitado dizendo onde funciona, em vez de não fazer nada.
+              // No Orbit não há sessão à vista: Serviços abre a tela da
+              // máquina por cima dele (os túneis são uma seção dela); o que
+              // depende de sessão fica desabilitado dizendo onde funciona, em
+              // vez de não fazer nada. A ordem é a do terminal (quadro Header:
+              // relógio, Docker, plugue, Git e pasta).
               <>
-                <IconAction label={t("servicesTitle")} onClick={() => setMachineScreen("ports")}>
-                  <Plug size={18} />
-                </IconAction>
-                <IconAction label={t("tunnelsTitle")} onClick={() => setMachineScreen("tunnels")}>
-                  <ArrowsLeftRight size={18} />
-                </IconAction>
-                {panelTabs
-                  .filter((tab) => tab.kind !== "services")
-                  .map((tab) => (
-                    <IconAction
-                      key={tab.kind}
-                      disabled
-                      label={t("openInTerminalHint", { what: tab.label })}
-                    >
-                      <PanelIcon kind={tab.kind} size={18} />
-                    </IconAction>
-                  ))}
+                {ORBIT_HEADER_PANELS.filter((kind) => kind !== "docker" || showContainers).map(
+                  (kind) =>
+                    kind === "services" ? (
+                      <IconAction
+                        key={kind}
+                        label={t("servicesTitle")}
+                        onClick={() => setMachineScreen("ports")}
+                      >
+                        <Plug size={18} />
+                      </IconAction>
+                    ) : (
+                      <IconAction
+                        key={kind}
+                        disabled
+                        label={t("openInTerminalHint", {
+                          what: panelAriaLabel(
+                            kind,
+                            { ...panelIndicatorInput, gitChanged: null },
+                            t,
+                          ),
+                        })}
+                      >
+                        <PanelIcon kind={kind} size={18} />
+                      </IconAction>
+                    ),
+                )}
                 <IconAction disabled label={t("openInTerminalHint", { what: t("filesPanel") })}>
                   <FolderSimple size={18} />
                 </IconAction>
@@ -6889,19 +6927,16 @@ export default function App() {
                   className="tyba-section tyba-mk-sidebar flex shrink-0 flex-col overflow-hidden"
                   style={{ width: SIDEBAR_WIDTH[sidebar] }}
                 >
+                  {/* A busca é o Input do Muriki com ícone (quadro Sidebar). */}
                   {open && (
-                    <label className="mx-3 mt-3 flex h-10 shrink-0 items-center gap-2 rounded-[10px] bg-tyba-raised pl-4 pr-3 text-tyba-text-faint shadow-[0_0_0_1px_var(--tyba-line)] focus-within:shadow-[0_0_0_2px_var(--tyba-blue)]">
-                      <MagnifyingGlass size={16} className="shrink-0" />
-                      <input
-                        spellCheck={false}
-                        autoCapitalize="off"
-                        autoCorrect="off"
-                        value={sessionQuery}
-                        onChange={(e) => setSessionQuery(e.target.value)}
-                        placeholder={t("searchSessions")}
-                        className="w-full min-w-0 bg-transparent text-[14px] font-medium text-tyba-text outline-none placeholder:text-tyba-text-faint"
-                      />
-                    </label>
+                    <Input
+                      icon={<MagnifyingGlass size={18} />}
+                      value={sessionQuery}
+                      onChange={(e) => setSessionQuery(e.target.value)}
+                      placeholder={t("searchSessions")}
+                      aria-label={t("searchSessions")}
+                      className="mx-3 mt-3 w-auto shrink-0"
+                    />
                   )}
                   <div className={`flex shrink-0 flex-col gap-0.5 ${open ? "mt-1.5 px-3" : "mt-2 px-1"}`}>
                     <SidebarItem
@@ -6949,10 +6984,14 @@ export default function App() {
                       open ? "px-3" : "mt-2 gap-0.5 px-1"
                     }`}
                   >
+                    {/* Vazia, a caixa tracejada do quadro SidebarVazia (`.vz`). */}
                     {open && sidebarGroups.length === 0 && (
-                      <span className="px-3 py-2 text-[12.5px] text-tyba-text-faint">
-                        {t("sidebarNoSessions")}
-                      </span>
+                      <div className="tyba-vz mx-1 mb-1 mt-0.5 flex flex-col gap-1 rounded-[12px] px-3 py-3.5 text-[12px] leading-[17px] text-tyba-text-muted">
+                        <b className="text-[12.5px] font-semibold text-tyba-text">
+                          {t("sidebarNoSessions")}
+                        </b>
+                        <span>{t("sidebarNoSessionsHint")}</span>
+                      </div>
                     )}
                     {sidebarGroups.map((g) => {
                       // Fechada, a lateral é o trilho: só os ícones.
@@ -6996,7 +7035,7 @@ export default function App() {
                               <span
                                 aria-hidden
                                 className={`size-2 shrink-0 rounded-[3px] ${g.color ? "" : "bg-tyba-text-faint"}`}
-                                style={g.color ? { background: `var(--tyba-${g.color})` } : undefined}
+                                style={g.color ? { background: colorFill(g.color) } : undefined}
                               />
                             )}
                             <span className="min-w-0 flex-1 truncate text-left">
@@ -7519,7 +7558,9 @@ export default function App() {
                         // Mesmo peso do divisor do painel lateral: são a mesma
                         // peça de linguagem visual e destoar entre elas se lê
                         // como defeito.
-                        className={`rounded-full bg-tyba-border-strong/60 transition-colors hover:bg-tyba-green/70 ${
+                        // No claro, o fio do quadro ShellSplit (`.pane+.pane`):
+                        // glass-line e sem hover (`.tyba-mk-divider`).
+                        className={`tyba-mk-divider rounded-full bg-tyba-border-strong/60 transition-colors hover:bg-tyba-green/70 ${
                           d.kind === "v" ? "h-full w-px" : "h-px w-full"
                         }`}
                       />

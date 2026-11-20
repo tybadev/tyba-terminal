@@ -127,9 +127,11 @@ export interface ToolbarPref {
 export const DEFAULT_TOOLBAR: ToolbarPref = {
   version: 1,
   enabled: true,
-  // A branch abre a barra, colada nas alterações dela (mockup Proposta).
-  left: ["branch", "diffCount", "reviewDiff"],
-  right: ["aheadBehind", "cwd", "clock"],
+  // Quadro Shell (`.st`): à esquerda só as dicas; à direita a pílula, a
+  // pasta, a branch e a hora. As alterações e o "diff", que o quadro não
+  // tem, ficam depois das dicas.
+  left: ["diffCount", "reviewDiff"],
+  right: ["cwd", "branch", "aheadBehind", "clock"],
   hidden: [],
 };
 

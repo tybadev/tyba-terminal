@@ -96,7 +96,7 @@ export function SidePanelBar({
   return (
     <nav
       aria-label={t("sidePanelNav")}
-      className="flex items-center gap-0.5"
+      className="flex items-center gap-[var(--tyba-mk-hd-icons-gap,2px)]"
       onKeyDown={(e) => {
         if (e.key === "Escape" && lit) {
           e.preventDefault();

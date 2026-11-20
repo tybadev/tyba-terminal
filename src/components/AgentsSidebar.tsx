@@ -115,7 +115,22 @@ export function AgentsSidebar({ rows, open, onSelect, subagents }: Props) {
   const marcas = useMemo(() => disambiguators(rows), [rows]);
   // Com algum turno rodando, redesenha a cada segundo para o tempo andar.
   useNow(rows.some((row) => turnElapsedMs(row.session, 0) !== null));
-  if (rows.length === 0) return null;
+  if (rows.length === 0) {
+    // Vazia, a caixa tracejada do quadro SidebarVazia, com o robô. No trilho
+    // fechado não sobra lugar para texto.
+    if (!open) return null;
+    return (
+      <div className="tyba-vz mx-1 mb-1 mt-0.5 flex items-start gap-2.5 rounded-[12px] px-3 py-3.5 text-[12px] leading-[17px] text-tyba-text-muted">
+        <span className="opacity-80">
+          <RobotIcon size={22} />
+        </span>
+        <span className="flex flex-col gap-[3px]">
+          <b className="text-[12.5px] font-semibold text-tyba-text">{t("agentsEmptyTitle")}</b>
+          <span>{t("agentsEmptyHint")}</span>
+        </span>
+      </div>
+    );
+  }
   const now = Date.now();
 
   return (
@@ -166,7 +181,7 @@ export function AgentsSidebar({ rows, open, onSelect, subagents }: Props) {
             className={`flex shrink-0 flex-col gap-1 rounded-[10px] px-3 py-2.5 text-left transition-colors ${
               marca
                 ? "tyba-pill-on outline outline-[1.5px] -outline-offset-[1.5px] outline-tyba-amber-fill"
-                : "bg-tyba-raised/60 shadow-[inset_0_0_0_1px_var(--tyba-line)] hover:bg-tyba-raised/80"
+                : "bg-[var(--tyba-mk-ag-bg,color-mix(in_oklab,var(--tyba-raised)_60%,transparent))] shadow-[inset_0_0_0_1px_var(--tyba-line)] hover:bg-tyba-raised/80"
             }`}
           >
             <span

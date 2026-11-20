@@ -1,8 +1,8 @@
-import type * as React from "react";
+import * as React from "react";
 import { CaretDown, Check } from "@phosphor-icons/react";
 
 import { cn } from "@/lib/utils";
-import { FIELD_SURFACE } from "@/components/ui/input";
+import { FIELD_LABEL, FIELD_SURFACE } from "@/components/ui/input";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -23,6 +23,7 @@ export function Select({
   icon,
   disabled,
   id,
+  label,
   "aria-label": ariaLabel,
 }: {
   value: string;
@@ -33,9 +34,33 @@ export function Select({
   icon?: React.ReactNode;
   disabled?: boolean;
   id?: string;
+  /** Rótulo em cima do campo (Muriki `Select label`, `.mk-field`), como no
+   *  `Input`. O `className` continua sendo do campo. */
+  label?: React.ReactNode;
   "aria-label"?: string;
 }) {
+  const autoId = React.useId();
   const current = options.find((o) => o.value === value);
+  if (label) {
+    const fieldId = id ?? autoId;
+    return (
+      <div data-slot="field" className="flex min-w-0 flex-col gap-1.5">
+        <label htmlFor={fieldId} className={FIELD_LABEL}>
+          {label}
+        </label>
+        <Select
+          value={value}
+          options={options}
+          onChange={onChange}
+          className={className}
+          icon={icon}
+          disabled={disabled}
+          id={fieldId}
+          aria-label={ariaLabel}
+        />
+      </div>
+    );
+  }
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -63,7 +88,8 @@ export function Select({
           <DropdownMenuItem
             key={o.value}
             onSelect={() => onChange(o.value)}
-            className="justify-between gap-3 text-xs"
+            // Item do Menu do Muriki (14px), como o resto dos menus.
+            className="justify-between gap-3"
           >
             {o.label}
             {o.value === value && (
