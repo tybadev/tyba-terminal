@@ -1,5 +1,7 @@
 import { useTranslation } from "react-i18next";
-import { Check, Folder, GitBranch, Minus, Pause } from "@phosphor-icons/react";
+import { ArrowLineRight, Check, Folder, GitBranch, Minus, Pause } from "@phosphor-icons/react";
+
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 import {
   splitPath,
@@ -56,7 +58,20 @@ export const TURN_LETTER_COLOR: Record<FileStatus, string> = {
  * chegam do core em `Session.last_turn`. O conteúdo fica na tela de Git:
  * "Ver diff do turno" e o clique numa linha abrem a seção Turno dela.
  */
-export function TurnPanel({ sessionId, turn }: { sessionId: SessionId; turn: TurnDigest }) {
+export function TurnPanel({
+  sessionId,
+  turn,
+  turnOpen,
+  onHandoff,
+}: {
+  sessionId: SessionId;
+  turn: TurnDigest;
+  /** Turno aberto: o agente trabalha e "Passar para…" fica desligado (H1). */
+  turnOpen: boolean;
+  /** Abre a folha "Passar para outro agente" (HandoffAgentes H2). Sem ela
+   * (runner custom), o botão não aparece. */
+  onHandoff?: () => void;
+}) {
   const { t, i18n } = useTranslation();
   const now = useNow(true);
   const band = turnBand(turn);
@@ -188,10 +203,10 @@ export function TurnPanel({ sessionId, turn }: { sessionId: SessionId; turn: Tur
           )}
         </p>
       )}
-      {/* Quadro Agentes (g6-foot). "Passar para…" vem com o handoff, que
-          ainda não está nesta base: sem botão até a ação existir. */}
+      {/* Quadro Agentes (g6-foot). O rodapé "desde HH:MM" fica inteiro: sem
+          espaço, desce de linha. */}
       <div
-        className={`flex min-h-[56px] items-center gap-2 px-3 pb-3 pt-2.5 shadow-[inset_0_1px_0_var(--tyba-line)] ${
+        className={`flex min-h-[56px] flex-wrap items-center gap-x-2 gap-y-1.5 px-3 pb-3 pt-2.5 shadow-[inset_0_1px_0_var(--tyba-line)] ${
           hasFiles ? "mt-1.5" : ""
         }`}
       >
@@ -201,8 +216,27 @@ export function TurnPanel({ sessionId, turn }: { sessionId: SessionId; turn: Tur
             {t("turnSeeDiff")}
           </button>
         )}
+        {!onHandoff ? null : turnOpen ? (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              {/* Botão desligado não recebe hover: a dica mora no invólucro. */}
+              <span tabIndex={0} className="inline-flex">
+                <button type="button" disabled className={GLASS_BTN}>
+                  <ArrowLineRight size={15} />
+                  {t("handoffPassTo")}
+                </button>
+              </span>
+            </TooltipTrigger>
+            <TooltipContent side="top">{t("handoffWaitTurn")}</TooltipContent>
+          </Tooltip>
+        ) : (
+          <button type="button" onClick={onHandoff} className={GLASS_BTN}>
+            <ArrowLineRight size={15} />
+            {t("handoffPassTo")}
+          </button>
+        )}
         <span className="flex-1" />
-        <span className="font-mono text-[11.5px] text-tyba-text-faint">
+        <span className="whitespace-nowrap font-mono text-[11.5px] text-tyba-text-faint">
           {t(hasFiles ? "turnSince" : "turnStartedAt", { time: since })}
         </span>
       </div>

@@ -44,6 +44,7 @@ import {
   type PillTurn,
 } from "../lib/agentsDrawer";
 import { drawerBox, type DrawerBox } from "../lib/appFooter";
+import { handoffSource, requestHandoff } from "../lib/handoff";
 import { queueIndicator, reorderIds, slotAt, type QueueTone } from "../lib/promptQueue";
 import { toastError } from "../lib/toast";
 import { AgentsPanel, RobotIcon } from "./AgentsPanel";
@@ -98,6 +99,7 @@ export function PromptQueue({
   approvals,
   agentName,
   orchestratorTitle,
+  runner,
   selectedSubagent,
   onSelectSubagent,
 }: Props) {
@@ -285,7 +287,16 @@ export function PromptQueue({
           onSelect={onSelectSubagent}
         />
       ) : tab === "turn" && turn ? (
-        <TurnPanel sessionId={sessionId} turn={turn} />
+        <TurnPanel
+          sessionId={sessionId}
+          turn={turn}
+          turnOpen={Boolean(session.turn_open)}
+          onHandoff={
+            handoffSource(runner)
+              ? () => requestHandoff({ sessionId, from: agentName, turn })
+              : undefined
+          }
+        />
       ) : (
         <>
           <div

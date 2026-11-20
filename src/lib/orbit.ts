@@ -813,14 +813,17 @@ export interface NodeRun {
   /** O log da sessão do nó neste run (o ⋯ do card), do mais velho ao mais novo. */
   events?: NodeEvent[];
   /**
-   * Agente parado esperando o dono (espelha `run::WaitingYou`): o pedido de
-   * permissão aberto no terminal dele, desde quando (ms) e o resumo redigido.
+   * Agente parado esperando o dono (espelha `run::WaitingYou`): permissão,
+   * pergunta ou turno fechado, desde quando (ms) e o resumo redigido.
    */
   waitingYou?: WaitingYou | null;
 }
 
-/** Por que o agente espera o dono (espelha `agent::WaitReason`). */
-export type WaitReason = "permission";
+/**
+ * Por que o agente espera o dono (espelha `agent::WaitReason`): permissão,
+ * pergunta ou fim de turno.
+ */
+export type WaitReason = "permission" | "question" | "turnEnd";
 
 export interface WaitingYou {
   reason: WaitReason;
@@ -1379,6 +1382,13 @@ export const runsList = (graphId: string) => invoke<Run[]>("orbit_runs_list", { 
 /** O ▶ num nó de integração manual: roda assim que as entradas chegarem. */
 export const runNode = (runId: string, nodeId: string) =>
   invoke<void>("orbit_run_node", { runId, nodeId });
+
+/**
+ * O clique no aviso do sistema de um nó que espera o dono (o core manda na
+ * primeira volta de foco da janela depois do aviso): o id da sessão do nó.
+ */
+export const onFocusSession = (handler: (sessionId: string) => void): Promise<UnlistenFn> =>
+  listen<string>("orbit://focus-session", (e) => handler(e.payload));
 
 /** Cada mudança de estado do run chega com o run inteiro. */
 export const onRun = (runId: string, handler: (run: Run) => void): Promise<UnlistenFn> =>
