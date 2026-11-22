@@ -64,7 +64,9 @@ export interface AgentRow {
 
 /** Estado sem cor própria no `statusVisual`: idle já visto e saída limpa. */
 const RESTING: StatusVisual = {
-  dotClass: "bg-tyba-bg ring-1 ring-inset ring-tyba-text-faint",
+  // `tyba-dot-rest`: no claro, o ponto cheio em ink-subtle do quadro Sidebar
+  // ("Pronto · há 12 min").
+  dotClass: "tyba-dot-rest bg-tyba-bg ring-1 ring-inset ring-tyba-text-faint",
   textClass: "text-tyba-text-muted",
   labelKey: "sessionIdle",
   rank: 0,

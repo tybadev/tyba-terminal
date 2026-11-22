@@ -113,7 +113,7 @@ describe("HandoffSheetBody (H2)", () => {
     expect(html).toContain("handoffRedacted");
     expect(html).toContain("[REDACTED]");
     expect(html).toContain("handoffNoteLabel");
-    expect(html).toContain("tira o TODO</textarea>");
+    expect(html).toMatch(/<input[^>]*id="handoff-note"[^>]*value="tira o TODO"/);
     // A folha desenha o body: a nota não aparece duas vezes.
     expect(html).not.toContain("Nota do dono");
     expect(html).toContain("handoffNoApprovals");
@@ -124,13 +124,13 @@ describe("HandoffSheetBody (H2)", () => {
   test("desenha o body do core; a linha citada fica apagada, sem destaque", () => {
     const html = sheet(preview);
     expect(html).toContain("fecha o bug");
-    expect(html).toContain('<span class="text-tyba-text-faint">&gt; Feito:');
-    expect(html).not.toMatch(/font-medium text-tyba-text">&gt; Feito:/);
-    expect(html).toContain('font-medium text-tyba-text">O que o Claude disse por último:');
+    expect(html).toContain('<span class="text-tyba-text-muted">&gt; Feito:');
+    expect(html).not.toMatch(/font-bold text-tyba-text">&gt; Feito:/);
+    expect(html).toContain('font-bold text-tyba-text">O que o Claude disse por último:');
   });
 
   test("a nota tem teto de 2000 no campo", () => {
-    expect(sheet(preview)).toMatch(/<textarea[^>]*maxLength="2000"/);
+    expect(sheet(preview)).toMatch(/<input[^>]*maxLength="2000"/);
   });
 
   test("nota igual à digitada: sem Vai assim", () => {

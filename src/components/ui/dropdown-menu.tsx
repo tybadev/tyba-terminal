@@ -221,7 +221,11 @@ function DropdownMenuSubTrigger({
       {...props}
     >
       {children}
-      <ChevronRightIcon className="ml-auto size-4" />
+      {/* No claro, o "›" do quadro como atalho (`.mk-shortcut`). */}
+      <ChevronRightIcon className="tyba-mk-hide ml-auto size-4" />
+      <span aria-hidden className="tyba-mk-only ml-auto font-mono text-[11px] text-tyba-text-faint">
+        ›
+      </span>
     </DropdownMenuPrimitive.SubTrigger>
   )
 }

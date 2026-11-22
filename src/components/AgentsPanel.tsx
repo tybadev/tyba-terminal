@@ -226,7 +226,7 @@ export function AgentsPanel({
         })()}
       </div>
 
-      <div className="max-h-[45vh] min-h-0 overflow-y-auto overflow-x-hidden px-3 pb-2.5 pt-1">
+      <div className="max-h-[45vh] min-h-0 overflow-y-auto overflow-x-hidden px-3 pb-2.5">
         {rounds.length === 0 ? (
           <p className="pt-2 text-[12px] leading-relaxed text-tyba-text-faint">
             {t("agentsEmpty")}
@@ -433,7 +433,7 @@ export function NowBox({
       // Quadro Agentes (g5-now): caixa clara com fio, AGORA em verde, a
       // ferramenta em azul e o comando numa linha (inteiro no hover e no
       // detalhe aberto).
-      className={`mt-2 mb-1 ml-[17px] flex min-w-0 gap-2.5 rounded-[10px] bg-tyba-paper-solid px-3 py-2 font-mono text-[12px] shadow-[inset_0_0_0_1px_var(--tyba-line),0_1px_2px_color-mix(in_srgb,var(--tyba-text)_4%,transparent)] ${
+      className={`mt-2 ml-[17px] flex min-w-0 gap-2.5 rounded-[10px] bg-[var(--tyba-control-bg)] px-3 py-2 font-mono text-[12px] shadow-[inset_0_0_0_1px_var(--tyba-line),0_1px_2px_color-mix(in_srgb,var(--tyba-text)_4%,transparent)] ${
         compact ? "items-center whitespace-nowrap" : "items-start"
       }`}
     >

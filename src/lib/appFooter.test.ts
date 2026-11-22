@@ -63,10 +63,10 @@ describe("escada do rodapé", () => {
 describe("drawerBox", () => {
   const base = { footerTop: 734, viewportHeight: 760 };
 
-  it("R3: pane largo, 430 com a borda direita 8 dentro do pane e 6 acima do rodapé", () => {
+  it("R3: pane largo, 430 com a borda direita 18 dentro do pane e 16 acima do rodapé", () => {
     // janela 1000, lateral 224, pane 776
     const box = drawerBox({ ...base, paneLeft: 224, paneRight: 1000 });
-    expect(box).toEqual({ left: 1000 - 8 - 430, width: 430, bottom: 26 + 6, compact: false });
+    expect(box).toEqual({ left: 1000 - 18 - 430, width: 430, bottom: 26 + 16, compact: false });
   });
 
   it("R4: pane de 296 com detalhe: 360, compacta, cresce por cima da lateral", () => {
@@ -74,13 +74,13 @@ describe("drawerBox", () => {
     const box = drawerBox({ ...base, paneLeft: 224, paneRight: 520 });
     expect(box.width).toBe(DRAWER_MIN);
     expect(box.compact).toBe(true);
-    expect(box.left + box.width).toBe(520 - 8); // não cobre o detalhe
+    expect(box.left + box.width).toBe(520 - 18); // não cobre o detalhe
     expect(box.left).toBeLessThan(224); // por cima da lateral
   });
 
   it("entre 360 e 430 segue o pane, e abaixo de 430 compacta", () => {
     const box = drawerBox({ ...base, paneLeft: 0, paneRight: 400 });
-    expect(box.width).toBe(384);
+    expect(box.width).toBe(364);
     expect(box.compact).toBe(true);
     expect(drawerBox({ ...base, paneLeft: 0, paneRight: 2000 }).width).toBe(DRAWER_MAX);
   });
@@ -93,6 +93,6 @@ describe("drawerBox", () => {
 
   it("split: ancora no pane ativo, o da direita", () => {
     const box = drawerBox({ ...base, paneLeft: 868, paneRight: 1512 });
-    expect(box.left + box.width).toBe(1504);
+    expect(box.left + box.width).toBe(1494);
   });
 });

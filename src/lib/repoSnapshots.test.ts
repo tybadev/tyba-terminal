@@ -69,8 +69,8 @@ describe("parseToolbarPref", () => {
     const pref = parseToolbarPref(
       '{"version":1,"enabled":true,"left":["diffCount","voiceInput","hack"],"right":["clock"],"hidden":[]}',
     );
-    expect(pref.left).toEqual(["diffCount", "branch", "reviewDiff"]);
-    expect(pref.right).toEqual(["clock", "cwd", "aheadBehind"]);
+    expect(pref.left).toEqual(["diffCount", "reviewDiff"]);
+    expect(pref.right).toEqual(["clock", "cwd", "branch", "aheadBehind"]);
     expect(pref.hidden).toEqual([]);
   });
 
@@ -96,8 +96,8 @@ describe("parseToolbarPref", () => {
     const healed = parseToolbarPref(
       '{"version":1,"enabled":true,"left":[],"right":["clock"],"hidden":[]}',
     );
-    expect(healed.left).toEqual(["branch", "diffCount", "reviewDiff"]);
-    expect(healed.right).toEqual(["clock", "cwd", "aheadBehind"]);
+    expect(healed.left).toEqual(["diffCount", "reviewDiff"]);
+    expect(healed.right).toEqual(["clock", "cwd", "branch", "aheadBehind"]);
   });
 
   test("enabled false is preserved", () => {

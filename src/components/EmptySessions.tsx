@@ -2,6 +2,7 @@ import { useEffect, useState, type KeyboardEvent, type ReactNode } from "react";
 import {
   ArrowBendUpLeft,
   ArrowRight,
+  Circle,
   Command,
   FolderSimple,
   HardDrives,
@@ -13,7 +14,6 @@ import { useTranslation } from "react-i18next";
 
 import { ClaudeIcon } from "@/components/icons/ClaudeIcon";
 import { OpenAIIcon } from "@/components/icons/OpenAIIcon";
-import { OrbitIcon } from "@/components/icons/OrbitIcon";
 import { ShellGlyph } from "@/components/icons/ShellGlyph";
 import { TybaMark } from "@/components/icons/TybaMark";
 import { PLATE, PLATE_ACRYLIC, PLATE_LINE } from "@/components/plate";
@@ -59,24 +59,27 @@ export interface EmptySessionsProps {
   onPalette: () => void;
 }
 
-// Peça do cartão (Onde / Com quê): fio fino em repouso; escolhida, a placa
-// acesa com o contorno inteiro na cor da marca (azul no claro, verde no escuro).
+// Peça do cartão (Onde / Com quê): vidro .5 com o fio fino em repouso, que
+// clareia para .8 no hover; escolhida, a placa acesa com o contorno inteiro na
+// cor da marca (azul no claro, verde no escuro).
 const TILE =
   "flex min-w-0 flex-col gap-1 rounded-[10px] px-3.5 py-3 text-left text-tyba-text outline-none transition-colors disabled:cursor-not-allowed disabled:opacity-40";
 const TILE_IDLE =
-  "shadow-[inset_0_0_0_1px_var(--tyba-line)] enabled:hover:bg-tyba-hover focus-visible:[box-shadow:inset_0_0_0_1px_var(--tyba-line),var(--tyba-focus-ring)]";
+  "bg-[var(--tyba-mk-glass-tile,transparent)] shadow-[inset_0_0_0_1px_var(--tyba-line)] enabled:hover:bg-[var(--tyba-mk-glass-strong,var(--tyba-hover))] focus-visible:[box-shadow:inset_0_0_0_1px_var(--tyba-line),var(--tyba-focus-ring)]";
 const TILE_ON =
   "tyba-pill-on [box-shadow:inset_0_0_0_1.5px_var(--primary),var(--tyba-pill-on)]! focus-visible:[box-shadow:inset_0_0_0_1.5px_var(--primary),var(--tyba-focus-ring)]!";
 
-// Linha da coluna de recentes: mesma regra da peça, em 36px.
+// Linha da coluna de recentes: mesma regra da peça, em 36px; no hover, o
+// branco .96 com a sombra do knob (quadro `.rw`).
 const ROW =
-  "flex h-9 w-full items-center gap-2.5 rounded-[8px] px-3 text-left text-tyba-text outline-none transition-colors";
+  "flex h-9 w-full items-center gap-2.5 rounded-[10px] px-3 text-left text-tyba-text outline-none transition-colors";
 const ROW_IDLE =
-  "hover:bg-tyba-hover focus-visible:[box-shadow:var(--tyba-focus-ring)]";
+  "hover:bg-[var(--tyba-mk-raised,var(--tyba-hover))] hover:[box-shadow:var(--tyba-mk-hover-shadow,none)] focus-visible:[box-shadow:var(--tyba-focus-ring)]";
 
-// Botão da linha compacta (Conexões SSH, Orbit, Paleta).
+// Botão da linha compacta (Conexões SSH, Orbit, Paleta), quadro `.mini`:
+// branco .6 com o fio; no hover, branco .96 com a sombra do knob.
 const MINI =
-  "inline-flex h-10 items-center gap-2 rounded-[10px] bg-[var(--tyba-control-bg)] px-3.5 text-[13px] font-semibold text-tyba-text outline-none transition-colors [box-shadow:inset_0_0_0_1px_var(--tyba-control-line),var(--tyba-control-shadow)] hover:bg-[color-mix(in_srgb,var(--tyba-text)_4%,var(--tyba-control-bg))] focus-visible:[box-shadow:var(--tyba-focus-ring)]";
+  "inline-flex h-10 items-center gap-2 rounded-[10px] bg-[var(--tyba-mk-glass-mini,var(--tyba-control-bg))] px-3.5 text-[13px] font-semibold text-tyba-text outline-none transition-colors [box-shadow:var(--tyba-mk-mini-shadow,inset_0_0_0_1px_var(--tyba-control-line),var(--tyba-control-shadow))] hover:bg-[var(--tyba-mk-raised,color-mix(in_srgb,var(--tyba-text)_4%,var(--tyba-control-bg)))] hover:[box-shadow:var(--tyba-mk-hover-shadow,inset_0_0_0_1px_var(--tyba-control-line),var(--tyba-control-shadow))] focus-visible:[box-shadow:var(--tyba-focus-ring)]";
 
 /** Setas andam o foco dentro do grupo, como num radiogroup nativo. */
 function moveFocus(e: KeyboardEvent<HTMLDivElement>) {
@@ -160,14 +163,9 @@ function RecentColumn({
           </span>
         )}
       </div>
-      <div
-        className={cn(
-          PLATE,
-          PLATE_LINE,
-          PLATE_ACRYLIC,
-          "flex flex-col gap-px p-1",
-        )}
-      >
+      {/* Quadro `.box`: raio 14, branco .55 com o fio, padding 4, sem sombra;
+          as linhas encostadas. */}
+      <div className="flex flex-col rounded-[14px] bg-[var(--tyba-mk-glass-soft,var(--tyba-glass-section))] p-1 shadow-[inset_0_0_0_1px_var(--tyba-line)] backdrop-blur-[28px] backdrop-saturate-150">
         {children.length > 0 ? (
           children
         ) : (
@@ -279,7 +277,8 @@ export function EmptySessions({
           PLATE,
           PLATE_LINE,
           PLATE_ACRYLIC,
-          "flex w-full flex-col gap-4 rounded-[14px] px-[22px] py-5",
+          // Quadro: `mk-glass is-strong is-float`, raio 18.
+          "is-strong flex w-full flex-col gap-4 rounded-[18px] px-[22px] py-5",
         )}
       >
         <div className="flex flex-col gap-2">
@@ -371,8 +370,8 @@ export function EmptySessions({
               : placeMissing}
           </span>
           <Button type="button" disabled={!plan} onClick={launch}>
-            {t("startOpen")}
             <ArrowRight />
+            {t("startOpen")}
             <Shortcut combo={SEND_PROMPT_COMBO} joined />
           </Button>
         </div>
@@ -391,7 +390,7 @@ export function EmptySessions({
           {t("connectionsTitle")}
         </button>
         <button type="button" className={MINI} onClick={onOrbit}>
-          <OrbitIcon size={16} className="text-primary" />
+          <Circle size={16} className="text-primary" />
           {t("orbitView")}
           <Shortcut combo={bindings.toggleOrbit} joined />
         </button>

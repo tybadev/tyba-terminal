@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ArrowRight, Check, Clock, GithubLogo, WarningCircle, X, type Icon } from "@phosphor-icons/react";
 
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { SegmentedControl } from "@/components/ui/segmented";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Textarea } from "@/components/ui/textarea";
@@ -53,12 +53,11 @@ const BUCKET_LABEL: Record<DayBucket, string> = {
 
 // Quadro Inbox (aprovado em 2026-11-15): linha solta com o ícone num
 // quadradinho por tipo; o que precisa de você vira a placa branca com
-// contorno amarelo. Botões pequenos do Muriki (primário, vidro, fantasma).
-const BTN =
-  "inline-flex h-[34px] shrink-0 items-center justify-center gap-2 rounded-[10px] px-3.5 text-[13px] font-semibold whitespace-nowrap outline-none transition-colors focus-visible:[box-shadow:var(--tyba-focus-ring)] disabled:pointer-events-none disabled:opacity-45";
-const BTN_PRIMARY = `${BTN} bg-tyba-blue text-tyba-text-inverse hover:bg-tyba-blue/90`;
-const BTN_GLASS = `${BTN} bg-[var(--tyba-glass-piece)] text-tyba-text shadow-[inset_0_0_0_1px_var(--tyba-line)] hover:bg-tyba-hover`;
-const BTN_GHOST = `${BTN} text-tyba-text-muted hover:bg-tyba-hover hover:text-tyba-text`;
+// contorno amarelo. Botões pequenos do Muriki (primário, vidro, fantasma):
+// os do Button, no tamanho sm.
+const BTN_PRIMARY = buttonVariants({ size: "sm" });
+const BTN_GLASS = buttonVariants({ variant: "outline", size: "sm" });
+const BTN_GHOST = buttonVariants({ variant: "ghost", size: "sm" });
 const ITEM = "relative mx-2 my-0.5 flex gap-2.5 rounded-[12px] px-3 py-2.5";
 const ITEM_NEED =
   "tyba-pill-on shadow-[var(--tyba-pill-on),inset_0_0_0_1.5px_var(--tyba-amber-fill)]!";
@@ -74,7 +73,7 @@ const GLYPH_TONE: Record<GlyphTone, string> = {
   amber: "bg-tyba-amber-tint text-tyba-amber",
   blue: "bg-tyba-blue-tint text-tyba-blue",
   red: "bg-tyba-red-tint text-tyba-red",
-  neutral: "bg-tyba-neutral-tint text-tyba-text-muted",
+  neutral: "bg-[var(--tyba-mk-neutral-soft,var(--tyba-neutral-tint))] text-tyba-text-muted",
 };
 
 /** O quadradinho do tipo (quadro Inbox, `.nx-gl`). */
@@ -85,7 +84,7 @@ function Glyph({ icon: Glyphicon, tone, label }: { icon: Icon; tone: GlyphTone; 
       aria-label={label}
       className={`mt-px grid size-[26px] shrink-0 place-items-center rounded-[8px] ${GLYPH_TONE[tone]}`}
     >
-      <Glyphicon size={15} weight="bold" />
+      <Glyphicon size={15} />
     </span>
   );
 }
@@ -213,7 +212,7 @@ export function NotificationsInbox({
         goToSession(sessionId);
       }}
     >
-      <ArrowRight size={16} weight="bold" />
+      <ArrowRight size={16} />
       {t("notifOpenInSession")}
     </button>
   );
@@ -392,9 +391,13 @@ export function NotificationsInbox({
     );
     const limit = e.kind === "usage_limit";
     // Quadro: o aviso de limite diz quem e quando volta; o resto, o resumo.
+    // O que o agente disse no fim do turno vai entre aspas curvas (quadro).
+    const said = e.detail ?? e.command;
     const desc = limit
       ? [e.agent ?? e.session_title, resets].filter(Boolean).join(" · ")
-      : (e.detail ?? e.command);
+      : e.kind === "agent_finished" && said
+        ? `“${said}”`
+        : said;
     return (
       <div
         key={e.id}
@@ -411,7 +414,8 @@ export function NotificationsInbox({
           <div className={`${TITLE} ${e.read ? "font-medium text-tyba-text-muted" : "font-semibold text-tyba-text"}`}>
             {entryTitle(e)}
           </div>
-          {desc && (
+          {/* Quadro: o lido ("Ontem") fica só com o título e a linha mono. */}
+          {desc && !e.read && (
             <div className={`${DESC} line-clamp-2 break-words`} title={desc}>
               {desc}
             </div>
@@ -427,7 +431,7 @@ export function NotificationsInbox({
                 {e.turn.files > 0 && (
                   <>
                     <span className="shrink-0 font-semibold text-tyba-green">+{e.turn.insertions}</span>
-                    <span className="-ml-1 shrink-0 font-semibold text-tyba-red">−{e.turn.deletions}</span>
+                    <span className="shrink-0 font-semibold text-tyba-red">−{e.turn.deletions}</span>
                   </>
                 )}
                 <span>·</span>
@@ -436,7 +440,7 @@ export function NotificationsInbox({
             <span className="shrink-0">{clock(e.at_ms)}</span>
           </div>
           {/* Quadro: falha e limite são só aviso, sem botões. */}
-          {e.kind === "agent_finished" && (
+          {e.kind === "agent_finished" && !e.read && (
             <div className={ACTS}>
               {diffTarget && (
                 <button
@@ -485,7 +489,7 @@ export function NotificationsInbox({
           className="tyba-section tyba-mk-column flex w-[360px] shrink-0 flex-col overflow-hidden motion-safe:animate-tyba-panel-in"
         >
           <div className="flex shrink-0 items-center gap-2 px-4 pb-2.5 pt-3.5">
-            <span className="text-[15px] font-semibold text-tyba-text">{t("inbox")}</span>
+            <span className="text-[15px] font-bold text-tyba-text">{t("inbox")}</span>
             {unread > 0 && (
               <span className="text-[12px] text-tyba-text-muted">{t("notifUnreadCount", { count: unread })}</span>
             )}

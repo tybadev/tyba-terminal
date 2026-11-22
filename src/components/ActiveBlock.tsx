@@ -136,9 +136,11 @@ export function ActiveBlockHeader({
           Na BORDA, e não no texto: o efeito serve para anunciar que há algo em
           curso, e animar o nome do comando faria mexer justamente o que se quer
           ler. Ele para sozinho em `prefers-reduced-motion`. */}
+      {/* No claro, o quadro (ShellSplit) não tem filete nem ponto pulsando:
+          o canto direito é só texto apagado, "● rodando · 12m". */}
       <span
         aria-hidden
-        className="tyba-flow-line tyba-flow-line--live tyba-flow-line--thick pointer-events-none absolute inset-x-0 top-0"
+        className="tyba-mk-hide tyba-flow-line tyba-flow-line--live tyba-flow-line--thick pointer-events-none absolute inset-x-0 top-0"
       />
       <div className="flex min-w-0 items-start gap-2.5">
         <span className="shrink-0 font-mono text-[13px] leading-5 text-primary">
@@ -149,8 +151,9 @@ export function ActiveBlockHeader({
         </span>
         {/* O ponto fica: o filete diz "algo corre", o ponto diz "é este bloco".
             Aceso (glow) porque está vivo; o pulso para em reduced-motion. */}
-        <span className="flex shrink-0 items-center gap-2 font-mono text-[11.5px] font-medium leading-5 text-primary">
-          <span className="size-[7px] shrink-0 rounded-full bg-primary tyba-pulse" />
+        <span className="flex shrink-0 items-center gap-2 font-mono text-[11.5px] font-medium leading-5 text-[var(--tyba-mk-run-ink,var(--primary))]">
+          <span className="tyba-mk-hide size-[7px] shrink-0 rounded-full bg-primary tyba-pulse" />
+          <span aria-hidden className="tyba-mk-only -mr-1">●</span>
           {[elapsed && t("blockRunningFor", { time: elapsed }), note].filter(Boolean).join(" · ")}
         </span>
       </div>

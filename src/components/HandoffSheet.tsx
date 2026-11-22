@@ -1,13 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ArrowLineRight, Folder, Lock, Sparkle, Warning, X } from "@phosphor-icons/react";
+import { ArrowRight, FolderSimple, Lock, LockSimple, Warning, X } from "@phosphor-icons/react";
 
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
-import { Textarea } from "@/components/ui/textarea";
-import { PLATE, PLATE_FLOAT, PLATE_LINE } from "./plate";
-import { ClaudeIcon } from "./icons/ClaudeIcon";
-import { OpenAIIcon } from "./icons/OpenAIIcon";
+import { Input } from "@/components/ui/input";
 import { translateError } from "../lib/errors";
 import {
   closeHandoff,
@@ -41,14 +38,6 @@ const NOTE_MAX = 2000;
 
 /** Espera curta antes de pedir o texto de novo ao core enquanto o dono escreve. */
 const PREVIEW_DEBOUNCE_MS = 250;
-
-export function HandoffAgentIcon({ agent, size }: { agent: HandoffAgent; size: number }) {
-  if (agent === "claude") {
-    return <ClaudeIcon size={size} className="shrink-0" style={{ color: "#d97757" }} />;
-  }
-  if (agent === "codex") return <OpenAIIcon size={size} className="shrink-0 text-tyba-blue" />;
-  return <Sparkle size={size} className="shrink-0" />;
-}
 
 function Parts({ parts }: { parts: PreviewPart[] }) {
   const { t } = useTranslation();
@@ -124,175 +113,165 @@ export function HandoffSheetBody({
   const lines = preview && !error ? previewLines(preview.body) : [];
   const sent = error ? null : noteAsSent(preview?.note, previewNote, note);
 
+  // Quadro Handoff (`.ho-m`): uma coluna com padding 22/24/18 e gap 12 —
+  // cabeçalho, legendas, opções, prévia e rodapé, sem faixas nem fios.
   return (
-    <>
-      <div className="flex items-center gap-2 pb-1 pl-4 pr-3 pt-3">
-        <ArrowLineRight size={15} className="shrink-0 text-tyba-blue" />
-        <DialogTitle className="text-[14px] font-semibold leading-normal text-tyba-text">
+    <div className="flex min-h-0 flex-col gap-3 px-6 pb-[18px] pt-[22px]">
+      <div className="flex items-center gap-2.5">
+        <ArrowRight size={18} className="shrink-0 text-tyba-blue" />
+        <DialogTitle className="text-[17px] font-bold leading-normal text-tyba-text">
           {t("handoffTitle")}
         </DialogTitle>
         <span className="flex-1" />
         <Button
           type="button"
           variant="ghost"
-          size="icon-xs"
-          aria-label={t("cancel")}
+          size="icon-sm"
+          aria-label={t("close")}
           onClick={onCancel}
         >
-          <X size={13} />
+          <X size={16} />
         </Button>
       </div>
       <DialogDescription asChild>
-        <div className="px-4 pb-2.5 text-[11px] text-tyba-text-faint">
-          {t("handoffFrom")} <span className="text-tyba-amber">{from}</span>
+        <div className="text-[13px] text-tyba-text-muted">
+          {t("handoffFrom")}{" "}
+          <b className="font-bold" style={{ color: "#d97757" }}>
+            {from}
+          </b>
           {preview && ` · ${folderName(preview.folder)}`} · {t("handoffTurnAt", { time })}
-          {turn.diff === "ok" && turn.files_total > 0 && (
-            <>
-              {" · "}
-              {t("diffFilesSummary", { count: turn.files_total })}{" "}
-              <span className="font-mono">
-                <span className="text-tyba-green">+{turn.insertions}</span>{" "}
-                <span className="text-tyba-red">−{turn.deletions}</span>
-              </span>
-            </>
-          )}
         </div>
       </DialogDescription>
 
-      <div className="flex min-h-0 flex-col gap-2.5 px-4 pb-3">
-        <div className="tyba-label">
-          {t("handoffPickAgent")}
-        </div>
-        <div role="radiogroup" className="flex gap-1.5">
-          {(targets ?? []).map((x) => {
-            const on = x.available && x.agent === target;
-            return (
-              <button
-                key={x.agent}
-                type="button"
-                role="radio"
-                aria-checked={on}
-                disabled={!x.available}
-                onClick={() => onTarget(x.agent)}
-                className={`flex h-10 flex-1 items-center gap-[9px] rounded-[10px] px-3 text-[13px] font-medium outline-none transition-colors focus-visible:[box-shadow:var(--tyba-focus-ring)] ${
+      <div className="tyba-label is-cap mt-1">{t("handoffPickAgent")}</div>
+      <div role="radiogroup" className="grid grid-cols-2 gap-2.5">
+        {(targets ?? []).map((x) => {
+          const on = x.available && x.agent === target;
+          return (
+            <button
+              key={x.agent}
+              type="button"
+              role="radio"
+              aria-checked={on}
+              disabled={!x.available}
+              onClick={() => onTarget(x.agent)}
+              className={`flex h-12 min-w-0 items-center gap-2.5 rounded-[12px] px-3.5 text-[14px] outline-none transition-[background-color,box-shadow] focus-visible:[box-shadow:var(--tyba-focus-ring)] ${
+                on
+                  ? "bg-[var(--tyba-control-bg)] font-semibold text-tyba-text [box-shadow:var(--tyba-knob-shadow),inset_0_0_0_1.5px_var(--tyba-blue)]"
+                  : x.available
+                    ? "bg-[var(--tyba-mk-glass-soft,transparent)] font-semibold text-tyba-text shadow-[inset_0_0_0_1px_var(--tyba-line)] hover:bg-tyba-hover"
+                    : "bg-[var(--tyba-mk-glass-soft,transparent)] font-medium text-tyba-text-faint shadow-[inset_0_0_0_1px_var(--tyba-line)]"
+              }`}
+            >
+              <span
+                className={`size-4 shrink-0 rounded-full ${
                   on
-                    ? "tyba-pill-on text-tyba-text"
-                    : x.available
-                      ? "text-tyba-text shadow-[inset_0_0_0_1px_var(--tyba-line)] hover:bg-tyba-hover"
-                      : "text-tyba-text-ghost shadow-[inset_0_0_0_1px_var(--tyba-line)]"
+                    ? "shadow-[inset_0_0_0_5px_var(--tyba-blue)]"
+                    : "shadow-[inset_0_0_0_1.5px_var(--tyba-text-faint)]"
                 }`}
-              >
-                <span
-                  className={`size-3 shrink-0 rounded-full ${
-                    on
-                      ? "shadow-[inset_0_0_0_4px_var(--primary)]"
-                      : "shadow-[inset_0_0_0_1px_var(--tyba-control-line)]"
-                  }`}
-                />
-                <HandoffAgentIcon agent={x.agent} size={15} />
-                {x.label}
-                <span className="ml-auto text-[11px] font-normal text-tyba-text-faint">
-                  {x.available ? t("handoffInstalled") : x.reason}
-                </span>
-              </button>
-            );
-          })}
-        </div>
+              />
+              <span className="truncate">{x.label}</span>
+              <span className="ml-auto shrink-0 text-[11.5px] font-medium text-tyba-text-faint">
+                {x.available ? t("handoffInstalled") : x.reason}
+              </span>
+            </button>
+          );
+        })}
+      </div>
 
-        <div className="tyba-label flex items-center gap-2">
-          {t("handoffPreviewLabel")}
-          <span className="ml-auto inline-flex items-center gap-[5px] font-normal normal-case tracking-normal">
-            <Lock size={11} />
-            {preview && preview.redacted > 0 && (
-              <>{t("handoffRedacted", { count: preview.redacted })} · </>
-            )}
-            {t("handoffReadOnly")}
-          </span>
-        </div>
-        <div className="flex min-h-0 flex-col overflow-hidden rounded-[10px] bg-tyba-paper-solid font-mono text-[12px] leading-[19px] shadow-[inset_0_0_0_1px_var(--tyba-line)]">
-          {error ? (
-            <div
-              role="alert"
-              data-testid="handoff-error"
-              className="flex items-start gap-2 px-3 py-2.5 font-sans text-tyba-red"
-            >
-              <Warning size={13} className="mt-[3px] shrink-0" />
-              {error}
-            </div>
-          ) : (
-            <pre
-              data-testid="handoff-preview"
-              className="max-h-[40vh] min-h-0 overflow-auto px-3 py-2.5 text-tyba-text-muted"
-            >
-              {lines.map((line, i) => (
-                <span
-                  key={i}
-                  className={
-                    line.head
-                      ? "font-medium text-tyba-text"
-                      : line.quote
-                        ? "text-tyba-text-faint"
-                        : undefined
-                  }
-                >
-                  <Parts parts={line.parts} />
-                  {i < lines.length - 1 && "\n"}
-                </span>
-              ))}
-            </pre>
+      <div className="tyba-label is-cap mt-1 flex items-center gap-1.5">
+        {t("handoffPreviewLabel")}
+        <span className="ml-auto inline-flex items-center gap-1 font-medium normal-case tracking-normal">
+          <LockSimple size={13} />
+          {preview && preview.redacted > 0 && (
+            <>{t("handoffRedacted", { count: preview.redacted })} · </>
           )}
-          <div className="px-3 pb-3 pt-2.5 shadow-[inset_0_1px_0_var(--tyba-line)]">
-            <label htmlFor="handoff-note" className="mb-1.5 block font-semibold text-tyba-text">
-              {t("handoffNoteLabel")}
-            </label>
-            <Textarea
-              id="handoff-note"
-              autoFocus
-              maxLength={NOTE_MAX}
-              value={note}
-              onChange={(e) => onNote(e.target.value)}
-              className="block min-h-[46px] resize-none px-3 py-2 text-[12px]"
-            />
-            {sent !== null && (
-              <div
-                data-testid="handoff-note-as-sent"
-                className="mt-1.5 whitespace-pre-wrap break-words text-[11.5px] text-tyba-text-faint"
-              >
-                {t("handoffNoteAsSent")} <Parts parts={withMarks(sent)} />
-              </div>
-            )}
+          {t("handoffReadOnly")}
+        </span>
+      </div>
+      <div className="flex min-h-0 flex-col overflow-hidden rounded-[12px] bg-[var(--tyba-control-bg)] font-mono text-[12px] leading-5 shadow-[inset_0_0_0_1px_var(--tyba-line)]">
+        {error ? (
+          <div
+            role="alert"
+            data-testid="handoff-error"
+            className="flex items-start gap-2 px-4 py-3.5 [font-family:var(--tyba-font-ui)] text-tyba-red"
+          >
+            <Warning size={14} className="mt-[3px] shrink-0" />
+            {error}
           </div>
+        ) : (
+          <pre
+            data-testid="handoff-preview"
+            className="max-h-[250px] min-h-0 overflow-auto px-4 py-3.5 text-tyba-text"
+          >
+            {lines.map((line, i) => (
+              <span
+                key={i}
+                className={
+                  line.head
+                    ? "font-bold text-tyba-text"
+                    : line.quote
+                      ? "text-tyba-text-muted"
+                      : undefined
+                }
+              >
+                <Parts parts={line.parts} />
+                {i < lines.length - 1 && "\n"}
+              </span>
+            ))}
+          </pre>
+        )}
+        <div className="flex flex-col gap-2 px-4 pb-3.5 pt-3 shadow-[inset_0_1px_0_var(--tyba-line)]">
+          <label htmlFor="handoff-note" className="block text-tyba-text">
+            {t("handoffNoteLabel")}
+          </label>
+          {/* Quadro: Input de uma linha, na sans do campo. */}
+          <Input
+            id="handoff-note"
+            autoFocus
+            maxLength={NOTE_MAX}
+            value={note}
+            onChange={(e) => onNote(e.target.value)}
+            placeholder={t("handoffNotePlaceholder")}
+            className="[font-family:var(--tyba-font-ui)]"
+          />
+          {sent !== null && (
+            <div
+              data-testid="handoff-note-as-sent"
+              className="whitespace-pre-wrap break-words text-[11.5px] text-tyba-text-faint"
+            >
+              {t("handoffNoteAsSent")} <Parts parts={withMarks(sent)} />
+            </div>
+          )}
         </div>
       </div>
 
-      <div className="flex items-center gap-2 pb-3 pl-4 pr-3 pt-2.5 shadow-[inset_0_1px_0_var(--tyba-line)]">
-        <div className="flex min-w-0 flex-col gap-[3px] text-[11px]">
-          <span className="flex items-center gap-1.5 whitespace-nowrap text-tyba-amber">
-            <Warning size={12} />
+      <div className="flex items-center gap-2.5 pt-1.5">
+        <div className="flex min-w-0 flex-1 flex-col gap-1 text-[12px]">
+          <span className="flex items-center gap-1.5 text-tyba-amber">
+            <Warning size={14} className="shrink-0" />
             {t("handoffNoApprovals")}
           </span>
           {preview && (
-            <span className="flex items-center gap-1.5 whitespace-nowrap text-tyba-text-faint">
-              <Folder size={12} />
+            <span className="flex items-center gap-1.5 text-tyba-text-muted">
+              <FolderSimple size={14} className="shrink-0" />
               {t("handoffSameFolder", { folder: folderName(preview.folder) })}
             </span>
           )}
         </div>
-        <span className="flex-1" />
-        <Button type="button" variant="outline" size="sm" onClick={onCancel}>
+        <Button type="button" variant="outline" onClick={onCancel}>
           {t("cancel")}
         </Button>
         <Button
           type="button"
-          size="sm"
           disabled={!chosen || !preview || Boolean(error) || opening}
           onClick={onOpen}
         >
-          {chosen && <HandoffAgentIcon agent={chosen.agent} size={15} />}
+          {chosen && <ArrowRight />}
           {noAgent ? t("handoffNoAgent") : t("handoffOpenIn", { agent: chosen?.label ?? "" })}
         </Button>
       </div>
-    </>
+    </div>
   );
 }
 
@@ -383,7 +362,10 @@ export function HandoffSheet({
     <Dialog open onOpenChange={(o) => !o && closeHandoff()}>
       <DialogContent
         showCloseButton={false}
-        className={`top-[52px] flex max-h-[calc(100vh-72px)] w-[620px] max-w-[calc(100%-2rem)] translate-y-0 flex-col gap-0 overflow-hidden p-0 ${PLATE} ${PLATE_LINE} ${PLATE_FLOAT}`}
+        // Quadro Handoff: centrada, vidro `is-float` (o da placa) com raio
+        // 18, sobre o véu marinho .18 sem desfoque.
+        overlayClassName="bg-[var(--tyba-mk-scrim,rgba(60,40,120,0.10))] backdrop-blur-[var(--tyba-mk-scrim-blur,2px)]"
+        className="flex max-h-[calc(100vh-72px)] w-[620px] max-w-[calc(100%-2rem)] flex-col gap-0 overflow-hidden rounded-[18px] p-0"
       >
         <HandoffSheetBody
           from={request.from}

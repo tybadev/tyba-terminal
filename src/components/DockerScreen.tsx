@@ -17,6 +17,7 @@ import {
 import "./gitScreen.css";
 import { Button } from "@/components/ui/button";
 import { SegmentedControl } from "@/components/ui/segmented";
+import { Switch } from "@/components/ui/switch";
 import { Input } from "@/components/ui/input";
 import { ContainerFilesPanel } from "./ContainerFilesPanel";
 import { ContainerLogsView } from "./ContainerLogsView";
@@ -588,14 +589,14 @@ export function DockerScreen({
           on
             ? "tyba-pill-on"
             : "hover:bg-tyba-text/[.03]"
-        } ${running ? "text-tyba-text" : "text-tyba-text-muted"}`}
+        } text-tyba-text`}
       >
         <span className="flex w-full items-center justify-between gap-2">
           <span className="flex min-w-0 items-center gap-2 text-[13px] font-semibold">
             <span
               aria-hidden
               className={`size-[7px] shrink-0 rounded-full ${
-                running ? "bg-tyba-green-fill" : "bg-tyba-text-ghost"
+                running ? "bg-tyba-green-fill" : "bg-tyba-text-faint"
               }`}
             />
             <span className="truncate">{displayName(c)}</span>
@@ -610,39 +611,43 @@ export function DockerScreen({
                     : t("dockerPanelOom")}
               </span>
             ) : (
-              <>
-                {image.short}
-                {port && ` · :${port}`}
-              </>
+              // Quadro: o rodando com porta mostra só ":porta"; os outros, a imagem.
+              running && port ? `:${port}` : image.short
             )}
           </span>
         </span>
-        <span className="flex gap-3 pl-[15px] text-[11.5px] text-tyba-text-muted">
+        <span className="flex pl-[15px] text-[11.5px] text-tyba-text-muted">
           {running ? (
-            <>
-              {health && (
-                <span
-                  className={
-                    health === "healthy"
-                      ? ""
-                      : health === "unhealthy"
-                        ? "text-tyba-red"
-                        : "text-tyba-amber"
-                  }
-                >
-                  {t(
-                    health === "healthy"
-                      ? "dockerPanelHealthy"
-                      : health === "unhealthy"
-                        ? "dockerPanelUnhealthy"
-                        : "dockerPanelHealthStarting",
-                  )}
-                </span>
-              )}
-              {!health && cpu && <span>CPU {cpu}</span>}
-              {mem && <span>RAM {mem}</span>}
-              {up && <span>{t("dockerScreenAgo", { span: up })}</span>}
-            </>
+            <span className="truncate">
+              {[
+                health && (
+                  <span
+                    key="health"
+                    className={
+                      health === "healthy"
+                        ? ""
+                        : health === "unhealthy"
+                          ? "text-tyba-red"
+                          : "text-tyba-amber"
+                    }
+                  >
+                    {t(
+                      health === "healthy"
+                        ? "dockerPanelHealthy"
+                        : health === "unhealthy"
+                          ? "dockerPanelUnhealthy"
+                          : "dockerPanelHealthStarting",
+                    )}
+                  </span>
+                ),
+                !health && cpu && <span key="cpu">CPU {cpu}</span>,
+                mem && <span key="mem">RAM {mem}</span>,
+                up && <span key="up">{t("dockerScreenAgo", { span: up })}</span>,
+              ]
+                .filter(Boolean)
+                // Quadro: "saudável · RAM 63 MB · há 34 h".
+                .flatMap((part, i) => (i === 0 ? [part] : [" · ", part]))}
+            </span>
           ) : (
             <span className="truncate">
               {ago ? t("dockerPanelStoppedAgo", { span: ago }) : c.status}
@@ -680,7 +685,7 @@ export function DockerScreen({
     >
       <nav
         aria-label={t("dockerScreenSections")}
-        className="relative flex w-[52px] shrink-0 flex-col items-center gap-1.5 tyba-divide-l bg-[var(--tyba-panel-bg)] pt-3"
+        className="relative flex w-[52px] shrink-0 flex-col items-center gap-1.5 tyba-divide-l bg-[var(--tyba-panel-bg)] py-2.5"
       >
         {DOCKER_SECTIONS.map((key) => {
           const { icon: SectionIcon, label } = RAIL[key];
@@ -693,7 +698,7 @@ export function DockerScreen({
               aria-pressed={on}
               title={t(label)}
               onClick={() => go(key)}
-              className={`relative flex size-9 items-center justify-center rounded-[8px] transition-colors ${
+              className={`relative flex size-9 items-center justify-center rounded-[10px] transition-colors ${
                 on ? "tyba-icon-on text-tyba-blue" : "text-tyba-text-faint hover:text-tyba-text"
               }`}
             >
@@ -707,7 +712,7 @@ export function DockerScreen({
           aria-label={t("filesScreenClose")}
           title={t("filesScreenClose")}
           onClick={onClose}
-          className="mb-2.5 flex size-9 items-center justify-center rounded-[8px] text-tyba-text-faint hover:text-tyba-text"
+          className="flex size-9 items-center justify-center rounded-[10px] text-tyba-text-faint hover:text-tyba-text"
         >
           <X size={15} />
         </button>
@@ -715,12 +720,12 @@ export function DockerScreen({
 
       <div className="flex min-w-0 flex-1 flex-col">
         {state.section === "compose" ? (
-          <div className="flex h-[46px] shrink-0 items-center gap-3 tyba-divide-b bg-[var(--tyba-panel-bg)] px-[18px] text-[12px]">
+          <div className="flex h-[46px] shrink-0 items-center gap-2.5 tyba-divide-b bg-[var(--tyba-panel-bg)] px-[18px] text-[12.5px]">
             <Stack size={16} className="shrink-0 text-tyba-blue" />
             <span className="shrink-0 text-[15px] font-bold tracking-[-0.01em] text-tyba-text">
               {t("dockerScreenComposeTitle")}
             </span>
-            <span className="min-w-0 flex-1 truncate text-tyba-text-faint" title={session.title}>
+            <span className="min-w-0 flex-1 truncate text-tyba-text-muted" title={session.title}>
               {t("dockerScreenComposeSub", {
                 target: host ?? t("dockerPanelLocal"),
                 count: visibleProjects(projects, state.hide_stopped).length,
@@ -731,25 +736,23 @@ export function DockerScreen({
                 {error}
               </span>
             )}
-            <label className="flex shrink-0 items-center gap-1.5 text-tyba-text-muted">
-              <input
-                type="checkbox"
-                checked={state.hide_stopped}
-                onChange={(e) =>
-                  void dockerScreenHideStopped(workspaceId, e.target.checked).catch(() => {})
-                }
-                className="accent-tyba-blue"
-              />
+            <label className="flex shrink-0 cursor-pointer items-center gap-2 text-tyba-text-muted">
               {t("dockerScreenHideStopped")}
+              <Switch
+                checked={state.hide_stopped}
+                onCheckedChange={(on) =>
+                  void dockerScreenHideStopped(workspaceId, on).catch(() => {})
+                }
+              />
             </label>
           </div>
         ) : (
-          <div className="flex h-[46px] shrink-0 items-center gap-3 tyba-divide-b bg-[var(--tyba-panel-bg)] px-[18px] text-[12px]">
+          <div className="flex h-[46px] shrink-0 items-center gap-2.5 tyba-divide-b bg-[var(--tyba-panel-bg)] px-[18px] text-[12.5px]">
             <PanelIcon kind="docker" size={16} className="shrink-0 text-tyba-blue" />
             <span className="shrink-0 text-[15px] font-bold tracking-[-0.01em] text-tyba-text">
               {t("sidePanelDocker")}
             </span>
-            <span className="min-w-0 flex-1 truncate text-tyba-text-faint" title={session.title}>
+            <span className="min-w-0 flex-1 truncate text-tyba-text-muted" title={session.title}>
               {titleSub}
             </span>
             {error && (
@@ -758,12 +761,12 @@ export function DockerScreen({
               </span>
             )}
             {available !== false && (
-              <span className="shrink-0">
-                <span className="text-tyba-green">
+              <span className="shrink-0 text-tyba-text-muted">
+                <b className="font-bold text-tyba-green">
                   {t("dockerPanelRunning", { count: counts.running })}
-                </span>
+                </b>
                 {counts.stopped > 0 && (
-                  <span className="text-tyba-text-faint">
+                  <span>
                     {" · "}
                     {t("dockerPanelStopped", { count: counts.stopped })}
                   </span>
@@ -833,7 +836,7 @@ export function DockerScreen({
                   {t("dockerScreenContainersCount", { count: list?.length ?? 0 })}
                 </span>
               </div>
-              <div className="shrink-0 px-3 pb-2">
+              <div className="shrink-0 px-3 pb-1.5">
                 <Input
                   icon={<MagnifyingGlass size={16} />}
                   type="text"
@@ -849,9 +852,9 @@ export function DockerScreen({
                   aria-label={t("dockerPanelFilter")}
                 />
               </div>
-              <div className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-2 py-1">
+              <div className="flex min-h-0 flex-1 flex-col gap-1.5 overflow-y-auto px-3 pb-3.5">
                 {list === null ? (
-                  firstLoad("list", "-mx-2 -my-1")
+                  firstLoad("list", "-mx-3")
                 ) : list.length === 0 ? (
                   <p className="px-2 py-2 text-[12px] text-tyba-text-faint">
                     {t("dockerPanelEmptyAll")}

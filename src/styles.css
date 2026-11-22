@@ -508,8 +508,9 @@
   --tyba-lens: 0 0 0 1px rgba(10, 24, 48, 0.08);
   --tyba-lens-shadow: 0 0 transparent;
   --tyba-line: rgba(10, 24, 48, 0.08);
-  --tyba-paper: rgba(255, 255, 255, 0.8);
-  --tyba-paper-solid: #fdfcff;
+  /* Quadro Shell (`.sh`): a folha do terminal é branca opaca. */
+  --tyba-paper: #ffffff;
+  --tyba-paper-solid: #ffffff;
   /* As faixas das telas cheias são a própria folha: separa o fio. */
   --tyba-panel-bg: transparent;
 }
@@ -1203,6 +1204,11 @@ samp {
   color: var(--tyba-text-faint);
 }
 
+/* Legenda das folhas (Handoff): no claro do TYBA, .06em. */
+.tyba-label.is-cap {
+  letter-spacing: var(--tyba-mk-cap-tracking, var(--tyba-mk-label-tracking, var(--tyba-tracking-wide)));
+}
+
 /* Anel de foco padrão para elementos interativos */
 .tyba-focusable:focus-visible {
   outline: none;
@@ -1466,6 +1472,44 @@ samp {
 }
 .tyba-half-flip {
   animation: tyba-half-flip 1.2s steps(1, end) infinite;
+}
+/* No claro, o pulso do Muriki (`.pulse` do quadro Sidebar): o anel sai da
+   cor do ponto, cresce 5px e some em 1.8s. O mesmo halo, em escala. */
+@keyframes tyba-mk-pulse {
+  0% { transform: scale(1); opacity: 1; }
+  70%, 100% { transform: scale(2.43); opacity: 0; }
+}
+[data-theme='light']:not([data-imported]) .tyba-pulse::after {
+  animation: tyba-mk-pulse 1.8s ease infinite;
+}
+/* O ponto no canto do ícone da sessão (`.sdot`) fica parado, com o anel
+   branco de 2px que o brilho não apaga. */
+[data-theme='light']:not([data-imported]) .tyba-sdot {
+  box-shadow: 0 0 0 2px var(--tyba-paper-solid);
+}
+[data-theme='light']:not([data-imported]) .tyba-sdot.tyba-pulse::after {
+  display: none;
+}
+/* Agente parado: o ponto cheio em ink-subtle do quadro Sidebar. */
+[data-theme='light']:not([data-imported]) .tyba-dot-rest {
+  background: var(--tyba-text-faint);
+  box-shadow: none;
+}
+/* Meta do item da paleta (quadro Main, `.mk-cmd-item .mk-meta`): no claro,
+   sans 12px muted logo depois do rótulo, não mono colado à direita. */
+[data-theme='light']:not([data-imported]) .tyba-cmd-meta {
+  margin-left: 0;
+  font-family: var(--tyba-font-ui);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--tyba-text-muted);
+}
+/* Lateral vazia (quadro SidebarVazia, `.vz`): a caixa tracejada. */
+.tyba-vz {
+  border: 1px dashed color-mix(in srgb, var(--tyba-text) 12%, transparent);
+}
+[data-theme='light']:not([data-imported]) .tyba-vz {
+  border-color: rgba(10, 24, 48, 0.16);
 }
 @media (prefers-reduced-motion: reduce) {
   .tyba-flow-line--live,
@@ -1935,6 +1979,32 @@ html {
   --tyba-mk-hd-gap: 10px;
   --tyba-mk-hd-sep: 20px;
   --tyba-mk-wordmark-weight: 700;
+  /* Ícones da direita a 4px; botão só de ícone (Nova aba) 34×34, raio 10. */
+  --tyba-mk-hd-icons-gap: 4px;
+  --tyba-mk-ib: 34px;
+  --tyba-mk-ib-r: 10px;
+  /* Terminal (quadro Shell): bloco com o fio em cima e 12 embaixo, corpo em
+     tinta, ✓ de sucesso verde, o que roda em texto apagado; ❯ sempre da
+     marca, placeholder muted, branch e caminho a 13px e o fio que não muda
+     com o foco. */
+  --tyba-mk-blk-line: inset 0 1px 0 0 var(--tyba-line);
+  --tyba-mk-blk-pb: 12px;
+  --tyba-mk-blk-ink: var(--tyba-text);
+  --tyba-mk-ok: var(--tyba-green);
+  --tyba-mk-run-ink: var(--tyba-text-faint);
+  --tyba-mk-prompt-idle: var(--tyba-primary);
+  --tyba-mk-placeholder: var(--tyba-text-muted);
+  --tyba-mk-cmd-where-pt: 4px;
+  --tyba-mk-cmd-where-size: 13px;
+  --tyba-mk-cmd-where-lh: 20px;
+  --tyba-mk-cmd-where-ink: var(--tyba-text-muted);
+  --tyba-mk-cmd-focus-line: var(--tyba-line);
+  /* Barra lateral (quadro Sidebar): nome da sessão na entrelinha do corpo e
+     o cartão de agente a .62. */
+  --tyba-mk-ses-lh: 18px;
+  --tyba-mk-ag-bg: rgba(255, 255, 255, 0.62);
+  /* Amostras de cor do menu da sessão (quadro SessionMenu, `.sw i`). */
+  --tyba-mk-swatch-line: rgba(10, 24, 48, 0.1);
   /* Toast (`.mk-toast`): 12 8 12 16, de 340 a 440, descrição sans 13/18. */
   --tyba-mk-toast-vw: auto;
   --tyba-mk-toast-min: 340px;
@@ -1956,6 +2026,22 @@ html {
   --tyba-mk-label-size: 11px;
   --tyba-mk-label-weight: 600;
   --tyba-mk-label-tracking: 0.04em;
+  /* Legenda das folhas (`.ho-cap` do Handoff): a mesma, com .06em. */
+  --tyba-mk-cap-tracking: 0.06em;
+  /* Vidro fraco das opções e caixas paradas (`.ho-o`, `.box`): branco .55. */
+  --tyba-mk-glass-soft: rgba(255, 255, 255, 0.55);
+  /* Véu atrás das folhas (`.ho-bg`): marinho .18, sem desfoque. */
+  --tyba-mk-scrim: rgba(10, 24, 48, 0.18);
+  --tyba-mk-scrim-blur: 0px;
+  /* Tela inicial (DirAB): peça parada .5, botão compacto .6, e o hover que
+     acende para o branco .96 com a sombra do knob. */
+  --tyba-mk-glass-tile: rgba(255, 255, 255, 0.5);
+  --tyba-mk-glass-mini: rgba(255, 255, 255, 0.6);
+  --tyba-mk-raised: rgba(255, 255, 255, 0.96);
+  --tyba-mk-hover-shadow: var(--tyba-knob-shadow);
+  --tyba-mk-mini-shadow: inset 0 0 0 1px var(--tyba-line);
+  /* Quadradinho neutro do Inbox (`.nx-gl`): marinho .05. */
+  --tyba-mk-neutral-soft: rgba(10, 24, 48, 0.05);
   /* Foco do campo (`.mk-input:focus-within`): anel de 2px da marca e o halo
      de 5px no azul suave. */
   --tyba-field-focus: 0 0 0 2px var(--tyba-blue), 0 0 0 5px var(--tyba-brand-soft);
@@ -2035,6 +2121,19 @@ html {
 .tyba-pane[data-pane-dim] {
   background: color-mix(in srgb, var(--tyba-text) 4%, color-mix(in srgb, var(--tyba-blue) 3%, var(--tyba-paper-solid)));
 }
+/* No claro, os literais do quadro ShellSplit (foco B): o painel sem foco em
+   #f3f5f9 e o cabeçalho dele em #eef1f6; o divisor é o glass-line, sem
+   hover. */
+[data-theme='light']:not([data-imported]) .tyba-pane[data-pane-dim] {
+  background: #f3f5f9;
+}
+[data-theme='light']:not([data-imported]) .tyba-pane-head-dim {
+  background: #eef1f6;
+}
+[data-theme='light']:not([data-imported]) .tyba-mk-divider,
+[data-theme='light']:not([data-imported]) .tyba-mk-divider:hover {
+  background: var(--tyba-line);
+}
 .tyba-pane[data-pane-dim] > .tyba-pane-body,
 .tyba-pane[data-pane-dim] > .tyba-pane-line {
   opacity: 0.55;
@@ -2101,6 +2200,11 @@ html {
   background: rgba(255, 255, 255, 0.62);
   -webkit-backdrop-filter: var(--tyba-mk-filter-md);
   backdrop-filter: var(--tyba-mk-filter-md);
+}
+/* Quadro Inbox (`.nx-bg`): com a coluna aberta, o terminal ao lado recua
+   para .55. Ela é irmã do <main> (App.tsx). */
+[data-theme='light']:not([data-imported]) main:has(~ [data-inbox-section]) {
+  opacity: 0.55;
 }
 /* Peça que só existe no claro do TYBA, e a que só existe fora dele: onde o
    Muriki troca o que não é cor (o ícone regular do toast no lugar do cheio,

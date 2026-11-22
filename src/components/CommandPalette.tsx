@@ -438,7 +438,10 @@ export function CommandPalette({
       showCloseButton={false}
       className={`top-28 max-w-[580px] translate-y-0 ${PLATE} ${PLATE_LINE} ${PLATE_FLOAT} is-deep rounded-[18px]`}
     >
-      <div className="flex items-center gap-1 tyba-divide-b px-2 py-1.5">
+      {/* No claro a paleta abre direto no campo, como no quadro Main: os
+          modos seguem no Tab e nos atalhos, e o placeholder diz em qual se
+          está. */}
+      <div className="tyba-mk-hide flex items-center gap-1 tyba-divide-b px-2 py-1.5">
         {(
           ["actions", "files", "sessions", "history", "snippets"] as const
         ).map((m) => {
@@ -500,7 +503,7 @@ export function CommandPalette({
                   <Icon size={15} />
                   <span className="truncate">{name}</span>
                   {dir && (
-                    <span className="ml-auto min-w-0 truncate font-mono text-[10px] text-tyba-text-faint">
+                    <span className="tyba-cmd-meta ml-auto min-w-0 truncate font-mono text-[10px] text-tyba-text-faint">
                       {dir}
                     </span>
                   )}
@@ -525,7 +528,7 @@ export function CommandPalette({
                 <span className="truncate font-mono text-[12px]">
                   {hit.command}
                 </span>
-                <span className="ml-auto shrink-0 text-[10px] text-tyba-text-faint">
+                <span className="tyba-cmd-meta ml-auto shrink-0 text-[10px] text-tyba-text-faint">
                   {hit.inCwd
                     ? t("historyHere")
                     : hit.inRepo
@@ -638,7 +641,7 @@ export function CommandPalette({
                 className={handoff.disabled ? "text-tyba-text-ghost" : "text-tyba-blue"}
               />
               {t("handoffTitle")}
-              <span className="ml-auto font-mono text-[10px] text-tyba-text-faint">
+              <span className="tyba-cmd-meta ml-auto font-mono text-[10px] text-tyba-text-faint">
                 {handoff.detail}
               </span>
             </CommandItem>
@@ -656,7 +659,7 @@ export function CommandPalette({
               >
                 <Stack size={15} className="text-tyba-violet" />
                 <span className="truncate">{config.name}</span>
-                <span className="ml-auto font-mono text-[10px] text-tyba-text-faint">
+                <span className="tyba-cmd-meta ml-auto font-mono text-[10px] text-tyba-text-faint">
                   {config.slots.length}{" "}
                   {config.slots.length === 1 ? "pane" : "panes"}
                 </span>
@@ -682,7 +685,7 @@ export function CommandPalette({
                   />
                   <span className="truncate">{w.name}</span>
                   {w.tabs.length > 0 && (
-                    <span className="ml-auto font-mono text-[10px] text-tyba-text-faint">
+                    <span className="tyba-cmd-meta ml-auto font-mono text-[10px] text-tyba-text-faint">
                       {w.tabs.length} {w.tabs.length === 1 ? "tab" : "tabs"}
                     </span>
                   )}

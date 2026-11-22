@@ -180,8 +180,8 @@ export function roundAge(
 }
 
 export const LIGHT_CLASS: Record<AgentLight, string> = {
-  running:
-    "bg-tyba-green-fill [box-shadow:var(--tyba-glow-green)] tyba-pulse",
+  // Quadro Agentes (g5-dot): o rodando é o verde parado, sem pulso nem brilho.
+  running: "bg-tyba-green-fill",
   starting: "bg-tyba-amber-fill tyba-pulse",
   awaiting: "bg-tyba-amber-fill",
   done: "bg-tyba-text-faint",

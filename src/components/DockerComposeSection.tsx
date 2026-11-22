@@ -1,8 +1,9 @@
-import { useEffect, useLayoutEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ArrowClockwise, Play, Stop } from "@phosphor-icons/react";
+import { ArrowClockwise, MagnifyingGlass, Play, Stop } from "@phosphor-icons/react";
 
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { requestConfirm } from "../lib/confirm";
 import {
   compactSpan,
@@ -158,6 +159,10 @@ export function DockerComposeSection({
   const { t } = useTranslation();
 
   const visible = visibleProjects(projects, hideStopped);
+  // Filtro da lista, como o de containers: só recorta o que se vê.
+  const [query, setQuery] = useState("");
+  const needle = query.trim().toLowerCase();
+  const shown = needle ? visible.filter((p) => p.name.toLowerCase().includes(needle)) : visible;
   const currentName = pickProject(visible, selected);
   const current = visible.find((p) => p.name === currentName) ?? null;
 
@@ -416,15 +421,33 @@ export function DockerComposeSection({
         <div className="shrink-0 px-4 pb-1.5 pt-3.5 text-[12.5px] text-tyba-text-muted">
           {t("dockerScreenProjectsCount", { count: visible.length })}
         </div>
-        <div className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-2 py-1">
+        <div className="shrink-0 px-3 pb-1.5">
+          <Input
+            icon={<MagnifyingGlass size={16} />}
+            type="text"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape" && query) {
+                e.preventDefault();
+                setQuery("");
+              }
+            }}
+            placeholder={t("dockerScreenComposeFilter")}
+            aria-label={t("dockerScreenComposeFilter")}
+          />
+        </div>
+        <div className="flex min-h-0 flex-1 flex-col gap-1.5 overflow-y-auto px-3 pb-3.5">
           {!loaded ? (
-            <div className="-mx-2 -my-1">{loading}</div>
+            <div className="-mx-3">{loading}</div>
           ) : visible.length === 0 ? (
             <p className="px-2 py-2 text-[12px] text-tyba-text-faint">
               {projects.length > 0 ? t("dockerScreenNoRunningProjects") : t("dockerScreenNoProjects")}
             </p>
+          ) : shown.length === 0 ? (
+            <p className="px-2 py-2 text-[12px] text-tyba-text-faint">{t("dockerScreenComposeNoMatch")}</p>
           ) : (
-            visible.map(card)
+            shown.map(card)
           )}
         </div>
         <p className="shrink-0 border-t border-[var(--tyba-line)] px-3.5 py-2.5 text-[11px] leading-4 text-tyba-text-faint">

@@ -44,12 +44,14 @@ export function footerKeeps(step: number, at: number): boolean {
 /** Gaveta: mínimo, máximo, folgas (quadro R3/R4). */
 export const DRAWER_MIN = 360;
 export const DRAWER_MAX = 430;
-/** Borda direita da gaveta para dentro da borda direita do pane ativo. */
-export const DRAWER_INSET = 8;
+/** Borda direita da gaveta para dentro da borda direita do pane ativo
+ *  (quadro Agentes, `.g4-dw`: right 18). */
+export const DRAWER_INSET = 18;
 /** Distância mínima da borda esquerda da janela. */
 export const DRAWER_EDGE = 8;
-/** Base da gaveta acima do topo do rodapé. */
-export const DRAWER_LIFT = 6;
+/** Base da gaveta acima do topo do rodapé (quadro: bottom 52 sobre o
+ *  rodapé de 36, 16 de folga). */
+export const DRAWER_LIFT = 16;
 
 export type DrawerBox = {
   /** Em px, da borda esquerda da janela. */
@@ -62,7 +64,7 @@ export type DrawerBox = {
 };
 
 /**
- * Onde a gaveta aberta fica: popover que sobe do rodapé, borda direita 8 px
+ * Onde a gaveta aberta fica: popover que sobe do rodapé, borda direita 18 px
  * dentro do pane ativo (com o detalhe aberto, o pane termina antes dele, e a
  * gaveta não o cobre). Largura do pane menos as folgas, entre 360 e 430;
  * abaixo do pane ela cresce para a esquerda por cima da lateral, e se nem
