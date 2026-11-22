@@ -11,7 +11,9 @@ import {
 } from "@phosphor-icons/react";
 
 import { Button } from "@/components/ui/button";
+import { EmptyState } from "@/components/ui/empty-state";
 import { Input } from "@/components/ui/input";
+import { GitHubIcon } from "./icons/GitHubIcon";
 import { SegmentedControl } from "@/components/ui/segmented";
 import { useRelative } from "./GitHistoryView";
 import { OpenPrDialog } from "./OpenPrDialog";
@@ -202,7 +204,8 @@ export function PrListView({
     // PR não vem de fork.
     const linked = linkedSession(item);
     const agent = linked?.agent ?? null;
-    const author = item.author_name ?? item.author;
+    // Quadro: o login escrito, as iniciais do nome no avatar ("GT gteodoro").
+    const author = item.author;
     return (
       <div
         key={item.number}
@@ -212,7 +215,7 @@ export function PrListView({
         onKeyDown={(e) => {
           if (e.key === "Enter") onOpenPr(item.number);
         }}
-        className={`${GRID} group/pr cursor-pointer shadow-[inset_0_-1px_0_var(--tyba-line)] py-3 text-[13.5px] outline-none hover:bg-[color-mix(in_srgb,var(--tyba-glass-active)_57%,transparent)] focus-visible:bg-[color-mix(in_srgb,var(--tyba-glass-active)_57%,transparent)] ${
+        className={`${GRID} group/pr cursor-pointer shadow-[inset_0_-1px_0_var(--tyba-line)] pb-[13px] pt-3 text-[13.5px] leading-[normal] outline-none hover:bg-[color-mix(in_srgb,var(--tyba-glass-active)_57%,transparent)] focus-visible:bg-[color-mix(in_srgb,var(--tyba-glass-active)_57%,transparent)] ${
           dim ? "opacity-75" : ""
         }`}
       >
@@ -234,10 +237,11 @@ export function PrListView({
           </div>
           {/* Quadro: "autor · sessão · branch → main · atualizado há…", texto corrido. */}
           <div className="mt-1 flex min-w-0 items-center whitespace-nowrap text-[12px] text-tyba-text-faint">
-            <Avatar name={author} />
+            <Avatar name={item.author_name ?? item.author} />
             <span className="truncate">
               {author}
-              {linked && <> · {t("prBySession", { title: linked.title })}</>}
+              {/* Quadro: o mesclado leva a marca do agente, mas não a sessão. */}
+              {linked && item.state !== "merged" && <> · {t("prBySession", { title: linked.title })}</>}
             </span>
             <span className="shrink-0">&nbsp;·&nbsp;</span>
             <span className="truncate font-mono text-[11.5px] text-tyba-blue">
@@ -376,12 +380,18 @@ export function PrListView({
         )}
         {error && page !== undefined && <p className="p-6 text-[12px] text-tyba-red">{error}</p>}
         {page === null && !error && (
-          <p className="p-6 text-[12px] text-tyba-text-faint">{t("prListUnsupported")}</p>
+          <div className="flex flex-1 items-center justify-center">
+            <EmptyState
+              icon={<GitHubIcon />}
+              title={t("prListUnsupportedTitle")}
+              description={t("prListUnsupported")}
+            />
+          </div>
         )}
         {page && filter === "ci" && <CiTab sessionId={session.id} wide />}
         {page && filter !== "ci" && (
           <>
-            <div className={`${GRID} shadow-[inset_0_-1px_0_var(--tyba-line)] pb-2 pt-2.5 text-[11.5px] text-tyba-text-faint`}>
+            <div className={`${GRID} shadow-[inset_0_-1px_0_var(--tyba-line)] pb-[9px] pt-2.5 text-[11.5px] leading-[normal] text-tyba-text-faint`}>
               <span />
               <span>
                 {filter === "open"
@@ -416,7 +426,7 @@ export function PrListView({
             )}
             {merged.length > 0 && (
               <>
-                <div className="px-2 pb-1 pt-3.5 text-[12px] font-bold text-tyba-text-muted">{t("prRecentMerged")}</div>
+                <div className="px-2 pb-1 pt-3.5 text-[12px] font-bold leading-[normal] text-tyba-text-muted">{t("prRecentMerged")}</div>
                 {merged.map((item) => row(item, true))}
               </>
             )}

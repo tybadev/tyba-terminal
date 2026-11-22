@@ -7180,6 +7180,63 @@ fn play_notify_sound(name: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// "Avisos do macOS" nas Configurações: se o sistema deixa o TYBA avisar.
+/// `None` fora do macOS (a linha some).
+#[tauri::command]
+async fn notification_permission() -> Option<notifications::permission::NotifyPermission> {
+    tauri::async_runtime::spawn_blocking(notifications::permission::current)
+        .await
+        .ok()
+        .flatten()
+}
+
+/// Um `.tyba/config.toml` aprovado, para "Ver aprovados" (Segurança).
+/// `current`: o arquivo de hoje é o mesmo que foi aprovado (mudou, vale de
+/// novo só depois de outra aprovação).
+#[derive(serde::Serialize)]
+struct ApprovedRepoConfig {
+    repo_root: String,
+    decided_at: String,
+    current: bool,
+}
+
+#[tauri::command]
+async fn list_approved_configs(app: AppHandle) -> Result<Vec<ApprovedRepoConfig>, String> {
+    off_main(app, move |_app, state| {
+        let approved = state.store.approved_configs().map_err(|e| e.to_string())?;
+        Ok(approved
+            .into_iter()
+            .map(|c| {
+                let current = repo_config::load(std::path::Path::new(&c.repo_root))
+                    .ok()
+                    .flatten()
+                    .is_some_and(|(_, hash)| hash == c.config_hash);
+                ApprovedRepoConfig {
+                    repo_root: c.repo_root,
+                    decided_at: c.decided_at,
+                    current,
+                }
+            })
+            .collect())
+    })
+    .await?
+}
+
+/// "Testar aviso" das Configurações: um aviso do sistema na hora, para ver
+/// se chega (ou se os Ajustes do Sistema o bloqueiam). O texto vem traduzido
+/// do front e é cortado: é só um teste, não um canal.
+#[tauri::command]
+fn test_notification(app: AppHandle, title: String, body: String) -> Result<(), String> {
+    use tauri_plugin_notification::NotificationExt;
+    let cut = |s: &str| s.chars().take(120).collect::<String>();
+    app.notification()
+        .builder()
+        .title(cut(&title))
+        .body(cut(&body))
+        .show()
+        .map_err(|e| e.to_string())
+}
+
 /// Abre os Ajustes do Sistema em Notificações (endereço fixo, só macOS).
 #[tauri::command]
 async fn open_notification_settings() -> Result<(), String> {
@@ -8221,6 +8278,78 @@ fn write_control(state: State<'_, AppState>, id: SessionId, bytes: String) -> Re
         .pty_pool
         .write(id, bytes.as_bytes())
         .map_err(|e| e.to_string())
+}
+
+/// Pausa/retoma o agente da sessão (botão ‖ do FocusHUD): SIGSTOP/SIGCONT
+/// no process group e o estado no core. Só Unix; no Windows a UI nem
+/// mostra o botão.
+#[tauri::command]
+fn agent_pause(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: SessionId,
+    paused: bool,
+) -> Result<(), String> {
+    pause_agent(&app, &state, id, paused)
+}
+
+#[cfg(unix)]
+fn pause_agent(
+    app: &AppHandle,
+    state: &AppState,
+    id: SessionId,
+    paused: bool,
+) -> Result<(), String> {
+    let now = approvals::now_ms();
+    let session = state.sessions.get(id).ok_or("sessão não existe")?;
+    if session.paused_at_ms.is_some() == paused {
+        return Ok(());
+    }
+    // Checa antes de mandar o sinal: nada de parar um processo que o core
+    // não vai registrar como pausado.
+    if paused {
+        if !matches!(session.kind, session::SessionKind::Agent { .. }) {
+            return Err("só dá para pausar agente aberto pelo TYBA".into());
+        }
+        if session.turn_started_at_ms.is_none() {
+            return Err("o agente não está num turno".into());
+        }
+    }
+    state
+        .pty_pool
+        .pause_group(id, paused)
+        .map_err(|e| e.to_string())?;
+    state
+        .sessions
+        .set_paused(app, id, paused, now)
+        .map_err(str::to_string)
+}
+
+#[cfg(not(unix))]
+fn pause_agent(_: &AppHandle, _: &AppState, _: SessionId, _: bool) -> Result<(), String> {
+    Err("pausar o agente só existe no macOS e no Linux".into())
+}
+
+/// Encerra o turno do agente como o dono faria: Esc no PTY (Claude Code e
+/// Codex cancelam o turno com Esc). Nunca mata a sessão. Pausado, retoma
+/// antes: parado, o agente não leria a tecla.
+#[tauri::command]
+fn agent_stop_turn(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: SessionId,
+) -> Result<(), String> {
+    if state
+        .sessions
+        .get(id)
+        .is_some_and(|s| s.paused_at_ms.is_some())
+    {
+        pause_agent(&app, &state, id, false)?;
+    }
+    state
+        .owner_input
+        .record(&id.to_string(), b"\x1b", approvals::now_ms());
+    state.pty_pool.write(id, b"\x1b").map_err(|e| e.to_string())
 }
 
 /// Consulta o modo prompt em vez de esperar o evento: quem assina depois do
@@ -11075,6 +11204,8 @@ pub fn run() {
             set_app_menu,
             submit_shell_line,
             write_control,
+            agent_pause,
+            agent_stop_turn,
             toggle_prompt_mode,
             session_prompt_mode,
             session_hook_expected,
@@ -11222,6 +11353,9 @@ pub fn run() {
             user_config_path,
             preview_notify_sound,
             open_notification_settings,
+            test_notification,
+            notification_permission,
+            list_approved_configs,
             splash::splash_done,
         ])
         .build(tauri::generate_context!())
@@ -12053,6 +12187,10 @@ mod tests {
             last_turn: None,
             turn_open: false,
             turn_started_at_ms: None,
+            turn_prompt: None,
+            paused_at_ms: None,
+            paused_ms: 0,
+            waiting_since_ms: None,
             last_words: None,
             shell_resume_offer: false,
             agent_conversation_cwd: None,

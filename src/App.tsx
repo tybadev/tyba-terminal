@@ -32,6 +32,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { Button } from "@/components/ui/button";
 import { Loader } from "@/components/ui/loader";
+import { FocusHUD } from "@/components/ui/focus-hud";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -64,7 +65,7 @@ import { NotificationToaster } from "./components/NotificationToaster";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { WindowControls, WindowResizeEdges } from "./components/WindowChrome";
 import { UpdateToast } from "./components/UpdateToast";
-import { IS_MAC } from "./lib/platform";
+import { IS_MAC, IS_WINDOWS } from "./lib/platform";
 import { AgentIcon } from "./components/icons/AgentIcon";
 import { AgentsBoard } from "./components/AgentsBoard";
 import { AgentsQueue } from "./components/AgentsQueue";
@@ -289,6 +290,8 @@ import {
   agentsDrawerCollapse,
   agentsDrawerOpen,
   onAgentsDrawerChanged,
+  agentPause,
+  agentStopTurn,
   type DrawerState,
   detectedAgent,
   canResumeAgentSession,
@@ -819,6 +822,41 @@ function PaneTurnTime({ session }: { session: Session }) {
   return ms === null ? null : <>{` · ${formatElapsed(ms)}`}</>;
 }
 
+/** "01:12", "1:02:05": o relógio do FocusHUD. */
+const hudClock = (ms: number): string => {
+  const total = Math.floor(ms / 1000);
+  const two = (n: number) => String(n).padStart(2, "0");
+  const [h, m, s] = [Math.floor(total / 3600), Math.floor(total / 60) % 60, total % 60];
+  return h > 0 ? `${h}:${two(m)}:${two(s)}` : `${two(m)}:${two(s)}`;
+};
+
+/** O FocusHUD do turno que roda no painel ativo (quadro Main): tempo do
+ *  turno sem as pausas, agente · prompt, pausar (SIGSTOP no core, só agente
+ *  aberto pelo TYBA e fora do Windows) e encerrar (Esc, como o dono). Tudo
+ *  do core; componente próprio para só ele andar de segundo em segundo. */
+function PaneFocusHud({ session, agent }: { session: Session; agent: string }) {
+  const { t } = useTranslation();
+  const paused = session.paused_at_ms != null;
+  const now = useNow(!paused);
+  const ms = turnElapsedMs(session, now);
+  if (ms === null) return null;
+  const fail = (e: unknown) => toastError(t("focusHudFailed"), e);
+  return (
+    <FocusHUD
+      className="pointer-events-auto"
+      time={hudClock(ms)}
+      task={session.turn_prompt ? `${agent} · ${session.turn_prompt}` : agent}
+      paused={paused}
+      onPause={
+        !IS_WINDOWS && session.kind.type === "agent"
+          ? () => void agentPause(session.id, !paused).catch(fail)
+          : undefined
+      }
+      onStop={() => void agentStopTurn(session.id).catch(fail)}
+    />
+  );
+}
+
 /** Ícones do header no Orbit, na ordem do terminal (quadro Header). */
 const ORBIT_HEADER_PANELS: readonly PanelKind[] = ["history", "docker", "services", "git"];
 
@@ -925,9 +963,7 @@ export default function App() {
     () => new Map(),
   );
   const [sidebar, setSidebar] = useState<SidebarMode>("open");
-  // Padrão do quadro Sidebar: nome e uma linha de estado, sem caminho nem
-  // contagem; os detalhes ligam nas Configurações ou por sessão.
-  const [detailsPref, setDetailsPref] = useState<DetailsPref>("off");
+  const [detailsPref, setDetailsPref] = useState<DetailsPref>("on");
   const [detailOverrides, setDetailOverrides] = useState<
     Record<string, DetailsPref>
   >({});
@@ -2896,10 +2932,12 @@ export default function App() {
         drawer?.outcome_seen ?? false,
       ),
       turn: pillTurn(activeSession),
+      // Começo do turno somado ao tempo já pausado: a pílula desconta a pausa.
       runningSince:
-        activeSession && turnElapsedMs(activeSession, 0) !== null
-          ? (activeSession.turn_started_at_ms ?? null)
+        activeSession && turnElapsedMs(activeSession, 0) !== null && activeSession.turn_started_at_ms != null
+          ? activeSession.turn_started_at_ms + (activeSession.paused_ms ?? 0)
           : null,
+      pausedAt: activeSession?.paused_at_ms ?? null,
       open,
       onToggle: () =>
         void (
@@ -5668,14 +5706,13 @@ export default function App() {
     const agentLabel = agentStatus ? t(agentStatus.visual.labelKey) : null;
     const agentDetail = (() => {
       if (!agentStatus) return null;
-      // Quadro Sidebar: "codex espera você", "claude rodando" — o nome vem do
-      // `hoverAgent`, aqui só o estado; o que ele pede fica no cartão de
-      // Agentes e no hover.
+      // Quadro: "claude rodando" — o nome já vem do `hoverAgent`; aqui o estado.
+      if (agentStatus.observed) return agentLabel;
       const status = agentStatus.session.status;
-      if (status.state === "awaiting_input") return t("sessionAwaiting");
+      if (status.state === "awaiting_input" && status.hint) return status.hint;
       if (status.state === "failed") return status.reason;
-      if (agentStatus.visual.labelKey === "sessionInProgress") return t("sidebarRunning");
-      return agentLabel;
+      if (status.state === "running" && runningCmd) return runningCmd;
+      return hoverAgent ?? agentLabel;
     })();
     // Linha de estado do quadro ("claude em andamento"): quem é e o que faz;
     // a pergunta pendente ou o motivo da falha no lugar do estado quando há.
@@ -5834,7 +5871,7 @@ export default function App() {
                 </span>
               )}
             </span>
-            {showDetails && w.tabs.length > 1 && (
+            {!isConfig && !isWtView && w.tabs.length > 1 && (
               <span
                 title={t("sessionPanes", { count: w.tabs.length })}
                 className={`mt-[3px] shrink-0 font-mono text-[10.5px] font-medium text-tyba-text-faint ${
@@ -6109,6 +6146,22 @@ export default function App() {
                   );
                   return <Loader label={t(step.key, step.params)} />;
                 })()}
+              </div>
+            )}
+          {/* Agente com turno rodando no painel ativo: o FocusHUD no canto
+              de baixo, acima do rodapé; some com a gaveta de Agentes aberta. */}
+          {!bare &&
+            s.id === activeId &&
+            !(drawers.get(s.id)?.open ?? false) &&
+            turnElapsedMs(s, 0) !== null &&
+            (s.kind.type === "agent" || detected) && (
+              <div className="pointer-events-none absolute right-4 bottom-4 z-20">
+                <PaneFocusHud
+                  session={s}
+                  agent={agentBinaryName(
+                    s.kind.type === "agent" ? s.kind.runner : detected!.kind,
+                  )}
+                />
               </div>
             )}
           {wrapNodeTerminal(nodeZoom, <TerminalView

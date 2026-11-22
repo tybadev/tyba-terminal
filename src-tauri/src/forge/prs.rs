@@ -45,7 +45,7 @@ pub const DETAIL_QUERY: &str = "query($owner: String!, $name: String!, $number: 
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
       number title url state isDraft
-      author { login }
+      author { login ... on User { name } }
       headRefName baseRefName headRefOid createdAt body
       additions deletions changedFiles
       isCrossRepository
@@ -61,7 +61,7 @@ pub const DETAIL_QUERY: &str = "query($owner: String!, $name: String!, $number: 
         ... on CheckRun { name status conclusion startedAt completedAt detailsUrl checkSuite { workflowRun { workflow { name } } } }
         ... on StatusContext { context state createdAt targetUrl }
       } } } } } }
-      reviews(last: 100) { totalCount nodes { author { login } state body submittedAt commit { oid } } }
+      reviews(last: 100) { totalCount nodes { author { login ... on User { name } } state body submittedAt commit { oid } } }
       reviewRequests(first: 100) { nodes { requestedReviewer {
         __typename
         ... on User { login }
@@ -226,6 +226,8 @@ pub struct PrCheck {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PrReview {
     pub author: String,
+    /// Nome do perfil (só usuário tem), para as iniciais do avatar.
+    pub author_name: Option<String>,
     pub state: PrReviewState,
     pub submitted_at: Option<String>,
     pub body: String,
@@ -254,6 +256,8 @@ pub struct PrDetail {
     pub url: String,
     pub state: PrState,
     pub author: String,
+    /// Nome do perfil do autor (só usuário tem), para as iniciais do avatar.
+    pub author_name: Option<String>,
     pub head: String,
     pub head_sha: String,
     pub base: String,
@@ -1090,6 +1094,7 @@ pub fn parse_detail_graphql(
         title: pr.title,
         url: pr.url,
         state: pr_state(&pr.state, pr.is_draft),
+        author_name: pr.author.as_ref().and_then(|a| non_empty(a.name.clone())),
         author: login(pr.author),
         head: pr.head_ref_name,
         head_sha: pr.head_ref_oid,
@@ -1122,6 +1127,7 @@ pub fn parse_detail_graphql(
         reviews: nodes(pr.reviews)
             .into_iter()
             .map(|r| PrReview {
+                author_name: r.author.as_ref().and_then(|a| non_empty(a.name.clone())),
                 author: login(r.author),
                 state: review_state(&r.state),
                 submitted_at: timestamp(r.submitted_at),
@@ -2152,6 +2158,16 @@ mod tests {
         assert_eq!(d.pending_reviewers, vec!["eu-mesmo", "time-core"]);
         assert_eq!(d.comments.len(), 1);
         assert_eq!(d.comments[0].author, "beto-dev");
+    }
+
+    #[test]
+    fn detail_brings_author_names_for_the_avatar() {
+        let d = parse_detail(DETAIL.as_bytes(), "exemplo").unwrap();
+        assert_eq!(d.author, "ana-dev");
+        assert_eq!(d.author_name.as_deref(), Some("Ana Exemplo"));
+        assert_eq!(d.reviews[0].author_name.as_deref(), Some("Carla Dev"));
+        assert_eq!(d.reviews[1].author_name, None, "nome vazio vira None");
+        assert!(DETAIL_QUERY.contains("author { login ... on User { name } }"));
     }
 
     #[test]

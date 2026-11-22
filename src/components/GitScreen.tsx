@@ -54,6 +54,13 @@ const RAIL: Record<GitSection, { icon: Icon; label: string }> = {
   ci: { icon: Lightning, label: "gitScreenCi" },
 };
 
+function agentOf(session: Session): string | null {
+  if (session.kind.type !== "agent") return null;
+  const { runner } = session.kind;
+  if (typeof runner !== "string") return runner.custom;
+  return runner === "claude_code" ? "claude" : runner;
+}
+
 /**
  * Tela cheia de Git (protótipo "Git em tela cheia"). Cobre abas e shell; a
  * sidebar de sessões, o header e a barra de status seguem visíveis. Trilho na
@@ -124,7 +131,11 @@ export function GitScreen({
       .then((runs) => {
         if (!alive || !runs) return;
         const branch = snapshot?.branch;
-        const latest = runs.find((r) => !branch || r.head_branch === branch);
+        // O ponto vermelho é o último resultado: um run ainda rodando não apaga
+        // a falha do anterior (quadro: CI rodando e o ponto aceso).
+        const latest = runs.find(
+          (r) => (!branch || r.head_branch === branch) && r.status === "completed",
+        );
         setCiFailing(latest?.conclusion === "failure");
       })
       .catch(() => {});
@@ -258,7 +269,11 @@ export function GitScreen({
                 {note.text}
               </span>
             ) : (
-              session.title
+              // Quadro: "api · claude" — a sessão (a pasta, como na barra
+              // lateral) e o agente dela.
+              [session.repo_root?.split("/").filter(Boolean).pop() ?? session.title, agentOf(session)]
+                .filter(Boolean)
+                .join(" · ")
             )}
           </span>
           <span className="flex shrink-0 items-center gap-2">

@@ -84,20 +84,6 @@ export function healthOf(status: string): Health | null {
   return null;
 }
 
-/** Parado há mais que isso some atrás de "mostrar antigos". */
-export const OLD_EXITED_MS = 7 * DAY;
-
-export type ContainerGroup = {
-  /** `null` = "Avulsos" (sem projeto compose). */
-  project: string | null;
-  inRepo: boolean;
-  running: ContainerInfo[];
-  /** Parados recentes, mais recentes primeiro. */
-  stopped: ContainerInfo[];
-  /** Parados há mais de `OLD_EXITED_MS`. */
-  old: ContainerInfo[];
-};
-
 export const displayName = (c: ContainerInfo) => c.service ?? c.name;
 
 export function matchesQuery(c: ContainerInfo, query: string): boolean {
@@ -113,44 +99,6 @@ export function matchesQuery(c: ContainerInfo, query: string): boolean {
  * alfabética, "Avulsos" por último. Dentro: rodando (por nome), parados
  * recentes (mais novo primeiro) e antigos.
  */
-export function groupContainers(
-  list: readonly ContainerInfo[],
-  query = "",
-): ContainerGroup[] {
-  const groups = new Map<string, ContainerGroup>();
-  const LOOSE = "\u0000avulsos";
-  for (const c of list) {
-    if (!matchesQuery(c, query)) continue;
-    const key = c.compose_project ?? LOOSE;
-    let g = groups.get(key);
-    if (!g) {
-      g = { project: c.compose_project, inRepo: false, running: [], stopped: [], old: [] };
-      groups.set(key, g);
-    }
-    if (c.in_repo) g.inRepo = true;
-    if (c.state === "running") g.running.push(c);
-    else {
-      const ago = exitedAgoMs(c.status);
-      (ago !== null && ago > OLD_EXITED_MS ? g.old : g.stopped).push(c);
-    }
-  }
-  const byName = (a: ContainerInfo, b: ContainerInfo) =>
-    displayName(a).localeCompare(displayName(b));
-  const byRecent = (a: ContainerInfo, b: ContainerInfo) =>
-    (exitedAgoMs(a.status) ?? Infinity) - (exitedAgoMs(b.status) ?? Infinity) ||
-    byName(a, b);
-  for (const g of groups.values()) {
-    g.running.sort(byName);
-    g.stopped.sort(byRecent);
-    g.old.sort(byRecent);
-  }
-  return [...groups.values()].sort((a, b) => {
-    if (a.inRepo !== b.inRepo) return a.inRepo ? -1 : 1;
-    if ((a.project === null) !== (b.project === null)) return a.project === null ? 1 : -1;
-    return (a.project ?? "").localeCompare(b.project ?? "");
-  });
-}
-
 export function containerCounts(list: readonly ContainerInfo[]): {
   running: number;
   stopped: number;

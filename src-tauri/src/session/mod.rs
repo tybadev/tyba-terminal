@@ -248,6 +248,22 @@ pub struct Session {
     /// tempo dele. Anda junto com `turn_open`. Só memória.
     #[serde(default, skip_deserializing)]
     pub turn_started_at_ms: Option<u64>,
+    /// O prompt do turno aberto, redigido e cortado (o mesmo que vai ao
+    /// resumo). Anda junto com `turn_started_at_ms`. Só memória.
+    #[serde(default, skip_deserializing)]
+    pub turn_prompt: Option<String>,
+    /// O dono pausou o agente (SIGSTOP no grupo, ver
+    /// [`SessionManager::apply_paused`]): desde quando. Só memória.
+    #[serde(default, skip_deserializing)]
+    pub paused_at_ms: Option<u64>,
+    /// Quanto do turno aberto já ficou pausado, sem contar a pausa de agora:
+    /// a UI tira isto do tempo do turno. Zera quando o turno troca. Só memória.
+    #[serde(default, skip_deserializing)]
+    pub paused_ms: u64,
+    /// Desde quando a sessão espera o dono (status ou palpite em
+    /// `AwaitingInput`); `None` fora disso. Só memória.
+    #[serde(default, skip_deserializing)]
+    pub waiting_since_ms: Option<u64>,
     /// De onde sai a fala final do último turno, para o handoff entre agentes
     /// ([`crate::agent::handoff`]). **Nunca serializado**: nem ao webview nem
     /// ao SQLite. Só memória, como `last_turn`.
@@ -272,6 +288,27 @@ pub struct Session {
     /// Fixo na criação. Só memória: o que está no banco é sempre da grade.
     #[serde(skip)]
     pub owner: SessionOwner,
+}
+
+/// Liga `waiting_since_ms` quando a sessão passa a esperar o dono (pelo
+/// status ou pelo palpite de tela) e desliga quando ela sai disso. Continuar
+/// esperando não reinicia a conta.
+fn sync_waiting_since(s: &mut Session, now_ms: u64) {
+    let waiting = matches!(s.status, SessionStatus::AwaitingInput { .. })
+        || s.observed
+            .as_ref()
+            .is_some_and(|o| o.state == Some(ObservedState::AwaitingInput));
+    s.waiting_since_ms = match (waiting, s.waiting_since_ms) {
+        (true, Some(since)) => Some(since),
+        (true, None) => Some(now_ms),
+        (false, _) => None,
+    };
+}
+
+/// Turno novo (ou nenhum): a pausa do turno anterior não conta mais. A pausa
+/// de agora fica: o processo continua parado até o dono retomar.
+fn reset_pause(s: &mut Session) {
+    s.paused_ms = 0;
 }
 
 #[derive(Debug, Deserialize)]
@@ -1036,6 +1073,10 @@ impl SessionManager {
             last_turn: None,
             turn_open: false,
             turn_started_at_ms: None,
+            turn_prompt: None,
+            paused_at_ms: None,
+            paused_ms: 0,
+            waiting_since_ms: None,
             last_words: None,
             shell_resume_offer: false,
             agent_conversation_cwd: previous.and_then(|s| s.agent_conversation_cwd),
@@ -1106,6 +1147,7 @@ impl SessionManager {
             return None;
         }
         s.observed = observed;
+        sync_waiting_since(s, crate::approvals::now_ms());
         Some(s.clone())
     }
 
@@ -1158,6 +1200,7 @@ impl SessionManager {
             s.subagents_working = false;
         }
         let prev = std::mem::replace(&mut s.status, status);
+        sync_waiting_since(s, crate::approvals::now_ms());
         self.persist(s);
         Some((prev, s.clone()))
     }
@@ -1221,7 +1264,12 @@ impl SessionManager {
             return None;
         }
         s.last_turn = Some(digest);
-        s.turn_started_at_ms = self.turns.open_started_at(id);
+        let started = self.turns.open_started_at(id);
+        if s.turn_started_at_ms != started {
+            reset_pause(s);
+        }
+        s.turn_started_at_ms = started;
+        s.turn_prompt = self.turns.open_prompt(id);
         s.turn_open = s.turn_started_at_ms.is_some();
         Some(s.clone())
     }
@@ -1244,7 +1292,57 @@ impl SessionManager {
         }
         s.turn_open = true;
         s.turn_started_at_ms = started;
+        s.turn_prompt = self.turns.open_prompt(id);
+        reset_pause(s);
         Some(s.clone())
+    }
+
+    /// Pausa ou retoma o agente: só o estado, sem sinal — quem chama manda
+    /// o SIGSTOP/SIGCONT antes ([`crate::pty::PtyPool::signal_group`]).
+    /// Pausa só sessão de agente aberta pelo TYBA (o agente é o líder do
+    /// PTY; num shell, o job parado faria o shell tomar o terminal) e com
+    /// turno aberto. Retomar vale sempre que está pausada. `Err` quando não
+    /// pode; `Ok(None)` quando já estava assim.
+    pub(crate) fn apply_paused(
+        &self,
+        id: SessionId,
+        paused: bool,
+        now_ms: u64,
+    ) -> Result<Option<Session>, &'static str> {
+        let mut sessions = self.sessions.write();
+        let s = sessions.get_mut(&id).ok_or("sessão não existe")?;
+        match (paused, s.paused_at_ms) {
+            (true, Some(_)) | (false, None) => Ok(None),
+            (true, None) => {
+                if !matches!(s.kind, SessionKind::Agent { .. }) {
+                    return Err("só dá para pausar agente aberto pelo TYBA");
+                }
+                if s.turn_started_at_ms.is_none() {
+                    return Err("o agente não está num turno");
+                }
+                s.paused_at_ms = Some(now_ms);
+                Ok(Some(s.clone()))
+            }
+            (false, Some(since)) => {
+                s.paused_ms += now_ms.saturating_sub(since);
+                s.paused_at_ms = None;
+                Ok(Some(s.clone()))
+            }
+        }
+    }
+
+    /// Ver [`Self::apply_paused`].
+    pub fn set_paused(
+        &self,
+        app: &AppHandle,
+        id: SessionId,
+        paused: bool,
+        now_ms: u64,
+    ) -> Result<(), &'static str> {
+        if let Some(session) = self.apply_paused(id, paused, now_ms)? {
+            emit_status(app, &session);
+        }
+        Ok(())
     }
 
     /// Mexe na fala final guardada para o handoff. Sem IPC e sem `persist`:
@@ -2619,6 +2717,10 @@ mod tests {
             last_turn: None,
             turn_open: false,
             turn_started_at_ms: None,
+            turn_prompt: None,
+            paused_at_ms: None,
+            paused_ms: 0,
+            waiting_since_ms: None,
             last_words: None,
             shell_resume_offer: false,
             agent_conversation_cwd: None,
@@ -4178,6 +4280,102 @@ echo beta
         manager.apply_last_turn(id, turn_digest(2, "segundo"));
         let s = manager.get(id).unwrap();
         assert_eq!((s.turn_open, s.turn_started_at_ms), (false, None));
+    }
+
+    /// Pausa só com turno aberto; retomar soma o tempo parado, que zera
+    /// quando o turno troca. O prompt do turno vai junto com o começo.
+    #[test]
+    fn pausa_do_agente_conta_o_tempo_parado_do_turno() {
+        let (_store, mut manager, id) = restored_agent();
+        let dir = tempfile::tempdir().unwrap();
+        manager.turns = crate::agent::turn::Turns::at(dir.path().join("privado"));
+        let dir = dir.path().join("pasta");
+        std::fs::create_dir(&dir).unwrap();
+        let begin = |at, prompt: &str| {
+            let bound = std::time::Duration::from_secs(120);
+            manager
+                .turns
+                .begin(id, dir.clone(), bound, at, Some(prompt.into()), None)
+        };
+        assert!(manager.apply_paused(id, true, 0).is_err(), "sem turno");
+
+        begin(1_000, "arruma o header");
+        let s = manager.apply_turn_open(id).unwrap();
+        assert_eq!(s.turn_prompt.as_deref(), Some("arruma o header"));
+
+        let s = manager.apply_paused(id, true, 2_000).unwrap().unwrap();
+        assert_eq!((s.paused_at_ms, s.paused_ms), (Some(2_000), 0));
+        assert!(manager.apply_paused(id, true, 2_500).unwrap().is_none());
+        let s = manager.apply_paused(id, false, 5_000).unwrap().unwrap();
+        assert_eq!((s.paused_at_ms, s.paused_ms), (None, 3_000));
+        assert!(manager.apply_paused(id, false, 6_000).unwrap().is_none());
+
+        // Turno novo: a pausa do anterior não conta.
+        begin(9_000, "outro");
+        let s = manager.apply_turn_open(id).unwrap();
+        assert_eq!((s.paused_ms, s.turn_prompt.as_deref()), (0, Some("outro")));
+    }
+
+    #[test]
+    fn shell_nao_pausa() {
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        store
+            .upsert_session(&make(SessionKind::Shell, SessionStatus::Running))
+            .unwrap();
+        let manager = SessionManager::new(Arc::clone(&store));
+        manager.restore().unwrap();
+        let id = manager.list()[0].id;
+        manager
+            .sessions
+            .write()
+            .get_mut(&id)
+            .unwrap()
+            .turn_started_at_ms = Some(1);
+        assert!(manager.apply_paused(id, true, 2).is_err());
+    }
+
+    /// `waiting_since_ms` liga quando passa a esperar o dono, não reinicia
+    /// enquanto continua esperando e desliga quando sai.
+    #[test]
+    fn espera_do_dono_marca_desde_quando() {
+        let (_store, manager, id) = restored_agent();
+        assert_eq!(manager.get(id).unwrap().waiting_since_ms, None);
+        let ask = |hint: &str| SessionStatus::AwaitingInput {
+            hint: Some(hint.into()),
+            reason: AwaitingReason::default(),
+        };
+        let (_, s) = manager.apply_status(id, ask("bun test")).unwrap();
+        let since = s.waiting_since_ms.expect("esperando");
+        let (_, s) = manager.apply_status(id, ask("cargo test")).unwrap();
+        assert_eq!(s.waiting_since_ms, Some(since));
+        let (_, s) = manager.apply_status(id, SessionStatus::Running).unwrap();
+        assert_eq!(s.waiting_since_ms, None);
+    }
+
+    #[test]
+    fn palpite_de_tela_esperando_tambem_marca() {
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        store
+            .upsert_session(&make(SessionKind::Shell, SessionStatus::Running))
+            .unwrap();
+        let manager = SessionManager::new(Arc::clone(&store));
+        manager.restore().unwrap();
+        let id = manager.list()[0].id;
+        let observed = |state| {
+            Some(ObservedAgent {
+                agent: "codex".into(),
+                state: Some(state),
+                kind: None,
+            })
+        };
+        let s = manager
+            .apply_observed(id, observed(ObservedState::AwaitingInput))
+            .unwrap();
+        assert!(s.waiting_since_ms.is_some());
+        let s = manager
+            .apply_observed(id, observed(ObservedState::Running))
+            .unwrap();
+        assert_eq!(s.waiting_since_ms, None);
     }
 
     /// A prova que dá sentido ao campo separado: o palpite não alcança o fato.

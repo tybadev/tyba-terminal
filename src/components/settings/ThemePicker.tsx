@@ -8,8 +8,27 @@ import { IS_MAC } from "@/lib/platform";
 
 type Base = "dark" | "light";
 
-/** Cor de destaque do tema (o ❯ do prompt e o ponto da pílula). */
-const accentOf = (theme: Theme) => theme.ui.primary ?? theme.terminal.ansi[2];
+/** Cor de destaque do tema (o ❯ do prompt e o ponto da pílula). Os dois
+ *  TYBA não trazem `ui` (o CSS pinta o app): a marca deles é o cursor. */
+const accentOf = (theme: Theme) =>
+  theme.ui.primary ?? (TYBA_IDS.has(theme.id) ? theme.terminal.cursor : theme.terminal.ansi[2]);
+
+const TYBA_IDS = new Set(["tyba-dark", "tyba-light"]);
+
+/** Quadro: a pílula já está no claro ou no escuro, então o embutido aparece
+ *  sem o lado no nome ("Solarized", não "Solarized Light"). */
+export const themeLabel = (theme: Theme) =>
+  theme.builtin ? (SHORT_NAMES[theme.id] ?? theme.name.replace(/\s+(light|dark)$/i, "")) : theme.name;
+
+/** Os nomes do quadro que não saem só de tirar o lado. */
+const SHORT_NAMES: Record<string, string> = {
+  "dracula-light": "Dracula",
+  "monokai-light": "Monokai",
+  "monokai-machine": "Pro Machine",
+  "monokai-octagon": "Pro Octagon",
+  "monokai-ristretto": "Pro Ristretto",
+  "monokai-spectrum": "Pro Spectrum",
+};
 
 /** A linha fina do terminal na cor do texto do próprio tema. */
 const lineOf = (theme: Theme) => `color-mix(in srgb, ${theme.terminal.foreground} 12%, transparent)`;
@@ -63,7 +82,7 @@ function TerminalSpecimen({
           <i key={i} className="block size-2.5 rounded-full" style={{ background: line }} />
         ))}
         <span className="ml-2 text-[12px] font-semibold">{label}</span>
-        <b className="ml-auto truncate text-[12px] font-semibold opacity-65">{theme.name}</b>
+        <b className="ml-auto truncate text-[12px] font-semibold opacity-65">{themeLabel(theme)}</b>
       </span>
       <span
         aria-hidden
@@ -128,7 +147,7 @@ export function ThemePicker({
   fontSize,
   footer,
   onImport,
-  onCopyExample,
+  onHowTo,
 }: {
   themes: Theme[];
   state: ThemeState | null;
@@ -137,7 +156,7 @@ export function ThemePicker({
   fontSize: number;
   footer: boolean;
   onImport: () => void;
-  onCopyExample: () => void;
+  onHowTo: () => void;
 }) {
   const { t } = useTranslation();
   const slots: Base[] = mode === "system" ? ["light", "dark"] : [mode];
@@ -223,27 +242,27 @@ export function ThemePicker({
                 >
                   <i className="block size-2 rounded-full" style={{ background: accentOf(theme) }} />
                 </span>
-                {theme.name}
+                {themeLabel(theme)}
               </button>
             );
           })}
           <button
             type="button"
             onClick={onImport}
-            className="inline-flex h-9 items-center gap-2 rounded-full pr-3.5 pl-2 text-[13px] text-tyba-text shadow-[inset_0_0_0_1px_var(--tyba-line)] hover:bg-[var(--tyba-glass-piece)] focus-visible:outline-none focus-visible:[box-shadow:var(--tyba-focus-ring)]"
+            className="inline-flex h-9 items-center gap-2 rounded-full pr-3.5 pl-3 text-[13px] text-tyba-text-muted shadow-[inset_0_0_0_1px_var(--tyba-line-strong,rgba(10,24,48,0.18))] hover:bg-[var(--tyba-glass-piece)] focus-visible:outline-none focus-visible:[box-shadow:var(--tyba-focus-ring)]"
           >
             <Plus size={14} />
-            {t("importTheme")}
+            {t("importVsCodeTheme")}
           </button>
         </div>
         <div className="text-[12.5px] text-tyba-text-faint">
           {note}{" "}
           <button
             type="button"
-            onClick={onCopyExample}
+            onClick={onHowTo}
             className="font-semibold text-tyba-blue hover:underline"
           >
-            {t("cfgThemeCopyExample")}
+            {t("cfgThemeHowTo")}
           </button>
         </div>
       </div>

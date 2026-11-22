@@ -1532,6 +1532,14 @@ pub struct Store {
     degraded: Option<String>,
 }
 
+/// Um `.tyba/config.toml` aprovado pelo dono (ver [`Store::approved_configs`]).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ApprovedConfig {
+    pub repo_root: String,
+    pub config_hash: String,
+    pub decided_at: String,
+}
+
 impl Store {
     pub fn open(path: &Path) -> Result<Self, StoreError> {
         let span = crate::boot::Span::start("store.connection_open");
@@ -2077,6 +2085,28 @@ impl Store {
             params![repo_root, config_hash, allowed, Utc::now().to_rfc3339()],
         )?;
         Ok(())
+    }
+
+    /// Repos cujo `.tyba/config.toml` está aprovado: a decisão mais nova de
+    /// cada repo, quando ela é "aprovar" (Configurações → Segurança, "Ver
+    /// aprovados"). Mais recentes primeiro.
+    pub fn approved_configs(&self) -> Result<Vec<ApprovedConfig>, StoreError> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT repo_root, config_hash, decided_at FROM config_consents c
+             WHERE c.allowed = 1 AND c.rowid = (
+               SELECT d.rowid FROM config_consents d WHERE d.repo_root = c.repo_root
+               ORDER BY d.decided_at DESC, d.rowid DESC LIMIT 1)
+             ORDER BY c.decided_at DESC, c.repo_root",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(ApprovedConfig {
+                repo_root: row.get(0)?,
+                config_hash: row.get(1)?,
+                decided_at: row.get(2)?,
+            })
+        })?;
+        rows.collect::<Result<_, _>>().map_err(StoreError::from)
     }
 
     pub fn lsp_managed_consent(&self, server_id: &str) -> Result<bool, StoreError> {
@@ -4430,6 +4460,10 @@ impl RawSession {
             last_turn: None,
             turn_open: false,
             turn_started_at_ms: None,
+            turn_prompt: None,
+            paused_at_ms: None,
+            paused_ms: 0,
+            waiting_since_ms: None,
             last_words: None,
             shell_resume_offer: false,
             agent_conversation_cwd: conversation_cwd,
@@ -4542,6 +4576,10 @@ mod tests {
             last_turn: None,
             turn_open: false,
             turn_started_at_ms: None,
+            turn_prompt: None,
+            paused_at_ms: None,
+            paused_ms: 0,
+            waiting_since_ms: None,
             last_words: None,
             shell_resume_offer: false,
             agent_conversation_cwd: None,
@@ -6066,6 +6104,34 @@ mod tests {
 
         store.set_setup_consent("/repo", "abc", false).unwrap();
         assert_eq!(store.setup_consent("/repo", "abc").unwrap(), Some(false));
+    }
+
+    #[test]
+    fn approved_configs_lists_the_latest_allowed_decision_per_repo() {
+        let store = Store::open_in_memory().unwrap();
+        assert!(store.approved_configs().unwrap().is_empty());
+        store.set_config_consent("/a", "h1", true).unwrap();
+        store.set_config_consent("/b", "h1", true).unwrap();
+        // /b aprovou um config e recusou o seguinte: não está aprovado.
+        store.set_config_consent("/b", "h2", false).unwrap();
+        // /c recusou e depois aprovou o config novo: está.
+        store.set_config_consent("/c", "h1", false).unwrap();
+        store.set_config_consent("/c", "h2", true).unwrap();
+
+        let mut got: Vec<_> = store
+            .approved_configs()
+            .unwrap()
+            .into_iter()
+            .map(|c| (c.repo_root, c.config_hash))
+            .collect();
+        got.sort();
+        assert_eq!(
+            got,
+            vec![
+                ("/a".to_string(), "h1".to_string()),
+                ("/c".to_string(), "h2".to_string())
+            ]
+        );
     }
 
     #[test]

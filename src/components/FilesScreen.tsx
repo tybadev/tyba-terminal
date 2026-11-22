@@ -397,7 +397,7 @@ export function FilesScreen({
             <FolderOpen size={16} className="shrink-0 text-tyba-blue" />
             <span className="shrink-0 text-[15px] font-bold text-tyba-text">{t("filesTitle")}</span>
             <span className="min-w-0 flex-1 truncate font-mono text-tyba-text-faint" title={info?.root}>
-              {info?.root ?? session.title}
+              {info?.root ? info.root.replace(/^\/(Users|home)\/[^/]+/, "~") : session.title}
             </span>
             {snapshot?.branch && (
               <span className="shrink-0 font-mono font-semibold text-tyba-blue">{snapshot.branch}</span>
@@ -498,7 +498,7 @@ export function FilesScreen({
                         className={`shrink-0 ${on ? langGlyph(f.rel).className : ""}`}
                       />
                       <span className={f.preview ? "italic" : ""}>{baseName(f.rel)}</span>
-                      <span className="relative flex size-4 shrink-0 items-center justify-center">
+                      <span className="relative flex size-3 shrink-0 items-center justify-center">
                         {dirty && (
                           <span
                             aria-label={t("filesScreenUnsaved")}

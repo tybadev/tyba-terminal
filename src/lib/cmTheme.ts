@@ -13,6 +13,14 @@ export interface SyntaxPalette {
   variable: string;
   tag: string;
   invalid: string;
+  /** `return`, `if`, `import`/`export`: no escuro é o `control`. */
+  flow: string;
+  /** `true`, `false`, `null`: no escuro é o `number`. */
+  literal: string;
+  /** Propriedade e atributo (`turn.id`, `className=`): no escuro é o `type`. */
+  property: string;
+  /** `<`, `/>` em volta da tag: no escuro é a cor da tag. */
+  bracket: string;
 }
 
 const MONO_DARK: SyntaxPalette = {
@@ -26,6 +34,10 @@ const MONO_DARK: SyntaxPalette = {
   variable: "#f07178",
   tag: "#f07178",
   invalid: "#FF5370",
+  flow: "#89DDFF",
+  literal: "#F78C6C",
+  property: "#FFCB6B",
+  bracket: "#f07178",
 };
 
 /// Mockup Editor: palavra-chave lilás, string lima, função azul, número âmbar,
@@ -38,22 +50,28 @@ const TYBA_DARK: SyntaxPalette = {
   function: "#4c7df0",
   number: "#f5a93b",
   variable: "#f5f5f6",
+  literal: "#f5a93b",
 };
 
 /// Quadro Files do Muriki (`.q-k/.q-s/.q-f/.q-ty/.q-c`): palavra-chave
-/// violeta, string verde, função azul da marca, tipo âmbar, comentário no
-/// ink-subtle e texto no marinho.
+/// violeta (com `return`, `export` e `true`/`false`), string verde, função
+/// azul da marca, tipo e nome de tag âmbar, comentário no ink-subtle; o resto
+/// (pontuação, propriedade, atributo, `<`/`/>`) no marinho do texto.
 const TYBA_LIGHT: SyntaxPalette = {
   comment: "#5c6880",
   keyword: "#7a4ce8",
-  control: "#55555f",
+  control: "#0a1830",
   string: "#15803d",
   function: "#1152d2",
   number: "#9a5f0c",
   type: "#a16207",
   variable: "#0a1830",
-  tag: "#b5321f",
+  tag: "#a16207",
   invalid: "#b5321f",
+  flow: "#7a4ce8",
+  literal: "#7a4ce8",
+  property: "#0a1830",
+  bracket: "#0a1830",
 };
 
 /// A paleta de sintaxe dos mockups Editor/EditorClaro. Função pura pra testar
@@ -69,7 +87,7 @@ export function cmHighlightStyle(dark: boolean): HighlightStyle {
     { tag: [t.keyword, t.modifier, t.definitionKeyword], color: p.keyword },
     {
       tag: [t.controlKeyword, t.operatorKeyword, t.moduleKeyword],
-      color: p.control,
+      color: p.flow,
     },
     { tag: [t.string, t.special(t.string)], color: p.string },
     { tag: [t.regexp, t.escape], color: p.control },
@@ -77,17 +95,16 @@ export function cmHighlightStyle(dark: boolean): HighlightStyle {
       tag: [t.function(t.variableName), t.function(t.propertyName)],
       color: p.function,
     },
-    {
-      tag: [t.number, t.bool, t.null, t.atom, t.unit],
-      color: p.number,
-    },
+    { tag: [t.number, t.unit], color: p.number },
+    { tag: [t.bool, t.null, t.atom], color: p.literal },
     {
       tag: [t.typeName, t.className, t.namespace, t.definition(t.typeName)],
       color: p.type,
     },
-    { tag: [t.propertyName, t.attributeName], color: p.type },
+    { tag: [t.propertyName, t.attributeName], color: p.property },
     { tag: [t.variableName, t.self], color: p.variable },
-    { tag: [t.tagName, t.angleBracket], color: p.tag },
+    { tag: t.tagName, color: p.tag },
+    { tag: t.angleBracket, color: p.bracket },
     { tag: [t.operator, t.punctuation, t.separator], color: p.control },
     { tag: [t.heading, t.strong], color: p.type, fontWeight: "bold" },
     { tag: t.emphasis, fontStyle: "italic" },
@@ -140,6 +157,9 @@ export function cmEditorTheme(dark: boolean): ReturnType<typeof EditorView.theme
       // número alinhado à direita em 44px, depois o código.
       ".cm-diff-lane": { width: "6px", padding: "0", marginRight: "12px" },
       ".cm-lineNumbers .cm-gutterElement": { padding: "0 12px 0 0", minWidth: "56px" },
+      // O código começa logo depois dos 12px de folga do número (o padrão do
+      // CodeMirror soma mais 6px à esquerda de cada linha).
+      ".cm-line": { paddingLeft: "2px" },
       ".cm-diff-marker": { width: "3px", height: "100%", marginLeft: "0" },
       ".cm-diff-added": { backgroundColor: "var(--tyba-editor-diff-add, var(--tyba-green))" },
       ".cm-diff-modified": { backgroundColor: "var(--tyba-editor-diff-mod, var(--tyba-amber))" },

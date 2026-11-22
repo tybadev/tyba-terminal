@@ -638,7 +638,8 @@ export function FilesTree({
         </ul>
       ) : (
         <div
-          className="min-h-0 flex-1 overflow-auto px-2 py-1.5"
+          // Quadro Files (`.q-rows`): linhas de 27px com 1px entre elas.
+          className="flex min-h-0 flex-1 flex-col gap-px overflow-auto px-2 py-1.5 [&>*]:shrink-0"
           tabIndex={0}
           aria-label={t("filesTitle")}
           onKeyDown={(e) => {

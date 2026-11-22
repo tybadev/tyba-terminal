@@ -115,6 +115,14 @@ export interface Session {
   /** Quando o turno aberto começou (ms desde a época). Anda com
    * `turn_open`; o front só conta o tempo a partir dele. Só memória no core. */
   turn_started_at_ms?: number | null;
+  /** O prompt do turno aberto, redigido e cortado pelo core. */
+  turn_prompt?: string | null;
+  /** O dono pausou o agente (SIGSTOP no core): desde quando. */
+  paused_at_ms?: number | null;
+  /** Quanto do turno aberto já ficou pausado, sem a pausa de agora. */
+  paused_ms?: number;
+  /** Desde quando a sessão espera o dono; ausente fora disso. */
+  waiting_since_ms?: number | null;
   /** Shell restaurado com uma conversa do Claude que ainda dá para retomar.
    * Decidido pelo core no boot; só em memória. */
   shell_resume_offer?: boolean;
@@ -165,6 +173,13 @@ export interface ShellOption {
   program: string;
   args: string[];
 }
+
+/** Pausa (SIGSTOP) ou retoma o agente da sessão. Só Unix. */
+export const agentPause = (id: SessionId, paused: boolean) =>
+  invoke<void>("agent_pause", { id, paused });
+
+/** Encerra o turno do agente como o dono faria (Esc), sem matar a sessão. */
+export const agentStopTurn = (id: SessionId) => invoke<void>("agent_stop_turn", { id });
 
 export const listShells = () => invoke<ShellOption[]>("list_shells");
 
@@ -677,6 +692,8 @@ export interface PrCheck {
 
 export interface PrReview {
   author: string;
+  /** Nome do perfil (só usuário tem): as iniciais do avatar. */
+  author_name: string | null;
   state: "approved" | "changes_requested" | "commented" | "dismissed" | "pending";
   submitted_at: string | null;
   body: string;
@@ -703,6 +720,8 @@ export interface PrDetail {
   url: string;
   state: PrState;
   author: string;
+  /** Nome do perfil do autor (só usuário tem): as iniciais do avatar. */
+  author_name: string | null;
   head: string;
   base: string;
   /** SHA do head quando o core buscou: o merge e a revisão só valem para ele. */
@@ -1133,6 +1152,23 @@ export const previewNotifySound = (name: string) =>
 
 /** Ajustes do Sistema → Notificações (macOS). */
 export const openNotificationSettings = () => invoke<void>("open_notification_settings");
+/** Se o sistema deixa o TYBA avisar; `null` fora do macOS. */
+export type NotifyPermission = "granted" | "denied" | "not_determined";
+export const notificationPermission = () =>
+  invoke<NotifyPermission | null>("notification_permission");
+
+/** Um `.tyba/config.toml` aprovado (Segurança → "Ver aprovados"). */
+export interface ApprovedRepoConfig {
+  repo_root: string;
+  decided_at: string;
+  /** O arquivo de hoje é o aprovado. */
+  current: boolean;
+}
+export const listApprovedConfigs = () => invoke<ApprovedRepoConfig[]>("list_approved_configs");
+
+/** Um aviso do sistema de teste (Configurações → Notificações). */
+export const testNotification = (title: string, body: string) =>
+  invoke<void>("test_notification", { title, body });
 
 
 /** Onde mora o `config.toml` do usuário; `null` se a pasta foi recusada. */

@@ -1,7 +1,7 @@
 // Foto de uma tela do preview (`preview.html`) no Chrome headless, para
 // comparar pixel a pixel com o quadro.
 //
-//   bun scripts/preview-shot.ts <screen> <out.png> [W] [H] [--theme light|dark] [--log]
+//   bun scripts/preview-shot.ts <screen> <out.png> [W] [H] [--theme light|dark] [--font mono|grotesk] [--log]
 //
 // Usa o `vite dev` que já estiver na porta 1425; se não houver, sobe um e o
 // derruba no fim. `--log` imprime o console da página (comandos sem fixture).
@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 const CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+// `PREVIEW_PORT`: porta própria por worktree, para não fotografar o vite de outro.
 const PORT = Number(process.env.PREVIEW_PORT ?? 1425);
 const BASE = `http://localhost:${PORT}`;
 
@@ -23,12 +24,13 @@ const flag = (name: string) => {
   return value ?? null;
 };
 const theme = flag("--theme") ?? "light";
+const font = flag("--font");
 const logIdx = argv.indexOf("--log");
 const log = logIdx >= 0;
 if (log) argv.splice(logIdx, 1);
 const [screen, out, w = "1110", h = "700"] = argv;
 if (!screen || !out) {
-  console.error("uso: bun scripts/preview-shot.ts <screen> <out.png> [W] [H] [--theme light|dark] [--log]");
+  console.error("uso: bun scripts/preview-shot.ts <screen> <out.png> [W] [H] [--theme light|dark] [--font mono|grotesk] [--log]");
   process.exit(2);
 }
 
@@ -55,7 +57,7 @@ if (!(await up())) {
 }
 
 const profile = mkdtempSync(join(tmpdir(), "tyba-preview-"));
-const url = `${BASE}/preview.html?screen=${encodeURIComponent(screen)}&theme=${theme}`;
+const url = `${BASE}/preview.html?screen=${encodeURIComponent(screen)}&theme=${theme}${font ? `&font=${font}` : ""}`;
 const chrome = Bun.spawn(
   [
     CHROME,
@@ -64,6 +66,8 @@ const chrome = Bun.spawn(
     `--screenshot=${resolve(out)}`,
     `--window-size=${w},${h}`,
     "--hide-scrollbars",
+    // O "Sistema" do app segue o `prefers-color-scheme`: o mesmo do tema pedido.
+    `--blink-settings=preferredColorScheme=${theme === "light" ? 1 : 0}`,
     "--force-device-scale-factor=2",
     "--virtual-time-budget=8000",
     ...(log ? ["--enable-logging=stderr", "--v=0"] : []),

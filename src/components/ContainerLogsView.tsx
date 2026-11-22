@@ -226,6 +226,13 @@ export function ContainerLogsView({ containerId, host = null, restartNonce }: Pr
             ))}
           </DropdownMenuContent>
         </DropdownMenu>
+        {/* Quadro: Copiar fecha a linha; o resto (hora, quebra, seguir,
+            baixar) são extras do app e descem para a linha de baixo. */}
+        {/* Renderizado no quadro, o Copiar fecha a linha justo, quase sem respiro. */}
+        <Button variant="ghost" size="sm" className="has-[>svg]:px-1" onClick={() => void copy()}>
+          <Copy />
+          {t("logsCopy")}
+        </Button>
         <FilterChip active={showTime} aria-pressed={showTime} onClick={() => setShowTime((v) => !v)}>
           {t("logsTime")}
         </FilterChip>
@@ -247,10 +254,6 @@ export function ContainerLogsView({ containerId, host = null, restartNonce }: Pr
           />
           {ended ? t("logsEnded") : follow ? t("logsFollowing") : t("logsPaused")}
         </FilterChip>
-        <Button variant="ghost" size="sm" onClick={() => void copy()}>
-          <Copy />
-          {t("logsCopy")}
-        </Button>
         <Button variant="ghost" size="sm" onClick={() => void download()}>
           <DownloadSimple />
           {t("logsDownload")}

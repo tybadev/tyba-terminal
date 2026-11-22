@@ -114,7 +114,11 @@ export function AgentsSidebar({ rows, open, onSelect, subagents }: Props) {
   // ambígua exige olhar as outras.
   const marcas = useMemo(() => disambiguators(rows), [rows]);
   // Com algum turno rodando, redesenha a cada segundo para o tempo andar.
-  useNow(rows.some((row) => turnElapsedMs(row.session, 0) !== null));
+  useNow(
+    rows.some(
+      (row) => turnElapsedMs(row.session, 0) !== null || row.session.waiting_since_ms != null,
+    ),
+  );
   if (rows.length === 0) {
     // Vazia, a caixa tracejada do quadro SidebarVazia, com o robô. No trilho
     // fechado não sobra lugar para texto.
@@ -158,11 +162,15 @@ export function AgentsSidebar({ rows, open, onSelect, subagents }: Props) {
         }
         const status = row.session.status;
         const turn = row.session.last_turn;
-        // Tempo só do que o core mediu: rodando, desde o começo do turno
-        // aberto; parado, desde o fim do último turno.
+        // Tempo só do que o core mediu: esperando o dono, desde quando ele
+        // passou a esperar; rodando, desde o começo do turno aberto; parado,
+        // desde o fim do último turno.
         const running = turnElapsedMs(row.session, now);
+        const waitingSince = row.session.waiting_since_ms;
         const time =
-          running !== null
+          marca && waitingSince != null
+            ? t("agentAgo", { time: ago(waitingSince, now) })
+            : running !== null
             ? formatElapsed(running)
             : status.state !== "running" && turn
               ? t("agentAgo", { time: ago(turn.ended_at_ms, now) })

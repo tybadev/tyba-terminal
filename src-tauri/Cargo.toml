@@ -58,10 +58,13 @@ rustix = { version = "1", features = ["fs"] }
 # lockfile pelo `rustls-platform-verifier`.
 security-framework = "3"
 objc2 = "0.6"
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSData", "NSString", "NSArray", "NSURL", "NSURLRequest", "NSError", "NSGeometry", "NSProcessInfo", "NSValue", "NSDictionary"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSData", "NSString", "NSArray", "NSURL", "NSURLRequest", "NSError", "NSGeometry", "NSProcessInfo", "NSValue", "NSDictionary", "NSBundle"] }
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSResponder", "NSImage", "NSDockTile", "NSView", "NSWindow", "NSEvent", "NSOpenPanel", "NSSavePanel", "NSPanel", "NSBitmapImageRep", "NSImageRep", "NSGraphics", "block2"] }
 objc2-web-kit = { version = "0.3", default-features = false, features = ["std", "block2", "objc2-app-kit", "WKWebView", "WKUIDelegate", "WKFrameInfo", "WKSecurityOrigin", "WKOpenPanelParameters", "WKNavigationAction", "WKNavigation", "WKWindowFeatures", "WKWebViewConfiguration", "WKSnapshotConfiguration", "WKContentWorld", "WKUserScript", "WKUserContentController"] }
 block2 = "0.6"
+# "Avisos do macOS: Permitidos" (`notifications::permission`); já vinha no
+# lockfile pelo `objc2-app-kit`.
+objc2-user-notifications = { version = "0.3", default-features = false, features = ["std", "block2", "UNUserNotificationCenter", "UNNotificationSettings"] }
 wry = { version = "=0.55.1", default-features = false, features = ["protocol", "os-webview"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]

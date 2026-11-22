@@ -4,7 +4,7 @@
 
 import { emit } from "@tauri-apps/api/event";
 
-import type { DrawerState, LayoutState, Workspace } from "../lib/ipc";
+import type { DrawerState, LayoutState, RepoSnapshot, Session, Workspace } from "../lib/ipc";
 import {
   BLOCKS,
   HOME,
@@ -25,10 +25,14 @@ import {
   DECORATIONS,
   HANDOFF_TARGETS,
   ORBIT_GRAPH,
+  ORBIT_RUN,
+  ORBIT_SESSIONS,
+  PANEL_USAGE,
   PR_DETAIL,
   PR_PAGE,
   RUN_LOG,
   SUBAGENTS,
+  TURN_PANEL_GUTTER,
   TURN_PANEL_SRC,
   WORKFLOW_JOBS,
   WORKFLOW_RUNS,
@@ -40,6 +44,9 @@ type Handler = (args: Args) => unknown;
 
 export const state = {
   theme: "dark" as "dark" | "light",
+  /** O modo salvo; "system" segue o `prefers-color-scheme` do navegador. */
+  mode: null as "system" | null,
+  font: null as "mono" | "grotesk" | null,
   layout: initialLayout(),
   drawers: [] as DrawerState[],
   /** A branch do repo api: a do quadro Header ("main") nas telas do shell;
@@ -47,6 +54,8 @@ export const state = {
   branch: BRANCH,
   /** Sessões cujo shell ainda não chegou ao prompt (o Loader do quadro Main). */
   booting: [] as string[],
+  /** Repos a mais no `repo_snapshots`, só no cenário que pede. */
+  snapshots: [] as RepoSnapshot[],
 };
 
 function activeWorkspace(): Workspace {
@@ -99,16 +108,19 @@ function attach(id: unknown): null {
   return null;
 }
 
-const isShell = (id: unknown) => SESSIONS.some((s) => s.id === id && s.kind.type === "shell");
+// O shell do Terminal do Orbit (quadro Orbit) também é shell.
+const isShell = (id: unknown) =>
+  id === "orbit-term" || SESSIONS.some((s) => s.id === id && s.kind.type === "shell");
 
 const themeState = () => ({
-  mode: state.theme,
+  mode: state.mode ?? state.theme,
   dark: THEMES[0],
   light: THEMES[1],
 });
 
 // O quadro mostra o Docker no header (o dono liga o ícone nas Configurações).
 const PREFS: Record<string, string> = { "pref.code.show_containers": "on" };
+const LSP_READY = { state: "ready", server: "typescript", diagnostics: 0, truncated: false };
 
 const handlers: Record<string, Handler> = {
   boot_snapshot: () => ({
@@ -120,17 +132,44 @@ const handlers: Record<string, Handler> = {
   }),
   boot_poll: () => ({ ready: true, bootFailure: null }),
   layout_state: () => ({ ready: true, value: structuredClone(state.layout) }),
-  list_sessions: () => ({ ready: true, value: SESSIONS }),
-  get_pref: ({ key }) => PREFS[String(key)] ?? null,
+  // O core lista também as sessões dos nós do Orbit (fora de qualquer aba).
+  list_sessions: () => ({ ready: true, value: [...SESSIONS, ...ORBIT_SESSIONS] }),
+  get_pref: ({ key }) =>
+    key === "pref.ui_font" && state.font ? state.font : (PREFS[String(key)] ?? null),
   set_pref: () => null,
   get_theme_state: themeState,
   list_themes: () => THEMES,
   set_theme_mode: ({ mode }) => {
-    state.theme = mode === "light" ? "light" : "dark";
+    state.mode = mode === "system" ? "system" : null;
+    if (mode !== "system") state.theme = mode === "light" ? "light" : "dark";
     void emit("theme://changed", themeState());
     return null;
   },
   app_version: () => "2.0.0-preview",
+  // Páginas das Configurações (quadro SettingsSpecimen).
+  list_snippets: () => [
+    { id: "s-deploy", name: "deploy", command: "./scripts/deploy.sh", description: null, tags: [], source: "local" },
+    { id: "s-testes", name: "testes", command: "bun run test --watch", description: null, tags: [], source: "local" },
+  ],
+  list_launch_configs: () => [],
+  command_history_total: () => 0,
+  scan_shell_history_sources: () => [],
+  // Quadro SettingsSpecimen: "Permitidos." e "Dois aprovados."
+  notification_permission: () => "granted",
+  list_approved_configs: () => [
+    { repo_root: "~/projetos/api", decided_at: "2026-11-02T14:00:00Z", current: true },
+    { repo_root: "~/projetos/site", decided_at: "2026-10-20T09:30:00Z", current: true },
+  ],
+  claude_plugin_status: () => ({ available: true, installed: true, blocked: null }),
+  ssh_typed_prefs: () => ({ detect: true, mode: "ask", denied: [] }),
+  app_build_info: () => ({
+    version: "2.0.0",
+    commit: "a1b2c3d",
+    commit_date: "2026-11-01",
+    os: "macos",
+    arch: "aarch64",
+    webview: "WebKit",
+  }),
   update_check: () => null,
   config_warnings: () => [],
   list_hosts: () => HOSTS,
@@ -160,12 +199,15 @@ const handlers: Record<string, Handler> = {
       branch: "main",
       status: { dirty: false, changed: 0, insertions: 0, deletions: 0 },
     })),
+    ...state.snapshots,
   ],
   // O `bun run dev` do Shell dividido escuta na 3000.
   services_session_ports: () => ({ [ID.server]: [3000] }),
   "plugin:path|resolve_directory": () => HOME,
   attach_session: ({ id }) => attach(id),
   resize_session: () => null,
+  agent_pause: () => null,
+  agent_stop_turn: () => null,
   session_mark_seen: () => null,
   session_blocks: ({ id }) => BLOCKS[String(id)] ?? [],
   session_prompt_mode: ({ id }) => isShell(id) && !state.booting.includes(String(id)),
@@ -222,13 +264,16 @@ const handlers: Record<string, Handler> = {
   files_watch_dir: () => null,
   files_unwatch_dir: () => null,
   files_decorations: () => DECORATIONS,
-  files_gutter: () => [],
+  files_gutter: ({ path }) => (String(path).endsWith("TurnPanel.tsx") ? TURN_PANEL_GUTTER : []),
   files_edit_begin: ({ path }) => ({ text: String(path).endsWith(".tsx") ? TURN_PANEL_SRC : "", hash: "preview" }),
-  lsp_status: () => ({ state: "ready", server: "typescript", diagnostics: 0, truncated: false }),
-  lsp_open: () => null,
+  lsp_status: () => LSP_READY,
+  lsp_open: () => LSP_READY,
+  lsp_symbol_path: ({ line }) => (Number(line) >= 39 ? ["TurnPanel"] : []),
+  lsp_code_actions: () => [],
   lsp_open_doc: () => null,
   lsp_close_doc: () => null,
   lsp_did_change: () => null,
+  lsp_change: () => null,
   files_read: () => ({
     kind: "text",
     text: TURN_PANEL_SRC,
@@ -244,7 +289,7 @@ const handlers: Record<string, Handler> = {
   docker_compose_runs: () => ({}),
   docker_logs_start: () => ({ lines: CONTAINER_LOG, following: false }),
   docker_logs_stop: () => null,
-  docker_panel_usage: () => ({ usage: [], exits: [] }),
+  docker_panel_usage: () => PANEL_USAGE,
   docker_container_detail: ({ containerId }) => {
     const c = CONTAINERS.find((x) => x.id === containerId) ?? CONTAINERS[0];
     return { id: c.id, name: c.name, image: c.image, state: c.state, started_at: null, workdir: null, mounts: [], ports: [] };
@@ -264,7 +309,7 @@ const handlers: Record<string, Handler> = {
   detach_session: () => null,
   orbit_list_graphs: () => [ORBIT_GRAPH],
   orbit_get_graph: () => ORBIT_GRAPH,
-  orbit_runs_list: () => [],
+  orbit_runs_list: () => [ORBIT_RUN],
   orbit_node_log: () => [],
   orbit_var_env_problems: () => [],
   orbit_save_graph: () => null,
@@ -306,9 +351,17 @@ export function setup(opts: {
   files?: Workspace["screens"]["files"];
   branch?: string;
   booting?: string[];
+  /** Campos a mais em sessões só deste cenário (as outras telas não mudam). */
+  sessions?: Record<string, Partial<Session>>;
+  snapshots?: RepoSnapshot[];
 }): void {
   if (opts.booting) state.booting = opts.booting;
   if (opts.branch) state.branch = opts.branch;
+  if (opts.snapshots) state.snapshots = opts.snapshots;
+  for (const [id, patch] of Object.entries(opts.sessions ?? {})) {
+    const target = SESSIONS.find((x) => x.id === id);
+    if (target) Object.assign(target, patch);
+  }
   if (opts.workspace) state.layout.active_workspace = opts.workspace;
   if (opts.tab) activeWorkspace().active_tab = opts.tab;
   if (opts.files) activeWorkspace().screens.files = opts.files;

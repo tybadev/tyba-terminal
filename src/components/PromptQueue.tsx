@@ -609,6 +609,7 @@ export function DrawerPill({
   agents,
   turn,
   runningSince,
+  pausedAt = null,
   open,
   compact,
   onToggle,
@@ -617,14 +618,17 @@ export function DrawerPill({
   agents: PillAgents | null;
   turn: PillTurn | null;
   runningSince: number | null;
+  /** Instante em que o dono pausou o agente: o tempo fica parado nele. */
+  pausedAt?: number | null;
   open: boolean;
   compact: boolean;
   onToggle: () => void;
 }) {
   const { t } = useTranslation();
   // O tempo do turno que roda, contado aqui a partir do começo que o core mandou.
-  useNow(runningSince !== null);
-  const elapsed = runningSince !== null ? formatElapsed(Date.now() - runningSince) : null;
+  useNow(runningSince !== null && pausedAt === null);
+  const elapsed =
+    runningSince !== null ? formatElapsed(Math.max(0, (pausedAt ?? Date.now()) - runningSince)) : null;
   const state = agents?.state ?? null;
   const attn = state?.kind === "attn";
   const stateText =

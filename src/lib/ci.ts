@@ -7,7 +7,7 @@ const BENIGN = /\b0\s+fail(ed|ures?|s)?\b|\bfail(ed|ures?|s)?\s*[:=]\s*0\b|conti
 
 /** Linha do log que parece erro, para realçar e para o "ir para o erro". */
 export function isErrorLine(line: string): boolean {
-  return /[✗✖]|(^|\W)(error|erro|fail(ed|ure)?|panic|exception)\b|exit code [1-9]/i.test(
+  return /[✗✖]|(^|\W)(error|erro|fail(ed|ure)?|panic(ked)?|exception)\b|exit code [1-9]/i.test(
     line.replace(BENIGN, ""),
   );
 }

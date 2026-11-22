@@ -2048,6 +2048,18 @@ impl PtyPool {
     pub fn is_alive(&self, id: PtyId) -> bool {
         self.ptys.lock().contains_key(&id)
     }
+
+    /// Pausa (SIGSTOP) ou retoma (SIGCONT) o process group do líder — o
+    /// agente inteiro, com os filhos dele. Só o líder original: pid morto ou
+    /// reusado não recebe sinal.
+    #[cfg(unix)]
+    pub fn pause_group(&self, id: PtyId, paused: bool) -> std::io::Result<()> {
+        let pid = self
+            .leader_pid(id)
+            .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound))?;
+        let sig = if paused { libc::SIGSTOP } else { libc::SIGCONT };
+        signal_process_group(pid, sig)
+    }
 }
 
 fn kill_handle(mut handle: PtyHandle) {
@@ -2127,6 +2139,11 @@ fn watch_leader_exit(id: PtyId, sid: u32, leader_start: Option<u64>, reaped: Arc
 
 #[cfg(unix)]
 fn kill_process_group(leader_pid: u32) -> std::io::Result<()> {
+    signal_process_group(leader_pid, libc::SIGKILL)
+}
+
+#[cfg(unix)]
+fn signal_process_group(leader_pid: u32, sig: libc::c_int) -> std::io::Result<()> {
     let pgid = unsafe { libc::getpgid(leader_pid as libc::pid_t) };
     if pgid < 0 {
         let err = std::io::Error::last_os_error();
@@ -2135,7 +2152,7 @@ fn kill_process_group(leader_pid: u32) -> std::io::Result<()> {
             _ => Err(err),
         };
     }
-    let rc = unsafe { libc::killpg(pgid, libc::SIGKILL) };
+    let rc = unsafe { libc::killpg(pgid, sig) };
     if rc == -1 {
         let err = std::io::Error::last_os_error();
         if err.raw_os_error() != Some(libc::ESRCH) {

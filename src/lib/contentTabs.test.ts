@@ -105,6 +105,7 @@ describe("apresentação", () => {
     expect(langGlyph("Main.TSX").text).toBe("TS");
     expect(langGlyph("Makefile").text).toBe("·");
     expect(languageName("src/server.js")).toBe("JavaScript");
+    expect(languageName("src/components/TurnPanel.tsx")).toBe("TypeScript React");
     expect(languageName("x.zig")).toBe("ZIG");
     expect(languageName("Makefile")).toBe("Texto");
   });

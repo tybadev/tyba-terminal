@@ -2080,12 +2080,10 @@ html {
   --tyba-settings-bg: radial-gradient(60% 40% at 20% 10%, rgba(17, 82, 210, 0.06), transparent 70%), #f4f6fb;
   --tyba-spec-edge: rgba(10, 24, 48, 0.1);
 }
-/* No claro a sans do cromo é a do Muriki (Plus Jakarta Sans): quando a
-   preferência pede sans e, sem preferência salva, por padrão (o quadro).
-   "Fonte da interface: mono" escolhida vale também no claro (dono,
-   2026-11-02). No escuro, sem preferência, segue a mono de sempre. */
-[data-theme='light'][data-font='grotesk']:not([data-imported]),
-[data-theme='light'][data-font='auto']:not([data-imported]) {
+/* No claro a sans do cromo é a do Muriki (Plus Jakarta Sans), mas só quando
+   a preferência pede sans: "Fonte da interface: mono" vale também no claro
+   (dono, 2026-11-02). */
+[data-theme='light'][data-font='grotesk']:not([data-imported]) {
   --tyba-font-ui: 'Plus Jakarta Sans', ui-sans-serif, system-ui, -apple-system, sans-serif;
 }
 [data-theme='light']:not([data-imported]) .tyba-aurora {
@@ -2259,4 +2257,24 @@ html {
 }
 @media (prefers-reduced-motion: reduce) {
   .tyba-loader-drop { animation: none; left: calc(50% - 28px); }
+}
+
+/* O pulso do ponto do FocusHUD (`.mk-hud-dot::after`, `mk-pulse`): halo da
+   cor do ponto, 5px para fora, de .6 a 1.6 em 2s. Parado em movimento
+   reduzido. */
+.tyba-hud-dot.is-running::after {
+  content: "";
+  position: absolute;
+  inset: -5px;
+  border-radius: inherit;
+  background: inherit;
+  opacity: 0.45;
+  animation: tyba-hud-pulse 2s ease-out infinite;
+}
+@keyframes tyba-hud-pulse {
+  0% { transform: scale(0.6); opacity: 0.55; }
+  100% { transform: scale(1.6); opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tyba-hud-dot.is-running::after { animation: none; }
 }
