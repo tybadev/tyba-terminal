@@ -32,7 +32,7 @@ function ContextMenuContent({
       <ContextMenuPrimitive.Content
         data-slot="context-menu-content"
         className={cn(
-          "z-50 min-w-40 overflow-hidden rounded-[14px] border border-tyba-border bg-tyba-overlay/[.97] p-1.5 backdrop-blur-xl [box-shadow:var(--tyba-edge),var(--tyba-shadow-lg)]",
+          "z-50 min-w-40 overflow-hidden tyba-mk-glass is-float rounded-[14px] border border-[var(--tyba-mk-glass-edge,var(--tyba-border))] bg-tyba-overlay/[.97] p-1.5 backdrop-blur-xl [box-shadow:var(--tyba-edge),var(--tyba-shadow-lg)]",
           className,
         )}
         {...props}
@@ -124,7 +124,7 @@ function ContextMenuSubContent({
       <ContextMenuPrimitive.SubContent
         data-slot="context-menu-sub-content"
         className={cn(
-          "z-50 min-w-40 overflow-hidden rounded-[14px] border border-tyba-border bg-tyba-overlay/[.97] p-1.5 backdrop-blur-xl [box-shadow:var(--tyba-edge),var(--tyba-shadow-lg)]",
+          "z-50 min-w-40 overflow-hidden tyba-mk-glass is-float rounded-[14px] border border-[var(--tyba-mk-glass-edge,var(--tyba-border))] bg-tyba-overlay/[.97] p-1.5 backdrop-blur-xl [box-shadow:var(--tyba-edge),var(--tyba-shadow-lg)]",
           className,
         )}
         {...props}

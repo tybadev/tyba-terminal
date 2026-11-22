@@ -16,7 +16,17 @@ function Kbd({ className, children }: { className?: string; children: React.Reac
   );
 }
 
-function Shortcut({ combo, className }: { combo: string; className?: string }) {
+function Shortcut({
+  combo,
+  className,
+  joined,
+}: {
+  combo: string;
+  className?: string;
+  /** Uma tecla só com o atalho inteiro ("⌘P"), como a barra de status do quadro Shell. */
+  joined?: boolean;
+}) {
+  if (joined) return <Kbd className={className}>{comboKeys(combo).join("")}</Kbd>;
   return (
     <span className={cn("inline-flex items-center gap-0.5", className)}>
       {comboKeys(combo).map((key, i) => (

@@ -56,8 +56,8 @@ const TONE_TEXT: Record<Tone, string> = {
 
 const CHIP: Record<ReviewChip["tone"], string> = {
   ok: "bg-tyba-green/[.12] text-tyba-green",
-  wait: "bg-tyba-amber/[.12] text-tyba-amber",
-  changes: "bg-tyba-red/[.12] text-tyba-red",
+  wait: "bg-tyba-amber-tint text-tyba-amber",
+  changes: "bg-tyba-red-tint text-tyba-red",
   draft: "bg-tyba-text/[.06] text-tyba-text-muted",
 };
 
@@ -87,7 +87,7 @@ function StateIcon({ state }: { state: PrListItem["state"] }) {
 
 function Avatar({ name }: { name: string }) {
   return (
-    <span className="flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-tyba-blue/[.14] px-1 text-[8.5px] font-bold text-tyba-blue">
+    <span className="mr-1.5 flex size-4 shrink-0 items-center justify-center overflow-hidden rounded-full bg-tyba-blue/[.14] text-[8.5px] font-bold text-tyba-blue">
       {initials(name)}
     </span>
   );
@@ -227,20 +227,23 @@ export function PrListView({
             </span>
             <span className="shrink-0 font-medium text-tyba-text-faint">#{item.number}</span>
             {agent && (
-              <span className="shrink-0 rounded-full bg-tyba-amber/[.12] px-2 py-px text-[11px] font-semibold text-tyba-amber">
+              <span className="shrink-0 rounded-full bg-tyba-amber-tint px-2 py-px text-[11px] font-semibold text-tyba-amber">
                 {agent}
               </span>
             )}
           </div>
-          <div className="mt-1 flex min-w-0 items-center gap-1.5 whitespace-nowrap text-[12px] text-tyba-text-faint">
+          {/* Quadro: "autor · sessão · branch → main · atualizado há…", texto corrido. */}
+          <div className="mt-1 flex min-w-0 items-center whitespace-nowrap text-[12px] text-tyba-text-faint">
             <Avatar name={author} />
             <span className="truncate">
               {author}
               {linked && <> · {t("prBySession", { title: linked.title })}</>}
             </span>
+            <span className="shrink-0">&nbsp;·&nbsp;</span>
             <span className="truncate font-mono text-[11.5px] text-tyba-blue">
               {item.head} → {item.base}
             </span>
+            <span className="shrink-0">&nbsp;·&nbsp;</span>
             <span className="shrink-0">
               {item.state === "merged" && item.merged_at
                 ? t("prMergedAgo", {
@@ -255,7 +258,7 @@ export function PrListView({
                   e.stopPropagation();
                   onFocusSession(linked.session);
                 }}
-                className="hidden shrink-0 text-tyba-blue hover:underline group-hover/pr:inline"
+                className="ml-1.5 hidden shrink-0 text-tyba-blue hover:underline group-hover/pr:inline"
               >
                 {t("prOpenInTyba")}
               </button>
@@ -272,12 +275,8 @@ export function PrListView({
             </span>
           ))}
         </span>
-        <span
-          className={`flex items-center gap-1 text-[12px] ${
-            item.comments > 0 ? "text-tyba-text-muted" : "text-tyba-text-faint"
-          }`}
-        >
-          <ChatTeardrop size={12} aria-hidden />
+        <span className="flex items-center gap-1 text-[12px] text-tyba-text-muted">
+          <ChatTeardrop size={13} aria-hidden />
           {item.comments}
         </span>
         <span className="text-right font-mono text-[12px]">
@@ -293,6 +292,7 @@ export function PrListView({
       <header className="flex h-[52px] shrink-0 items-center gap-3 whitespace-nowrap shadow-[inset_0_-1px_0_var(--tyba-line)] px-[18px] text-[12px] text-tyba-text-muted">
         {/* Quadro PRs: o filtro é o segmentado do Muriki, com a contagem no rótulo. */}
         <SegmentedControl
+          tone="tint"
           aria-label={t("notifFilter")}
           value={filter}
           onChange={(key) => {
@@ -306,18 +306,14 @@ export function PrListView({
               label: (
                 <>
                   {t(f.label)}
-                  {count !== null && count > 0 && (
-                    <span className={f.key === "review" ? "text-tyba-amber" : "text-tyba-text-muted"}>
-                      {prCountLabel(count, page?.capped ?? false)}
-                    </span>
-                  )}
+                  {count !== null && count > 0 && <> {prCountLabel(count, page?.capped ?? false)}</>}
                 </>
               ),
             };
           })}
         />
         <Input
-          icon={<MagnifyingGlass size={16} aria-hidden />}
+          icon={<MagnifyingGlass size={18} aria-hidden />}
           type="text"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
@@ -327,14 +323,14 @@ export function PrListView({
         />
         {status && (
           <Button size="sm" onClick={() => setCreating(true)}>
-            <Plus weight="bold" />
+            <Plus />
             {t("prNew")}
           </Button>
         )}
         <span className="flex-1" />
         {page && (
           <span className="flex min-w-0 items-center gap-1.5 text-[12.5px]" title={`GitHub · ${page.repo}`}>
-            <GithubLogo size={13} className="shrink-0" aria-hidden />
+            <GithubLogo size={14} className="shrink-0" aria-hidden />
             <span className="truncate">{page.repo.split("/").pop()}</span>
           </span>
         )}
@@ -345,7 +341,7 @@ export function PrListView({
             title={t("prRefresh")}
             className="flex shrink-0 items-center gap-[5px] text-[12px] text-tyba-text-faint hover:text-tyba-text"
           >
-            <ArrowsClockwise size={12} className={loading ? "animate-spin" : undefined} aria-hidden />
+            <ArrowsClockwise size={13} className={loading ? "animate-spin" : undefined} aria-hidden />
             {t("prFetchedAgo", { ago: relative(page.fetched_at, now) })}
           </button>
         )}
@@ -389,7 +385,7 @@ export function PrListView({
               <span />
               <span>
                 {filter === "open"
-                  ? t("prListSummary", { count: items.length, drafts })
+                  ? `${t("prListSummary", { count: items.length })} · ${t("prListDrafts", { count: drafts })}`
                   : t("prListCount", { count: items.length })}
               </span>
               <span>CI</span>
@@ -404,7 +400,7 @@ export function PrListView({
             {page.capped && nextPrLimit(limit) !== null && (
               <div className="flex justify-center pb-1.5 pt-3.5">
                 <Button
-                  variant="outline"
+                  variant="ghost"
                   size="sm"
                   disabled={loading}
                   onClick={() => {

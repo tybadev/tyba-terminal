@@ -54,8 +54,8 @@ function TerminalSpecimen({
         color: p.foreground,
         boxShadow:
           selectable && selected
-            ? `var(--tyba-shadow-md), 0 0 0 3px var(--tyba-bg), 0 0 0 5px var(--tyba-primary)`
-            : `var(--tyba-shadow-md), inset 0 0 0 1px ${line}`,
+            ? `var(--tyba-mk-shadow-float, var(--tyba-shadow-md)), 0 0 0 3px var(--tyba-ring-bg, var(--tyba-bg)), 0 0 0 5px var(--tyba-primary)`
+            : `var(--tyba-mk-shadow-float, var(--tyba-shadow-md)), inset 0 0 0 1px var(--tyba-spec-edge, ${line})`,
       }}
     >
       <span className="flex h-[34px] items-center gap-[7px] px-3.5" style={{ borderBottom: `1px solid ${line}` }}>
@@ -230,7 +230,7 @@ export function ThemePicker({
           <button
             type="button"
             onClick={onImport}
-            className="inline-flex h-9 items-center gap-2 rounded-full px-3.5 text-[13px] text-tyba-text-muted shadow-[inset_0_0_0_1px_var(--tyba-border-field)] hover:bg-[var(--tyba-glass-piece)] hover:text-tyba-text focus-visible:outline-none focus-visible:[box-shadow:var(--tyba-focus-ring)]"
+            className="inline-flex h-9 items-center gap-2 rounded-full pr-3.5 pl-2 text-[13px] text-tyba-text shadow-[inset_0_0_0_1px_var(--tyba-line)] hover:bg-[var(--tyba-glass-piece)] focus-visible:outline-none focus-visible:[box-shadow:var(--tyba-focus-ring)]"
           >
             <Plus size={14} />
             {t("importTheme")}

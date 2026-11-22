@@ -211,6 +211,9 @@ export const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEdito
     const state = EditorState.create({
       doc,
       extensions: [
+        // Quadro Files: a faixa de alteração vem antes do número.
+        markersField,
+        diffGutter,
         lineNumbers(),
         EditorState.readOnly.of(!!readOnly),
         EditorView.editable.of(!readOnly),
@@ -222,8 +225,6 @@ export const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEdito
         bracketMatching(),
         highlightActiveLine(),
         highlightSelectionMatches(),
-        markersField,
-        diffGutter,
         search({ top: true }),
         keymap.of([
           {

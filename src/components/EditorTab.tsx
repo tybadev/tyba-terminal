@@ -476,7 +476,7 @@ export function EditorTab({
         active ? "" : "hidden"
       }`}
     >
-      <div className="flex h-[34px] shrink-0 items-center gap-3.5 border-b border-[var(--tyba-line)] px-3.5 text-[11.5px] text-tyba-text-faint">
+      <div className="flex h-[34px] shrink-0 items-center gap-2 border-b border-[var(--tyba-line)] bg-[var(--tyba-editor-code-bg,transparent)] px-3.5 text-[11.5px] text-tyba-text-faint">
         <nav
           aria-label={t("editorBreadcrumb")}
           className="flex min-w-0 flex-1 items-center gap-1 truncate font-mono"
@@ -485,7 +485,7 @@ export function EditorTab({
           {parts.map((part, i) => (
             <span key={i} className="flex items-center gap-1">
               <span aria-hidden>›</span>
-              <span className={i === parts.length - 1 ? "text-tyba-text" : ""}>{part}</span>
+              <span className={i === parts.length - 1 ? "font-semibold text-tyba-text" : ""}>{part}</span>
             </span>
           ))}
           {symbols.map((sym, i) => (
@@ -521,7 +521,7 @@ export function EditorTab({
         <button
           type="button"
           onClick={onOpenDiff}
-          className="flex shrink-0 items-center gap-1 hover:text-tyba-text"
+          className="flex shrink-0 items-center gap-[5px] text-tyba-text-muted hover:text-tyba-text"
         >
           <GitIcon size={12} />
           {t("editorDiffHead")}
@@ -533,12 +533,12 @@ export function EditorTab({
               toastError(t("filesOpenExternal"), e),
             )
           }
-          className="flex shrink-0 items-center gap-1 hover:text-tyba-text"
+          className="flex shrink-0 items-center gap-[5px] text-tyba-text-muted hover:text-tyba-text"
         >
           <ArrowSquareOut size={12} />
           {t("editorOpenDefault")}
         </button>
-        <Button variant="outline" size="xs" onClick={() => void save()} disabled={loaded.kind !== "ready"}>
+        <Button variant="outline" size="sm" onClick={() => void save()} disabled={loaded.kind !== "ready"}>
           {t("editorSave", { combo: IS_MAC ? "⌘S" : "Ctrl+S" })}
         </Button>
       </div>

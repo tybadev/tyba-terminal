@@ -892,6 +892,7 @@ export function DockerScreen({
                   >
                     {/* Segmentado do quadro (Docker): trilho em pílula, knob branco. */}
                     <SegmentedControl
+                      tone="tint"
                       aria-label={t("dockerScreenPanes")}
                       value={state.pane}
                       onChange={showPane}

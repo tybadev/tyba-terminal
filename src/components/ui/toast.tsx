@@ -21,7 +21,7 @@ function ToastViewport({
     <ToastPrimitive.Viewport
       data-slot="toast-viewport"
       className={cn(
-        "fixed right-4 top-12 z-[100] flex w-full max-w-sm flex-col gap-2 outline-none",
+        "fixed right-4 top-[60px] z-[100] flex w-[var(--tyba-mk-toast-vw,100%)] max-w-[var(--tyba-mk-toast-max,24rem)] flex-col gap-2 outline-none",
         className,
       )}
       {...props}
@@ -29,8 +29,11 @@ function ToastViewport({
   );
 }
 
-// Toast do Muriki (quadro Main): raio 14px, título 14px/600 em caixa de
-// frase, descrição 13px apagada; a ação fica na mesma linha, à direita.
+// Toast do Muriki (quadro Main, `mk-glass is-float mk-toast`): raio 14px,
+// 12 8 12 16 de folga, entre 340 e 440 de largura, título 14px/600 em caixa
+// de frase, descrição 13px apagada; a ação fica na mesma linha, à direita.
+// Folga e largura são do claro do TYBA (`--tyba-mk-toast-*`); nos outros
+// temas o fallback é o de antes (12 em volta, até 384).
 function Toast({
   className,
   ...props
@@ -39,7 +42,7 @@ function Toast({
     <ToastPrimitive.Root
       data-slot="toast"
       className={cn(
-        "pointer-events-auto relative w-full rounded-[14px] border border-tyba-border bg-tyba-overlay/95 p-3 text-tyba-text backdrop-blur-xl [box-shadow:var(--tyba-edge),var(--tyba-shadow-lg)]",
+        "tyba-mk-glass is-float pointer-events-auto relative w-full min-w-[var(--tyba-mk-toast-min,0px)] rounded-[14px] border border-[var(--tyba-mk-glass-edge,var(--tyba-border))] bg-tyba-overlay/95 py-3 pr-[var(--tyba-mk-toast-pr,12px)] pl-[var(--tyba-mk-toast-pl,12px)] text-tyba-text backdrop-blur-xl [box-shadow:var(--tyba-edge),var(--tyba-shadow-lg)]",
         "motion-safe:animate-tyba-pop-in",
         "data-[swipe=move]:translate-x-[var(--radix-toast-swipe-move-x)] data-[swipe=cancel]:translate-x-0 data-[swipe=end]:translate-x-[var(--radix-toast-swipe-end-x)] data-[swipe=move]:transition-none",
         className,
@@ -100,12 +103,14 @@ function ToastClose({
       data-slot="toast-close"
       aria-label="Fechar"
       className={cn(
-        "absolute right-1.5 top-1.5 rounded-[3px] p-0.5 text-tyba-text-faint transition-colors hover:bg-tyba-text/[.08] hover:text-tyba-text",
+        "tyba-mk-toast-x absolute right-1.5 top-1.5 rounded-[3px] p-0.5 text-tyba-text-faint transition-colors hover:bg-tyba-text/[.08] hover:text-tyba-text",
         className,
       )}
       {...props}
     >
-      <X size={12} weight="bold" />
+      {/* No claro, o X regular de 16 do botão ghost sm do Muriki. */}
+      <X size={12} weight="bold" className="tyba-mk-hide" />
+      <X size={16} className="tyba-mk-only" />
     </ToastPrimitive.Close>
   );
 }

@@ -392,7 +392,7 @@ export function Toolbar({
       // Barra de status do quadro Shell (36px): atalhos à esquerda; pasta e
       // branch em pílulas neutras e a hora com o fio. A ordem dos chips segue
       // a preferência do dono (ToolbarChipsEditor).
-      className="tyba-section flex h-9 min-w-0 shrink-0 items-center justify-between gap-4 px-2.5 text-[12px] text-tyba-text-muted shadow-[inset_0_1px_0_var(--tyba-line)]"
+      className="flex h-9 min-w-0 shrink-0 items-center justify-between gap-4 bg-[var(--tyba-statusbar-bg)] px-2.5 text-[12px] text-tyba-text-muted shadow-[inset_0_1px_0_var(--tyba-line)] backdrop-blur-[12px]"
     >
       <div className="flex min-w-0 overflow-hidden">
         <div ref={leftRef} className="flex w-max items-center gap-1">
@@ -405,7 +405,7 @@ export function Toolbar({
             >
               <TextAlignLeft size={13} />
               {keeps(FOOTER_STEP.richInputLabel) && <span>{t("richInputToggle")}</span>}
-              <Shortcut combo={richInputCombo} />
+              <Shortcut combo={richInputCombo} joined />
             </button>
           )}
           {plugin && <PluginChip sessionId={sessionId} />}
@@ -420,7 +420,7 @@ export function Toolbar({
                 title={labeled ? undefined : hint.label}
                 className="flex h-[26px] shrink-0 items-center gap-1.5 rounded-[8px] px-2 font-medium text-tyba-text-muted transition-colors hover:bg-tyba-text/[.05] hover:text-tyba-text"
               >
-                {hint.combo ? <Shortcut combo={hint.combo} /> : hint.icon}
+                {hint.combo ? <Shortcut combo={hint.combo} joined /> : hint.icon}
                 {labeled && <span>{hint.label}</span>}
               </button>
             );

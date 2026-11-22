@@ -302,7 +302,7 @@ export function EmptySessions({
             <Tile
               on={choice.where === "folder"}
               icon={<FolderSimple size={20} />}
-              corner={<Shortcut combo={bindings.openFolder} />}
+              corner={<Shortcut combo={bindings.openFolder} joined />}
               name={t("startFolder")}
               detail={choice.folder ? compactPath(choice.folder) : t("startFolderPick")}
               onClick={onFolderTile}
@@ -373,7 +373,7 @@ export function EmptySessions({
           <Button type="button" disabled={!plan} onClick={launch}>
             {t("startOpen")}
             <ArrowRight />
-            <Shortcut combo={SEND_PROMPT_COMBO} />
+            <Shortcut combo={SEND_PROMPT_COMBO} joined />
           </Button>
         </div>
       </section>
@@ -383,7 +383,7 @@ export function EmptySessions({
           <button type="button" className={MINI} onClick={onNewTab}>
             <Plus size={16} className="text-primary" />
             {t("newTab")}
-            <Shortcut combo={bindings.newTab} />
+            <Shortcut combo={bindings.newTab} joined />
           </button>
         )}
         <button type="button" className={MINI} onClick={onConnectSsh}>
@@ -393,12 +393,12 @@ export function EmptySessions({
         <button type="button" className={MINI} onClick={onOrbit}>
           <OrbitIcon size={16} className="text-primary" />
           {t("orbitView")}
-          <Shortcut combo={bindings.toggleOrbit} />
+          <Shortcut combo={bindings.toggleOrbit} joined />
         </button>
         <button type="button" className={MINI} onClick={onPalette}>
           <Command size={16} className="text-primary" />
           {t("commandPalette")}
-          <Shortcut combo={bindings.paletteActions} />
+          <Shortcut combo={bindings.paletteActions} joined />
         </button>
       </nav>
 

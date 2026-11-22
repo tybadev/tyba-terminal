@@ -686,7 +686,7 @@ function agentGlyph(label: string, size = 16): React.ReactNode {
 /** Badge amarelo do Muriki (`mk-sb-badge`): contagem que pede você. */
 function SidebarBadge({ count }: { count: number }) {
   return (
-    <span className="ml-auto grid h-[18px] min-w-[18px] place-items-center rounded-full bg-tyba-amber-fill px-[5px] text-[11px] font-bold text-[color-mix(in_srgb,var(--tyba-amber-fill)_16%,black)]">
+    <span className="ml-auto grid h-[18px] min-w-[18px] place-items-center rounded-full bg-tyba-amber-fill px-[5px] text-[11px] font-bold text-[var(--tyba-on-spark,color-mix(in_srgb,var(--tyba-amber-fill)_16%,black))]">
       {count > 9 ? "9+" : count}
     </span>
   );
@@ -6629,23 +6629,26 @@ export default function App() {
           style={DEV_HEADER_STYLE}
           // Barra B do quadro PropostaClaro: seção de vidro na largura toda,
           // semáforos, marca, migalha, branch e, à direita, os ícones do painel.
-          // Os semáforos nativos ficam dentro dela (`trafficLightPosition`).
-          className={`tyba-section tyba-bar flex h-10 shrink-0 items-center gap-2.5 pr-2.5 ${
+          // Os semáforos nativos ficam dentro dela (`trafficLightPosition`,
+          // centrado nos 52px do `.hd` do quadro Header, em todo tema).
+          className={`tyba-section tyba-mk-glass tyba-bar flex h-[52px] shrink-0 items-center gap-2.5 pr-2.5 ${
             IS_MAC ? "pl-[84px]" : "pl-2.5"
           }`}
         >
           {/* Só o wordmark, como no quadro Header. Sem eventos: o clique cai no header, que
               arrasta a janela. */}
-          <span className="pointer-events-none flex shrink-0 items-center gap-3">
-            <span className="font-sans text-[14px] font-semibold tracking-[0.02em] text-tyba-text">
+          {/* Quadro Header: wordmark 14/700 e o fio de 1×20 a 10px, no claro
+              (`--tyba-mk-hd-*`); os outros temas ficam no 600 e no 1×18 a 12px. */}
+          <span className="pointer-events-none flex shrink-0 items-center gap-[var(--tyba-mk-hd-gap,12px)]">
+            <span className="font-sans text-[14px] [font-weight:var(--tyba-mk-wordmark-weight,600)] tracking-[0.02em] text-tyba-text">
               TYBA
             </span>
-            <span aria-hidden className="h-[18px] w-px bg-tyba-border" />
+            <span aria-hidden className="h-[var(--tyba-mk-hd-sep,18px)] w-px bg-[var(--tyba-mk-glass-line,var(--tyba-border))]" />
           </span>
 
           <nav
             aria-label={t("breadcrumb")}
-            className="flex min-w-0 items-center gap-2 text-[13px] font-medium text-tyba-text-faint"
+            className="flex min-w-0 items-center gap-[var(--tyba-mk-hd-gap,8px)] text-[13px] font-medium text-tyba-text-faint"
           >
             {/* O modo atual (Terminal ou Workspace/Orbit). Quem troca de modo é
                 a lateral — o item Workspace (dono, 2026-11-02); clicar aqui no
@@ -6804,7 +6807,7 @@ export default function App() {
                 >
                   <Tray size={18} />
                   {inboxBadge > 0 && (
-                    <span className="absolute -right-0.5 -top-0.5 grid h-4 min-w-4 place-items-center rounded-full bg-tyba-amber-fill px-1 text-[10px] font-bold text-[color-mix(in_srgb,var(--tyba-amber-fill)_16%,black)]">
+                    <span className="absolute -right-0.5 -top-0.5 grid h-4 min-w-4 place-items-center rounded-full bg-tyba-amber-fill px-1 text-[10px] font-bold text-[var(--tyba-on-spark,color-mix(in_srgb,var(--tyba-amber-fill)_16%,black))]">
                       {inboxBadge > 9 ? "9+" : inboxBadge}
                     </span>
                   )}
@@ -6883,7 +6886,7 @@ export default function App() {
                   // Barra lateral do quadro Sidebar (aprovada em 2026-11-15):
                   // busca, Nova sessão/Orbit/Conexões SSH, Sessões por grupo,
                   // Agentes em cartões e, no pé, Inbox e Configurações.
-                  className="tyba-section flex shrink-0 flex-col overflow-hidden"
+                  className="tyba-section tyba-mk-sidebar flex shrink-0 flex-col overflow-hidden"
                   style={{ width: SIDEBAR_WIDTH[sidebar] }}
                 >
                   {open && (

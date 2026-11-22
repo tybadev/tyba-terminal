@@ -40,16 +40,18 @@ const TYBA_DARK: SyntaxPalette = {
   variable: "#f5f5f6",
 };
 
-/// Mockup EditorClaro, com os tons de texto da paleta do claro (PropostaClaro).
+/// Quadro Files do Muriki (`.q-k/.q-s/.q-f/.q-ty/.q-c`): palavra-chave
+/// violeta, string verde, função azul da marca, tipo âmbar, comentário no
+/// ink-subtle e texto no marinho.
 const TYBA_LIGHT: SyntaxPalette = {
-  comment: "#8b8b96",
+  comment: "#5c6880",
   keyword: "#7a4ce8",
   control: "#55555f",
-  string: "#3f7a1b",
-  function: "#3b66d6",
+  string: "#15803d",
+  function: "#1152d2",
   number: "#9a5f0c",
-  type: "#0c7c6f",
-  variable: "#121218",
+  type: "#a16207",
+  variable: "#0a1830",
   tag: "#b5321f",
   invalid: "#b5321f",
 };
@@ -101,14 +103,15 @@ export function cmEditorTheme(dark: boolean): ReturnType<typeof EditorView.theme
     {
       "&": {
         color: "var(--tyba-text)",
-        // Opção G: quem pinta é a folha (ou a tela) em volta.
-        backgroundColor: "transparent",
+        // Opção G: quem pinta é a folha (ou a tela) em volta. No claro do
+        // Muriki o código fica no branco do quadro (`.q-code`).
+        backgroundColor: "var(--tyba-editor-code-bg, transparent)",
         height: "100%",
       },
       ".cm-scroller": {
         fontFamily: "var(--tyba-font-mono)",
       },
-      ".cm-content": { caretColor: "var(--tyba-green)", padding: "10px 0" },
+      ".cm-content": { caretColor: "var(--tyba-green)", padding: "var(--tyba-editor-pad, 10px 0)" },
       "&.cm-focused": { outline: "none" },
       // Mockup: cursor verde de 2px, aceso (o brilho some no claro).
       ".cm-cursor, .cm-dropCursor": {
@@ -119,24 +122,27 @@ export function cmEditorTheme(dark: boolean): ReturnType<typeof EditorView.theme
         {
           backgroundColor: "var(--tyba-selection)",
         },
-      ".cm-activeLine": { backgroundColor: "color-mix(in srgb, var(--tyba-text) 3%, transparent)" },
+      ".cm-activeLine": {
+        backgroundColor: "var(--tyba-editor-active-line, color-mix(in srgb, var(--tyba-text) 3%, transparent))",
+      },
       ".cm-gutters": {
         // Opaca: a calha fica sticky quando o código rola na horizontal.
-        backgroundColor: "var(--tyba-paper-solid)",
+        backgroundColor: "var(--tyba-editor-code-bg, var(--tyba-paper-solid))",
         color: "var(--tyba-text-ghost)",
         border: "none",
       },
       ".cm-activeLineGutter": {
-        backgroundColor: "color-mix(in srgb, var(--tyba-text) 3%, transparent)",
+        backgroundColor: "var(--tyba-editor-active-line, color-mix(in srgb, var(--tyba-text) 3%, transparent))",
         color: "var(--tyba-text-muted)",
       },
-      // Mockup: número alinhado à direita em 44px com 14px de folga, a faixa
-      // de alteração de 3px e 10px até o código.
-      ".cm-lineNumbers .cm-gutterElement": { padding: "0 14px 0 8px", minWidth: "22px" },
-      ".cm-diff-lane": { width: "3px", padding: "0", marginRight: "10px" },
+      // Quadro Files (`.q-cr`, grade 6px | 44px | 1fr com 12 de folga): a
+      // faixa de alteração vem primeiro (3px numa coluna de 6), depois o
+      // número alinhado à direita em 44px, depois o código.
+      ".cm-diff-lane": { width: "6px", padding: "0", marginRight: "12px" },
+      ".cm-lineNumbers .cm-gutterElement": { padding: "0 12px 0 0", minWidth: "56px" },
       ".cm-diff-marker": { width: "3px", height: "100%", marginLeft: "0" },
-      ".cm-diff-added": { backgroundColor: "var(--tyba-green)" },
-      ".cm-diff-modified": { backgroundColor: "var(--tyba-amber)" },
+      ".cm-diff-added": { backgroundColor: "var(--tyba-editor-diff-add, var(--tyba-green))" },
+      ".cm-diff-modified": { backgroundColor: "var(--tyba-editor-diff-mod, var(--tyba-amber))" },
       ".cm-diff-deleted": {
         backgroundColor: "var(--tyba-red)",
         height: "2px",

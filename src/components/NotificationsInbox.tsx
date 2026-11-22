@@ -482,7 +482,7 @@ export function NotificationsInbox({
           // Inbox): a mesma seção de vidro da lateral, 360px. Entra deslizando
           // da direita, sem animação para quem pede menos movimento.
           data-inbox-section
-          className="tyba-section flex w-[360px] shrink-0 flex-col overflow-hidden motion-safe:animate-tyba-panel-in"
+          className="tyba-section tyba-mk-column flex w-[360px] shrink-0 flex-col overflow-hidden motion-safe:animate-tyba-panel-in"
         >
           <div className="flex shrink-0 items-center gap-2 px-4 pb-2.5 pt-3.5">
             <span className="text-[15px] font-semibold text-tyba-text">{t("inbox")}</span>

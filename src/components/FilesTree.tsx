@@ -107,7 +107,7 @@ function FilesFooter({
     // 31px com o fio de cima (border-box), a altura da barra de status do
     // editor: as duas linhas de cima caem no mesmo y.
     <div className="flex h-[31px] shrink-0 items-center gap-1.5 border-t border-[var(--tyba-line)] px-3.5 text-[11.5px] text-tyba-text-faint">
-      <LspStatusChip stat={stat} truncated={false} onRetry={retry} />
+      <LspStatusChip stat={stat} truncated={false} onRetry={retry} readyNote />
     </div>
   );
 }
@@ -748,12 +748,12 @@ export function FilesTree({
                   } ${entry.gitignored ? "opacity-50" : ""}`}
                   style={{ paddingLeft: `${10 + depth * 16}px` }}
                 >
-                  <span className="flex w-2 shrink-0 items-center justify-center text-tyba-text-faint">
+                  <span className="flex w-2.5 shrink-0 items-center justify-center text-tyba-text-faint">
                     {entry.is_dir ? (
                       isOpenDir ? (
-                        <CaretDown size={9} weight="bold" />
+                        <CaretDown size={10} weight="bold" />
                       ) : (
-                        <CaretRight size={9} weight="bold" />
+                        <CaretRight size={10} weight="bold" />
                       )
                     ) : null}
                   </span>
@@ -787,7 +787,7 @@ export function FilesTree({
                   )}
                   {!renaming && deco && (
                     <span
-                      className={`shrink-0 text-[11px] ${DECO_CLASS[deco]} group-hover:hidden`}
+                      className={`shrink-0 font-mono text-[11px] font-bold ${DECO_CLASS[deco]} group-hover:hidden`}
                     >
                       {DECO_LABEL[deco]}
                     </span>

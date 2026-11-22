@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
-  CaretLeft,
+  ArrowLeft,
   ClockCounterClockwise,
   Files,
   GitDiff,
@@ -202,11 +202,11 @@ export function GitScreen({
           const on = key === place.section;
           const badge =
             key === "changes" && changed > 0 ? (
-              <span className="absolute right-0 top-px flex h-4 min-w-4 items-center justify-center rounded-full bg-tyba-amber px-1 text-[10px] font-bold text-tyba-text-inverse">
+              <span className="absolute right-0 top-px flex h-4 min-w-4 items-center justify-center rounded-full bg-[var(--tyba-spark,var(--tyba-amber))] px-1 text-[10px] font-bold text-[var(--tyba-on-spark,var(--tyba-text-inverse))]">
                 {changed > 99 ? "99+" : changed}
               </span>
             ) : key === "ci" && ciFailing ? (
-              <span className="absolute right-1.5 top-1.5 size-[7px] rounded-full bg-tyba-red-fill" />
+              <span className="absolute right-1.5 top-1.5 size-[7px] rounded-full bg-tyba-red-fill shadow-[0_0_0_2px_var(--tyba-ring-bg,transparent)]" />
             ) : null;
           return (
             <button
@@ -245,7 +245,7 @@ export function GitScreen({
               className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-full px-2.5 text-[12.5px] text-tyba-text-muted shadow-[inset_0_0_0_1px_var(--tyba-line)] hover:text-tyba-text focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
               onClick={() => go({ section: "prs", pr: null })}
             >
-              <CaretLeft size={12} />
+              <ArrowLeft size={13} />
               {t("gitScreenPrs")}
             </button>
           )}

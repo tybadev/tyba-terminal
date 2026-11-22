@@ -76,8 +76,10 @@ export function RobotIcon({ size = 15, className }: { size?: number; className?:
     );
     return () => running.forEach((a) => a?.cancel());
   }, []);
-  const accent = { fill: "var(--tyba-violet)" };
-  const eye = { fill: "var(--tyba-text)", transformBox: "fill-box", transformOrigin: "center" } as const;
+  // Lilás dos quadros no claro (`--tyba-robot-*`); nos outros temas, o
+  // violeta e a tinta do tema, como antes.
+  const accent = { fill: "var(--tyba-robot-accent, var(--tyba-violet))" };
+  const eye = { fill: "var(--tyba-robot-eye, var(--tyba-text))", transformBox: "fill-box", transformOrigin: "center" } as const;
   return (
     <svg
       viewBox="4 -8 76 92"
@@ -95,11 +97,11 @@ export function RobotIcon({ size = 15, className }: { size?: number; className?:
         width="72"
         height="58"
         rx="20"
-        style={{ fill: "color-mix(in srgb, var(--tyba-violet) 22%, var(--tyba-paper-solid))" }}
+        style={{ fill: "var(--tyba-robot-body, color-mix(in srgb, var(--tyba-violet) 22%, var(--tyba-paper-solid)))" }}
       />
       <rect ref={(el) => void (eyes.current[0] = el)} x="23" y="35" width="12" height="16" rx="6" style={eye} />
       <rect ref={(el) => void (eyes.current[1] = el)} x="49" y="35" width="12" height="16" rx="6" style={eye} />
-      <rect x="22" y="74" width="40" height="8" rx="4" style={accent} />
+      <rect x="22" y="74" width="40" height="8" rx="4" style={{ fill: "var(--tyba-robot-mouth, var(--tyba-violet))" }} />
     </svg>
   );
 }

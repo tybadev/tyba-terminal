@@ -28,6 +28,7 @@ import {
 } from "@phosphor-icons/react";
 
 import { Input } from "@/components/ui/input";
+import { cn } from "@/lib/utils";
 import { Select } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -162,7 +163,26 @@ const SECTIONS: { id: Section; label: string; sub: string; icon: React.ReactNode
   { id: "about", label: "settingsAbout", sub: "cfgSubAbout", icon: <Globe size={16} /> },
 ];
 
-const RAIL_PREF_KEY = "pref.settings_rail";
+/** Dica do atalho de abertura (quadro: "Claude em ~/projetos/api, dois
+ *  painéis."): o agente do primeiro painel de agente, a pasta e, com mais de
+ *  um painel, quantos. */
+function launchHint(config: LaunchConfig, t: ReturnType<typeof useTranslation>["t"]): string {
+  const agentSlot = config.slots.find((s) => s.kind.type === "agent");
+  const runner = agentSlot?.kind.type === "agent" ? agentSlot.kind.runner : null;
+  const who =
+    runner === null
+      ? t("launchHintShell")
+      : runner === "claude_code"
+        ? "Claude"
+        : runner === "codex"
+          ? "Codex"
+          : runner.custom;
+  return t(config.slots.length > 1 ? "launchHintPanes" : "launchHintOne", {
+    who,
+    path: config.repo_root,
+    count: config.slots.length,
+  });
+}
 
 /** As regras que o core impõe e que nenhuma configuração desliga. */
 const SECURITY_RULES = ["cfgRuleMain", "cfgRuleSecrets", "cfgRuleKill"];
@@ -690,10 +710,8 @@ function TextField({
   const [draft, setDraft] = useState(value);
   useEffect(() => setDraft(value), [value]);
   return (
-    <input
-      spellCheck={false}
-      autoCapitalize="off"
-      autoCorrect="off"
+    // O campo do Muriki; no claro, 40px, 0 12 0 16 e 14px como o quadro.
+    <Input
       value={draft}
       placeholder={placeholder}
       aria-label={ariaLabel}
@@ -702,7 +720,11 @@ function TextField({
       onKeyDown={(e) => {
         if (e.key === "Enter") (e.target as HTMLInputElement).blur();
       }}
-      className={`${SETTING_FIELD} px-3 text-[13px] text-tyba-text outline-none placeholder:text-tyba-text-faint focus:shadow-[0_0_0_1px_var(--tyba-border-strong)] ${className}`}
+      className={cn(
+        SETTING_FIELD,
+        "pl-[var(--tyba-mk-field-pl,12px)] text-[length:var(--tyba-mk-field-size,13px)]",
+        className,
+      )}
     />
   );
 }
@@ -854,17 +876,10 @@ export function SettingsView({
       .then(setConfigPath)
       .catch(() => {});
   }, []);
-  useEffect(() => {
-    void getPref(RAIL_PREF_KEY)
-      .then((v) => setRailCollapsed(v === "collapsed"))
-      .catch(() => {});
-  }, []);
-  const toggleRail = () => {
-    setRailCollapsed((was) => {
-      void setPref(RAIL_PREF_KEY, was ? "open" : "collapsed").catch(() => {});
-      return !was;
-    });
-  };
+  // A lista de seções sempre abre aberta, com os nomes (dono, 2026-11-20);
+  // recolher vale só enquanto a tela está aberta, sem preferência gravada
+  // (lida depois da montagem, ela fazia a lista piscar de aberta a fechada).
+  const toggleRail = () => setRailCollapsed((was) => !was);
   // Esc fecha, como nas outras telas cheias — a não ser que o foco esteja
   // num campo (aí o Esc é dele) ou gravando um atalho.
   useEffect(() => {
@@ -999,7 +1014,7 @@ export function SettingsView({
   );
 
   return (
-    <div className="flex min-h-0 flex-1 text-tyba-text" style={{ background: "var(--tyba-field)" }}>
+    <div className="flex min-h-0 flex-1 text-tyba-text" style={{ background: "var(--tyba-settings-bg, var(--tyba-field))" }}>
       <div ref={contentRef} className="tyba-settings min-h-0 min-w-0 flex-1 overflow-y-auto px-14 pt-9 pb-12">
         {/* A coluna fica no meio do espaço livre, e a lista de seções colada
             na borda direita (dono, 2026-11-19: em janela larga a coluna
@@ -1309,7 +1324,7 @@ export function SettingsView({
                   <SettingLine
                     key={config.id}
                     label={config.name}
-                    hint={`${config.repo_root} · ${config.slots.length} ${config.slots.length === 1 ? "pane" : "panes"}`}
+                    hint={launchHint(config, t)}
                   >
                     <SettingButton tone="ghost" icon={<Play size={16} />} onClick={() => onApplyLaunchConfig(config.id)}>
                       {t("launchOpen")}
