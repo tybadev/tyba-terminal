@@ -418,6 +418,11 @@
   --tyba-paper: rgba(0, 0, 0, 0.72);
   --tyba-paper-solid: #030304;
   --tyba-panel-bg: transparent;
+  /* Vidro "médio" do quadro escuro (TYBA 2.0 · Conceito, aprovado em
+     2026-11-22): o fio de luz no alto das peças a .10 e o fosco das telas
+     cheias a .58 com saturação 170. */
+  --tyba-edge: inset 0 1px 0 rgba(255, 255, 255, 0.1);
+  --tyba-frost-bg: rgba(10, 10, 11, 0.58);
 }
 
 /* Só o claro do TYBA (os outros claros herdam o bloco de cima e têm acentos
@@ -2114,6 +2119,11 @@ html {
   background: var(--tyba-frost-bg, color-mix(in srgb, var(--tyba-surface) 42%, transparent));
   backdrop-filter: blur(40px) saturate(140%);
   -webkit-backdrop-filter: blur(40px) saturate(140%);
+}
+/* Escuro do TYBA: o fosco "médio" do quadro satura mais a cor que vaza. */
+:root:not([data-theme]):not([data-imported]) .tyba-frost {
+  backdrop-filter: blur(40px) saturate(170%);
+  -webkit-backdrop-filter: blur(40px) saturate(170%);
 }
 /* Shell dividido, foco B (dono, 2026-11-18): o painel sem foco fica num
    papel um tom abaixo, puxado para o azul, e com o conteúdo apagado. O com
