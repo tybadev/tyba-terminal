@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import {
+  Buildings,
   Clock,
   FolderSimple,
   GitDiff,
@@ -59,6 +60,13 @@ export function PanelIcon({
     case "diff":
       return <GitDiff size={size} className={className} />;
   }
+}
+
+/** O ícone no header (quadro Header): o Docker é o prédio do Muriki
+ *  (`buildings`); a tela do Docker continua com a baleia. */
+export function HeaderPanelIcon({ kind, size = 18 }: { kind: PanelKind; size?: number }) {
+  if (kind === "docker") return <Buildings size={size} />;
+  return <PanelIcon kind={kind} size={size} />;
 }
 
 /** Texto da cor da área, para o ícone do cabeçalho do painel. */
@@ -121,7 +129,7 @@ export function SidePanelBar({
                     : "text-tyba-text-muted hover:text-tyba-text"
                 }`}
               >
-                <PanelIcon kind={tab.kind} size={18} />
+                <HeaderPanelIcon kind={tab.kind} />
                 {tab.indicator.dot && (
                   <span
                     aria-hidden
