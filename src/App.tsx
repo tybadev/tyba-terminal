@@ -1,5 +1,5 @@
 import type { ElementType } from "react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   ArrowBendUpLeft,
@@ -449,6 +449,7 @@ import {
   computeRects,
   findAncestorSplit,
   type DividerRect,
+  type PaneRect,
 } from "./lib/panes";
 import {
   DEFAULT_TOOLBAR,
@@ -3702,15 +3703,45 @@ export default function App() {
   const paneAreaRef = useRef<HTMLDivElement>(null);
   const dragThrottle = useRef(0);
 
+  // Movimento dos painéis (dono, 2026-11-22), por FLIP: o layout vai direto
+  // ao tamanho final — terminal, blocos e linha medem certo de primeira — e
+  // só a imagem desliza do lugar antigo ao novo por `transform`. Animar
+  // left/width de verdade fazia a lista de blocos medir o painel no meio do
+  // caminho e guardar a altura errada. O arrasto do divisor não anima.
+  const lastPaneRects = useRef(new Map<string, PaneRect>());
+  const paneDragging = useRef(false);
+  useLayoutEffect(() => {
+    const prev = lastPaneRects.current;
+    const next = new Map<string, PaneRect>();
+    for (const p of paneLayout?.panes ?? []) next.set(p.session, p);
+    lastPaneRects.current = next;
+    const area = paneAreaRef.current;
+    if (!area || paneDragging.current) return;
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    for (const p of next.values()) {
+      const old = prev.get(p.session);
+      if (!old || (old.x === p.x && old.y === p.y && old.w === p.w && old.h === p.h)) continue;
+      const el = area.querySelector<HTMLElement>(`[data-pane-session="${p.session}"]`);
+      if (!el) continue;
+      const dx = ((old.x - p.x) / p.w) * 100;
+      const dy = ((old.y - p.y) / p.h) * 100;
+      el.animate(
+        [
+          { transformOrigin: "0 0", transform: `translate(${dx}%, ${dy}%) scale(${old.w / p.w}, ${old.h / p.h})` },
+          { transformOrigin: "0 0", transform: "none" },
+        ],
+        { duration: 280, easing: "cubic-bezier(0.16, 1, 0.3, 1)" },
+      );
+    }
+  }, [paneLayout]);
+
   const startDividerDrag = useCallback(
     (divider: DividerRect) => (e: React.PointerEvent) => {
       e.preventDefault();
       const area = paneAreaRef.current;
       if (!area) return;
       const bounds = area.getBoundingClientRect();
-      // Durante o arrasto o deslize dos painéis fica curto e linear: só
-      // suaviza os degraus do throttle de 80ms, sem atrasar a mão.
-      area.dataset.paneDrag = "";
+      paneDragging.current = true;
       const compute = (ev: PointerEvent) => {
         const pct =
           divider.kind === "v"
@@ -3727,8 +3758,11 @@ export default function App() {
       const up = (ev: PointerEvent) => {
         window.removeEventListener("pointermove", move);
         window.removeEventListener("pointerup", up);
-        delete area.dataset.paneDrag;
-        void setSplitRatio(divider.split, compute(ev), true).catch(() => {});
+        void setSplitRatio(divider.split, compute(ev), true)
+          .catch(() => {})
+          .finally(() => {
+            paneDragging.current = false;
+          });
       };
       window.addEventListener("pointermove", move);
       window.addEventListener("pointerup", up);
@@ -6067,6 +6101,7 @@ export default function App() {
       <div
         key={`pane-${s.id}`}
         className={bare ? "absolute inset-0 flex flex-col" : "tyba-pane flex flex-col"}
+        data-pane-session={bare ? undefined : s.id}
         // Foco B (dono, 2026-11-18): com o terminal dividido, o painel sem
         // foco fica num papel um tom abaixo e apagado; o com foco não ganha
         // borda nenhuma.

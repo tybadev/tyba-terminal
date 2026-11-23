@@ -2184,26 +2184,14 @@ html {
 /* Shell dividido, foco B (dono, 2026-11-18): o painel sem foco fica num
    papel um tom abaixo, puxado para o azul, e com o conteúdo apagado. O com
    foco fica como está, sem borda. Tokens, para valer em todo tema. */
-/* Movimento dos painéis (dono, 2026-11-22): ao dividir, fechar ou abrir uma
-   sessão, os painéis deslizam para o novo lugar e o que nasce entra com fade
-   e uma escala leve. Só a moldura anda: o xterm reajusta uma vez no fim, pelo
-   debounce de 80ms do ResizeObserver, nunca a cada frame. */
-.tyba-pane,
-.tyba-pane-divider {
-  transition-property: left, top, width, height;
-  transition-duration: 280ms;
-  transition-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
-}
+/* Movimento dos painéis (dono, 2026-11-22): o deslize ao dividir e fechar é
+   FLIP em JS (App.tsx, `lastPaneRects`); aqui só a entrada do painel novo,
+   com fade e uma escala leve, e o fade do divisor. */
 .tyba-pane {
   animation: tyba-pane-in 280ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 .tyba-pane-divider {
   animation: tyba-pane-divider-in 280ms ease-out;
-}
-[data-pane-drag] .tyba-pane,
-[data-pane-drag] .tyba-pane-divider {
-  transition-duration: 80ms;
-  transition-timing-function: linear;
 }
 @keyframes tyba-pane-in {
   from {
@@ -2219,7 +2207,6 @@ html {
 @media (prefers-reduced-motion: reduce) {
   .tyba-pane,
   .tyba-pane-divider {
-    transition: none;
     animation: none;
   }
 }
