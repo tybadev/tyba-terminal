@@ -928,6 +928,16 @@ const withHostingState = (p: AgentDetectedPayload): DetectedAgentState | null =>
  * a menos: não é decisão de segurança. */
 const HOSTING_INTRO_TOAST_SEEN_KEY = "tyba.shim-v2-hosting-intro-seen";
 
+/** Descobre um painel recém-dividido a partir de `from` (um `inset` do lado
+ *  do vizinho), no mesmo tempo e curva do deslize dos painéis. */
+function revealPane(el: HTMLElement, from: string) {
+  el.style.animation = "none";
+  el.animate([{ clipPath: from }, { clipPath: "inset(0 0 0 0)" }], {
+    duration: 280,
+    easing: "cubic-bezier(0.16, 1, 0.3, 1)",
+  });
+}
+
 export default function App() {
   const { t, i18n } = useTranslation();
   const [sessions, setSessions] = useState<Session[]>([]);
@@ -3710,6 +3720,9 @@ export default function App() {
   // caminho e guardar a altura errada. O arrasto do divisor não anima.
   const lastPaneRects = useRef(new Map<string, PaneRect>());
   const paneDragging = useRef(false);
+  // Painel novo cujo elemento ainda não montou quando o layout chegou (a
+  // sessão vem depois): o `ref` do painel aplica a revelação ao montar.
+  const pendingReveal = useRef(new Map<string, string>());
   useLayoutEffect(() => {
     const prev = lastPaneRects.current;
     const next = new Map<string, PaneRect>();
@@ -3718,6 +3731,36 @@ export default function App() {
     const area = paneAreaRef.current;
     if (!area || paneDragging.current) return;
     if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    // Painel que nasce de uma divisão: o vizinho que o continha antes diz de
+    // que lado ele vem. Ele já está no lugar final e vai sendo descoberto
+    // por `clip-path` junto com a borda do vizinho que recua — sem
+    // `transform`, o texto não estica. Troca de aba (nenhum painel em comum)
+    // fica no fade de sempre.
+    const sameTab = [...next.keys()].some((k) => prev.has(k));
+    for (const p of next.values()) {
+      if (prev.has(p.session) || !sameTab) continue;
+      const parent = [...prev.values()].find(
+        (q) =>
+          next.has(q.session) &&
+          q.x <= p.x + 1e-6 &&
+          q.y <= p.y + 1e-6 &&
+          q.x + q.w >= p.x + p.w - 1e-6 &&
+          q.y + q.h >= p.y + p.h - 1e-6,
+      );
+      const now = parent && next.get(parent.session);
+      if (!now) continue;
+      const from =
+        now.x < p.x
+          ? "inset(0 0 0 100%)"
+          : now.x > p.x
+            ? "inset(0 100% 0 0)"
+            : now.y < p.y
+              ? "inset(100% 0 0 0)"
+              : "inset(0 0 100% 0)";
+      const el = area.querySelector<HTMLElement>(`[data-pane-session="${p.session}"]`);
+      if (el) revealPane(el, from);
+      else pendingReveal.current.set(p.session, from);
+    }
     for (const p of next.values()) {
       const old = prev.get(p.session);
       if (!old || (old.x === p.x && old.y === p.y && old.w === p.w && old.h === p.h)) continue;
@@ -6156,6 +6199,17 @@ export default function App() {
         key={`pane-${s.id}`}
         className={bare ? "absolute inset-0 flex flex-col" : "tyba-pane flex flex-col"}
         data-pane-session={bare ? undefined : s.id}
+        ref={
+          bare
+            ? undefined
+            : (el) => {
+                const from = el && pendingReveal.current.get(s.id);
+                if (el && from) {
+                  pendingReveal.current.delete(s.id);
+                  revealPane(el, from);
+                }
+              }
+        }
         // Foco B (dono, 2026-11-18): com o terminal dividido, o painel sem
         // foco fica num papel um tom abaixo e apagado; o com foco não ganha
         // borda nenhuma.
