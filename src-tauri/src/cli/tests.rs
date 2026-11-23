@@ -563,3 +563,130 @@ fn the_handler_sees_when_the_client_goes_away() {
     assert!(alive_at_start);
     assert!(!alive_at_end);
 }
+
+// ============================== `tyba events` ==============================
+
+/// O fixture e, depois, o mesmo com o shell fechado e o claude de volta a
+/// rodar.
+fn before_and_after() -> (Listing, Listing, Vec<Session>) {
+    let (layout, sessions) = fixture();
+    let before = build_listing(&layout, &sessions);
+    let mut later: Vec<Session> = sessions[1..].to_vec();
+    later[0].status = SessionStatus::Running;
+    let after = build_listing(&layout, &later);
+    (before, after, sessions)
+}
+
+#[test]
+fn events_diff_names_what_closed_and_which_agent_changed() {
+    let (before, after, sessions) = before_and_after();
+    let events = events::diff(&before, &after);
+    assert_eq!(
+        events,
+        vec![
+            events::Event::PaneClosed {
+                pane: sessions[0].id.to_string()
+            },
+            events::Event::Agent {
+                pane: sessions[1].id.to_string(),
+                agent: Some(AgentEntry {
+                    name: "claude".into(),
+                    state: Some("running".into()),
+                    observed: false,
+                }),
+            },
+        ]
+    );
+    assert!(events::diff(&after, &after).is_empty(), "sem mudança, nada");
+}
+
+#[test]
+fn events_diff_reports_a_new_pane_with_its_redacted_label() {
+    let (layout, mut sessions) = fixture();
+    let after = build_listing(&layout, &sessions[1..]);
+    sessions[0].title = "export TOKEN=sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789".into();
+    let opened = build_listing(&layout, &sessions);
+    let events = events::diff(&after, &opened);
+    let Some(events::Event::PaneOpened {
+        pane, label, kind, ..
+    }) = events.first()
+    else {
+        panic!("esperava pane_opened: {events:?}");
+    };
+    assert_eq!(pane, &sessions[0].id.to_string());
+    assert_eq!(kind, "shell");
+    assert!(
+        !label.contains("abcdefghijklmnop"),
+        "rótulo sem redação: {label}"
+    );
+}
+
+#[test]
+fn events_json_lines_carry_the_event_name() {
+    let line = serde_json::to_value(events::Event::PaneClosed { pane: "p1".into() }).unwrap();
+    assert_eq!(
+        line,
+        serde_json::json!({"event": "pane_closed", "pane": "p1"})
+    );
+}
+
+/// Aceita `limit` linhas e depois falha, como um `| head -n limit`.
+struct Head {
+    text: Arc<std::sync::Mutex<String>>,
+    limit: usize,
+}
+
+impl Write for Head {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let mut text = self.text.lock().unwrap();
+        if text.matches('\n').count() >= self.limit {
+            return Err(std::io::ErrorKind::BrokenPipe.into());
+        }
+        text.push_str(&String::from_utf8_lossy(buf));
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn events_over_the_socket_print_changes_and_stop_when_the_output_closes() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("ctl").join("control.sock");
+    let (before, after, _) = before_and_after();
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let seen = calls.clone();
+    let handler: ControlHandler = Arc::new(move |req, _| {
+        assert_eq!(req.op, "ls", "events só lê o ls");
+        let n = seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        // Vai e volta, para sempre haver mudança e o `Head` encher.
+        let listing = if n.is_multiple_of(2) { &before } else { &after };
+        ControlResponse::ok(serde_json::to_value(listing).unwrap())
+    });
+    let _server = ControlServer::bind(&socket, handler).unwrap();
+
+    let text = Arc::new(std::sync::Mutex::new(String::new()));
+    let mut out = Head {
+        text: text.clone(),
+        limit: 2,
+    };
+    let mut err = Vec::new();
+    let code = run(&args(&["events"]), &socket, &mut out, &mut err);
+    assert_eq!(code, EXIT_OK, "{}", String::from_utf8_lossy(&err));
+    let text = text.lock().unwrap();
+    assert!(text.starts_with("fechou "), "{text}");
+    assert!(text.contains("claude · rodando"), "{text}");
+}
+
+#[test]
+fn events_without_the_app_is_exit_4_and_extra_args_are_usage() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("ctl").join("control.sock");
+    assert_eq!(run_capture(&["events"], &socket).0, EXIT_NOT_RUNNING);
+    assert_eq!(run_capture(&["events", "p1"], &socket).0, EXIT_USAGE);
+    assert_eq!(
+        run_capture(&["events", "--lines", "3"], &socket).0,
+        EXIT_USAGE
+    );
+}
