@@ -42,6 +42,9 @@ fi
 # --- 2. Hooks (instala uma unica vez, depois da config do usuario) ---
 if [ -z "${TYBA_BASH_HOOKS:-}" ] && case "$-" in *i*) true ;; *) false ;; esac; then
   TYBA_BASH_HOOKS=1
+  # Tecla de controle apertada com comando rodando (^C, ^V...) nao volta como
+  # texto: o tty ecoaria `^C` na saida, e o bloco ja diz "^C interrompido".
+  stty -echoctl 2>/dev/null
   __tyba_osc133b=$'\033]133;B\007'
   __tyba_at_prompt=0
 
