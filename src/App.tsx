@@ -3708,6 +3708,9 @@ export default function App() {
       const area = paneAreaRef.current;
       if (!area) return;
       const bounds = area.getBoundingClientRect();
+      // Durante o arrasto o deslize dos painéis fica curto e linear: só
+      // suaviza os degraus do throttle de 80ms, sem atrasar a mão.
+      area.dataset.paneDrag = "";
       const compute = (ev: PointerEvent) => {
         const pct =
           divider.kind === "v"
@@ -3724,6 +3727,7 @@ export default function App() {
       const up = (ev: PointerEvent) => {
         window.removeEventListener("pointermove", move);
         window.removeEventListener("pointerup", up);
+        delete area.dataset.paneDrag;
         void setSplitRatio(divider.split, compute(ev), true).catch(() => {});
       };
       window.addEventListener("pointermove", move);
@@ -7617,7 +7621,7 @@ export default function App() {
                     <div
                       key={d.split}
                       onPointerDown={startDividerDrag(d)}
-                      className={`absolute z-10 flex items-center justify-center ${
+                      className={`tyba-pane-divider absolute z-10 flex items-center justify-center ${
                         d.kind === "v"
                           ? "w-[7px] -translate-x-1/2 cursor-col-resize"
                           : "h-[7px] -translate-y-1/2 cursor-row-resize"
