@@ -2193,6 +2193,17 @@ html {
 .tyba-pane-divider {
   animation: tyba-pane-divider-in 280ms ease-out;
 }
+/* Barra lateral voltando no ⌘B: desliza da esquerda com fade; a área
+   principal acompanha por FLIP (App.tsx, `mainLeft`). */
+.tyba-sidebar-in {
+  animation: tyba-sidebar-in 280ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+@keyframes tyba-sidebar-in {
+  from {
+    opacity: 0;
+    transform: translateX(-24px);
+  }
+}
 @keyframes tyba-pane-in {
   from {
     opacity: 0;
@@ -2206,7 +2217,8 @@ html {
 }
 @media (prefers-reduced-motion: reduce) {
   .tyba-pane,
-  .tyba-pane-divider {
+  .tyba-pane-divider,
+  .tyba-sidebar-in {
     animation: none;
   }
 }

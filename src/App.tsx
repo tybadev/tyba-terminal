@@ -4417,6 +4417,25 @@ export default function App() {
     requestTerminalRelayout();
   }, [sidebar]);
 
+  // ⌘B com movimento (dono, 2026-11-22), por FLIP como os painéis: a área
+  // principal vai direto à largura nova e só desliza do lugar antigo; a
+  // barra entra com fade (`.tyba-sidebar-in`). `offsetLeft` não enxerga o
+  // `transform`, então um ⌘B no meio do deslize mede o lugar certo.
+  const mainLeft = useRef<number | null>(null);
+  useLayoutEffect(() => {
+    const el = mainAreaRef.current;
+    if (!el) return;
+    const left = el.offsetLeft;
+    const old = mainLeft.current;
+    mainLeft.current = left;
+    if (old === null || old === left) return;
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    el.animate([{ transform: `translateX(${old - left}px)` }, { transform: "none" }], {
+      duration: 280,
+      easing: "cubic-bezier(0.16, 1, 0.3, 1)",
+    });
+  }, [sidebar]);
+
   useEffect(() => {
     if (!showContainers) return;
     let cancelled = false;
@@ -7044,7 +7063,7 @@ export default function App() {
                   // Barra lateral do quadro Sidebar (aprovada em 2026-11-15):
                   // busca, Nova sessão/Orbit/Conexões SSH, Sessões por grupo,
                   // Agentes em cartões e, no pé, Inbox e Configurações.
-                  className="tyba-section tyba-mk-sidebar flex shrink-0 flex-col overflow-hidden"
+                  className="tyba-section tyba-mk-sidebar tyba-sidebar-in flex shrink-0 flex-col overflow-hidden"
                   style={{ width: SIDEBAR_WIDTH[sidebar] }}
                 >
                   {/* A busca é o Input do Muriki com ícone (quadro Sidebar). */}
