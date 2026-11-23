@@ -2184,6 +2184,44 @@ html {
 /* Shell dividido, foco B (dono, 2026-11-18): o painel sem foco fica num
    papel um tom abaixo, puxado para o azul, e com o conteúdo apagado. O com
    foco fica como está, sem borda. Tokens, para valer em todo tema. */
+/* Movimento dos painéis (dono, 2026-11-22): o deslize ao dividir e fechar é
+   FLIP em JS (App.tsx, `lastPaneRects`); aqui só a entrada do painel novo,
+   com fade e uma escala leve, e o fade do divisor. */
+.tyba-pane {
+  animation: tyba-pane-in 280ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+.tyba-pane-divider {
+  animation: tyba-pane-divider-in 280ms ease-out;
+}
+/* Barra lateral voltando no ⌘B: desliza da esquerda com fade; a área
+   principal acompanha por FLIP (App.tsx, `mainLeft`). */
+.tyba-sidebar-in {
+  animation: tyba-sidebar-in 280ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+@keyframes tyba-sidebar-in {
+  from {
+    opacity: 0;
+    transform: translateX(-24px);
+  }
+}
+@keyframes tyba-pane-in {
+  from {
+    opacity: 0;
+    transform: scale(0.985);
+  }
+}
+@keyframes tyba-pane-divider-in {
+  from {
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tyba-pane,
+  .tyba-pane-divider,
+  .tyba-sidebar-in {
+    animation: none;
+  }
+}
 .tyba-pane[data-pane-dim] {
   background: color-mix(in srgb, var(--tyba-text) 4%, color-mix(in srgb, var(--tyba-blue) 3%, var(--tyba-paper-solid)));
 }

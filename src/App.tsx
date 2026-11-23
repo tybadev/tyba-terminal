@@ -1,5 +1,5 @@
 import type { ElementType } from "react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   ArrowBendUpLeft,
@@ -449,6 +449,7 @@ import {
   computeRects,
   findAncestorSplit,
   type DividerRect,
+  type PaneRect,
 } from "./lib/panes";
 import {
   DEFAULT_TOOLBAR,
@@ -926,6 +927,16 @@ const withHostingState = (p: AgentDetectedPayload): DetectedAgentState | null =>
  * (reinstall, limpar dados do app) é mostrar o toast de novo, nunca um gate
  * a menos: não é decisão de segurança. */
 const HOSTING_INTRO_TOAST_SEEN_KEY = "tyba.shim-v2-hosting-intro-seen";
+
+/** Descobre um painel recém-dividido a partir de `from` (um `inset` do lado
+ *  do vizinho), no mesmo tempo e curva do deslize dos painéis. */
+function revealPane(el: HTMLElement, from: string) {
+  el.style.animation = "none";
+  el.animate([{ clipPath: from }, { clipPath: "inset(0 0 0 0)" }], {
+    duration: 280,
+    easing: "cubic-bezier(0.16, 1, 0.3, 1)",
+  });
+}
 
 export default function App() {
   const { t, i18n } = useTranslation();
@@ -3702,12 +3713,112 @@ export default function App() {
   const paneAreaRef = useRef<HTMLDivElement>(null);
   const dragThrottle = useRef(0);
 
+  // Movimento dos painéis (dono, 2026-11-22), por FLIP: o layout vai direto
+  // ao tamanho final — terminal, blocos e linha medem certo de primeira — e
+  // só a imagem desliza do lugar antigo ao novo por `transform`. Animar
+  // left/width de verdade fazia a lista de blocos medir o painel no meio do
+  // caminho e guardar a altura errada. O arrasto do divisor não anima.
+  const lastPaneRects = useRef(new Map<string, PaneRect>());
+  const paneDragging = useRef(false);
+  // Painel novo cujo elemento ainda não montou quando o layout chegou (a
+  // sessão vem depois): o `ref` do painel aplica a revelação ao montar.
+  const pendingReveal = useRef(new Map<string, string>());
+  useLayoutEffect(() => {
+    const prev = lastPaneRects.current;
+    const next = new Map<string, PaneRect>();
+    for (const p of paneLayout?.panes ?? []) next.set(p.session, p);
+    lastPaneRects.current = next;
+    const area = paneAreaRef.current;
+    if (!area || paneDragging.current) return;
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    // Painel que nasce de uma divisão: o vizinho que o continha antes diz de
+    // que lado ele vem. Ele já está no lugar final e vai sendo descoberto
+    // por `clip-path` junto com a borda do vizinho que recua — sem
+    // `transform`, o texto não estica. Troca de aba (nenhum painel em comum)
+    // fica no fade de sempre.
+    const sameTab = [...next.keys()].some((k) => prev.has(k));
+    for (const p of next.values()) {
+      if (prev.has(p.session) || !sameTab) continue;
+      const parent = [...prev.values()].find(
+        (q) =>
+          next.has(q.session) &&
+          q.x <= p.x + 1e-6 &&
+          q.y <= p.y + 1e-6 &&
+          q.x + q.w >= p.x + p.w - 1e-6 &&
+          q.y + q.h >= p.y + p.h - 1e-6,
+      );
+      const now = parent && next.get(parent.session);
+      if (!now) continue;
+      const from =
+        now.x < p.x
+          ? "inset(0 0 0 100%)"
+          : now.x > p.x
+            ? "inset(0 100% 0 0)"
+            : now.y < p.y
+              ? "inset(100% 0 0 0)"
+              : "inset(0 0 100% 0)";
+      const el = area.querySelector<HTMLElement>(`[data-pane-session="${p.session}"]`);
+      if (el) revealPane(el, from);
+      else pendingReveal.current.set(p.session, from);
+    }
+    for (const p of next.values()) {
+      const old = prev.get(p.session);
+      if (!old || (old.x === p.x && old.y === p.y && old.w === p.w && old.h === p.h)) continue;
+      const el = area.querySelector<HTMLElement>(`[data-pane-session="${p.session}"]`);
+      if (!el) continue;
+      const dx = ((old.x - p.x) / p.w) * 100;
+      const dy = ((old.y - p.y) / p.h) * 100;
+      el.animate(
+        [
+          { transformOrigin: "0 0", transform: `translate(${dx}%, ${dy}%) scale(${old.w / p.w}, ${old.h / p.h})` },
+          { transformOrigin: "0 0", transform: "none" },
+        ],
+        { duration: 280, easing: "cubic-bezier(0.16, 1, 0.3, 1)" },
+      );
+    }
+  }, [paneLayout]);
+
+  /** Fecha um painel com saída: fade e uma escala leve em 160ms, e só então
+   *  pede ao core. Se o core recusar, a animação é desfeita e o painel volta.
+   *  O último painel da aba não anima (fecha a aba inteira). */
+  const closePaneAnimated = useCallback(async (pane: PaneId) => {
+    const area = paneAreaRef.current;
+    let anim: Animation | null = null;
+    const rects = [...lastPaneRects.current.values()];
+    const session = rects.find((r) => r.pane === pane)?.session;
+    if (
+      area &&
+      session &&
+      rects.length > 1 &&
+      !window.matchMedia("(prefers-reduced-motion: reduce)").matches
+    ) {
+      const el = area.querySelector<HTMLElement>(`[data-pane-session="${session}"]`);
+      if (el) {
+        anim = el.animate(
+          [
+            { opacity: 1, transform: "none" },
+            { opacity: 0, transform: "scale(0.985)" },
+          ],
+          { duration: 160, easing: "cubic-bezier(0.4, 0, 1, 1)", fill: "forwards" },
+        );
+        await anim.finished.catch(() => {});
+      }
+    }
+    try {
+      await closePane(pane);
+    } catch (e) {
+      anim?.cancel();
+      throw e;
+    }
+  }, []);
+
   const startDividerDrag = useCallback(
     (divider: DividerRect) => (e: React.PointerEvent) => {
       e.preventDefault();
       const area = paneAreaRef.current;
       if (!area) return;
       const bounds = area.getBoundingClientRect();
+      paneDragging.current = true;
       const compute = (ev: PointerEvent) => {
         const pct =
           divider.kind === "v"
@@ -3724,7 +3835,11 @@ export default function App() {
       const up = (ev: PointerEvent) => {
         window.removeEventListener("pointermove", move);
         window.removeEventListener("pointerup", up);
-        void setSplitRatio(divider.split, compute(ev), true).catch(() => {});
+        void setSplitRatio(divider.split, compute(ev), true)
+          .catch(() => {})
+          .finally(() => {
+            paneDragging.current = false;
+          });
       };
       window.addEventListener("pointermove", move);
       window.addEventListener("pointerup", up);
@@ -4218,7 +4333,7 @@ export default function App() {
         ? paneRunningAgent(activeTab.root, activeTab.active_pane, sessionById)
         : null;
       if (!(await confirmCloseWithRunningAgent(running))) return;
-      await closePane(activeTab.active_pane);
+      await closePaneAnimated(activeTab.active_pane);
     } else {
       const running = tabRunningAgent(activeTab, sessionById);
       if (!(await confirmCloseWithRunningAgent(running))) return;
@@ -4233,6 +4348,7 @@ export default function App() {
     confirmCloseWithRunningAgent,
     confirmCloseDirtyEditors,
     refreshSessions,
+    closePaneAnimated,
   ]);
 
   const closeTabAndRefresh = useCallback(
@@ -4377,6 +4493,25 @@ export default function App() {
 
   useEffect(() => {
     requestTerminalRelayout();
+  }, [sidebar]);
+
+  // ⌘B com movimento (dono, 2026-11-22), por FLIP como os painéis: a área
+  // principal vai direto à largura nova e só desliza do lugar antigo; a
+  // barra entra com fade (`.tyba-sidebar-in`). `offsetLeft` não enxerga o
+  // `transform`, então um ⌘B no meio do deslize mede o lugar certo.
+  const mainLeft = useRef<number | null>(null);
+  useLayoutEffect(() => {
+    const el = mainAreaRef.current;
+    if (!el) return;
+    const left = el.offsetLeft;
+    const old = mainLeft.current;
+    mainLeft.current = left;
+    if (old === null || old === left) return;
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    el.animate([{ transform: `translateX(${old - left}px)` }, { transform: "none" }], {
+      duration: 280,
+      easing: "cubic-bezier(0.16, 1, 0.3, 1)",
+    });
   }, [sidebar]);
 
   useEffect(() => {
@@ -6063,6 +6198,18 @@ export default function App() {
       <div
         key={`pane-${s.id}`}
         className={bare ? "absolute inset-0 flex flex-col" : "tyba-pane flex flex-col"}
+        data-pane-session={bare ? undefined : s.id}
+        ref={
+          bare
+            ? undefined
+            : (el) => {
+                const from = el && pendingReveal.current.get(s.id);
+                if (el && from) {
+                  pendingReveal.current.delete(s.id);
+                  revealPane(el, from);
+                }
+              }
+        }
         // Foco B (dono, 2026-11-18): com o terminal dividido, o painel sem
         // foco fica num papel um tom abaixo e apagado; o com foco não ganha
         // borda nenhuma.
@@ -6116,7 +6263,7 @@ export default function App() {
             <button
               aria-label={t("closePane")}
               title={t("closePane")}
-              onClick={() => void closePane(paneRect.pane).catch(() => {})}
+              onClick={() => void closePaneAnimated(paneRect.pane).catch(() => {})}
               className="ml-auto flex size-4 shrink-0 items-center justify-center rounded-[4px] opacity-0 transition-opacity hover:bg-tyba-text/[.08] hover:text-tyba-text focus-visible:opacity-100 group-hover/ph:opacity-100"
             >
               <X size={12} />
@@ -7005,7 +7152,7 @@ export default function App() {
                   // Barra lateral do quadro Sidebar (aprovada em 2026-11-15):
                   // busca, Nova sessão/Orbit/Conexões SSH, Sessões por grupo,
                   // Agentes em cartões e, no pé, Inbox e Configurações.
-                  className="tyba-section tyba-mk-sidebar flex shrink-0 flex-col overflow-hidden"
+                  className="tyba-section tyba-mk-sidebar tyba-sidebar-in flex shrink-0 flex-col overflow-hidden"
                   style={{ width: SIDEBAR_WIDTH[sidebar] }}
                 >
                   {/* A busca é o Input do Muriki com ícone (quadro Sidebar). */}
@@ -7617,7 +7764,7 @@ export default function App() {
                     <div
                       key={d.split}
                       onPointerDown={startDividerDrag(d)}
-                      className={`absolute z-10 flex items-center justify-center ${
+                      className={`tyba-pane-divider absolute z-10 flex items-center justify-center ${
                         d.kind === "v"
                           ? "w-[7px] -translate-x-1/2 cursor-col-resize"
                           : "h-[7px] -translate-y-1/2 cursor-row-resize"
