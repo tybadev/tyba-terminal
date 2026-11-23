@@ -12,7 +12,7 @@ import {
 
 import { bodyLines, columnsFor } from "../lib/blockMetrics";
 import { cwdChange, formatDuration } from "../lib/blockLayout";
-import { blockMarkdown, blockOutput, failed, shortPath } from "../lib/blockText";
+import { blockMarkdown, blockOutput, failed, interrupted, shortPath } from "../lib/blockText";
 import { writeClipboardText } from "../lib/clipboard";
 import { ensureContrast, parseRgb, type Rgb } from "../lib/contrast";
 import type { Block, BlockColor, LogicalLine, ReplacedShell, StyleRun } from "../lib/ipc";
@@ -298,6 +298,12 @@ const BlockHeader = memo(function BlockHeader({
           <span className="text-tyba-red">
             ✗ {t("blockExitedWith", { code: block.exitCode })}
           </span>
+          {took && ` · ${took}`}
+        </span>
+      ) : interrupted(block.exitCode) ? (
+        // Ctrl+C: nem vermelho nem ✓ — o bloco só diz que foi interrompido.
+        <span className="shrink-0 font-mono text-[11.5px] font-medium leading-5 tabular-nums text-tyba-text-faint">
+          ^C {t("blockInterrupted")}
           {took && ` · ${took}`}
         </span>
       ) : (

@@ -6338,6 +6338,7 @@ export default function App() {
                 line.owns
               }
               focusNonce={lineFocusNonces[s.id] ?? 0}
+              onYieldFocus={() => getTerm(s.id)?.term.focus()}
               state={line.state}
               boot={shellBoots[s.id] ?? null}
               booting={
