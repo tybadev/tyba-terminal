@@ -118,6 +118,9 @@ pub fn watch(socket: &Path, json: bool, out: &mut impl Write, err: &mut impl Wri
             return code;
         }
     };
+    // No stderr: o stdout do `--json` fica só com eventos. Sem isto o bloco
+    // parece travado até a primeira mudança.
+    let _ = writeln!(err, "observando o TYBA… (Ctrl-C para sair)");
     loop {
         std::thread::sleep(POLL_INTERVAL);
         let after = match fetch(socket) {

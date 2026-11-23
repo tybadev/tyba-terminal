@@ -674,6 +674,7 @@ fn events_over_the_socket_print_changes_and_stop_when_the_output_closes() {
     let mut err = Vec::new();
     let code = run(&args(&["events"]), &socket, &mut out, &mut err);
     assert_eq!(code, EXIT_OK, "{}", String::from_utf8_lossy(&err));
+    assert!(String::from_utf8_lossy(&err).starts_with("observando o TYBA"));
     let text = text.lock().unwrap();
     assert!(text.starts_with("fechou "), "{text}");
     assert!(text.contains("claude · rodando"), "{text}");
