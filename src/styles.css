@@ -423,6 +423,9 @@
      cheias a .58 com saturação 170. */
   --tyba-edge: inset 0 1px 0 rgba(255, 255, 255, 0.1);
   --tyba-frost-bg: rgba(10, 10, 11, 0.58);
+  /* Sem aurora no escuro do TYBA (dono, 2026-11-22): o fundo é o #050505
+     chapado, como no quadro. */
+  --tyba-aurora: none;
 }
 
 /* Só o claro do TYBA (os outros claros herdam o bloco de cima e têm acentos
