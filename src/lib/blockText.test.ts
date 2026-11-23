@@ -7,6 +7,7 @@ import {
   duration,
   shortPath,
   failed,
+  interrupted,
   wipesTheScreen,
 } from "./blockText";
 import type { Block } from "./ipc";
@@ -45,6 +46,13 @@ describe("failed", () => {
     // ninguém olha.
     expect(failed(130)).toBe(false);
     expect(failed(141)).toBe(false);
+  });
+
+  it("marks Ctrl+C as interrupted, not as success", () => {
+    expect(interrupted(130)).toBe(true);
+    expect(interrupted(0)).toBe(false);
+    expect(interrupted(141)).toBe(false);
+    expect(interrupted(null)).toBe(false);
   });
 
   it("says nothing when there is no exit code yet", () => {

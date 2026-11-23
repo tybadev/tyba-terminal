@@ -11,6 +11,14 @@ export function failed(exitCode: number | null): boolean {
 }
 
 /**
+ * Ctrl+C (130): não é falha, mas também não é sucesso. O bloco diz que foi
+ * interrompido, em cor neutra, em vez de um ✓ que mente.
+ */
+export function interrupted(exitCode: number | null): boolean {
+  return exitCode === 130;
+}
+
+/**
  * O comando pede a tela limpa?
  *
  * Espelha `blocks::wipes_the_screen` no core, que é quem apaga a lista de

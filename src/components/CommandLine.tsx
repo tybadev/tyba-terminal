@@ -139,6 +139,11 @@ interface Props {
    */
   pending?: string[];
   onPendingChange?: (sessionId: SessionId, lines: string[]) => void;
+  /**
+   * A caixa estava com o foco e deixou de aceitar tecla (o comando começou):
+   * quem a usa devolve o teclado ao terminal, senão o Ctrl-C cai no `body`.
+   */
+  onYieldFocus?: () => void;
 }
 
 /**
@@ -167,6 +172,7 @@ export function CommandLine({
   onDraftChange,
   pending: pendingSaved = NO_PENDING,
   onPendingChange,
+  onYieldFocus,
 }: Props) {
   // Não é "a linha não é minha", é "a caixa não aceita tecla". A diferença é
   // o `waiting`: a linha ainda não é do TYBA, mas o rascunho pode ser escrito
@@ -265,6 +271,28 @@ export function CommandLine({
       el.setSelectionRange(inject.text.length, inject.text.length);
     });
   }, [inject]);
+
+  // Foco na caixa quando ela é desativada (`disabled={waiting}`): o navegador
+  // tira o foco de controle desativado, às vezes depois dos efeitos, e o
+  // teclado ficava no `body` — Ctrl-C não chegava ao comando rodando. Lido no
+  // render, antes de o DOM ganhar o `disabled`; devolvido no frame seguinte,
+  // depois de qualquer ajuste de foco do navegador.
+  const hadFocusWhenDisabled = useRef(false);
+  const prevWaiting = useRef(waiting);
+  if (waiting && !prevWaiting.current) {
+    hadFocusWhenDisabled.current =
+      typeof document !== "undefined" && document.activeElement === inputRef.current;
+  }
+  prevWaiting.current = waiting;
+  // Em ref: o App passa uma função nova a cada render (e ele renderiza a cada
+  // flush do PTY), o que cancelaria o frame antes de ele rodar.
+  const yieldRef = useRef(onYieldFocus);
+  yieldRef.current = onYieldFocus;
+  useEffect(() => {
+    if (!waiting || !hadFocusWhenDisabled.current) return;
+    hadFocusWhenDisabled.current = false;
+    requestAnimationFrame(() => yieldRef.current?.());
+  }, [waiting]);
 
   const seenNonce = useRef(focusNonce);
   useEffect(() => {
