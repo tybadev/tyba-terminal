@@ -8,6 +8,7 @@
 //! ([`target`]); `--json` estável; códigos de saída abaixo; `TYBA_SESSION` e
 //! `TYBA_PANE` no env de todo pane.
 
+pub mod events;
 pub mod target;
 pub mod waiters;
 
@@ -34,7 +35,7 @@ pub const EXIT_INTERRUPTED: i32 = 130;
 
 pub const PROTOCOL_VERSION: u32 = 1;
 const CONTROL_SOCKET_FILE: &str = "control.sock";
-const SUBCOMMANDS: &[&str] = &["ls", "capture", "run"];
+const SUBCOMMANDS: &[&str] = &["ls", "capture", "run", "events"];
 const CLI_MODE: &str = "_cli";
 
 const USAGE: &str = "\
@@ -46,6 +47,8 @@ uso:
                          abre uma aba com um shell e digita o comando nela;
                          com --wait, espera o fim e devolve a saída (redigida)
                          e sai com o código do comando
+  tyba events [--json]   o que muda no TYBA aberto (pane abriu/fechou, estado
+                         do agente), uma linha por mudança, até o app fechar
 
 <pane>: id, rótulo, posição no `tyba ls` ou sufixo do id, nessa ordem.
 <comando>: uma linha de shell (`tyba run -- 'cargo test | tail'`). Passa
@@ -509,6 +512,11 @@ fn parse_args(args: &[String]) -> Result<Invocation, String> {
             }),
             _ => Err("falta o comando: `tyba run -- <comando>`".into()),
         },
+        ("events", []) if lines.is_none() => Ok(Invocation {
+            request: request("events", None),
+            json,
+        }),
+        ("events", _) => Err("`tyba events` não recebe pane nem --lines".into()),
         ("run", _) => {
             Err("`tyba run` não recebe pane nem --lines; o comando vem depois de `--`".into())
         }
@@ -533,6 +541,9 @@ pub fn run(args: &[String], socket: &Path, out: &mut impl Write, err: &mut impl 
             return EXIT_USAGE;
         }
     };
+    if invocation.request.op == "events" {
+        return events::watch(socket, invocation.json, out, err);
+    }
     let response = match exchange(socket, &invocation.request) {
         Ok(r) => r,
         Err((code, message)) => {
