@@ -3735,6 +3735,40 @@ export default function App() {
     }
   }, [paneLayout]);
 
+  /** Fecha um painel com saída: fade e uma escala leve em 160ms, e só então
+   *  pede ao core. Se o core recusar, a animação é desfeita e o painel volta.
+   *  O último painel da aba não anima (fecha a aba inteira). */
+  const closePaneAnimated = useCallback(async (pane: PaneId) => {
+    const area = paneAreaRef.current;
+    let anim: Animation | null = null;
+    const rects = [...lastPaneRects.current.values()];
+    const session = rects.find((r) => r.pane === pane)?.session;
+    if (
+      area &&
+      session &&
+      rects.length > 1 &&
+      !window.matchMedia("(prefers-reduced-motion: reduce)").matches
+    ) {
+      const el = area.querySelector<HTMLElement>(`[data-pane-session="${session}"]`);
+      if (el) {
+        anim = el.animate(
+          [
+            { opacity: 1, transform: "none" },
+            { opacity: 0, transform: "scale(0.985)" },
+          ],
+          { duration: 160, easing: "cubic-bezier(0.4, 0, 1, 1)", fill: "forwards" },
+        );
+        await anim.finished.catch(() => {});
+      }
+    }
+    try {
+      await closePane(pane);
+    } catch (e) {
+      anim?.cancel();
+      throw e;
+    }
+  }, []);
+
   const startDividerDrag = useCallback(
     (divider: DividerRect) => (e: React.PointerEvent) => {
       e.preventDefault();
@@ -4256,7 +4290,7 @@ export default function App() {
         ? paneRunningAgent(activeTab.root, activeTab.active_pane, sessionById)
         : null;
       if (!(await confirmCloseWithRunningAgent(running))) return;
-      await closePane(activeTab.active_pane);
+      await closePaneAnimated(activeTab.active_pane);
     } else {
       const running = tabRunningAgent(activeTab, sessionById);
       if (!(await confirmCloseWithRunningAgent(running))) return;
@@ -4271,6 +4305,7 @@ export default function App() {
     confirmCloseWithRunningAgent,
     confirmCloseDirtyEditors,
     refreshSessions,
+    closePaneAnimated,
   ]);
 
   const closeTabAndRefresh = useCallback(
@@ -6174,7 +6209,7 @@ export default function App() {
             <button
               aria-label={t("closePane")}
               title={t("closePane")}
-              onClick={() => void closePane(paneRect.pane).catch(() => {})}
+              onClick={() => void closePaneAnimated(paneRect.pane).catch(() => {})}
               className="ml-auto flex size-4 shrink-0 items-center justify-center rounded-[4px] opacity-0 transition-opacity hover:bg-tyba-text/[.08] hover:text-tyba-text focus-visible:opacity-100 group-hover/ph:opacity-100"
             >
               <X size={12} />
