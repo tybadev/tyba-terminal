@@ -2107,6 +2107,9 @@ html {
   --tyba-editor-bg: rgba(255, 255, 255, 0.24);
   --tyba-editor-strip: transparent;
   --tyba-editor-code-bg: rgba(255, 255, 255, 0.24);
+  /* Calha sem faixa também no claro: transparente com blur, como no escuro. */
+  --tyba-editor-gutter-bg: transparent;
+  --tyba-editor-gutter-fx: blur(16px);
   --tyba-editor-dirty: var(--tyba-text-muted);
   --tyba-editor-pad: 6px 0;
   --tyba-editor-active-line: rgba(17, 82, 210, 0.05);
@@ -2173,9 +2176,9 @@ html {
    que está atrás. Só no claro do TYBA. */
 [data-theme='light']:not([data-imported]) .tyba-acrylic {
   background-image:
-    radial-gradient(72% 60% at 12% -2%, rgba(17, 82, 210, 0.2), transparent 55%),
-    radial-gradient(52% 50% at 96% 102%, rgba(253, 206, 4, 0.13), transparent 58%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.55) 0%, rgba(255, 255, 255, 0) 26%);
+    radial-gradient(140% 90% at 0% 0%, rgba(17, 82, 210, 0.07), transparent 75%),
+    radial-gradient(110% 80% at 100% 100%, rgba(253, 206, 4, 0.05), transparent 75%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.35) 0%, rgba(255, 255, 255, 0) 30%);
   background-repeat: no-repeat;
 }
 /* Shell dividido, foco B (dono, 2026-11-18): o painel sem foco fica num
