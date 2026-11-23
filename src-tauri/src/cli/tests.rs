@@ -741,7 +741,15 @@ fn send_refuses_what_the_guard_rail_refuses() {
 
 #[test]
 fn send_refuses_slash_commands_exit_and_control_characters() {
-    for text in ["/exit", " /quit", "/meu-comando x", "exit", "QUIT"] {
+    for text in [
+        "/exit",
+        " /quit",
+        "/meu-comando x",
+        "exit",
+        "QUIT",
+        "!gh pr merge 42 --admin",
+        " !git push --no-verify origin main",
+    ] {
         let response = checked_send_text(&send_request(text)).unwrap_err();
         assert_eq!(response.code, Some(EXIT_FAILURE), "{text}");
     }

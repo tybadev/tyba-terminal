@@ -292,6 +292,14 @@ pub fn checked_send_text(request: &ControlRequest) -> Result<String, ControlResp
             "o texto tem quebra de linha, TAB ou caractere de controle; mande uma linha só",
         ));
     }
+    // `!…` é o modo shell do Claude Code e do Codex: roda direto, sem
+    // ferramenta, e o hook do guarda-corpo (`PreToolUse`) nunca vê.
+    if text.starts_with('!') {
+        return Err(ControlResponse::error(
+            EXIT_FAILURE,
+            "texto que começa com `!` vira comando de shell no agente; use `tyba run`",
+        ));
+    }
     if text.starts_with('/') || ["exit", "quit"].contains(&text.to_lowercase().as_str()) {
         return Err(ControlResponse::error(
             EXIT_FAILURE,
@@ -306,20 +314,21 @@ pub fn checked_send_text(request: &ControlRequest) -> Result<String, ControlResp
 
 /// Por que o `send` NÃO escreve neste pane (`None` = pode). Só entrega a um
 /// agente parado esperando o próximo prompt:
-/// - `agent_in_pane`: há um processo de agente no pane (sessão de agente, ou
-///   o prober achou um claude/codex digitado no shell). Sem ele o texto
-///   viraria comando de um shell que não tem o hook pre-push;
+/// - `agent_in_front`: o agente é quem está na frente do terminal (sessão de
+///   agente, ou o claude/codex digitado no shell como grupo em primeiro
+///   plano). Sem isso o texto viraria comando de um shell sem o hook
+///   pre-push, ou entrada de outro programa;
 /// - `idle`: o status `Idle`, que só vem de hook (fim de turno). Trabalhando,
 ///   o agente pode abrir um prompt de permissão a qualquer instante, e um
 ///   texto que começa com `1` o aprovaria; esperando aprovação, é o próprio
 ///   prompt. A fila de prompts usa a mesma régua;
 /// - `at_prompt`: o shell do pane está no prompt (o agente saiu): recusa.
 pub fn send_refusal(
-    agent_in_pane: bool,
+    agent_in_front: bool,
     idle: bool,
     at_prompt: Option<bool>,
 ) -> Option<&'static str> {
-    if !agent_in_pane || at_prompt == Some(true) {
+    if !agent_in_front || at_prompt == Some(true) {
         return Some("nenhum agente no pane; para rodar comando, use `tyba run`");
     }
     if !idle {

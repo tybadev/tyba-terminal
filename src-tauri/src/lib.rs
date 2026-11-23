@@ -878,23 +878,22 @@ fn dispose_all(app: &AppHandle, state: &State<'_, AppState>, ids: &[SessionId]) 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 const CLI_RUN_PROMPT_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
 
-/// `tyba run [--wait] -- <comando>`: abre uma aba com um shell novo e digita o
-/// comando nela, como o dono digitaria.
-///
-/// Guarda-corpo, nesta ordem e sem exceção: o texto passa pelo
-/// [`cli::checked_run_command`] (uma linha só, nada que o guarda-corpo fixo
-/// recuse); o shell nasce com o `core.hooksPath` do TYBA no env, como uma
-/// sessão de agente — sem a pasta de hooks, recusa (fail closed) em vez de
-/// abrir um shell sem o pre-push. Só digita com a integração do shell dizendo
-/// "prompt pintado, nada rodando".
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 /// Quanto o `tyba send` espera o agente começar o turno (o hook
 /// `UserPromptSubmit` tira a sessão do `Idle`).
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 const CLI_SEND_CONFIRM_WAIT: Duration = Duration::from_secs(10);
 
-/// `tyba send <pane> <texto>`: entrega o texto ao agente do pane pelo mesmo
-/// caminho da fila de prompts (`inject_rich_input`). Ver
-/// [`cli::checked_send_text`] e [`cli::send_refusal`] para o que é recusado.
+/// Um `send` por vez no app inteiro: dois em paralelo passariam ambos pelo
+/// `Idle` e o segundo Enter poderia cair num prompt de permissão aberto pelo
+/// turno do primeiro. Quem chega com outro em curso é recusado, sem fila
+/// (fila prenderia as vagas do socket).
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+static CLI_SEND_BUSY: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// `tyba send <pane> <texto>`: entrega o texto ao agente do pane, como a fila
+/// de prompts (colagem, pausa, Enter). Ver [`cli::checked_send_text`] e
+/// [`cli::send_refusal`] para o que é recusado; a recusa é conferida de novo
+/// antes do Enter.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn cli_send(
     app: &AppHandle,
@@ -906,6 +905,12 @@ fn cli_send(
     let text = match cli::checked_send_text(request) {
         Ok(text) => text,
         Err(response) => return response,
+    };
+    let Ok(_busy) = CLI_SEND_BUSY.try_lock() else {
+        return ControlResponse::error(
+            EXIT_FAILURE,
+            "outro `tyba send` em andamento; tente de novo",
+        );
     };
     let state = app.state::<AppState>();
     let pane = match cli::resolve_target(
@@ -923,23 +928,60 @@ fn cli_send(
         let Some(session) = state.sessions.get(id) else {
             return Some("o pane fechou");
         };
-        let agent_in_pane = match session.kind {
+        // O agente tem de estar NA FRENTE do terminal: suspenso (Ctrl-Z), em
+        // segundo plano (`&`) ou atrás de outro programa, o texto iria para o
+        // shell — que não tem o hook — ou para o programa da frente. Sessão de
+        // agente aberta pelo TYBA não tem shell atrás.
+        let agent_in_front = match session.kind {
             SessionKind::Agent { .. } => true,
-            SessionKind::Shell => state.agent_prober.detected(id).is_some(),
+            SessionKind::Shell => state.agent_prober.detected(id).is_some_and(|agent| {
+                let group = unsafe { libc::getpgid(agent.pid as libc::pid_t) };
+                group > 0 && state.pty_pool.foreground_group(id) == Some(group as u32)
+            }),
             _ => false,
         };
         let idle = matches!(session.status, SessionStatus::Idle { .. });
-        cli::send_refusal(agent_in_pane, idle, state.pty_pool.shell_at_prompt(id))
+        cli::send_refusal(agent_in_front, idle, state.pty_pool.shell_at_prompt(id))
     };
-    // Entre conferir e escrever há uma janela curta: um hook pode chegar no
-    // meio. Por isso o texto nunca é comando de barra nem exit/quit (o agente
-    // não sai por causa do próprio `send`) e só vai a agente PARADO, que não
-    // abre prompt de permissão sozinho.
-    if let Some(reason) = refusal(&state) {
-        return ControlResponse::error(EXIT_FAILURE, reason);
-    }
-    if let Err(e) = inject_rich_input(&state, id, &text, true) {
-        return ControlResponse::error(EXIT_FAILURE, format!("não deu para escrever no pane: {e}"));
+    let (pastes, strategy) = match rich_input_plan(&state, id) {
+        Ok(plan) => plan,
+        Err(e) => return ControlResponse::error(EXIT_FAILURE, e),
+    };
+    let (normalized, _) = rich_input::normalize(&text);
+    let payload = match rich_input::plan_injection(&normalized, pastes) {
+        Ok(payload) => payload,
+        Err(e) => return ControlResponse::error(EXIT_FAILURE, e),
+    };
+    {
+        // A trava do input rico: nem a caixa de texto nem a fila entram no
+        // meio da colagem e do Enter.
+        let _submitting = state.rich_input_submit.lock();
+        if let Some(reason) = refusal(&state) {
+            return ControlResponse::error(EXIT_FAILURE, reason);
+        }
+        if let Err(e) = state.pty_pool.write(id, &payload) {
+            return ControlResponse::error(
+                EXIT_FAILURE,
+                format!("não deu para escrever no pane: {e}"),
+            );
+        }
+        if !strategy.delay.is_zero() {
+            std::thread::sleep(strategy.delay);
+        }
+        // O agente pode ter acordado sozinho na pausa (um bash de fundo
+        // acabou) e aberto um prompt: o Enter não vai.
+        if let Some(reason) = refusal(&state) {
+            return ControlResponse::error(
+                EXIT_FAILURE,
+                format!("texto colado mas não enviado: {reason}"),
+            );
+        }
+        if let Err(e) = state.pty_pool.write(id, strategy.submit_bytes) {
+            return ControlResponse::error(
+                EXIT_FAILURE,
+                format!("não deu para escrever no pane: {e}"),
+            );
+        }
     }
     let deadline = std::time::Instant::now() + CLI_SEND_CONFIRM_WAIT;
     let delivered = loop {
@@ -961,6 +1003,16 @@ fn cli_send(
     }
 }
 
+/// `tyba run [--wait] -- <comando>`: abre uma aba com um shell novo e digita o
+/// comando nela, como o dono digitaria.
+///
+/// Guarda-corpo, nesta ordem e sem exceção: o texto passa pelo
+/// [`cli::checked_run_command`] (uma linha só, nada que o guarda-corpo fixo
+/// recuse); o shell nasce com o `core.hooksPath` do TYBA no env, como uma
+/// sessão de agente — sem a pasta de hooks, recusa (fail closed) em vez de
+/// abrir um shell sem o pre-push. Só digita com a integração do shell dizendo
+/// "prompt pintado, nada rodando".
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn cli_run(
     app: &AppHandle,
     request: &cli::ControlRequest,
