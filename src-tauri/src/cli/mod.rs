@@ -9,6 +9,7 @@
 //! `TYBA_PANE` no env de todo pane.
 
 pub mod target;
+pub mod waiters;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod server;
@@ -33,7 +34,7 @@ pub const EXIT_INTERRUPTED: i32 = 130;
 
 pub const PROTOCOL_VERSION: u32 = 1;
 const CONTROL_SOCKET_FILE: &str = "control.sock";
-const SUBCOMMANDS: &[&str] = &["ls", "capture"];
+const SUBCOMMANDS: &[&str] = &["ls", "capture", "run"];
 const CLI_MODE: &str = "_cli";
 
 const USAGE: &str = "\
@@ -41,14 +42,20 @@ uso:
   tyba ls [--json]       sessões e panes do TYBA aberto, com o estado do agente
   tyba capture <pane> [--lines N] [--json]
                          o scrollback do pane, já redigido (sem segredos)
+  tyba run [--wait] [--cwd DIR] [--json] -- <comando>
+                         abre uma aba com um shell e digita o comando nela;
+                         com --wait, espera o fim e devolve a saída (redigida)
+                         e sai com o código do comando
 
 <pane>: id, rótulo, posição no `tyba ls` ou sufixo do id, nessa ordem.
+<comando>: uma linha de shell (`tyba run -- 'cargo test | tail'`). Passa
+pelo guarda-corpo do TYBA, e o shell nasce com o hook pre-push dele.
 
 A CLI fala com o app aberto: fechou o TYBA, os dados somem junto.
 Saída: 0 ok, 1 falha, 2 uso inválido, 3 alvo não achado/ambíguo,
        4 TYBA não está aberto, 130 interrompido.";
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ControlRequest {
     pub v: u32,
     pub op: String,
@@ -58,6 +65,15 @@ pub struct ControlRequest {
     /// `capture --lines N`: só as últimas N linhas.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lines: Option<usize>,
+    /// `run`: a linha de shell a digitar no pane novo.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    /// `run --cwd`: a pasta do pane novo.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    /// `run --wait`: responde só quando o comando termina.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub wait: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -228,6 +244,69 @@ pub struct CaptureResult {
     pub lines: Vec<String>,
 }
 
+/// A saída do `tyba run --json`. Sem `--wait`, só o `pane`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunResult {
+    pub pane: String,
+    /// O código do comando; `null` quando o shell não disse.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
+    /// A saída do comando, já redigida.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lines: Option<Vec<String>>,
+}
+
+/// O comando do `run`, conferido antes de qualquer pane nascer. Recusa:
+/// - linha vazia;
+/// - caractere de controle (quebra de linha, TAB, `ESC`, `^C`…): o texto é
+///   DIGITADO num shell, e o editor de linha age neles depois do guarda-corpo
+///   ter olhado: um `\n` vira dois comandos, um TAB completa `unset GIT_CONFI`
+///   para `GIT_CONFIG_COUNT` (no TAB, use `$'\t'`);
+/// - o que o guarda-corpo fixo recusa (merge/aprovação de PR, desligar o
+///   hook pre-push), com a mesma mensagem que o agente recebe.
+pub fn checked_run_command(request: &ControlRequest) -> Result<String, ControlResponse> {
+    let raw = request.command.as_deref().unwrap_or("");
+    let command = raw.trim();
+    if command.is_empty() {
+        return Err(ControlResponse::error(EXIT_USAGE, "falta o comando"));
+    }
+    // No texto CRU: o `trim` também come TAB e quebra de linha das pontas.
+    if raw.chars().any(char::is_control) {
+        return Err(ControlResponse::error(
+            EXIT_USAGE,
+            "o comando tem quebra de linha, TAB ou caractere de controle; mande uma linha só",
+        ));
+    }
+    if let Some(reason) = crate::agent::guard_rail::guard_rail(command) {
+        return Err(ControlResponse::error(EXIT_FAILURE, reason));
+    }
+    Ok(command.to_string())
+}
+
+/// A linha que o `run` digita: o comando inteiro entre aspas simples, dentro
+/// de um `eval`. O shell interativo expande histórico (`!#:1`, `!?texto?`)
+/// na linha DIGITADA, antes de rodar — o guarda-corpo veria uma coisa e o
+/// shell rodaria outra. Entre aspas simples nem o bash nem o zsh expandem `!`,
+/// e o `eval` não expande histórico; funções e aliases do dono seguem valendo.
+pub fn typed_run_line(command: &str) -> String {
+    format!("eval '{}'", command.replace('\'', "'\\''"))
+}
+
+/// O bloco que fechou, já como resposta: texto extraído no tamanho da tela e
+/// redigido antes de sair do app.
+pub fn run_result(pane: String, done: waiters::Done) -> RunResult {
+    let (lines, _) = crate::blocks::extract_lines(&done.bytes, done.cols, done.rows);
+    let lines = crate::blocks::redact_lines(lines)
+        .into_iter()
+        .map(|l| l.text)
+        .collect();
+    RunResult {
+        pane,
+        exit_code: done.exit_code,
+        lines: Some(lines),
+    }
+}
+
 /// Lado do app: responde um pedido já autenticado (peer do mesmo usuário).
 /// `scrollback` lê o texto CRU de um pane (`PtyPool::scrollback_lines`); a
 /// redação acontece aqui, antes de qualquer byte sair.
@@ -348,12 +427,37 @@ fn parse_args(args: &[String]) -> Result<Invocation, String> {
     let (op, rest) = args.split_first().ok_or("falta o subcomando")?;
     let mut json = false;
     let mut lines = None;
+    let mut wait = false;
+    let mut cwd = None;
+    let mut command = None;
     let mut positional = Vec::new();
     let mut rest = rest.iter();
     while let Some(arg) = rest.next() {
         let value = match arg.as_str() {
             "--json" => {
                 json = true;
+                continue;
+            }
+            "--wait" if op == "run" => {
+                wait = true;
+                continue;
+            }
+            "--cwd" if op == "run" => {
+                let dir = PathBuf::from(rest.next().ok_or("--cwd pede uma pasta")?);
+                // Relativo vale a partir de quem chamou, não da pasta do app.
+                let dir = if dir.is_absolute() {
+                    dir
+                } else {
+                    std::env::current_dir()
+                        .map_err(|e| format!("--cwd relativo sem pasta atual: {e}"))?
+                        .join(dir)
+                };
+                cwd = Some(dir.to_string_lossy().into_owned());
+                continue;
+            }
+            "--" if op == "run" => {
+                let words: Vec<&str> = rest.by_ref().map(String::as_str).collect();
+                command = Some(words.join(" "));
                 continue;
             }
             "--lines" => Some(rest.next().ok_or("--lines pede um número")?.as_str()),
@@ -379,6 +483,7 @@ fn parse_args(args: &[String]) -> Result<Invocation, String> {
         op: op.into(),
         target,
         lines,
+        ..Default::default()
     };
     match (op.as_str(), positional.as_slice()) {
         ("ls", []) if lines.is_none() => Ok(Invocation {
@@ -392,6 +497,21 @@ fn parse_args(args: &[String]) -> Result<Invocation, String> {
         }),
         ("capture", []) => Err("falta o pane: `tyba capture <pane>`".into()),
         ("capture", _) => Err("`tyba capture` recebe um pane só".into()),
+        ("run", []) if lines.is_none() => match command {
+            Some(command) if !command.trim().is_empty() => Ok(Invocation {
+                request: ControlRequest {
+                    command: Some(command),
+                    cwd,
+                    wait,
+                    ..request("run", None)
+                },
+                json,
+            }),
+            _ => Err("falta o comando: `tyba run -- <comando>`".into()),
+        },
+        ("run", _) => {
+            Err("`tyba run` não recebe pane nem --lines; o comando vem depois de `--`".into())
+        }
         (other, _) => Err(format!("subcomando desconhecido: {other}")),
     }
 }
@@ -432,11 +552,17 @@ pub fn run(args: &[String], socket: &Path, out: &mut impl Write, err: &mut impl 
         return response.code.unwrap_or(EXIT_FAILURE);
     }
     let result = response.result.unwrap_or(serde_json::Value::Null);
+    let exit = command_exit_code(&invocation, &result);
     let rendered = if invocation.json {
         Ok(format!("{result}\n"))
     } else if invocation.request.op == "capture" {
         serde_json::from_value::<CaptureResult>(result)
             .map(|c| c.lines.iter().map(|l| format!("{l}\n")).collect::<String>())
+    } else if invocation.request.op == "run" {
+        serde_json::from_value::<RunResult>(result).map(|r| match r.lines {
+            Some(lines) => lines.iter().map(|l| format!("{l}\n")).collect(),
+            None => format!("{}\n", r.pane),
+        })
     } else {
         serde_json::from_value::<Listing>(result).map(|l| render_listing(&l))
     };
@@ -448,8 +574,20 @@ pub fn run(args: &[String], socket: &Path, out: &mut impl Write, err: &mut impl 
         }
     };
     match written {
-        Ok(()) => EXIT_OK,
+        Ok(()) => exit,
         Err(_) => EXIT_FAILURE,
+    }
+}
+
+/// `run --wait` sai com o código do comando, como o `ssh` e o `docker run`;
+/// fora do 0..=255 (ou sem código) vira falha. O resto sai com 0.
+fn command_exit_code(invocation: &Invocation, result: &serde_json::Value) -> i32 {
+    if invocation.request.op != "run" || !invocation.request.wait {
+        return EXIT_OK;
+    }
+    match result.get("exit_code").and_then(serde_json::Value::as_i64) {
+        Some(code @ 0..=255) => code as i32,
+        _ => EXIT_FAILURE,
     }
 }
 
@@ -517,7 +655,10 @@ fn exchange(socket: &Path, request: &ControlRequest) -> Result<ControlResponse, 
         ));
     }
     let failure = |e: std::io::Error| (EXIT_FAILURE, format!("falha falando com o TYBA: {e}"));
-    let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(10)));
+    // `run --wait` espera o comando, que pode levar horas: sem teto. O resto
+    // é leitura de estado, e 10 s é muito.
+    let timeout = (!request.wait).then(|| std::time::Duration::from_secs(10));
+    let _ = stream.set_read_timeout(timeout);
     let mut payload = serde_json::to_vec(request).map_err(|e| (EXIT_FAILURE, e.to_string()))?;
     payload.push(b'\n');
     (&stream).write_all(&payload).map_err(failure)?;
