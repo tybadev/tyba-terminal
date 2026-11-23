@@ -963,6 +963,15 @@ impl<R: Runtime> ActionSink<R> {
                     crate::blocks::submit(crate::blocks::Work::Wipe(self.session_id.to_string()))
                 }
                 capture::Action::Finalize(block) => {
+                    // `tyba run --wait` esperando este pane? Só então copia.
+                    crate::cli::waiters::offer(&self.session_id.to_string(), || {
+                        crate::cli::waiters::Done {
+                            exit_code: block.exit_code,
+                            bytes: block.bytes.clone(),
+                            cols,
+                            rows,
+                        }
+                    });
                     let finished = crate::blocks::Finished {
                         session_id: self.session_id.to_string(),
                         command: block.command,

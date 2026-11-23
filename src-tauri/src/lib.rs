@@ -874,6 +874,150 @@ fn dispose_all(app: &AppHandle, state: &State<'_, AppState>, ids: &[SessionId]) 
     }
 }
 
+/// Quanto o `tyba run` espera o shell novo pintar o prompt antes de desistir.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+const CLI_RUN_PROMPT_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// `tyba run [--wait] -- <comando>`: abre uma aba com um shell novo e digita o
+/// comando nela, como o dono digitaria.
+///
+/// Guarda-corpo, nesta ordem e sem exceção: o texto passa pelo
+/// [`cli::checked_run_command`] (uma linha só, nada que o guarda-corpo fixo
+/// recuse); o shell nasce com o `core.hooksPath` do TYBA no env, como uma
+/// sessão de agente — sem a pasta de hooks, recusa (fail closed) em vez de
+/// abrir um shell sem o pre-push. Só digita com a integração do shell dizendo
+/// "prompt pintado, nada rodando".
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn cli_run(
+    app: &AppHandle,
+    request: &cli::ControlRequest,
+    connected: &dyn Fn() -> bool,
+) -> cli::ControlResponse {
+    use cli::{ControlResponse, EXIT_FAILURE};
+
+    let command = match cli::checked_run_command(request) {
+        Ok(command) => command,
+        Err(response) => return response,
+    };
+    let state = app.state::<AppState>();
+    if !state.boot.wait_ready(BOOT_WAIT) {
+        return ControlResponse::error(EXIT_FAILURE, "o TYBA ainda está abrindo; tente de novo");
+    }
+    let hooks = match session::ensure_git_hooks() {
+        Ok(dir) => dir,
+        Err(detail) => {
+            return ControlResponse::error(
+                EXIT_FAILURE,
+                format!("sem o hook pre-push do TYBA ({detail}); recusado"),
+            )
+        }
+    };
+    let mut env = agent::git_hooks::config_env(|k| std::env::var(k).ok(), &hooks.to_string_lossy());
+    // Um `git -c core.hooksPath=…` herdado venceria o nosso: o mesmo corte do
+    // agente (`with_hooks`). Vazio = nada para o git ler.
+    if let Ok(params) = std::env::var("GIT_CONFIG_PARAMETERS") {
+        let kept = agent::git_hooks::strip_hookspath_params(&params).unwrap_or_default();
+        env.push(("GIT_CONFIG_PARAMETERS".into(), kept));
+    }
+    let cwd = request.cwd.as_deref().map(std::path::PathBuf::from);
+    if cwd.as_deref().is_some_and(|dir| !dir.is_dir()) {
+        return ControlResponse::error(cli::EXIT_USAGE, "--cwd não é uma pasta");
+    }
+    // Redige ANTES de cortar: cortada no meio, a senha de uma URL perde o `@`
+    // e o padrão não casa mais — iria crua para o título no banco.
+    let title: String = session::redact::redact(&command).chars().take(40).collect();
+    let handle = app.clone();
+    let session = match state.sessions.create_shell_session_as(
+        app.clone(),
+        &state.pty_pool,
+        CreateSessionOpts {
+            kind: SessionKind::Shell,
+            title: Some(title),
+            cwd,
+            cols: 120,
+            rows: 32,
+            worktree_task: None,
+            attach_existing: false,
+            shell: None,
+            inherit_cwd_from: None,
+            initial_prompt: None,
+            agent_model: None,
+            prepared_worktree: None,
+        },
+        session::SessionOwner::Grid,
+        &env,
+        move |id| {
+            cli::waiters::cancel(&id.to_string());
+            session_exited(&handle, id);
+        },
+    ) {
+        Ok(session) => session,
+        Err(e) => return ControlResponse::error(EXIT_FAILURE, e.to_string()),
+    };
+    let id = session.id;
+    if let Err(e) = state.layout.open_session(id) {
+        return ControlResponse::error(EXIT_FAILURE, e.to_string());
+    }
+    emit_layout(app, &state);
+
+    let deadline = std::time::Instant::now() + CLI_RUN_PROMPT_WAIT;
+    while state.pty_pool.shell_at_prompt(id) != Some(true) {
+        if state.pty_pool.hook_expected(id) == Some(false) {
+            return ControlResponse::error(
+                EXIT_FAILURE,
+                "o shell padrão não tem a integração do TYBA (só bash e zsh)",
+            );
+        }
+        if std::time::Instant::now() >= deadline || !connected() {
+            return ControlResponse::error(EXIT_FAILURE, "o shell novo não chegou ao prompt");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+
+    let pane = id.to_string();
+    let done = request.wait.then(|| cli::waiters::register(&pane));
+    // A aba nova tem o foco: o que o dono digitou nela enquanto o shell subia
+    // se somaria ao comando. Limpa a linha antes, como o `--resume`.
+    let mut line = KILL_LINE.to_vec();
+    line.extend_from_slice(b"\x05\x15");
+    line.extend_from_slice(cli::typed_run_line(&command).as_bytes());
+    line.push(b'\r');
+    {
+        let _submitting = state.rich_input_submit.lock();
+        if let Err(e) = state.pty_pool.write(id, &line) {
+            cli::waiters::cancel(&pane);
+            return ControlResponse::error(EXIT_FAILURE, e.to_string());
+        }
+    }
+    let result = match done {
+        None => cli::RunResult {
+            pane,
+            exit_code: None,
+            lines: None,
+        },
+        Some(rx) => loop {
+            use std::sync::mpsc::RecvTimeoutError;
+            match rx.recv_timeout(std::time::Duration::from_millis(500)) {
+                Ok(done) => break cli::run_result(pane, done),
+                Err(RecvTimeoutError::Disconnected) => {
+                    return ControlResponse::error(EXIT_FAILURE, "o terminal fechou antes do fim")
+                }
+                // Ninguém mais lê (Ctrl-C, timeout do agente): solta a vaga.
+                // O comando segue rodando na aba.
+                Err(RecvTimeoutError::Timeout) if !connected() => {
+                    cli::waiters::cancel(&pane);
+                    return ControlResponse::error(EXIT_FAILURE, "o cliente desistiu");
+                }
+                Err(RecvTimeoutError::Timeout) => {}
+            }
+        },
+    };
+    match serde_json::to_value(result) {
+        Ok(value) => ControlResponse::ok(value),
+        Err(e) => ControlResponse::error(EXIT_FAILURE, e.to_string()),
+    }
+}
+
 fn session_exited(app: &AppHandle, id: SessionId) {
     let state = app.state::<AppState>();
     let Some(session) = state.sessions.get(id) else {
@@ -10704,15 +10848,19 @@ pub fn run() {
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             {
                 let control_app = app.handle().clone();
-                let control_handler: cli::server::ControlHandler = Arc::new(move |request| {
-                    let state = control_app.state::<AppState>();
-                    cli::handle(
-                        &request,
-                        &state.layout.state(),
-                        &state.sessions.list(),
-                        |id| state.pty_pool.scrollback_lines(id),
-                    )
-                });
+                let control_handler: cli::server::ControlHandler =
+                    Arc::new(move |request, connected| {
+                        if request.op == "run" {
+                            return cli_run(&control_app, &request, connected);
+                        }
+                        let state = control_app.state::<AppState>();
+                        cli::handle(
+                            &request,
+                            &state.layout.state(),
+                            &state.sessions.list(),
+                            |id| state.pty_pool.scrollback_lines(id),
+                        )
+                    });
                 match cli::server::ControlServer::bind(
                     &cli::resolve_control_socket_path(),
                     control_handler,

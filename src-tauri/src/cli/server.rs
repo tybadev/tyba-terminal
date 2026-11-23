@@ -17,7 +17,11 @@ use std::time::Duration;
 
 use super::{ControlRequest, ControlResponse};
 
-pub type ControlHandler = Arc<dyn Fn(ControlRequest) -> ControlResponse + Send + Sync>;
+/// O segundo argumento diz se o cliente ainda está do outro lado: o
+/// `run --wait` pergunta enquanto espera, e desiste quando ninguém mais lê
+/// (sem isso, 16 clientes mortos prenderiam todas as vagas).
+pub type ControlHandler =
+    Arc<dyn Fn(ControlRequest, &dyn Fn() -> bool) -> ControlResponse + Send + Sync>;
 
 const MAX_INFLIGHT: usize = 16;
 /// Um pedido é uma linha minúscula (`{"v":1,"op":"capture",…}`).
@@ -107,6 +111,29 @@ fn dispatch(stream: UnixStream, handler: &ControlHandler, inflight: &Arc<AtomicU
     });
 }
 
+/// O cliente fechou? `recv` com `MSG_PEEK | MSG_DONTWAIT`: 0 é fim de
+/// conexão; nada para ler (`EAGAIN`) é cliente vivo esperando.
+fn client_connected(stream: &UnixStream) -> bool {
+    use std::os::fd::AsRawFd;
+    let mut byte = 0u8;
+    let n = unsafe {
+        libc::recv(
+            stream.as_raw_fd(),
+            (&mut byte as *mut u8).cast(),
+            1,
+            libc::MSG_PEEK | libc::MSG_DONTWAIT,
+        )
+    };
+    match n {
+        0 => false,
+        n if n > 0 => true,
+        _ => matches!(
+            std::io::Error::last_os_error().kind(),
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+        ),
+    }
+}
+
 fn serve(stream: UnixStream, handler: &ControlHandler) {
     // Quem conectou tem de ser do MESMO usuário, pelo kernel — nunca pelo
     // que o pedido diz. Sem leitura de peer cred, recusa (fail closed).
@@ -127,7 +154,9 @@ fn serve(stream: UnixStream, handler: &ControlHandler) {
         Ok(_) => {}
     }
     let response = match serde_json::from_str::<ControlRequest>(line.trim_end()) {
-        Ok(request) if request.v == super::PROTOCOL_VERSION => handler(request),
+        Ok(request) if request.v == super::PROTOCOL_VERSION => {
+            handler(request, &|| client_connected(&stream))
+        }
         Ok(_) => ControlResponse::error(super::EXIT_FAILURE, "versão de protocolo diferente"),
         Err(_) => ControlResponse::error(super::EXIT_USAGE, "pedido inválido"),
     };

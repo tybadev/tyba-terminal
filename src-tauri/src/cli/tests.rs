@@ -119,8 +119,7 @@ fn unknown_op_is_usage_error() {
     let request = ControlRequest {
         v: PROTOCOL_VERSION,
         op: "rm".into(),
-        target: None,
-        lines: None,
+        ..Default::default()
     };
     assert_eq!(
         handle(&request, &layout, &sessions, fake_scrollback).code,
@@ -159,6 +158,7 @@ fn capture_request(target: &str, lines: Option<usize>) -> ControlRequest {
         op: "capture".into(),
         target: Some(target.into()),
         lines,
+        ..Default::default()
     }
 }
 
@@ -258,7 +258,7 @@ fn serve_fixture(dir: &Path) -> (ControlServer, PathBuf) {
     let socket = dir.join("ctl").join("control.sock");
     let (layout, sessions) = fixture();
     let handler: ControlHandler =
-        Arc::new(move |req| handle(&req, &layout, &sessions, fake_scrollback));
+        Arc::new(move |req, _| handle(&req, &layout, &sessions, fake_scrollback));
     (ControlServer::bind(&socket, handler).unwrap(), socket)
 }
 
@@ -353,7 +353,7 @@ fn error_code_from_the_app_becomes_the_exit_code() {
     let dir = tempfile::tempdir().unwrap();
     let socket = dir.path().join("ctl").join("control.sock");
     let handler: ControlHandler =
-        Arc::new(|_| ControlResponse::error(EXIT_TARGET, "alvo ambíguo: a, b"));
+        Arc::new(|_, _| ControlResponse::error(EXIT_TARGET, "alvo ambíguo: a, b"));
     let _server = ControlServer::bind(&socket, handler).unwrap();
     let (code, _, err) = run_capture(&["ls"], &socket);
     assert_eq!(code, EXIT_TARGET);
@@ -390,4 +390,176 @@ fn capture_over_the_socket_prints_redacted_text() {
     assert_clean(&result.lines);
 
     assert_eq!(run_capture(&["capture", "nada"], &socket).0, EXIT_TARGET);
+}
+
+// ================================ `tyba run` ================================
+
+fn run_request(command: &str) -> ControlRequest {
+    ControlRequest {
+        v: PROTOCOL_VERSION,
+        op: "run".into(),
+        command: Some(command.into()),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn run_args_take_the_command_after_the_double_dash() {
+    let parsed = parse_args(&args(&[
+        "run", "--wait", "--cwd", "/tmp", "--", "cargo", "test",
+    ]))
+    .unwrap();
+    assert_eq!(parsed.request.op, "run");
+    assert_eq!(parsed.request.command.as_deref(), Some("cargo test"));
+    assert_eq!(parsed.request.cwd.as_deref(), Some("/tmp"));
+    assert!(parsed.request.wait);
+    // Depois do `--`, flag é do comando, não da CLI.
+    let parsed = parse_args(&args(&["run", "--", "ls", "--json"])).unwrap();
+    assert_eq!(parsed.request.command.as_deref(), Some("ls --json"));
+    assert!(!parsed.json && !parsed.request.wait);
+    for bad in [
+        &["run"][..],
+        &["run", "--"],
+        &["run", "--", " "],
+        &["run", "ls"],
+        &["run", "--cwd"],
+        &["run", "--lines", "3", "--", "ls"],
+        &["ls", "--wait"],
+        &["capture", "1", "--", "ls"],
+    ] {
+        assert!(parse_args(&args(bad)).is_err(), "{bad:?}");
+    }
+}
+
+#[test]
+fn run_refuses_what_the_guard_rail_refuses() {
+    for command in [
+        "gh pr merge 12",
+        "git push --no-verify origin feat",
+        "git -c core.hooksPath=/dev/null push",
+        "sh -c 'gh pr review 3 --approve'",
+    ] {
+        let response = checked_run_command(&run_request(command)).unwrap_err();
+        assert_eq!(response.code, Some(EXIT_FAILURE), "{command}");
+        assert!(response.error.unwrap().starts_with("TYBA:"), "{command}");
+    }
+    assert_eq!(
+        checked_run_command(&run_request("  cargo test --lib  ")).unwrap(),
+        "cargo test --lib"
+    );
+}
+
+#[test]
+fn run_refuses_more_than_one_line_or_control_characters() {
+    // Um `\n` digitado viraria um segundo comando, fora do guarda-corpo.
+    // E um TAB completaria `unset GIT_CONFI` para `GIT_CONFIG_COUNT` no zsh.
+    for command in [
+        "ls\ngh pr merge 1",
+        "ls\rx",
+        "ls\u{1b}[A",
+        "ls\u{3}",
+        "unset GIT_CONFI\t\t",
+        "",
+    ] {
+        let response = checked_run_command(&run_request(command)).unwrap_err();
+        assert_eq!(response.code, Some(EXIT_USAGE), "{command:?}");
+    }
+    assert!(checked_run_command(&run_request("printf 'a\\tb'")).is_ok());
+}
+
+#[test]
+fn run_output_is_redacted_before_leaving_the_app() {
+    let bytes = format!("ok\r\nexport AWS_ACCESS_KEY_ID={FAKE_AWS}\r\ntoken: {FAKE_SK}\r\nfim\r\n");
+    let result = run_result(
+        "pane-1".into(),
+        waiters::Done {
+            exit_code: Some(2),
+            bytes: bytes.into_bytes(),
+            cols: 120,
+            rows: 32,
+        },
+    );
+    assert_eq!(result.exit_code, Some(2));
+    let lines = result.lines.unwrap();
+    assert!(lines.iter().any(|l| l == "ok"), "{lines:?}");
+    assert!(lines.iter().any(|l| l == "fim"), "{lines:?}");
+    assert_clean(&lines);
+}
+
+#[test]
+fn run_wait_exits_with_the_command_code() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("ctl").join("control.sock");
+    let handler: ControlHandler = Arc::new(|req, _| {
+        let code = if req.wait { Some(7) } else { None };
+        ControlResponse::ok(
+            serde_json::to_value(RunResult {
+                pane: "pane-1".into(),
+                exit_code: code,
+                lines: req.wait.then(|| vec!["saida".to_string()]),
+            })
+            .unwrap(),
+        )
+    });
+    let _server = ControlServer::bind(&socket, handler).unwrap();
+
+    let (code, out, err) = run_capture(&["run", "--wait", "--", "false"], &socket);
+    assert_eq!(code, 7, "{err}");
+    assert_eq!(out, "saida\n");
+
+    let (code, out, _) = run_capture(&["run", "--", "sleep", "9"], &socket);
+    assert_eq!(code, EXIT_OK);
+    assert_eq!(out, "pane-1\n");
+
+    let (code, out, _) = run_capture(&["run", "--wait", "--json", "--", "false"], &socket);
+    assert_eq!(code, 7);
+    let result: RunResult = serde_json::from_str(out.trim()).unwrap();
+    assert_eq!(result.exit_code, Some(7));
+}
+
+#[test]
+fn the_typed_line_keeps_the_command_inside_single_quotes() {
+    // `!` fora de aspas simples seria expandido pelo histórico do shell
+    // interativo DEPOIS do guarda-corpo ter olhado.
+    assert_eq!(
+        typed_run_line("echo mer ge; gh pr !#:1!#:2 12"),
+        "eval 'echo mer ge; gh pr !#:1!#:2 12'"
+    );
+    assert_eq!(typed_run_line("echo 'a b'"), r"eval 'echo '\''a b'\'''");
+}
+
+#[test]
+fn relative_cwd_is_resolved_where_the_cli_runs() {
+    let parsed = parse_args(&args(&["run", "--cwd", "sub", "--", "ls"])).unwrap();
+    let here = std::env::current_dir().unwrap().join("sub");
+    assert_eq!(parsed.request.cwd.as_deref(), here.to_str());
+    let parsed = parse_args(&args(&["run", "--cwd", "/abs", "--", "ls"])).unwrap();
+    assert_eq!(parsed.request.cwd.as_deref(), Some("/abs"));
+}
+
+#[test]
+fn the_handler_sees_when_the_client_goes_away() {
+    use std::io::Write;
+    use std::sync::mpsc;
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("ctl").join("control.sock");
+    let (tx, rx) = mpsc::channel();
+    let handler: ControlHandler = Arc::new(move |_, connected| {
+        let alive_at_start = connected();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while connected() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let _ = tx.send((alive_at_start, connected()));
+        ControlResponse::error(EXIT_FAILURE, "fim")
+    });
+    let _server = ControlServer::bind(&socket, handler).unwrap();
+    let mut stream = std::os::unix::net::UnixStream::connect(&socket).unwrap();
+    stream.write_all(b"{\"v\":1,\"op\":\"run\"}\n").unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    drop(stream);
+    let (alive_at_start, alive_at_end) =
+        rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+    assert!(alive_at_start);
+    assert!(!alive_at_end);
 }
