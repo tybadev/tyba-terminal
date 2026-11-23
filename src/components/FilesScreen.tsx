@@ -446,7 +446,7 @@ export function FilesScreen({
             </div>
           )}
 
-          <div className="flex min-w-0 flex-1 flex-col bg-[var(--tyba-editor-bg,var(--tyba-paper-solid))]">
+          <div className="tyba-acrylic flex min-w-0 flex-1 flex-col bg-[var(--tyba-editor-bg,var(--tyba-paper-solid))]">
             {visible && tabs.length > 0 && (
               <div
                 role="tablist"
