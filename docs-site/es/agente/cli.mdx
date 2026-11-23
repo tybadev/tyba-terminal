@@ -1,0 +1,92 @@
+---
+title: "CLI de TYBA"
+description: "El comando `tyba` permite que un agente (o tú) liste los paneles, lea lo que apareció en ellos, ejecute un comando en una pestaña nueva, siga lo que cambia y le mande un mensaje a otro agente."
+---
+
+Todo panel de TYBA tiene el comando `tyba` en el `PATH`. Habla con la app **abierta**: si cierras TYBA, la CLI sale con el código 4 y nada sigue corriendo por detrás.
+
+| Comando | Qué hace |
+| --- | --- |
+| `tyba ls` | Lista workspaces y paneles, con el estado del agente de cada uno |
+| `tyba capture <panel>` | Muestra lo que apareció en el panel, ya sin secretos |
+| `tyba run [--wait] -- <comando>` | Abre una pestaña con un shell y ejecuta el comando en ella |
+| `tyba events` | Imprime una línea por cada cambio: panel abierto, cerrado, agente que cambió de estado |
+| `tyba send <panel> <texto>` | Le manda el texto al agente del panel cuando está parado esperándote |
+
+Todo comando acepta `--json`, con campos estables: las versiones nuevas solo agregan.
+
+## Elegir el panel
+
+`<panel>` acepta, en este orden: el id completo, la etiqueta, la posición en `tyba ls` (1, 2, 3…) o el final del id. Si más de un panel coincide, la CLI sale con el código 3 y no hace nada.
+
+Dentro de un panel, `TYBA_PANE` y `TYBA_SESSION` dicen cuál es.
+
+## `tyba run`
+
+```bash
+tyba run --wait -- 'cargo test 2>&1 | tail -20'
+```
+
+Abre una pestaña nueva, espera a que el shell esté listo y escribe el comando. Con `--wait`, espera a que el comando termine, imprime la salida y sale con su código, igual que `ssh` y `docker run`. Usa `--cwd <carpeta>` para elegir la carpeta de la pestaña.
+
+Tú ves el comando corriendo en la pestaña, y quien lo llamó recibe el resultado.
+
+## `tyba events`
+
+```bash
+tyba events
+abriu    a1b2c3d4  zsh  [shell]
+agente   e5f6a7b8  claude · esperando você
+fechou   a1b2c3d4
+```
+
+Sigue corriendo hasta que presiones Ctrl-C o la app se cierre. Solo escribe cuando algo cambia, así que quedarse quieto es lo normal. El estado inicial viene de `tyba ls`. Un cambio que va y vuelve en menos de un cuarto de segundo puede no aparecer.
+
+## `tyba send`
+
+```bash
+tyba send 2 'corre los tests y dime si pasan'
+entregue a e5f6a7b8-…
+```
+
+Le entrega el texto al Claude Code o al Codex del panel y espera hasta 10 segundos a que el agente empiece su turno. Si no empieza, sale con el código 1.
+
+## Seguridad
+
+La CLI pasa por la misma barrera que los agentes:
+
+- **`run` y `send` rechazan** lo que la barrera rechaza: merge y aprobación de PR, y desactivar el hook `pre-push` (`--no-verify`, `core.hooksPath`, `GIT_CONFIG_*`).
+- **El shell de `run` nace con el hook `pre-push` de TYBA**, como una sesión de agente. El push a main o master se rechaza.
+- **`run` y `send` aceptan una sola línea**, sin TAB ni caracteres de control.
+- **`send` solo escribe en un agente parado que te está esperando.** Rechaza:
+  - un shell común, que no tiene el hook. Para ejecutar un comando, usa `tyba run`;
+  - un agente trabajando o en un prompt de permiso. La CLI nunca aprueba nada;
+  - un agente suspendido (Ctrl-Z), en segundo plano o detrás de otro programa;
+  - texto que empieza con `!` (se vuelve un comando de shell en el agente) o con `/` (comandos de barra), o que es solo `exit` o `quit`.
+- **`capture`, `run --wait` y `events` solo entregan texto ya redactado.** Las claves y los tokens salen enmascarados.
+- **El socket solo acepta conexiones de tu usuario**, verificadas por el sistema operativo.
+
+<Warning>
+Cualquier programa que corra con tu usuario puede llamar a la CLI, incluso un agente en otro panel. Puede leer los paneles, ya redactados, y abrir pestañas. La barrera de arriba es lo que impide que esas llamadas terminen en un merge o en un push a main.
+</Warning>
+
+## Enseñarle al agente a usarla
+
+```bash
+mkdir -p ~/.claude/skills/tyba && tyba skill > ~/.claude/skills/tyba/SKILL.md
+```
+
+`tyba skill` imprime una skill lista para Claude Code. Vuelve a correrlo después de actualizar TYBA, para que la skill acompañe la versión.
+
+## Códigos de salida
+
+| Código | Significado |
+| --- | --- |
+| 0 | ok |
+| 1 | falla (o rechazo de la barrera) |
+| 2 | uso inválido |
+| 3 | panel no encontrado o ambiguo |
+| 4 | TYBA no está abierto |
+| 130 | interrumpido |
+
+Con `run --wait`, el código es el del comando.

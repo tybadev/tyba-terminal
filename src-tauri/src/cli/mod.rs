@@ -35,8 +35,10 @@ pub const EXIT_INTERRUPTED: i32 = 130;
 
 pub const PROTOCOL_VERSION: u32 = 1;
 const CONTROL_SOCKET_FILE: &str = "control.sock";
-const SUBCOMMANDS: &[&str] = &["ls", "capture", "run", "events", "send"];
+const SUBCOMMANDS: &[&str] = &["ls", "capture", "run", "events", "send", "skill"];
 const CLI_MODE: &str = "_cli";
+/// A skill que ensina o Claude Code a usar a CLI (`tyba skill`).
+const SKILL: &str = include_str!("skill.md");
 
 const USAGE: &str = "\
 uso:
@@ -51,6 +53,9 @@ uso:
                          manda o texto ao agente (claude, codex) do pane, só
                          com ele parado esperando você; nunca a um shell nem
                          a um prompt de permissão
+  tyba skill             imprime a skill do Claude Code para esta CLI:
+                         mkdir -p ~/.claude/skills/tyba &&
+                         tyba skill > ~/.claude/skills/tyba/SKILL.md
   tyba events [--json]   o que muda no TYBA aberto (pane abriu/fechou, estado
                          do agente), uma linha por mudança, até o app fechar
 
@@ -641,6 +646,16 @@ pub fn run(args: &[String], socket: &Path, out: &mut impl Write, err: &mut impl 
     ) {
         let _ = writeln!(out, "{USAGE}");
         return EXIT_OK;
+    }
+    if args.first().map(String::as_str) == Some("skill") {
+        if args.len() > 1 {
+            let _ = writeln!(err, "tyba: `tyba skill` não recebe argumentos\n\n{USAGE}");
+            return EXIT_USAGE;
+        }
+        return match out.write_all(SKILL.as_bytes()) {
+            Ok(()) => EXIT_OK,
+            Err(_) => EXIT_FAILURE,
+        };
     }
     let invocation = match parse_args(args) {
         Ok(i) => i,

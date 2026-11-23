@@ -1,0 +1,92 @@
+---
+title: "CLI do TYBA"
+description: "O comando `tyba` deixa um agente (ou você) listar os panes, ler o que apareceu neles, rodar comando numa aba nova, acompanhar o que muda e mandar mensagem a outro agente."
+---
+
+Todo pane do TYBA tem o comando `tyba` no `PATH`. Ele fala com o app **aberto**: fechou o TYBA, a CLI sai com o código 4 e nada continua rodando por trás.
+
+| Comando | O que faz |
+| --- | --- |
+| `tyba ls` | Lista workspaces e panes, com o estado do agente de cada um |
+| `tyba capture <pane>` | Mostra o que apareceu no pane, já sem segredos |
+| `tyba run [--wait] -- <comando>` | Abre uma aba com um shell e roda o comando nela |
+| `tyba events` | Imprime uma linha a cada mudança: pane abriu, fechou, agente mudou de estado |
+| `tyba send <pane> <texto>` | Manda o texto ao agente do pane, quando ele está parado esperando você |
+
+Todo comando aceita `--json`, com campos estáveis: versões novas só acrescentam.
+
+## Escolher o pane
+
+`<pane>` aceita, nesta ordem: o id completo, o rótulo, a posição no `tyba ls` (1, 2, 3…) ou o fim do id. Se mais de um pane bate, a CLI sai com o código 3 e não faz nada.
+
+Dentro de um pane, `TYBA_PANE` e `TYBA_SESSION` dizem qual é ele.
+
+## `tyba run`
+
+```bash
+tyba run --wait -- 'cargo test 2>&1 | tail -20'
+```
+
+Abre uma aba nova, espera o shell ficar pronto e digita o comando. Com `--wait`, espera o comando terminar, imprime a saída e sai com o código dele, como o `ssh` e o `docker run` fazem. Use `--cwd <pasta>` para escolher a pasta da aba.
+
+Você vê o comando rodando na aba, e quem chamou recebe o resultado.
+
+## `tyba events`
+
+```bash
+tyba events
+abriu    a1b2c3d4  zsh  [shell]
+agente   e5f6a7b8  claude · esperando você
+fechou   a1b2c3d4
+```
+
+Fica rodando até você apertar Ctrl-C ou o app fechar. Ele só escreve quando algo muda, então ficar parado é o normal. O estado inicial vem do `tyba ls`. Uma mudança que vai e volta em menos de um quarto de segundo pode não aparecer.
+
+## `tyba send`
+
+```bash
+tyba send 2 'rode os testes e me diga se passou'
+entregue a e5f6a7b8-…
+```
+
+Entrega o texto ao Claude Code ou ao Codex do pane e espera até 10 segundos o agente começar o turno. Se ele não começar, sai com o código 1.
+
+## Segurança
+
+A CLI passa pelo mesmo guarda-corpo dos agentes:
+
+- **`run` e `send` recusam** o que o guarda-corpo recusa: merge e aprovação de PR, e desligar o hook `pre-push` (`--no-verify`, `core.hooksPath`, `GIT_CONFIG_*`).
+- **O shell do `run` nasce com o hook `pre-push` do TYBA**, como uma sessão de agente. Push para main ou master é recusado.
+- **`run` e `send` aceitam uma linha só**, sem TAB nem caractere de controle.
+- **O `send` só escreve num agente parado esperando você.** Recusa:
+  - shell comum, que não tem o hook. Para rodar comando, use `tyba run`;
+  - agente trabalhando ou num prompt de permissão. A CLI nunca aprova nada;
+  - agente suspenso (Ctrl-Z), em segundo plano ou atrás de outro programa;
+  - texto que começa com `!` (vira comando de shell no agente), com `/` (comandos de barra) ou que é só `exit` ou `quit`.
+- **`capture`, `run --wait` e `events` só entregam texto já redigido.** Chaves e tokens saem mascarados.
+- **O socket só aceita conexões do seu usuário**, conferido pelo sistema operacional.
+
+<Warning>
+Qualquer programa rodando como o seu usuário pode chamar a CLI, inclusive um agente em outro pane. Ele lê os panes, já redigidos, e abre abas. O guarda-corpo acima é o que impede essas chamadas de virar merge ou push na main.
+</Warning>
+
+## Ensinar o agente a usar
+
+```bash
+mkdir -p ~/.claude/skills/tyba && tyba skill > ~/.claude/skills/tyba/SKILL.md
+```
+
+`tyba skill` imprime uma skill pronta para o Claude Code. Rode de novo depois de atualizar o TYBA, para a skill acompanhar a versão.
+
+## Códigos de saída
+
+| Código | Significado |
+| --- | --- |
+| 0 | ok |
+| 1 | falha (ou recusa do guarda-corpo) |
+| 2 | uso inválido |
+| 3 | pane não encontrado ou ambíguo |
+| 4 | o TYBA não está aberto |
+| 130 | interrompido |
+
+No `run --wait`, o código é o do comando.

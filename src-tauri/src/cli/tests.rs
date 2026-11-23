@@ -805,3 +805,24 @@ fn send_exits_by_the_delivery_confirmation() {
         assert!(out.contains(text), "{out}");
     }
 }
+
+// ============================== `tyba skill` ===============================
+
+#[test]
+fn skill_prints_a_claude_skill_without_touching_the_app() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("nada.sock");
+    let (code, out, _) = run_capture(&["skill"], &socket);
+    assert_eq!(code, EXIT_OK);
+    assert!(out.starts_with("---\nname: tyba\n"), "{out}");
+    for command in [
+        "tyba run",
+        "tyba ls",
+        "tyba capture",
+        "tyba events",
+        "tyba send",
+    ] {
+        assert!(out.contains(command), "a skill não fala de {command}");
+    }
+    assert_eq!(run_capture(&["skill", "x"], &socket).0, EXIT_USAGE);
+}
