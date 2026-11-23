@@ -1964,6 +1964,14 @@ impl PtyPool {
         None
     }
 
+    /// O grupo de processos na frente do terminal do pane (quem recebe o que
+    /// se digita). `None` quando não dá para saber.
+    #[cfg(unix)]
+    pub fn foreground_group(&self, id: PtyId) -> Option<u32> {
+        let group = self.ptys.lock().get(&id)?.master.process_group_leader()?;
+        u32::try_from(group).ok()
+    }
+
     /// O shell está esperando o resto de um comando (`PS2`)? Ver
     /// [`ScreenState::continuation`].
     pub fn continuation(&self, id: PtyId) -> Option<bool> {
@@ -3879,6 +3887,25 @@ mod tests {
         assert_eq!(pool.shell_at_prompt(idle), Some(true));
         assert_eq!(pool.shell_at_prompt(busy), Some(false));
         assert_eq!(pool.shell_at_prompt(super::PtyId::new_v4()), None);
+        pool.kill_all();
+    }
+
+    #[test]
+    fn foreground_group_e_o_shell_ate_um_job_tomar_o_terminal() {
+        let pool = super::PtyPool::new();
+        let idle = pooled_script(&pool, "sleep 60");
+        assert_eq!(pool.foreground_group(idle), pool.leader_pid(idle));
+        // Com controle de job, o `sleep` vira o grupo da frente: é o claude
+        // digitado no shell.
+        let busy = pooled_script(&pool, "set -m; sleep 60; sleep 60");
+        let leader = pool.leader_pid(busy);
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while pool.foreground_group(busy) == leader && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(pool.foreground_group(busy).is_some());
+        assert_ne!(pool.foreground_group(busy), leader);
+        assert_eq!(pool.foreground_group(super::PtyId::new_v4()), None);
         pool.kill_all();
     }
 
