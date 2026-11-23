@@ -298,8 +298,8 @@ impl PaneNode {
                 second,
                 ..
             } => {
-                let found = first.equalize_toward(target, kind)
-                    || second.equalize_toward(target, kind);
+                let found =
+                    first.equalize_toward(target, kind) || second.equalize_toward(target, kind);
                 if found && *split == kind {
                     let a = first.span(kind) as f64;
                     let b = second.span(kind) as f64;
