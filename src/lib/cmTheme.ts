@@ -144,7 +144,11 @@ export function cmEditorTheme(dark: boolean): ReturnType<typeof EditorView.theme
       },
       ".cm-gutters": {
         // Opaca: a calha fica sticky quando o código rola na horizontal.
-        backgroundColor: "var(--tyba-editor-code-bg, var(--tyba-paper-solid))",
+        // No acrílico do escuro a calha é transparente com blur: sem faixa
+        // entre o número e o código, e o que rola por baixo fica desfocado.
+        backgroundColor:
+          "var(--tyba-editor-gutter-bg, var(--tyba-editor-code-bg, var(--tyba-paper-solid)))",
+        backdropFilter: "var(--tyba-editor-gutter-fx, none)",
         color: "var(--tyba-text-ghost)",
         border: "none",
       },
@@ -156,7 +160,10 @@ export function cmEditorTheme(dark: boolean): ReturnType<typeof EditorView.theme
       // faixa de alteração vem primeiro (3px numa coluna de 6), depois o
       // número alinhado à direita em 44px, depois o código.
       ".cm-diff-lane": { width: "6px", padding: "0", marginRight: "12px" },
-      ".cm-lineNumbers .cm-gutterElement": { padding: "0 12px 0 0", minWidth: "56px" },
+      ".cm-lineNumbers .cm-gutterElement": {
+        padding: "0 12px 0 0",
+        minWidth: "var(--tyba-editor-ln-min, 56px)",
+      },
       // O código começa logo depois dos 12px de folga do número (o padrão do
       // CodeMirror soma mais 6px à esquerda de cada linha).
       ".cm-line": { paddingLeft: "2px" },
