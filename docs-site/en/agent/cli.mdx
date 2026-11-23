@@ -1,0 +1,92 @@
+---
+title: "TYBA CLI"
+description: "The `tyba` command lets an agent (or you) list panes, read what showed up in them, run a command in a new tab, follow what changes, and message another agent."
+---
+
+Every TYBA pane has the `tyba` command on its `PATH`. It talks to the **running** app: once TYBA is closed, the CLI exits with code 4 and nothing keeps running behind it.
+
+| Command | What it does |
+| --- | --- |
+| `tyba ls` | Lists workspaces and panes, with each agent's state |
+| `tyba capture <pane>` | Shows what appeared in the pane, with secrets already redacted |
+| `tyba run [--wait] -- <command>` | Opens a tab with a shell and runs the command in it |
+| `tyba events` | Prints one line per change: pane opened, closed, agent changed state |
+| `tyba send <pane> <text>` | Sends the text to the pane's agent while it is idle, waiting for you |
+
+Every command accepts `--json` with stable fields: new versions only add.
+
+## Picking the pane
+
+`<pane>` accepts, in this order: the full id, the label, the position in `tyba ls` (1, 2, 3…), or the end of the id. If more than one pane matches, the CLI exits with code 3 and does nothing.
+
+Inside a pane, `TYBA_PANE` and `TYBA_SESSION` tell which one it is.
+
+## `tyba run`
+
+```bash
+tyba run --wait -- 'cargo test 2>&1 | tail -20'
+```
+
+Opens a new tab, waits for the shell to be ready and types the command. With `--wait`, it waits for the command to finish, prints its output and exits with its code, just like `ssh` and `docker run`. Use `--cwd <dir>` to pick the tab's folder.
+
+You see the command running in the tab, and the caller gets the result.
+
+## `tyba events`
+
+```bash
+tyba events
+abriu    a1b2c3d4  zsh  [shell]
+agente   e5f6a7b8  claude · esperando você
+fechou   a1b2c3d4
+```
+
+Keeps running until you press Ctrl-C or the app closes. It only writes when something changes, so sitting still is normal. The initial state comes from `tyba ls`. A change that comes and goes in under a quarter of a second may not show up.
+
+## `tyba send`
+
+```bash
+tyba send 2 'run the tests and tell me if they pass'
+entregue a e5f6a7b8-…
+```
+
+Delivers the text to the pane's Claude Code or Codex and waits up to 10 seconds for the agent to start its turn. If it doesn't, it exits with code 1.
+
+## Security
+
+The CLI goes through the same guard rail as agents:
+
+- **`run` and `send` refuse** what the guard rail refuses: merging and approving PRs, and disabling the `pre-push` hook (`--no-verify`, `core.hooksPath`, `GIT_CONFIG_*`).
+- **The `run` shell starts with TYBA's `pre-push` hook**, like an agent session. Pushing to main or master is refused.
+- **`run` and `send` take a single line**, with no TAB and no control characters.
+- **`send` only writes to an idle agent waiting for you.** It refuses:
+  - a plain shell, which has no hook. To run a command, use `tyba run`;
+  - an agent that is working or showing a permission prompt. The CLI never approves anything;
+  - an agent that is suspended (Ctrl-Z), in the background, or behind another program;
+  - text that starts with `!` (it becomes a shell command in the agent) or `/` (slash commands), or that is just `exit` or `quit`.
+- **`capture`, `run --wait` and `events` only return redacted text.** Keys and tokens come out masked.
+- **The socket only accepts connections from your user**, checked by the operating system.
+
+<Warning>
+Any program running as your user can call the CLI, including an agent in another pane. It can read the panes, already redacted, and open tabs. The guard rail above is what keeps those calls from turning into a merge or a push to main.
+</Warning>
+
+## Teaching the agent to use it
+
+```bash
+mkdir -p ~/.claude/skills/tyba && tyba skill > ~/.claude/skills/tyba/SKILL.md
+```
+
+`tyba skill` prints a ready-made skill for Claude Code. Run it again after updating TYBA, so the skill matches the version.
+
+## Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| 0 | ok |
+| 1 | failure (or refused by the guard rail) |
+| 2 | invalid usage |
+| 3 | pane not found or ambiguous |
+| 4 | TYBA is not running |
+| 130 | interrupted |
+
+With `run --wait`, the code is the command's.
