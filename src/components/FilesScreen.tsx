@@ -487,7 +487,7 @@ export function FilesScreen({
                         }
                       }}
                       // Fio à direita de cada aba; a ativa tem o fundo do editor (quadro).
-                      className={`group flex shrink-0 cursor-pointer items-center gap-[7px] border-r border-[var(--tyba-line)] px-3.5 text-[12.5px] outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-tyba-cyan ${
+                      className={`tyba-file-tab group flex shrink-0 cursor-pointer items-center gap-[7px] border-r border-[var(--tyba-line)] px-3.5 text-[12.5px] outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-tyba-cyan ${
                         on
                           ? "bg-[var(--tyba-editor-code-bg,var(--tyba-paper-solid))] font-semibold text-tyba-text"
                           : "text-tyba-text-faint hover:text-tyba-text"

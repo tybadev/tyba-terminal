@@ -431,6 +431,27 @@
      colorido, que no escuro lê como degradê. */
   --tyba-editor-bg: rgba(255, 255, 255, 0.03);
   --tyba-editor-code-bg: rgba(255, 255, 255, 0.03);
+  /* Dono, 2026-11-22: sem faixa entre a calha e o código, e o número mais
+     perto da borda esquerda. A faixa de abas fica sem fundo próprio. */
+  --tyba-editor-gutter-bg: transparent;
+  --tyba-editor-gutter-fx: blur(16px);
+  --tyba-editor-ln-min: 20px;
+  --tyba-editor-strip: transparent;
+}
+/* Abas de Arquivos no escuro: pílulas com a cara do selecionado da árvore
+   (fundo ativo + aresta de luz e contorno), sem o fio entre abas. */
+:root:not([data-theme]):not([data-imported]) .tyba-file-tab {
+  border-right: 0;
+  margin: 4px 0 4px 4px;
+  border-radius: 8px;
+  padding-inline: 12px;
+}
+:root:not([data-theme]):not([data-imported]) .tyba-file-tab[aria-selected='true'] {
+  background: var(--tyba-glass-active);
+  box-shadow: var(--tyba-pill-on);
+}
+:root:not([data-theme]):not([data-imported]) .tyba-file-tab[aria-selected='false']:hover {
+  background: var(--tyba-hover);
 }
 
 /* Só o claro do TYBA (os outros claros herdam o bloco de cima e têm acentos
