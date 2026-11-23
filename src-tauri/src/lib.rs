@@ -906,11 +906,16 @@ fn cli_send(
         Ok(text) => text,
         Err(response) => return response,
     };
-    let Ok(_busy) = CLI_SEND_BUSY.try_lock() else {
-        return ControlResponse::error(
-            EXIT_FAILURE,
-            "outro `tyba send` em andamento; tente de novo",
-        );
+    // Envenenado (um `send` anterior entrou em pânico) não é ocupado: segue.
+    let _busy = match CLI_SEND_BUSY.try_lock() {
+        Ok(guard) => guard,
+        Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+        Err(std::sync::TryLockError::WouldBlock) => {
+            return ControlResponse::error(
+                EXIT_FAILURE,
+                "outro `tyba send` em andamento; tente de novo",
+            )
+        }
     };
     let state = app.state::<AppState>();
     let pane = match cli::resolve_target(
