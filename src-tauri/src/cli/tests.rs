@@ -691,3 +691,109 @@ fn events_without_the_app_is_exit_4_and_extra_args_are_usage() {
         EXIT_USAGE
     );
 }
+
+// =============================== `tyba send` ===============================
+
+fn send_request(text: &str) -> ControlRequest {
+    ControlRequest {
+        v: PROTOCOL_VERSION,
+        op: "send".into(),
+        target: Some("2".into()),
+        text: Some(text.into()),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn send_args_take_the_pane_then_the_text_with_or_without_double_dash() {
+    for list in [
+        &["send", "2", "rode", "os", "testes"][..],
+        &["send", "2", "--", "rode", "os", "testes"][..],
+        &["send", "--json", "2", "rode os testes"][..],
+    ] {
+        let invocation = parse_args(&args(list)).unwrap();
+        assert_eq!(invocation.request.op, "send");
+        assert_eq!(invocation.request.target.as_deref(), Some("2"));
+        assert_eq!(invocation.request.text.as_deref(), Some("rode os testes"));
+    }
+    for bad in [
+        &["send"][..],
+        &["send", "2"][..],
+        &["send", "2", "--wait", "oi"][..],
+        &["send", "2", "--lines", "3", "oi"][..],
+        &["send", "2", "a", "--", "b"][..],
+    ] {
+        assert!(parse_args(&args(bad)).is_err(), "{bad:?}");
+    }
+}
+
+#[test]
+fn send_refuses_what_the_guard_rail_refuses() {
+    for text in [
+        "gh pr merge 12",
+        "git push --no-verify origin main",
+        "git -c core.hooksPath=/dev/null push",
+    ] {
+        let response = checked_send_text(&send_request(text)).unwrap_err();
+        assert_eq!(response.code, Some(EXIT_FAILURE), "{text}");
+    }
+}
+
+#[test]
+fn send_refuses_slash_commands_exit_and_control_characters() {
+    for text in ["/exit", " /quit", "/meu-comando x", "exit", "QUIT"] {
+        let response = checked_send_text(&send_request(text)).unwrap_err();
+        assert_eq!(response.code, Some(EXIT_FAILURE), "{text}");
+    }
+    for text in ["", "   ", "oi\nrm -rf x", "oi\r", "a\tb", "\x1b[A"] {
+        let response = checked_send_text(&send_request(text)).unwrap_err();
+        assert_eq!(response.code, Some(EXIT_USAGE), "{text:?}");
+    }
+    assert_eq!(
+        checked_send_text(&send_request("  rode os testes e me diga  ")).unwrap(),
+        "rode os testes e me diga"
+    );
+    assert!(checked_send_text(&send_request("exit code do teste?")).is_ok());
+}
+
+#[test]
+fn send_only_reaches_an_idle_agent_and_never_a_shell_prompt() {
+    // agente no pane, parado, shell de trás fora do prompt: entrega.
+    assert_eq!(send_refusal(true, true, Some(false)), None);
+    assert_eq!(send_refusal(true, true, None), None);
+    // sem agente: o texto viraria comando de shell.
+    assert!(send_refusal(false, true, Some(false)).is_some());
+    // o agente saiu e o shell voltou ao prompt, mesmo com status velho.
+    assert!(send_refusal(true, true, Some(true)).is_some());
+    // trabalhando ou pedindo permissão (não `Idle`).
+    assert!(send_refusal(true, false, Some(false)).is_some());
+}
+
+#[test]
+fn send_exits_by_the_delivery_confirmation() {
+    let dir = tempfile::tempdir().unwrap();
+    for (delivered, code, text) in [
+        (true, EXIT_OK, "entregue a p1"),
+        (false, EXIT_FAILURE, "não começou"),
+    ] {
+        let socket = dir
+            .path()
+            .join(format!("ctl-{delivered}"))
+            .join("control.sock");
+        let handler: ControlHandler = Arc::new(move |req, _| {
+            assert_eq!(req.op, "send");
+            assert_eq!(req.text.as_deref(), Some("oi"));
+            ControlResponse::ok(
+                serde_json::to_value(SendResult {
+                    pane: "p1".into(),
+                    delivered,
+                })
+                .unwrap(),
+            )
+        });
+        let _server = ControlServer::bind(&socket, handler).unwrap();
+        let (exit, out, _) = run_capture(&["send", "2", "oi"], &socket);
+        assert_eq!(exit, code);
+        assert!(out.contains(text), "{out}");
+    }
+}

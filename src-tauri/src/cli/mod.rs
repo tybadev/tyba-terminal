@@ -35,7 +35,7 @@ pub const EXIT_INTERRUPTED: i32 = 130;
 
 pub const PROTOCOL_VERSION: u32 = 1;
 const CONTROL_SOCKET_FILE: &str = "control.sock";
-const SUBCOMMANDS: &[&str] = &["ls", "capture", "run", "events"];
+const SUBCOMMANDS: &[&str] = &["ls", "capture", "run", "events", "send"];
 const CLI_MODE: &str = "_cli";
 
 const USAGE: &str = "\
@@ -47,6 +47,10 @@ uso:
                          abre uma aba com um shell e digita o comando nela;
                          com --wait, espera o fim e devolve a saída (redigida)
                          e sai com o código do comando
+  tyba send <pane> [--json] [--] <texto>
+                         manda o texto ao agente (claude, codex) do pane, só
+                         com ele parado esperando você; nunca a um shell nem
+                         a um prompt de permissão
   tyba events [--json]   o que muda no TYBA aberto (pane abriu/fechou, estado
                          do agente), uma linha por mudança, até o app fechar
 
@@ -77,6 +81,9 @@ pub struct ControlRequest {
     /// `run --wait`: responde só quando o comando termina.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub wait: bool,
+    /// `send`: o texto a entregar ao agente do pane.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -259,6 +266,70 @@ pub struct RunResult {
     pub lines: Option<Vec<String>>,
 }
 
+/// A saída do `tyba send --json`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SendResult {
+    pub pane: String,
+    /// O agente começou o turno com o texto (o hook disse), dentro do prazo.
+    pub delivered: bool,
+}
+
+/// O texto do `send`, conferido antes de olhar o pane. Recusa o mesmo que o
+/// `run` (vazio, caractere de controle, o que o guarda-corpo recusa) e mais:
+/// - comando de barra (`/exit`, `/quit`…) e `exit`/`quit` soltos: fecham o
+///   agente, e o que vier depois cairia no shell de trás, sem o hook;
+/// - qualquer `/…`, porque o dono instala comandos próprios e a CLI não sabe
+///   o que cada um faz.
+pub fn checked_send_text(request: &ControlRequest) -> Result<String, ControlResponse> {
+    let raw = request.text.as_deref().unwrap_or("");
+    let text = raw.trim();
+    if text.is_empty() {
+        return Err(ControlResponse::error(EXIT_USAGE, "falta o texto"));
+    }
+    if raw.chars().any(char::is_control) {
+        return Err(ControlResponse::error(
+            EXIT_USAGE,
+            "o texto tem quebra de linha, TAB ou caractere de controle; mande uma linha só",
+        ));
+    }
+    if text.starts_with('/') || ["exit", "quit"].contains(&text.to_lowercase().as_str()) {
+        return Err(ControlResponse::error(
+            EXIT_FAILURE,
+            "comando de barra e exit/quit não passam pelo `tyba send`; digite no pane",
+        ));
+    }
+    if let Some(reason) = crate::agent::guard_rail::guard_rail(text) {
+        return Err(ControlResponse::error(EXIT_FAILURE, reason));
+    }
+    Ok(text.to_string())
+}
+
+/// Por que o `send` NÃO escreve neste pane (`None` = pode). Só entrega a um
+/// agente parado esperando o próximo prompt:
+/// - `agent_in_pane`: há um processo de agente no pane (sessão de agente, ou
+///   o prober achou um claude/codex digitado no shell). Sem ele o texto
+///   viraria comando de um shell que não tem o hook pre-push;
+/// - `idle`: o status `Idle`, que só vem de hook (fim de turno). Trabalhando,
+///   o agente pode abrir um prompt de permissão a qualquer instante, e um
+///   texto que começa com `1` o aprovaria; esperando aprovação, é o próprio
+///   prompt. A fila de prompts usa a mesma régua;
+/// - `at_prompt`: o shell do pane está no prompt (o agente saiu): recusa.
+pub fn send_refusal(
+    agent_in_pane: bool,
+    idle: bool,
+    at_prompt: Option<bool>,
+) -> Option<&'static str> {
+    if !agent_in_pane || at_prompt == Some(true) {
+        return Some("nenhum agente no pane; para rodar comando, use `tyba run`");
+    }
+    if !idle {
+        return Some(
+            "o agente não está parado esperando você (trabalhando ou pedindo permissão); tente quando o turno acabar",
+        );
+    }
+    None
+}
+
 /// O comando do `run`, conferido antes de qualquer pane nascer. Recusa:
 /// - linha vazia;
 /// - caractere de controle (quebra de linha, TAB, `ESC`, `^C`…): o texto é
@@ -344,6 +415,16 @@ pub fn handle(
 }
 
 /// O id do pane que `target` nomeia, ou a resposta de erro do contrato.
+/// O alvo, como o dono digitou, para o id do pane (o mesmo contrato do
+/// `capture`).
+pub fn resolve_target(
+    layout: &LayoutState,
+    sessions: &[Session],
+    target: &str,
+) -> Result<String, ControlResponse> {
+    resolve_pane(&build_listing(layout, sessions), target)
+}
+
 fn resolve_pane(listing: &Listing, target: &str) -> Result<String, ControlResponse> {
     let panes: Vec<&PaneEntry> = listing.workspaces.iter().flat_map(|w| &w.panes).collect();
     let refs: Vec<target::PaneRef<'_>> = panes
@@ -458,7 +539,7 @@ fn parse_args(args: &[String]) -> Result<Invocation, String> {
                 cwd = Some(dir.to_string_lossy().into_owned());
                 continue;
             }
-            "--" if op == "run" => {
+            "--" if op == "run" || op == "send" => {
                 let words: Vec<&str> = rest.by_ref().map(String::as_str).collect();
                 command = Some(words.join(" "));
                 continue;
@@ -517,6 +598,24 @@ fn parse_args(args: &[String]) -> Result<Invocation, String> {
             json,
         }),
         ("events", _) => Err("`tyba events` não recebe pane nem --lines".into()),
+        ("send", [target, words @ ..]) if lines.is_none() => {
+            let text = match (command, words.is_empty()) {
+                (Some(text), true) => text,
+                (None, false) => words.join(" "),
+                _ => return Err("o texto vem depois do pane, com ou sem `--`".into()),
+            };
+            if text.trim().is_empty() {
+                return Err("falta o texto: `tyba send <pane> <texto>`".into());
+            }
+            Ok(Invocation {
+                request: ControlRequest {
+                    text: Some(text),
+                    ..request("send", Some(target.clone()))
+                },
+                json,
+            })
+        }
+        ("send", _) => Err("uso: `tyba send <pane> <texto>`".into()),
         ("run", _) => {
             Err("`tyba run` não recebe pane nem --lines; o comando vem depois de `--`".into())
         }
@@ -574,6 +673,14 @@ pub fn run(args: &[String], socket: &Path, out: &mut impl Write, err: &mut impl 
             Some(lines) => lines.iter().map(|l| format!("{l}\n")).collect(),
             None => format!("{}\n", r.pane),
         })
+    } else if invocation.request.op == "send" {
+        serde_json::from_value::<SendResult>(result).map(|r| {
+            if r.delivered {
+                format!("entregue a {}\n", r.pane)
+            } else {
+                format!("escrito em {}, mas o agente não começou o turno\n", r.pane)
+            }
+        })
     } else {
         serde_json::from_value::<Listing>(result).map(|l| render_listing(&l))
     };
@@ -593,6 +700,12 @@ pub fn run(args: &[String], socket: &Path, out: &mut impl Write, err: &mut impl 
 /// `run --wait` sai com o código do comando, como o `ssh` e o `docker run`;
 /// fora do 0..=255 (ou sem código) vira falha. O resto sai com 0.
 fn command_exit_code(invocation: &Invocation, result: &serde_json::Value) -> i32 {
+    if invocation.request.op == "send" {
+        return match result.get("delivered").and_then(serde_json::Value::as_bool) {
+            Some(true) => EXIT_OK,
+            _ => EXIT_FAILURE,
+        };
+    }
     if invocation.request.op != "run" || !invocation.request.wait {
         return EXIT_OK;
     }

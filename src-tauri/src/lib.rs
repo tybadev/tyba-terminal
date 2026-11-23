@@ -888,6 +888,79 @@ const CLI_RUN_PROMPT_WAIT: std::time::Duration = std::time::Duration::from_secs(
 /// abrir um shell sem o pre-push. Só digita com a integração do shell dizendo
 /// "prompt pintado, nada rodando".
 #[cfg(any(target_os = "linux", target_os = "macos"))]
+/// Quanto o `tyba send` espera o agente começar o turno (o hook
+/// `UserPromptSubmit` tira a sessão do `Idle`).
+const CLI_SEND_CONFIRM_WAIT: Duration = Duration::from_secs(10);
+
+/// `tyba send <pane> <texto>`: entrega o texto ao agente do pane pelo mesmo
+/// caminho da fila de prompts (`inject_rich_input`). Ver
+/// [`cli::checked_send_text`] e [`cli::send_refusal`] para o que é recusado.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn cli_send(
+    app: &AppHandle,
+    request: &cli::ControlRequest,
+    connected: &dyn Fn() -> bool,
+) -> cli::ControlResponse {
+    use cli::{ControlResponse, EXIT_FAILURE};
+
+    let text = match cli::checked_send_text(request) {
+        Ok(text) => text,
+        Err(response) => return response,
+    };
+    let state = app.state::<AppState>();
+    let pane = match cli::resolve_target(
+        &state.layout.state(),
+        &state.sessions.list(),
+        request.target.as_deref().unwrap_or(""),
+    ) {
+        Ok(pane) => pane,
+        Err(response) => return response,
+    };
+    let Ok(id) = pane.parse::<SessionId>() else {
+        return ControlResponse::error(EXIT_FAILURE, "pane inválido");
+    };
+    let refusal = |state: &AppState| {
+        let Some(session) = state.sessions.get(id) else {
+            return Some("o pane fechou");
+        };
+        let agent_in_pane = match session.kind {
+            SessionKind::Agent { .. } => true,
+            SessionKind::Shell => state.agent_prober.detected(id).is_some(),
+            _ => false,
+        };
+        let idle = matches!(session.status, SessionStatus::Idle { .. });
+        cli::send_refusal(agent_in_pane, idle, state.pty_pool.shell_at_prompt(id))
+    };
+    // Entre conferir e escrever há uma janela curta: um hook pode chegar no
+    // meio. Por isso o texto nunca é comando de barra nem exit/quit (o agente
+    // não sai por causa do próprio `send`) e só vai a agente PARADO, que não
+    // abre prompt de permissão sozinho.
+    if let Some(reason) = refusal(&state) {
+        return ControlResponse::error(EXIT_FAILURE, reason);
+    }
+    if let Err(e) = inject_rich_input(&state, id, &text, true) {
+        return ControlResponse::error(EXIT_FAILURE, format!("não deu para escrever no pane: {e}"));
+    }
+    let deadline = std::time::Instant::now() + CLI_SEND_CONFIRM_WAIT;
+    let delivered = loop {
+        let idle = state
+            .sessions
+            .get(id)
+            .is_some_and(|s| matches!(s.status, SessionStatus::Idle { .. }));
+        if !idle {
+            break true;
+        }
+        if std::time::Instant::now() >= deadline || !connected() {
+            break false;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    match serde_json::to_value(cli::SendResult { pane, delivered }) {
+        Ok(value) => ControlResponse::ok(value),
+        Err(e) => ControlResponse::error(EXIT_FAILURE, e.to_string()),
+    }
+}
+
 fn cli_run(
     app: &AppHandle,
     request: &cli::ControlRequest,
@@ -10852,6 +10925,9 @@ pub fn run() {
                     Arc::new(move |request, connected| {
                         if request.op == "run" {
                             return cli_run(&control_app, &request, connected);
+                        }
+                        if request.op == "send" {
+                            return cli_send(&control_app, &request, connected);
                         }
                         let state = control_app.state::<AppState>();
                         cli::handle(
