@@ -2,6 +2,10 @@
 # Sourceado no fim do .zshrc gerado em ZDOTDIR, DEPOIS da config do usuario.
 
 if [[ -o interactive ]] && autoload -Uz add-zsh-hook 2>/dev/null; then
+  # Tecla de controle apertada com comando rodando (^C, ^V...) nao volta como
+  # texto: o tty ecoaria `^C` na saida, e o bloco ja diz "^C interrompido".
+  stty -echoctl 2>/dev/null
+
   __tyba_esc() { printf '\033]%s\007' "$1"; }
 
   __tyba_urlencode() {
