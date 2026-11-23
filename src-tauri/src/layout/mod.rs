@@ -261,6 +261,30 @@ impl PaneNode {
         }
     }
 
+    /// O tipo do split que segura `target` direto e um painel do irmão dele:
+    /// por onde reequilibrar depois de fechar `target`.
+    fn close_hint(&self, target: PaneId) -> Option<(SplitKind, PaneId)> {
+        match self {
+            PaneNode::Leaf { .. } | PaneNode::AgentViewer { .. } => None,
+            PaneNode::Split {
+                split,
+                first,
+                second,
+                ..
+            } => {
+                if first.id() == target {
+                    Some((*split, second.first_leaf()))
+                } else if second.id() == target {
+                    Some((*split, first.first_leaf()))
+                } else {
+                    first
+                        .close_hint(target)
+                        .or_else(|| second.close_hint(target))
+                }
+            }
+        }
+    }
+
     /// Divide por igual os splits do mesmo `kind` no caminho até `target`:
     /// dividir três vezes na mesma direção dá três terços, não 1/2, 1/4, 1/4
     /// (dono, 2026-11-22). Os outros ramos ficam como o usuário deixou.
@@ -1264,8 +1288,14 @@ impl LayoutManager {
         let (wi, ti) = target.ok_or(LayoutError::PaneNotFound(pane))?;
         let tab = inner.workspaces[wi].tabs[ti].clone();
         let tab_root = tab.root.clone().ok_or(LayoutError::PaneNotFound(pane))?;
+        let hint = tab_root.close_hint(pane);
         match tab_root.remove_leaf(pane) {
-            Some(root) => {
+            Some(mut root) => {
+                // Fechar também reparte por igual a fileira que perdeu o
+                // painel (dono, 2026-11-22): três terços viram duas metades.
+                if let Some((kind, neighbor)) = hint {
+                    root.equalize_toward(neighbor, kind);
+                }
                 let active_pane = match tab.active_pane {
                     Some(current) if root.contains(current) => Some(current),
                     _ => Some(root.first_leaf()),
@@ -2308,6 +2338,47 @@ mod tests {
         ratios(&root, &mut r);
         assert!((r[0] - 0.5).abs() < 1e-9, "{r:?}");
         assert!((r[1] - 0.5).abs() < 1e-9, "{r:?}");
+    }
+
+    #[test]
+    fn closing_one_of_three_gives_equal_halves() {
+        let a = Uuid::new_v4();
+        let mut root = PaneNode::Leaf {
+            id: a,
+            session_id: sid(),
+        };
+        let b = root.split_leaf(a, SplitKind::V, sid()).unwrap();
+        root.equalize_toward(b, SplitKind::V);
+        let c = root.split_leaf(b, SplitKind::V, sid()).unwrap();
+        root.equalize_toward(c, SplitKind::V);
+        // Fecha o primeiro (o terço da esquerda): sobram b | c.
+        let (kind, neighbor) = root.close_hint(a).unwrap();
+        let mut root = root.remove_leaf(a).unwrap();
+        root.equalize_toward(neighbor, kind);
+        let mut r = Vec::new();
+        ratios(&root, &mut r);
+        assert_eq!(r.len(), 1, "{r:?}");
+        assert!((r[0] - 0.5).abs() < 1e-9, "{r:?}");
+    }
+
+    #[test]
+    fn closing_the_middle_of_three_gives_equal_halves() {
+        let a = Uuid::new_v4();
+        let mut root = PaneNode::Leaf {
+            id: a,
+            session_id: sid(),
+        };
+        let b = root.split_leaf(a, SplitKind::V, sid()).unwrap();
+        root.equalize_toward(b, SplitKind::V);
+        let c = root.split_leaf(a, SplitKind::V, sid()).unwrap();
+        root.equalize_toward(c, SplitKind::V);
+        // a | c | b, com a raiz em 2/3: fechar o c deixa a | b em metades.
+        let (kind, neighbor) = root.close_hint(c).unwrap();
+        let mut root = root.remove_leaf(c).unwrap();
+        root.equalize_toward(neighbor, kind);
+        let mut r = Vec::new();
+        ratios(&root, &mut r);
+        assert!((r[0] - 0.5).abs() < 1e-9, "{r:?}");
     }
 
     #[test]
