@@ -6,6 +6,8 @@ pub mod boot;
 pub mod cli;
 pub mod completion;
 pub mod config;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub mod daemon;
 pub mod docker;
 pub mod editor;
 pub mod error;
