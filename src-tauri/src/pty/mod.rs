@@ -2126,7 +2126,7 @@ fn watch_leader_exit(id: PtyId, sid: u32, leader_start: Option<u64>, reaped: Arc
 }
 
 #[cfg(unix)]
-fn kill_process_group(leader_pid: u32) -> std::io::Result<()> {
+pub(crate) fn kill_process_group(leader_pid: u32) -> std::io::Result<()> {
     let pgid = unsafe { libc::getpgid(leader_pid as libc::pid_t) };
     if pgid < 0 {
         let err = std::io::Error::last_os_error();
@@ -2146,7 +2146,7 @@ fn kill_process_group(leader_pid: u32) -> std::io::Result<()> {
 }
 
 #[cfg(not(unix))]
-fn kill_process_group(_leader_pid: u32) -> std::io::Result<()> {
+pub(crate) fn kill_process_group(_leader_pid: u32) -> std::io::Result<()> {
     Ok(())
 }
 

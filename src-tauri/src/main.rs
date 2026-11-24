@@ -5,6 +5,10 @@ fn main() {
     if let Some(code) = tyba_lib::cli::maybe_run_cli_mode() {
         std::process::exit(code);
     }
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    if let Some(code) = tyba_lib::daemon::maybe_run_daemon_mode() {
+        std::process::exit(code);
+    }
     if let Some(code) = tyba_lib::hook_ipc::maybe_run_hook_mode() {
         std::process::exit(code);
     }
