@@ -442,6 +442,10 @@ const BlockCard = memo(function BlockCard({
         marked
           ? "bg-tyba-violet/[.07] dark:bg-tyba-surface"
           : "shadow-[inset_0_-1px_0_0_var(--tyba-border-field)]"
+      }${
+        // Falhou: véu vermelho fraco no bloco inteiro, sem barra nem contorno
+        // (dono, 2026-11-23). ^C (130) não conta como falha e fica neutro.
+        failed(block.exitCode) && !marked ? " bg-tyba-red/[.05]" : ""
       }`}
     >
       <BlockHeader block={block} onInject={onInject} marked={marked} />
